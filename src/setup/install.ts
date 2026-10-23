@@ -31,6 +31,7 @@ import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import * as opencode from '../agents/runtimes/small/opencode.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github/index.ts';
@@ -110,6 +111,22 @@ function writeSharedSkill(linkFile: string, targetFile: string, content: string,
 
 /** The skills folder a skill file is in, for the report: `~/.claude/skills`. */
 export const skillsDir = (file: string): string => dirname(dirname(file));
+
+/** The home skill folders that hold a managed yokoten skill, for the duplicate note (#540). */
+export function installedSkillDirs(env: Env): string[] {
+  return [...new Set(kitSkills().flatMap((name) => skillFiles(env, name).filter(isManaged).map(skillsDir)))];
+}
+
+/**
+ * The project folders that hold one managed yokoten skill, relative to `root`, for the
+ * duplicate note (#540): `.agents/skills/dispatch` and so on. `npx skills add` puts a copy
+ * in `.agents/skills` or `.claude/skills`. The note names each folder, never the whole
+ * folder above it, which holds other packages' skills too.
+ */
+export function projectSkillDirs(root: string): string[] {
+  const dirs = ['.agents/skills', '.claude/skills'];
+  return dirs.flatMap((dir) => kitSkills().filter((name) => isManaged(join(root, dir, name, 'SKILL.md'))).map((name) => `${dir}/${name}`));
+}
 
 /** The example install prints when it asks the owner to type a mark (#525). */
 const MARK_EXAMPLE = 'for example: your city, a company domain, a server name';
@@ -338,6 +355,13 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ok &&= museHooks.ok;
     report.push(...museHooks.lines);
   } else report.push(`skipped Muse Code: ${dirname(museFile)} not found (run \`yokoten install\` again after installing Muse Code)`);
+  // OpenCode gets the command guard only, and only when its config folder is already there.
+  if (opencode.hasUserDir(env)) {
+    const file = opencode.userPluginFile(env);
+    const openCodeHooks = agentHooks('OpenCode', file, () => [`${opencode.addUserPlugin(env, USER_CLI, USER_MISSING)} the OpenCode command guard in ${file}`]);
+    ok &&= openCodeHooks.ok;
+    report.push(...openCodeHooks.lines);
+  } else report.push(`skipped OpenCode: ${opencode.userPluginFile(env).replace(/\/plugins\/yokoten\.ts$/, '')} not found (run \`yokoten install\` again after installing OpenCode)`);
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (`yokoten marks add` adds one of your own)' : ''}`);
@@ -411,8 +435,8 @@ export function installedPieces(env: Env): string[] {
   const pieces: string[] = [];
   const hooks = [hasSessionDoctor(env) && 'the SessionStart doctor', hasUserGuard(env) && 'the command guard'].filter((hook) => hook !== false);
   if (hooks.length) pieces.push(`${hooks.join(' and ')} in ${join(userDir(env), 'settings.json')}`);
-  const skillDirs = new Set(kitSkills().flatMap((name) => skillFiles(env, name).filter(isManaged).map(skillsDir)));
-  if (skillDirs.size) pieces.push(`the skills in ${[...skillDirs].join(' and ')}`);
+  const skillDirs = installedSkillDirs(env);
+  if (skillDirs.length) pieces.push(`the skills in ${skillDirs.join(' and ')}`);
   if (kitAgents().some((file) => isManaged(agentFile(env, file)))) pieces.push(`the agents in ${join(userDir(env), 'agents')}`);
   if (existsSync(paths(env).runtime)) pieces.push(paths(env).runtime);
   return pieces;
@@ -959,7 +983,7 @@ export function setUpMailmap(env: Env, found: MachineMark[]): string {
   if (state === 'other') return `kept your own git mailmap.file setting; add the lines of ${file} to that file`;
   // git prints nothing when it sets a value, so the setting is read back to see it took.
   if (state === 'unset') readGitValue(env, ['config', '--global', 'mailmap.file', MAILMAP_SETTING]);
-  if (mailmapState(env) !== 'ours') return `skipped the git mailmap: git config could not set mailmap.file; run \`git config --global mailmap.file ${MAILMAP_SETTING}\``;
+  if (mailmapState(env) !== 'ours') return `skipped the git mailmap: git config could not set mailmap.file; run \`git config --global mailmap.file ${MAILMAP_SETTING}\`; a mailmap makes git print a private address in place of your email`;
   if (state === 'ours') return missing.length ? `added ${missing.length} line(s) to ${file}` : `kept ${file}: it already maps your emails`;
   return `${before === null ? 'wrote' : 'kept'} ${file}, and git log and git show now print your emails as a placeholder`;
 }

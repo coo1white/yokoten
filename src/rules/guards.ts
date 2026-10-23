@@ -17,7 +17,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } fr
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
-import { type Finding, finding } from './message.ts';
+import { type Finding, finding, noteWork } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
 import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
@@ -71,6 +71,9 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 
 /** The mark's file name, in the worktree's own git folder. */
 export const WORKER_MARK = 'yokoten-worker';
+
+/** The file in a checkout's git folder that holds a worker's done-when command. */
+export const DONE_WHEN_FILE = 'yokoten-done-when';
 
 // ---- The worker list (#566) ----
 //
@@ -265,9 +268,10 @@ const DOT_GIT_LIMIT = 4096;
 
 /**
  * What the `.git` at or above `folder` says, with no git process: `folder`, a main checkout's
- * git folder; `file`, the git folder a linked worktree's or a submodule's `.git` names (it may
- * be gone); `broken`, a `.git` that is no folder and no small readable file with a gitdir
- * line; null outside a checkout.
+ * git folder (it holds the `HEAD`, `objects` and `refs` git needs); `file`, the git folder a
+ * linked worktree's or a submodule's `.git` names (it may be gone); `broken`, a `.git` that is
+ * no folder and no small readable file with a gitdir line, a folder the guard cannot read, or
+ * a folder that kept the worker's own files but lost what git needs; null outside a checkout.
  */
 export type GitLink = { kind: 'folder' | 'file'; top: string; gitDir: string } | { kind: 'broken'; top: string } | null;
 
@@ -282,13 +286,55 @@ export function gitLinkAbove(folder: string): GitLink {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return { kind: 'broken', top: dir };
     }
     if (stats) {
-      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) return { kind: 'folder', top: dir, gitDir: dotGit };
-      const text = readSmallFile(dotGit);
-      const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
-      return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) {
+        const isGit = gitFolderState(dotGit);
+        if (isGit === 'yes') return { kind: 'folder', top: dir, gitDir: dotGit };
+        if (isGit === 'broken') return { kind: 'broken', top: dir };
+        // An empty `.git` is not a checkout: walk on past it (#746).
+      } else {
+        const text = readSmallFile(dotGit);
+        const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
+        return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      }
     }
     if (dirname(dir) === dir) return null;
   }
+}
+
+/**
+ * Whether a `.git` folder is one git would use. `broken` when the guard can't read it, or when
+ * the folder carries the worker's own files but git would not use it: a desk must not become
+ * its parent's checkout (#746). The caller then fails closed. No git process runs.
+ */
+function gitFolderState(gitDir: string): 'yes' | 'no' | 'broken' {
+  try {
+    if (isGitFolder(gitDir)) return 'yes';
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+  }
+  for (const name of [WORKER_MARK, DONE_WHEN_FILE]) {
+    try {
+      statSync(join(gitDir, name));
+      return 'broken';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+  }
+  return 'no';
+}
+
+/**
+ * Whether git itself would use this folder: `HEAD` a regular file (not a symlink) whose text is
+ * a `ref:` line or a commit sha, plus `objects` and `refs` folders. Git ignores anything less
+ * and walks up to the parent checkout, so the guard must too (#746). A reftable store is not
+ * checked: git still writes a `HEAD` line beside it, and no git here has `--ref-format`.
+ */
+function isGitFolder(gitDir: string): boolean {
+  const head = join(gitDir, 'HEAD');
+  if (!lstatSync(head).isFile()) return false;
+  const text = readSmallFile(head)?.trim() ?? '';
+  if (!/^ref:[ \t]*\S/.test(text) && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(text)) return false;
+  return statSync(join(gitDir, 'objects')).isDirectory() && statSync(join(gitDir, 'refs')).isDirectory();
 }
 
 function isFolder(path: string): boolean {
@@ -538,9 +584,14 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
   }
   // Files the guard can't see: a program fed by xargs or find, a find that writes, inline code.
   const fed = words.some((word) => programName(word) === 'xargs') || names.includes('find');
-  const blind = names.some((name) => RUNS_CODE.test(name)) || (fed && names.some(writes)) || (names.includes('find') && words.some((word) => FIND_WRITES.test(word)));
+  const codeRuns = names.some((name) => RUNS_CODE.test(name));
+  const fedWrite = fed && names.some(writes);
+  const findWrite = names.includes('find') && words.some((word) => FIND_WRITES.test(word));
+  const blind = codeRuns || fedWrite || findWrite;
   const isConfigNamed = () => namesConfigFolder(command) || namesConfigFolder(words.join(' '));
-  if (blind && namesGitDir(command)) return markFinding("this command names a git folder, and yokoten can't read which files it changes there");
+  // A find the guard can read, and that keeps `.git` out of the action, is not blind (#744).
+  const findIsRead = folder !== null && !codeRuns && !fedWrite && finds.length > 0 && finds.every(({ args: findArgs }) => findSparesGitTree(findArgs, folder, home));
+  if (blind && !findIsRead && namesGitDir(command)) return markFinding("this command names a git folder, and yokoten can't read which files it changes there");
   if (blind && isConfigNamed()) return configFinding("this command names yokoten's config folder, where the worker list is kept, and yokoten can't read which files it changes there");
   const config = configFolder(env);
   const context: ConfigContext = { folder, command, words, home, forms: config === null ? [] : configForms(config) };
@@ -553,6 +604,9 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
   // names keep it away (`find . -name '*.log' -delete`).
   for (const { starts, args } of finds) {
     if (folder === null || !mayReachGitFolder(args)) continue;
+    // Any `-o` used to count as reaching the mark. A prune or an exclusion that really
+    // keeps the walk out of `.git` does not (#744), so the mark rule stands down.
+    if (findSparesGitTree(args, folder, home)) continue;
     dirs ??= protectedGitDirs(folder);
     const top = gitLinkAbove(folder);
     const held = [...dirs, ...(top ? [realPath(join(top.top, '.git'))] : [])];
@@ -1462,7 +1516,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
   const isTildeQuoted = QUOTED_TILDE.test(command);
-  // A download piped into a shell runs code nobody read (#560).
+  // A download piped into a shell, eval, or a `$` program runs code nobody read (#560, #734, #745).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
   const token = checkTokenUse(command, commands);
@@ -1486,9 +1540,10 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // An alias runs another command under a new name: refused, not parsed (#560).
       // For a worker the worker rule already answers, with its own id.
       checkShellAlias(words, env) ??
-      // Removing the .git folder throws away every commit (#560, #573). For a worker the
-      // mark rule above already answers, with its own id.
-      checkRemoveGit(words) ??
+      // Removing the .git folder throws away every commit (#560). A find that deletes
+      // with nothing keeping it out of .git is the same loss (#573, #744). For a worker
+      // the mark rule above already answers, with its own id.
+      checkRemoveGit(words, postCwd, env) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -1500,11 +1555,13 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // The likely folder, read as written: a write there is refused, never let through.
       checkGitSetupWrites(words, { folder: nearCwd, from, env }) ??
       // A changed home folder hides the private marks (#664).
-      checkHomeSetting(words);
+      checkHomeSetting(words, env);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null) ?? later;
+  // A worker's changed home, before the box: the box would answer first and hide this fix (#739).
+  const worker = env.YOKOTEN_ROLE === 'worker' ? (checkWorkerRealHome(commands) ?? checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null;
+  return worker ?? later;
 }
 
 /**
@@ -1666,57 +1723,18 @@ function checkShellAlias(words: string[], env: Env): Finding | null {
 const REMOVE_PROGRAMS = new Set(['rm', 'rmdir', 'unlink', 'shred']);
 const REMOVE_GIT_FIX = 'delete only the files you mean (a tracked file with `git rm <path>`); to start over, clone the repo again';
 
-/**
- * Whether a find's tests can select a `.git` entry (#573). The name and path tests are
- * mayReachGitFolder's, including a join (`-o`, `!`) that can turn a test around. A find
- * that names nothing does not (`find dist -delete`). Every `-regex` counts: the guard
- * cannot prove one safe.
- */
-function findNamesDotGit(args: string[]): boolean {
-  if (args.some((arg) => arg === '-regex' || arg === '-iregex')) return true;
-  if (!args.some((arg) => FIND_NAME_TESTS.has(arg) || FIND_PATH_TESTS.has(arg))) return false;
-  return mayReachGitFolder(args);
-}
-
-/** A find that deletes an entry its tests can select as `.git`. `-fprint` only writes a list. */
-function findDeletesDotGit(args: string[]): boolean {
-  return findNamesDotGit(args) && (args.includes('-delete') || findActionRemoves(args));
-}
-
-/** Where a find action's command ends: the next action, `;`, or `{} +`. */
-function actionEnd(args: string[], index: number): number {
-  let end = index;
-  while (end < args.length && !FIND_ACTIONS.has(args[end]) && args[end] !== ';' && !(args[end] === '+' && args[end - 1] === '{}')) end++;
-  return end;
-}
-
-/** Whether these words run `rm`, `rmdir`, `unlink` or `shred`. */
-function commandRemoves(words: string[]): boolean {
-  return findPrograms(words).some((program) => REMOVE_PROGRAMS.has(programName(program)));
-}
-
-/**
- * Whether a find action runs `rm`, `rmdir`, `unlink` or `shred`. A launcher, an
- * assignment, `env -S` and a shell string count. `command -v` runs nothing.
- */
-function findActionRemoves(args: string[]): boolean {
-  for (let index = 0; index < args.length; index++) {
-    if (!FIND_ACTIONS.has(args[index])) continue;
-    const action = args.slice(index + 1, actionEnd(args, index + 1));
-    if (commandRemoves(action)) return true;
-    const at = runnerAt(action);
-    if (at !== -1 && commandWords(runString(action, at)).some(commandRemoves)) return true;
-  }
-  return false;
-}
-
-/** `rm` and friends on a path that can be `.git`, and a find that deletes one (#560, #573). For a worker the mark rule answers first. */
-function checkRemoveGit(words: string[]): Finding | null {
+/** `rm` and friends on a path that can be `.git`, and a `find` that deletes with nothing keeping it out (#573, #744). For a worker the mark rule answers first. */
+function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding | null {
+  const home = homeOf(env);
   let from = 0;
+  // A find's arguments run to the end of this command. The parse reads every find
+  // nested in them. Parsing those again would re-read the tail once per find (#744).
+  let coveredUntil = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
     if (at === -1) continue;
     from = at + 1;
+    if (at < coveredUntil) continue;
     const name = programName(program);
     const args = withoutShellRedirects(words, at + 1);
     if (REMOVE_PROGRAMS.has(name)) {
@@ -1725,11 +1743,946 @@ function checkRemoveGit(words: string[]): Finding | null {
         return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
       }
     }
-    if (name === 'find' && findDeletesDotGit(args)) {
-      return finding('remove-git', '`find` can delete the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+    if (name === 'find') {
+      if (findRemovesGit(args, cwd, home)) {
+        return finding('remove-git', '`find` deletes files, and nothing keeps it out of the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+      }
+      coveredUntil = words.length;
     }
   }
   return null;
+}
+
+// ---- A find that deletes, and .git (#744) ----
+//
+// `find . -delete` and `find . -exec rm` walk into `.git` and remove the history.
+// The guard refuses that unless something keeps the walk out: a prune of `.git`,
+// an exclusion such as `-not -path '*/.git/*'`, or a start folder that cannot hold
+// this repo's `.git` (`find dist -delete`). No test, or only tests that can match
+// `.git`, is refused. A name or path whose characters name git storage (`objects`,
+// `refs`, `*.idx`) but match no sample is refused too: the guard reads those
+// characters, not the glob grammar. When the guard cannot tell, it refuses.
+//
+// `-delete` turns depth on, and GNU find then refuses to run a prune at all, so the
+// prune form deletes nothing. An explicit `-depth` or `-d` is different: prune stops
+// working and the other branch can wipe `.git`. The guard treats only that explicit
+// depth as turning prune off.
+
+/** One node of a find expression. */
+type FindNode =
+  | { kind: 'or' | 'and' | 'comma'; left: FindNode; right: FindNode }
+  | { kind: 'not'; inner: FindNode }
+  | { kind: 'name' | 'path'; pattern: string }
+  | { kind: 'regex' }
+  | { kind: 'type'; letters: string }
+  | { kind: 'unknown' }
+  | { kind: 'prune' }
+  | { kind: 'harm'; recursive: boolean }
+  | { kind: 'pass' }
+  | { kind: 'fail' }
+  | { kind: 'exec'; harms: boolean; recursive: boolean };
+
+/** What a node does to one file find would visit. `isTrue` is null when the guard cannot tell. */
+interface FindEffect {
+  isTrue: boolean | null;
+  harms: boolean;
+  recursive: boolean;
+  prunes: boolean;
+  selects: boolean;
+}
+
+/** A parsed find: its starts, its expression, and whether the actions can delete. */
+interface FindParsed {
+  ok: boolean;
+  starts: string[];
+  node: FindNode;
+  forcesDepth: boolean;
+  harms: boolean;
+  unsure: boolean;
+  targetsGit: boolean;
+  maxDepth: number | null;
+  minDepth: number | null;
+  pathPatterns: string[];
+  /** Finds run by `-exec` and its kin. Each is parsed once, inside this walk (#744). */
+  innerFinds: FindParsed[];
+}
+
+/** One sample under `.git`, as find would print it. */
+interface GitProbe {
+  path: string;
+  base: string;
+  depth: number;
+  isDir: boolean;
+  isGitDir: boolean;
+}
+
+/** Where a start sits relative to this repo's `.git`. */
+type GitHold = 'no' | 'unsure' | { root: string };
+
+const FIND_GLOBAL_VALUES = new Set(['-maxdepth', '-mindepth', '-regextype']);
+const FIND_DEPTH_OPTIONS = new Set(['-depth', '-d']);
+const FIND_PRINTS = new Set(['-print', '-print0', '-ls', '-quit']);
+const FIND_FILE_ACTIONS = new Set(['-fprint', '-fprint0', '-fls']);
+const FIND_OR = new Set(['-o', '-or']);
+const FIND_AND = new Set(['-a', '-and']);
+// Files and folders a real checkout keeps. A test that matches one can reach the history.
+// The loose object (empty blob, two hex characters then the rest), the pack index and
+// the other refs are samples too: a pattern can name them without writing `.git`.
+const GIT_FILE_TAILS = [
+  'HEAD', 'config', 'index', 'packed-refs', 'COMMIT_EDITMSG', 'description',
+  'objects/pack/pack-1.pack', 'objects/pack/pack-1.idx', 'objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+  'refs/heads/main', 'refs/heads/master', 'refs/tags/sample-tag', 'refs/remotes/origin/HEAD',
+  'hooks/pre-commit', 'logs/HEAD', 'info/exclude', 'worktrees/wt/HEAD',
+];
+const GIT_DIR_TAILS = [
+  '', 'objects', 'objects/pack', 'objects/e6', 'refs', 'refs/heads', 'refs/tags',
+  'refs/remotes', 'refs/remotes/origin', 'hooks', 'logs', 'info', 'worktrees', 'worktrees/wt',
+];
+// Words under `.git` that a pattern can name without matching a sample (`refs/heads/develop`).
+// Exact file names the samples already cover (`config`, `index`) stay off this list.
+const GIT_STORAGE_PARTS = new Set(['objects', 'refs', 'hooks', 'logs', 'pack', 'worktrees', 'heads', 'tags', 'remotes', 'origin']);
+// Pack side files. `.idx` is the index; the rest sit beside the pack.
+const GIT_STORAGE_SUFFIXES = ['.idx', '.pack', '.rev', '.bitmap', '.keep', '.mtimes', '.promisor'];
+
+/** Whether a find that deletes can remove this repo's history. A parse the guard cannot finish refuses only when the line looks like a delete. */
+function findRemovesGit(args: string[], cwd: string | null, home: string | null): boolean {
+  let parsed: FindParsed;
+  try {
+    parsed = parseFindArgs(args, 'history');
+  } catch {
+    return looksLikeGitDelete(args);
+  }
+  return findParsedRemoves(parsed, args, cwd, home);
+}
+
+/** Whether this parsed find, or a find it runs, can remove the history. */
+function findParsedRemoves(parsed: FindParsed, args: string[], cwd: string | null, home: string | null): boolean {
+  if (!parsed.ok) return looksLikeGitDelete(args);
+  if (parsed.targetsGit) return true;
+  for (const inner of parsed.innerFinds) {
+    if (findParsedRemoves(inner, args, cwd, home)) return true;
+  }
+  if (parsed.unsure) return startMayHold(parsed.starts, cwd, home);
+  if (!parsed.harms) return false;
+  return expressionSpares(parsed, cwd, home, 'history') !== true;
+}
+
+/**
+ * Whether a find that writes keeps every git file, and the worker mark, out of its
+ * actions. True only when the guard is sure. Callers use it to stand down, never to
+ * add a refusal (`find . -fprint out` stays refused).
+ */
+function findSparesGitTree(args: string[], cwd: string, home: string | null): boolean {
+  try {
+    const parsed = parseFindArgs(args, 'tree');
+    if (!parsed.ok || parsed.targetsGit || parsed.unsure || !parsed.harms) return false;
+    return expressionSpares(parsed, cwd, home, 'tree') === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether any start may contain this repo's `.git`. An unreadable start counts. */
+function startMayHold(starts: string[], cwd: string | null, home: string | null): boolean {
+  for (const start of starts) {
+    if (gitHold(start, cwd, home) !== 'no') return true;
+  }
+  return false;
+}
+
+/** Whether the expression leaves every sample under `.git` unharmed. Null when it cannot tell. */
+function expressionSpares(parsed: FindParsed, cwd: string | null, home: string | null, mode: 'history' | 'tree'): boolean | null {
+  for (const start of parsed.starts) {
+    const hold = gitHold(start, cwd, home);
+    if (hold === 'unsure') return null;
+    if (hold === 'no') continue;
+    const probes = gitProbes(hold.root, start, mode);
+    if (hasUnsampledGitPath(parsed, probes)) return null;
+    if (probesHarmed(parsed, probes)) return false;
+  }
+  return true;
+}
+
+/** The `.git` of the checkout that holds `cwd`, or null when there is none. A broken one is unsure. */
+function repoGitDir(cwd: string): string | 'unsure' | null {
+  const link = gitLinkAbove(cwd);
+  if (link === null) return null;
+  if (link.kind === 'broken') return 'unsure';
+  return link.gitDir;
+}
+
+/**
+ * The printed path of this repo's `.git` when `start`'s walk includes it, `no` when
+ * the walk cannot reach it (`dist`, `src`), and `unsure` when the path cannot be read.
+ * A start that names `.git` itself (`find .git`, `find src/.git`) always holds that folder.
+ */
+function gitHold(start: string, cwd: string | null, home: string | null): GitHold {
+  const expanded = withHomeRead(start, home, cwd);
+  if (/[$`~]/.test(expanded)) return 'unsure';
+  // A glob the shell expands (`l*`, `*`) names children, and a child is not this repo's
+  // `.git`. A component that can be `.git`, or a glob the guard cannot place, stays unsure.
+  if (/[*?[{]/.test(expanded)) {
+    const globParts = expanded.split(/[\\/]+/).filter((part) => part !== '' && part !== '.');
+    if (isAbsolute(expanded) || globParts.includes('..') || globParts.some((part) => mayBeDotGit(part))) return 'unsure';
+    return globParts.length > 0 ? 'no' : 'unsure';
+  }
+  const parts = expanded.split(/[\\/]+/);
+  const gitAt = parts.findIndex((part) => part === '.git');
+  if (gitAt !== -1) {
+    const root = parts.slice(0, gitAt + 1).join('/');
+    return { root: root || '.git' };
+  }
+  const meaningful = parts.filter((part) => part !== '' && part !== '.');
+  const isHere = meaningful.length === 0;
+  if (!isHere && !isAbsolute(expanded) && !meaningful.includes('..')) return 'no';
+  if (cwd === null) return 'unsure';
+  const gitDir = repoGitDir(cwd);
+  if (gitDir === null) return 'no';
+  if (gitDir === 'unsure') return 'unsure';
+  const startAbs = resolve(cwd, expanded);
+  const reaches = startAbs === gitDir || isInsidePath(gitDir, startAbs) || isInsidePath(startAbs, gitDir);
+  if (!reaches) return 'no';
+  return { root: printedGit(expanded, startAbs, gitDir) };
+}
+
+/** Whether `inner` is strictly inside `outer`. The filesystem root holds every path. */
+function isInsidePath(inner: string, outer: string): boolean {
+  if (outer === sep) return inner.startsWith(sep) && inner.length > sep.length;
+  const prefix = outer.endsWith(sep) ? outer : outer + sep;
+  return inner.startsWith(prefix);
+}
+
+/** The path find prints for the git folder, from the start text the user wrote. */
+function printedGit(start: string, startAbs: string, gitDir: string): string {
+  const prefix = start.replace(/\/+$/, '') || '.';
+  if (startAbs === gitDir || isInsidePath(startAbs, gitDir)) {
+    const inside = relative(gitDir, startAbs).split(sep).join('/');
+    if (inside === '') return prefix;
+    const suffix = `/${inside}`;
+    return prefix.endsWith(suffix) ? prefix.slice(0, -suffix.length) : prefix;
+  }
+  const relativeGit = relative(startAbs, gitDir).split(sep).join('/');
+  if (prefix === '.') return relativeGit === '.git' ? './.git' : `./${relativeGit}`;
+  return `${prefix}/${relativeGit}`;
+}
+
+/** Samples of the git folder find would visit from `start`, plus the worker mark in tree mode. */
+function gitProbes(root: string, start: string, mode: 'history' | 'tree'): GitProbe[] {
+  const tails = [
+    ...GIT_DIR_TAILS.map((tail) => ({ tail, isDir: true, isGitDir: tail === '' })),
+    ...GIT_FILE_TAILS.map((tail) => ({ tail, isDir: false, isGitDir: false })),
+    ...(mode === 'tree' ? [WORKER_MARK, `worktrees/wt/${WORKER_MARK}`].map((tail) => ({ tail, isDir: false, isGitDir: false })) : []),
+  ];
+  return tails.map(({ tail, isDir, isGitDir }) => {
+    const path = tail === '' ? root : `${root}/${tail}`;
+    const slash = tail.lastIndexOf('/');
+    const base = tail === '' ? '.git' : tail.slice(slash + 1);
+    return { path, base, depth: depthBelow(start, path), isDir, isGitDir };
+  });
+}
+
+/** How many steps `printed` sits below the starting point find was given. */
+function depthBelow(start: string, printed: string): number {
+  const prefix = start.replace(/\/+$/, '') || '.';
+  if (prefix === '.') {
+    const body = printed.startsWith('./') ? printed.slice(2) : printed;
+    if (body === '' || body === '.') return 0;
+    return body.split('/').filter(Boolean).length;
+  }
+  if (printed === prefix) return 0;
+  const lead = `${prefix}/`;
+  if (printed.startsWith(lead)) return printed.slice(lead.length).split('/').filter(Boolean).length;
+  return printed.split('/').filter(Boolean).length;
+}
+
+/** A `-name` or `-path` test that selects a delete. */
+interface HarmPattern {
+  kind: 'name' | 'path';
+  pattern: string;
+}
+
+/**
+ * Whether a pattern can reach git storage the samples do not cover, so the guard cannot tell.
+ * A `-path` that names `.git` and matches nothing is refused, prune or not.
+ * A delete whose characters name storage (`objects`, `*.idx`) but match no sample is refused
+ * too, unless a prune keeps the walk out or no interior sample is visited.
+ */
+function hasUnsampledGitPath(parsed: FindParsed, probes: GitProbe[]): boolean {
+  for (const pattern of parsed.pathPatterns) {
+    const namesDotGit = /[$`]/.test(pattern) || pattern.split(/[\\/]+/).some((part) => mayBeDotGit(part));
+    if (!namesDotGit) continue;
+    if (!probes.some((probe) => findGlobMatches(pattern, probe.path))) return true;
+  }
+  if (gitDirPruned(parsed, probes) || !interiorVisited(parsed, probes)) return false;
+  for (const item of harmPatterns(parsed.node)) {
+    if (!namesGitStorage(item.pattern)) continue;
+    const read = (probe: GitProbe) => (item.kind === 'name' ? probe.base : probe.path);
+    if (!probes.some((probe) => findGlobMatches(item.pattern, read(probe)))) return true;
+  }
+  return false;
+}
+
+/** Whether the git folder itself is pruned, so the walk never enters it. An explicit depth turns prune off. */
+function gitDirPruned(parsed: FindParsed, probes: GitProbe[]): boolean {
+  const gitDir = probes.find((probe) => probe.isGitDir);
+  if (!gitDir || parsed.forcesDepth || !probeIsVisited(gitDir, parsed)) return false;
+  return evalFind(parsed.node, gitDir).prunes;
+}
+
+/** Whether any sample inside the git folder is visited. A shallow `-maxdepth` visits none. */
+function interiorVisited(parsed: FindParsed, probes: GitProbe[]): boolean {
+  return probes.some((probe) => !probe.isGitDir && probeIsVisited(probe, parsed));
+}
+
+/** Whether `pattern`'s own characters name git storage. A safe suffix (`.log`, `.ts`) does not. */
+function namesGitStorage(pattern: string): boolean {
+  if (/[$`]/.test(pattern)) return true;
+  return pattern.split(/[\\/]+/).filter(Boolean).some((part) => partNamesGitStorage(part));
+}
+
+/**
+ * One path component. A dotted tail that is not a git ending allows the name.
+ * `?`, a class, a brace, or a star inside the word is grammar, so the guard cannot tell.
+ */
+function partNamesGitStorage(part: string): boolean {
+  const lower = part.toLowerCase();
+  const tail = /[^*?[\]{}\\]+$/.exec(lower)?.[0] ?? '';
+  if (tail.includes('.') && !GIT_STORAGE_SUFFIXES.some((suffix) => tail.endsWith(suffix))) return false;
+  if (/[?[{}]/.test(lower)) return true;
+  const core = lower.replace(/^\*+/, '').replace(/\*+$/, '');
+  if (core.includes('*')) return true;
+  if (core === '') return false;
+  if (GIT_STORAGE_PARTS.has(core)) return true;
+  return GIT_STORAGE_SUFFIXES.some((suffix) => core.endsWith(suffix));
+}
+
+/** Name and path tests that sit on a delete, so they choose what is removed. A negated test excludes. */
+function harmPatterns(node: FindNode): HarmPattern[] {
+  switch (node.kind) {
+    case 'and': {
+      const found = [...harmPatterns(node.left), ...harmPatterns(node.right)];
+      if (nodeHarms(node.right)) found.push(...testPatterns(node.left, false));
+      if (nodeHarms(node.left)) found.push(...testPatterns(node.right, false));
+      return found;
+    }
+    case 'or':
+    case 'comma':
+      return [...harmPatterns(node.left), ...harmPatterns(node.right)];
+    case 'not':
+      return harmPatterns(node.inner);
+    default:
+      return [];
+  }
+}
+
+/** Name and path tests in `node`. `isNegated` drops a test that only excludes. */
+function testPatterns(node: FindNode, isNegated: boolean): HarmPattern[] {
+  switch (node.kind) {
+    case 'name':
+    case 'path':
+      return isNegated ? [] : [{ kind: node.kind, pattern: node.pattern }];
+    case 'and':
+    case 'or':
+    case 'comma':
+      return [...testPatterns(node.left, isNegated), ...testPatterns(node.right, isNegated)];
+    case 'not':
+      return testPatterns(node.inner, !isNegated);
+    default:
+      return [];
+  }
+}
+
+/** Whether `node` deletes a file it selects. */
+function nodeHarms(node: FindNode): boolean {
+  switch (node.kind) {
+    case 'harm':
+      return true;
+    case 'exec':
+      return node.harms;
+    case 'and':
+    case 'or':
+    case 'comma':
+      return nodeHarms(node.left) || nodeHarms(node.right);
+    case 'not':
+      return nodeHarms(node.inner);
+    default:
+      return false;
+  }
+}
+
+/** find's `*` matches a leading dot and a slash. A pattern the guard cannot read counts as a match. */
+function findGlobMatches(pattern: string, text: string): boolean {
+  if (/[$`]/.test(pattern)) return true;
+  // globMatches compares a lower-case name, so `HEAD` matches `HEAD`.
+  return globMatches(`_${pattern}`, `_${text.toLowerCase()}`);
+}
+
+/** Whether any sample is deleted, or the git folder itself is selected or removed recursively. */
+function probesHarmed(parsed: FindParsed, probes: GitProbe[]): boolean {
+  const gitDir = probes.find((probe) => probe.isGitDir);
+  let skipInterior = false;
+  if (gitDir && probeIsVisited(gitDir, parsed) && evalFind(parsed.node, gitDir).prunes && !parsed.forcesDepth) skipInterior = true;
+  if (!skipInterior) {
+    for (const probe of probes) {
+      if (probe.isGitDir || !probeIsVisited(probe, parsed)) continue;
+      if (evalFind(parsed.node, probe).harms) return true;
+    }
+  }
+  if (!gitDir || !probeIsVisited(gitDir, parsed)) return false;
+  const effect = evalFind(parsed.node, gitDir);
+  // A plain `-delete` of the folder, with its contents spared, cannot remove a non-empty `.git`.
+  return effect.harms && (effect.recursive || effect.selects);
+}
+
+/** Whether find visits `probe` under `-maxdepth` and `-mindepth`. */
+function probeIsVisited(probe: GitProbe, parsed: FindParsed): boolean {
+  if (parsed.minDepth !== null && probe.depth < parsed.minDepth) return false;
+  if (parsed.maxDepth !== null && probe.depth > parsed.maxDepth) return false;
+  return true;
+}
+
+/** What `node` does to `probe`. AND and OR follow find's short-circuit; an unknown side still runs the other. */
+function evalFind(node: FindNode, probe: GitProbe): FindEffect {
+  switch (node.kind) {
+    case 'pass':
+      return { isTrue: true, harms: false, recursive: false, prunes: false, selects: false };
+    case 'fail':
+      return { isTrue: false, harms: false, recursive: false, prunes: false, selects: false };
+    case 'prune':
+      return { isTrue: true, harms: false, recursive: false, prunes: true, selects: false };
+    case 'harm':
+      return { isTrue: null, harms: true, recursive: node.recursive, prunes: false, selects: false };
+    case 'exec':
+      return { isTrue: null, harms: node.harms, recursive: node.recursive, prunes: false, selects: false };
+    case 'unknown':
+      return { isTrue: null, harms: false, recursive: false, prunes: false, selects: false };
+    case 'regex':
+      return { isTrue: null, harms: false, recursive: false, prunes: false, selects: true };
+    case 'name':
+    case 'path': {
+      const matched = findGlobMatches(node.pattern, node.kind === 'name' ? probe.base : probe.path);
+      return { isTrue: matched, harms: false, recursive: false, prunes: false, selects: matched };
+    }
+    case 'type': {
+      const letter = probe.isDir ? 'd' : 'f';
+      const known = node.letters.length > 0 && [...node.letters].every((item) => 'bcdpfls'.includes(item));
+      if (!known) return { isTrue: null, harms: false, recursive: false, prunes: false, selects: false };
+      const matched = node.letters.includes(letter);
+      return { isTrue: matched, harms: false, recursive: false, prunes: false, selects: matched };
+    }
+    case 'not': {
+      const inner = evalFind(node.inner, probe);
+      return { ...inner, isTrue: inner.isTrue === null ? null : !inner.isTrue };
+    }
+    case 'and':
+      return evalJoin(node, probe, false);
+    case 'or':
+      return evalJoin(node, probe, true);
+    case 'comma': {
+      const left = evalFind(node.left, probe);
+      const right = evalFind(node.right, probe);
+      return combineEffects(left, right, right.isTrue);
+    }
+  }
+}
+
+/** AND (`keep`) or OR. A side known to decide the result is not run; an unknown side is. */
+function evalJoin(node: { left: FindNode; right: FindNode }, probe: GitProbe, isOr: boolean): FindEffect {
+  const left = evalFind(node.left, probe);
+  if (left.isTrue === isOr) return left;
+  const right = evalFind(node.right, probe);
+  if (left.isTrue === !isOr) return combineEffects(left, right, right.isTrue);
+  const isTrue = right.isTrue === isOr ? isOr : null;
+  return combineEffects(left, right, isTrue);
+}
+
+/** The two sides of one operator, as one effect. `isTrue` is the value find keeps. */
+function combineEffects(left: FindEffect, right: FindEffect, isTrue: boolean | null): FindEffect {
+  return {
+    isTrue,
+    harms: left.harms || right.harms,
+    recursive: (left.harms && left.recursive) || (right.harms && right.recursive),
+    prunes: left.prunes || right.prunes,
+    selects: left.selects || right.selects,
+  };
+}
+
+interface FindCursor { at: number }
+
+/** One empty parse, before any word is read. */
+function blankFindParsed(): FindParsed {
+  return {
+    ok: true, starts: [], node: { kind: 'pass' }, forcesDepth: false, harms: false, unsure: false, targetsGit: false, maxDepth: null, minDepth: null, pathPatterns: [], innerFinds: [],
+  };
+}
+
+/** The find expression in `args`, or `ok: false` when a word does not fit. */
+function parseFindArgs(args: string[], mode: 'history' | 'tree'): FindParsed {
+  const parsed = blankFindParsed();
+  const cursor: FindCursor = { at: 0 };
+  const node = readFind(args, cursor, parsed, mode);
+  if (!parsed.ok || node === null || cursor.at !== args.length) parsed.ok = false;
+  else parsed.node = node;
+  return parsed;
+}
+
+/**
+ * The find at `cursor`, through its expression. A nested find stops before the
+ * `-exec` terminator that belongs to the find which runs it.
+ */
+function readFind(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  while (cursor.at < args.length && parsed.ok) {
+    const word = args[cursor.at];
+    if (FIND_LEAD_OPTIONS.test(word)) cursor.at++;
+    else if (word === '-D') cursor.at += 2;
+    else if (FIND_GLOBAL_VALUES.has(word)) takeGlobal(args, cursor, parsed);
+    else if (FIND_DEPTH_OPTIONS.has(word)) {
+      parsed.forcesDepth = true;
+      cursor.at++;
+    } else break;
+  }
+  while (cursor.at < args.length && !isExprWord(args[cursor.at]) && !isActionTerminator(args, cursor.at)) parsed.starts.push(args[cursor.at++]);
+  if (parsed.starts.length === 0) parsed.starts.push('.');
+  if (!parsed.ok) return null;
+  if (cursor.at >= args.length || isActionTerminator(args, cursor.at)) return parsed.node;
+  const node = parseComma(args, cursor, parsed, mode);
+  if (!parsed.ok || node === null) return null;
+  parsed.node = node;
+  return node;
+}
+
+/** A find run by `-exec`, parsed in place. `ok` is false when its words do not end on the terminator. */
+function parseNestedFind(args: string[], cursor: FindCursor, mode: 'history' | 'tree'): FindParsed {
+  const inner = blankFindParsed();
+  const node = readFind(args, cursor, inner, mode);
+  if (!inner.ok || node === null) {
+    inner.ok = false;
+    return inner;
+  }
+  inner.node = node;
+  if (!isAtActionEnd(args, cursor.at)) inner.ok = false;
+  return inner;
+}
+
+/** Whether `word` begins a test or an action, not a start folder. */
+function isExprWord(word: string): boolean {
+  return word.startsWith('-') || word === '(' || word === ')' || word === '!' || word === ',';
+}
+
+/** `-maxdepth`, `-mindepth` and `-regextype`, before the paths or inside the expression. */
+function takeGlobal(args: string[], cursor: FindCursor, parsed: FindParsed): void {
+  const option = args[cursor.at];
+  const value = args[cursor.at + 1];
+  if (value === undefined) {
+    parsed.ok = false;
+    return;
+  }
+  cursor.at += 2;
+  if (option === '-regextype') return;
+  if (!/^\d+$/.test(value)) {
+    parsed.ok = false;
+    return;
+  }
+  const depth = Number(value);
+  // Two limits: assume the one that visits more, so a delete is not let through.
+  if (option === '-maxdepth') parsed.maxDepth = parsed.maxDepth === null ? depth : Math.max(parsed.maxDepth, depth);
+  else parsed.minDepth = parsed.minDepth === null ? depth : Math.min(parsed.minDepth, depth);
+}
+
+/** Comma, the weakest join: both sides run, and the right side's truth is kept. */
+function parseComma(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  return parseJoined(args, cursor, parsed, mode, parseOr, (word) => word === ',');
+}
+
+/** OR. `-o` and `-or` bind less tightly than AND. */
+function parseOr(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  return parseJoined(args, cursor, parsed, mode, parseAnd, (word) => FIND_OR.has(word));
+}
+
+/** AND, written or implicit between two tests. */
+function parseAnd(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  let left = parseNot(args, cursor, parsed, mode);
+  while (parsed.ok && left !== null && cursor.at < args.length) {
+    const word = args[cursor.at];
+    if (FIND_AND.has(word)) cursor.at++;
+    else if (!startsPrimary(word)) break;
+    const before = cursor.at;
+    const right = parseNot(args, cursor, parsed, mode);
+    if (!parsed.ok || right === null) return null;
+    if (cursor.at === before) {
+      parsed.ok = false;
+      return null;
+    }
+    left = { kind: 'and', left, right };
+  }
+  return left;
+}
+
+/**
+ * A chain of one join. `lower` parses the tighter level, `isJoin` the operator.
+ * The kind is comma, or, or whatever `lower` already built for AND.
+ */
+function parseJoined(
+  args: string[],
+  cursor: FindCursor,
+  parsed: FindParsed,
+  mode: 'history' | 'tree',
+  lower: (args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree') => FindNode | null,
+  isJoin: (word: string) => boolean,
+): FindNode | null {
+  let left = lower(args, cursor, parsed, mode);
+  while (parsed.ok && left !== null && cursor.at < args.length && isJoin(args[cursor.at])) {
+    const kind = args[cursor.at] === ',' ? 'comma' : 'or';
+    cursor.at++;
+    const right = lower(args, cursor, parsed, mode);
+    if (right === null) return null;
+    left = { kind, left, right };
+  }
+  return left;
+}
+
+/** `!` and `-not`, tighter than AND. */
+function parseNot(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  if (!parsed.ok || cursor.at >= args.length) return null;
+  const word = args[cursor.at];
+  if (word !== '!' && word !== '-not') return parsePrimary(args, cursor, parsed, mode);
+  cursor.at++;
+  const inner = parseNot(args, cursor, parsed, mode);
+  return inner === null ? null : { kind: 'not', inner };
+}
+
+/** Whether the next word can start a test, so AND is implicit. */
+function startsPrimary(word: string | undefined): boolean {
+  if (word === undefined || word === ')' || word === ',' || FIND_OR.has(word) || FIND_AND.has(word)) return false;
+  return word === '(' || word === '!' || word === '-not' || word.startsWith('-');
+}
+
+/** One test, action, or parenthesised group. */
+function parsePrimary(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  if (!parsed.ok || cursor.at >= args.length) return null;
+  const word = args[cursor.at];
+  if (word === '(') {
+    cursor.at++;
+    const inner = parseComma(args, cursor, parsed, mode);
+    if (inner === null || args[cursor.at] !== ')') {
+      parsed.ok = false;
+      return null;
+    }
+    cursor.at++;
+    return inner;
+  }
+  if (FIND_ACTIONS.has(word)) return parseExec(args, cursor, parsed, mode);
+  if (word === '-delete') {
+    cursor.at++;
+    parsed.harms = true;
+    return { kind: 'harm', recursive: false };
+  }
+  if (word === '-prune') {
+    cursor.at++;
+    return { kind: 'prune' };
+  }
+  if (FIND_DEPTH_OPTIONS.has(word)) {
+    cursor.at++;
+    parsed.forcesDepth = true;
+    return { kind: 'pass' };
+  }
+  if (FIND_GLOBAL_VALUES.has(word)) {
+    takeGlobal(args, cursor, parsed);
+    return parsed.ok ? { kind: 'pass' } : null;
+  }
+  if (FIND_PRINTS.has(word) || word === '-true') {
+    cursor.at++;
+    return { kind: 'pass' };
+  }
+  if (word === '-false') {
+    cursor.at++;
+    return { kind: 'fail' };
+  }
+  if (FIND_NAME_TESTS.has(word) || word === '-lname' || word === '-ilname') return parsePattern(args, cursor, parsed, 'name', word === '-lname' || word === '-ilname');
+  if (word === '-path' || word === '-ipath' || word === '-wholename' || word === '-iwholename') return parsePattern(args, cursor, parsed, 'path', false);
+  if (word === '-regex' || word === '-iregex') return parsePattern(args, cursor, parsed, 'regex', false);
+  if (word === '-type' || word === '-xtype') return parseType(args, cursor, parsed, word === '-xtype');
+  if (FIND_FILE_ACTIONS.has(word) || word === '-fprintf') return parseFileAction(args, cursor, parsed, mode, word === '-fprintf' ? 2 : 1);
+  if (!word.startsWith('-')) {
+    parsed.ok = false;
+    return null;
+  }
+  // A test the guard does not know. Take a following value so the next test still lines up.
+  cursor.at++;
+  const next = args[cursor.at];
+  if (next !== undefined && !next.startsWith('-') && next !== '(' && next !== ')' && next !== ',' && next !== '!') cursor.at++;
+  return { kind: 'unknown' };
+}
+
+/** `-name` or `-path` and its pattern. A symlink-target test (`-lname`) stays unknown. */
+function parsePattern(args: string[], cursor: FindCursor, parsed: FindParsed, kind: 'name' | 'path' | 'regex', isUnknown: boolean): FindNode | null {
+  const pattern = args[cursor.at + 1];
+  if (pattern === undefined) {
+    parsed.ok = false;
+    return null;
+  }
+  cursor.at += 2;
+  if (kind === 'regex') return { kind: 'regex' };
+  if (kind === 'path') parsed.pathPatterns.push(pattern);
+  if (isUnknown) return { kind: 'unknown' };
+  return { kind, pattern };
+}
+
+/** `-type` and its letter. `-xtype` follows symlinks, which the guard does not. */
+function parseType(args: string[], cursor: FindCursor, parsed: FindParsed, isUnknown: boolean): FindNode | null {
+  const letters = args[cursor.at + 1];
+  if (letters === undefined) {
+    parsed.ok = false;
+    return null;
+  }
+  cursor.at += 2;
+  return isUnknown ? { kind: 'unknown' } : { kind: 'type', letters };
+}
+
+/** `-fprint` and its kin. In tree mode they count as a write, so the mark rule does not stand down. */
+function parseFileAction(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree', values: number): FindNode | null {
+  if (cursor.at + values >= args.length) {
+    parsed.ok = false;
+    return null;
+  }
+  cursor.at += 1 + values;
+  if (mode === 'history') return { kind: 'pass' };
+  parsed.harms = true;
+  return { kind: 'harm', recursive: false };
+}
+
+/** The command after `-exec` and its kin, up to `;` or `{} +`, with nested finds kept whole. */
+function parseExec(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
+  cursor.at++;
+  const findAt = indexOfLaunchedFind(args, cursor.at);
+  if (findAt !== -1) {
+    // The program is find. Parse it in this walk. A chain of `find -exec find`
+    // is then one read, not a fresh read of the tail for every find (#744).
+    cursor.at = findAt + 1;
+    const inner = parseNestedFind(args, cursor, mode);
+    if (!inner.ok) {
+      parsed.ok = false;
+      return null;
+    }
+    parsed.innerFinds.push(inner);
+    if (cursor.at < args.length) cursor.at++;
+    return { kind: 'exec', harms: false, recursive: false };
+  }
+  const command = readAction(args, cursor);
+  if (command === null) {
+    parsed.ok = false;
+    return null;
+  }
+  const removal = execEffect(command, mode);
+  if (removal.unsure) parsed.unsure = true;
+  if (removal.targetsGit) parsed.targetsGit = true;
+  if (removal.harmsMatch) parsed.harms = true;
+  return { kind: 'exec', harms: removal.harmsMatch, recursive: removal.recursive };
+}
+
+/** Whether `words[index]` ends an `-exec` action: `;`, or `+` right after `{}`. */
+function isActionTerminator(words: string[], index: number): boolean {
+  const word = words[index];
+  return word === ';' || (word === '+' && words[index - 1] === '{}');
+}
+
+/** Whether the action's command is over: no words left, or the terminator is next. */
+function isAtActionEnd(words: string[], index: number): boolean {
+  return index >= words.length || isActionTerminator(words, index);
+}
+
+/**
+ * The index of `find` when the action at `start` is launchers and then `find`.
+ * `-1` when the program is anything else, so the ordinary action reader runs.
+ */
+function indexOfLaunchedFind(args: string[], start: number): number {
+  let index = start;
+  while (index < args.length && !isActionTerminator(args, index)) {
+    const name = programName(args[index]);
+    if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(args[index + 1] ?? '')) return -1;
+    if (!Object.hasOwn(LAUNCHERS, name)) return name === 'find' ? index : -1;
+    const launcher = LAUNCHERS[name];
+    index++;
+    while (index < args.length && !isActionTerminator(args, index) && args[index].startsWith('-')) {
+      index += launcher.options.includes(args[index]) ? 2 : 1;
+    }
+    const operands = launcher.operands ?? 0;
+    for (let count = 0; count < operands && index < args.length && !isActionTerminator(args, index); count++) index++;
+  }
+  return -1;
+}
+
+/** The words of one find action. Null when the terminator is missing. Inner actions keep theirs. */
+function readAction(words: string[], cursor: FindCursor): string[] | null {
+  const command: string[] = [];
+  let nested = 0;
+  while (cursor.at < words.length) {
+    const word = words[cursor.at];
+    if (FIND_ACTIONS.has(word)) {
+      nested++;
+      command.push(word);
+      cursor.at++;
+      continue;
+    }
+    const closes = isActionTerminator(words, cursor.at);
+    if (closes && nested > 0) {
+      nested--;
+      command.push(word);
+      cursor.at++;
+      continue;
+    }
+    if (closes) {
+      cursor.at++;
+      return command;
+    }
+    command.push(word);
+    cursor.at++;
+  }
+  // The shell's own `;` already ended the command, so the action runs to here.
+  return nested === 0 ? command : null;
+}
+
+/** What an `-exec` command removes. A writer or a shell harms the tree even when it is not `rm`. */
+interface Removal {
+  harmsMatch: boolean;
+  recursive: boolean;
+  unsure: boolean;
+  targetsGit: boolean;
+}
+
+/** An empty removal: the command deletes nothing the guard can see. */
+function blankRemoval(): Removal {
+  return { harmsMatch: false, recursive: false, unsure: false, targetsGit: false };
+}
+
+/** Fold `extra` into `result`. */
+function mergeRemoval(result: Removal, extra: Removal): void {
+  result.harmsMatch ||= extra.harmsMatch;
+  result.recursive ||= extra.recursive;
+  result.unsure ||= extra.unsure;
+  result.targetsGit ||= extra.targetsGit;
+}
+
+/** `command`'s removal, plus, in tree mode, any writer or shell it runs. */
+function execEffect(command: string[], mode: 'history' | 'tree'): Removal {
+  const removal = commandRemoval(command, 0);
+  if (mode !== 'tree' || removal.harmsMatch) return removal;
+  const writes = findProgramPlaces(command).some((place) => {
+    const name = programName(place.word);
+    return Object.hasOwn(WRITERS, name) || MARK_WRITERS.has(name) || RUNS_CODE.test(name);
+  });
+  if (writes) removal.harmsMatch = true;
+  return removal;
+}
+
+/** Whether `words` runs `rm` on the file find is visiting, or on a path that can be `.git`. */
+function commandRemoval(words: string[], depth: number): Removal {
+  const result = blankRemoval();
+  if (depth > 4) {
+    result.unsure = true;
+    result.harmsMatch = true;
+    result.recursive = true;
+    return result;
+  }
+  const places = findProgramPlaces(words);
+  if (places.length === 0 && words.some((word) => /[$`]/.test(word))) {
+    result.unsure = true;
+    result.harmsMatch = true;
+    result.recursive = true;
+    return result;
+  }
+  for (const place of places) {
+    const name = programName(place.word);
+    if (/[$`]/.test(name)) {
+      result.unsure = true;
+      result.harmsMatch = true;
+      result.recursive = true;
+      continue;
+    }
+    if (REMOVE_PROGRAMS.has(name)) mergeRemoval(result, rmRemoval(words, place.index));
+    else if (isShell(place.word) || Object.hasOwn(RUNNERS, name)) mergeRemoval(result, shellRemoval(words, place.index, depth));
+  }
+  return result;
+}
+
+/** `rm` at `index`: a match operand deletes the file find visits; a `.git` operand is named outright. */
+function rmRemoval(words: string[], index: number): Removal {
+  const result = blankRemoval();
+  const name = programName(words[index] ?? '');
+  const args = words.slice(index + 1);
+  const recursive = name === 'rm' && rmIsRecursive(args);
+  const valued = name === 'shred' ? ['-n', '--iterations', '-s', '--size'] : [];
+  for (const operand of plainArgs(args, valued)) {
+    if (operand.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit)) result.targetsGit = true;
+    if (operand.includes('{}') || /[$`*?[{]/.test(operand)) {
+      result.harmsMatch = true;
+      if (recursive) result.recursive = true;
+    }
+  }
+  return result;
+}
+
+/** Whether `rm`'s options descend into folders (`-r`, `-R`, `--recursive`). */
+function rmIsRecursive(args: string[]): boolean {
+  for (const word of args) {
+    if (word === '--') break;
+    if (word === '--recursive') return true;
+    if (word.startsWith('--')) continue;
+    if (/^-[^-]*[rR]/.test(word)) return true;
+  }
+  return false;
+}
+
+/** A shell or a runner at `index`. A script the guard can read is checked; anything else may run `rm`. */
+function shellRemoval(words: string[], index: number, depth: number): Removal {
+  const result = blankRemoval();
+  const script = isShell(words[index] ?? '') ? shellScript(words, index) : runString(words, index);
+  if (script === null || script === '') {
+    result.unsure = true;
+    result.harmsMatch = true;
+    result.recursive = true;
+    return result;
+  }
+  // A script with no removal and no substitution cannot touch `.git`.
+  if (!/[$`]/.test(script) && !/(?:^|[^A-Za-z0-9_])(rm|rmdir|unlink|shred)(?:$|[^A-Za-z0-9_])/.test(script)) return result;
+  try {
+    for (const command of commandWords(script)) mergeRemoval(result, commandRemoval(command, depth + 1));
+  } catch {
+    result.unsure = true;
+    result.harmsMatch = true;
+    result.recursive = true;
+  }
+  return result;
+}
+
+/** The script after a shell's `-c`, or null when the shell reads a file or its input instead. */
+function shellScript(words: string[], index: number): string | null {
+  let at = index + 1;
+  while (at < words.length && words[at].startsWith('-') && !/^-[a-zA-Z]*c/.test(words[at])) {
+    if (words[at] === '--') return null;
+    at++;
+  }
+  const flag = words[at];
+  if (flag === undefined) return null;
+  const cluster = /^-[a-zA-Z]*c(.*)$/s.exec(flag);
+  if (!cluster) return null;
+  return cluster[1] || (words[at + 1] ?? '');
+}
+
+/** Whether a find the parser could not read still looks like a delete, so the guard refuses it. */
+function looksLikeGitDelete(args: string[]): boolean {
+  if (args.includes('-delete')) return true;
+  for (let index = 0; index < args.length; index++) {
+    if (!FIND_ACTIONS.has(args[index])) continue;
+    const cursor: FindCursor = { at: index + 1 };
+    const command = readAction(args, cursor);
+    const removal = commandRemoval(command ?? args.slice(index + 1), 0);
+    if (removal.harmsMatch || removal.targetsGit || removal.unsure) return true;
+    // No terminator, and nothing here removes: not this rule (`find . -exec env` repeated).
+    if (command === null) return false;
+    index = cursor.at - 1;
+  }
+  return false;
 }
 
 const DELETE_BRANCH_FIX = 'delete only the branch you mean (`git branch -d <branch>`), and leave the default branch alone';
@@ -1776,7 +2729,7 @@ const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, t
 // A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
 const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574). */
+/** A pipeline that feeds a download into a shell, `eval`, or a program word that is not plain text runs code nobody read (#560, #574, #734, #745). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1787,7 +2740,7 @@ function checkPipeToShell(command: string): Finding | null {
     for (const segment of segments) {
       const commands = commandWords(segment);
       const programs = commands.flatMap(findPrograms).map(programName);
-      const shell = findPipeShell(programs, commands);
+      const shell = findPipeShell(programs, commands, segment);
       if (shell !== undefined && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
@@ -1797,25 +2750,192 @@ function checkPipeToShell(command: string): Finding | null {
   return null;
 }
 
-/** The program that would run this segment, when that program is a shell. Case is folded here only (#574). */
-function findPipeShell(programs: string[], commands: string[][]): string | undefined {
+/**
+ * The program that would run this segment as a shell.
+ * A `$(…)`, backticks or `<(…)` inherits the pipe, so the nested command can run the download (#734).
+ * A program word that is not plain text can become a shell too, so it is refused (#745).
+ */
+function findPipeShell(programs: string[], commands: string[][], segment: string): string | undefined {
   const first = programs[0];
   if (first !== undefined && isPipeShell(first)) return first;
-  // A nested `$(sudo -s)` belongs to the outer program. That program reads the pipe.
-  for (const words of outerCommands(commands)) {
-    const shell = findShellRunner(words);
-    if (shell !== undefined) return shell;
+  // `sudo -s` reads stdin wherever it sits, including inside a substitution.
+  for (const words of commands) {
+    const runner = findShellRunner(words);
+    if (runner !== undefined) return runner;
+  }
+  const substitutions = scanSubstitutions(segment);
+  if (substitutions.live) {
+    // `bash -c "$(cat)"`: `$(cat)` is read first, so the shell is not the first program.
+    const nested = programs.find((program) => isPipeShell(program));
+    if (nested !== undefined) return nested;
+    // `$x`, or a substitution that never closes, may be a shell. The guard cannot tell, so it refuses.
+    const hidden = programs.find(isHiddenProgram);
+    if (hidden !== undefined) return hidden;
+    if (substitutions.unclosed) return 'sh';
+  }
+  // No shell name was written out. A prefix or a `$` name can still expand into one.
+  return findUnplainProgram(commands);
+}
+
+/** A program whose name is still a `$` value or a substitution, so it may be a shell. */
+const isHiddenProgram = (name: string) => name.startsWith('$') || name.includes('`') || name.includes('<(') || name.includes('>(');
+
+// After a download, a program word may hold only these characters. The guard allows
+// characters and does not read the shell's grammar: `s$(echo h)`, `$sh` and `sh*` are
+// not plain, so they are refused, and so is `eval` with any argument (#734, #745).
+const PLAIN_PROGRAM = /^[A-Za-z0-9._/-]+$/;
+// The inside of `$((1+2))`. commandWords lists it as its own command. It is math, not a program.
+const ARITHMETIC_BODY = /\$\(\(([0-9]+(?:[+\-*/%][0-9]+)*)\)\)/g;
+
+/** Program words `$((…))` lists beside the real command, such as `1+2` from `echo $((1+2))`. */
+function findArithmeticBodies(commands: string[][]): Set<string> {
+  const bodies = new Set<string>();
+  for (const words of commands) {
+    for (const word of words) {
+      spend(word.length);
+      ARITHMETIC_BODY.lastIndex = 0;
+      for (let match = ARITHMETIC_BODY.exec(word); match !== null; match = ARITHMETIC_BODY.exec(word)) bodies.add(match[1]);
+    }
+  }
+  return bodies;
+}
+
+/**
+ * A program word that is not plain text, or `eval` with an argument.
+ * The word is the text before expansion, path included, so `/bin/s$(echo h)` is refused.
+ */
+function findUnplainProgram(commands: string[][]): string | undefined {
+  const arithmetic = findArithmeticBodies(commands);
+  for (const words of commands) {
+    spend(words.length);
+    if (words.length === 1 && arithmetic.has(words[0])) continue;
+    for (const place of findProgramPlaces(words)) {
+      if (!PLAIN_PROGRAM.test(place.word)) return place.word;
+    }
+    if (hasEvalArgument(words)) return 'eval';
   }
   return undefined;
 }
 
-/** The segment's own commands. A list whose text sits in one word of another list belongs to that command. */
-function outerCommands(commands: string[][]): string[][] {
-  spend(commands.length);
-  return commands.filter((words, index) => {
-    const text = words.join(' ');
-    return text !== '' && !commands.some((other, otherIndex) => otherIndex !== index && other.some((word) => word.includes(text)));
-  });
+/** Whether `eval` has an argument, so it runs that argument as a command. A redirect is not one. */
+function hasEvalArgument(words: string[]): boolean {
+  for (const place of findProgramPlaces(words)) {
+    if (place.index < 0 || programName(place.word).toLowerCase() !== 'eval') continue;
+    let index = place.index + 1;
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (index < words.length) return true;
+  }
+  return false;
+}
+
+// Whether a substitution in `text` runs, and whether one never closes.
+// Single quotes and `$'…'` hide it. `<(…)` and `>(…)` do not run inside `"…"`. `$((…))` is arithmetic.
+// A backslash and a newline inside `"…"` are removed before the shell parses.
+interface SubstitutionScan {
+  live: boolean;
+  unclosed: boolean;
+}
+
+/** The index after a backslash and a newline. The shell removes that pair before it parses. */
+function skipContinuation(text: string, index: number): number {
+  const start = index;
+  while (text[index] === '\\' && text[index + 1] === '\n') index += 2;
+  spend(index - start);
+  return index;
+}
+
+function scanSubstitutions(text: string): SubstitutionScan {
+  spend(text.length);
+  let live = false;
+  let quote = '';
+  let ansi = false;
+  let inWord = false;
+  let backtick = false;
+  const kinds: Array<'run' | 'skip'> = [];
+  // `at` stays on the last character of the opener. The loop then steps past it.
+  const open = (kind: 'run' | 'skip', at: number, width: number) => {
+    kinds.push(kind);
+    if (kind === 'run') live = true;
+    return at + width - 1;
+  };
+  for (let at = 0; at < text.length; at++) {
+    const character = text[at];
+    const next = text[at + 1] ?? '';
+    if (ansi) {
+      if (character === '\\') at++;
+      else if (character === "'") ansi = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") quote = '';
+      continue;
+    }
+    if (quote === '"') {
+      // `"$\⏎(sh)"` is `"$(sh)"`. The pair is not an escape of the next character.
+      if (character === '\\' && next === '\n') {
+        at++;
+        continue;
+      }
+      if (character === '\\' && '$`"\\'.includes(next)) {
+        at++;
+        continue;
+      }
+      if (character === '"') {
+        quote = '';
+        continue;
+      }
+      if (character === '`') {
+        live = true;
+        backtick = !backtick;
+      } else if (character === '$') {
+        const opened = skipContinuation(text, at + 1);
+        if (text[opened] === '(') {
+          if (text[opened + 1] === '(') {
+            kinds.push('skip', 'skip');
+            at = opened + 1;
+          } else at = open('run', opened, 1);
+        }
+      } else if (character === '(') kinds.push('skip');
+      else if (character === ')' && kinds.length > 0) kinds.pop();
+      continue;
+    }
+    if (character === ' ' || character === '\t' || character === '\n' || character === '\r') {
+      inWord = false;
+      continue;
+    }
+    if (!inWord && character === '#') {
+      while (at < text.length && text[at] !== '\n') at++;
+      continue;
+    }
+    if (character === '\\') {
+      at++;
+      inWord = true;
+      continue;
+    }
+    if (character === '$' && next === "'") {
+      ansi = true;
+      at++;
+      inWord = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      inWord = true;
+      continue;
+    }
+    if (character === '`') {
+      live = true;
+      backtick = !backtick;
+    } else if ((character === '$' || character === '<' || character === '>') && next === '(') {
+      if (character === '$' && text[at + 2] === '(') {
+        kinds.push('skip', 'skip');
+        at += 2;
+      } else at = open('run', at, 2);
+    } else if (character === '(') kinds.push('skip');
+    else if (character === ')' && kinds.length > 0) kinds.pop();
+    inWord = true;
+  }
+  return { live, unclosed: backtick || kinds.includes('run') };
 }
 
 /** Whether `name` is a shell. `powershell` stays beside `isShell`, which names `pwsh` (#574). */
@@ -2068,6 +3188,8 @@ function settingsIn(words: string[]): Setting[] {
   }
   for (const at of programs) {
     const name = programName(words[at]);
+    // The tail is long inside `find -exec find`. Copy it only for a program that reads names.
+    if (!NAME_READERS.has(name) && name !== 'let' && name !== 'printf' && name !== 'getopts') continue;
     const args = words.slice(at + 1);
     if (NAME_READERS.has(name)) args.forEach((arg) => settings.push({ name: arg.replace(/^-[A-Za-z]*a/, ''), program: null }));
     if (name === 'let') args.filter(isAssignment).forEach((arg) => settings.push({ name: nameOf(arg), program: null }));
@@ -2089,13 +3211,18 @@ function settingsIn(words: string[]): Setting[] {
   return settings;
 }
 
-/** The settings in `words` whose name passes `isNamed`, that the rule refuses: see above. */
-function refusedSetting(words: string[], isNamed: (name: string) => boolean): string | null {
+/**
+ * The settings in `words` whose name passes `isNamed`, that the rule refuses: see above.
+ * `guards` replaces the usual program test (git, gh, yokoten, a shell). A setting for the
+ * rest of the line is refused when `includeRest` is set, which it is unless a caller says
+ * the script never reaches the check.
+ */
+function refusedSetting(words: string[], isNamed: (name: string) => boolean, guards?: (at: number) => boolean, includeRest = true): string | null {
   const settings = settingsIn(words).filter((setting) => isNamed(setting.name));
   if (settings.length === 0) return null;
   const lastYokoten = words.findLastIndex(isYokotenWord);
-  const runsGuarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
-  return settings.find((setting) => setting.program === null || runsGuarded(setting.program))?.name ?? null;
+  const runsGuarded = guards ?? ((at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at);
+  return settings.find((setting) => (includeRest && setting.program === null) || (setting.program !== null && runsGuarded(setting.program)))?.name ?? null;
 }
 
 // git's config variables (#361). GIT_CONFIG_PARAMETERS is read above, for core.hooksPath.
@@ -2146,17 +3273,34 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
   const known = new Map<string, string | null>();
   const isWorker = env.YOKOTEN_ROLE === 'worker';
   const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known), { keepsRestores: isWorker }).map((target) => target.path);
+  const findStarts = (args: string[]) => findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? [];
   let at = 0;
+  // Set when the outer find's tail has a write. Nested finds then add their own start folders.
+  let findTailWrites = false;
+  let findTailRead = false;
   for (const program of findPrograms(words)) {
     const index = words.indexOf(program, at);
     if (index === -1) continue;
     at = index + 1;
     const name = programName(program);
-    const args = withoutShellRedirects(words, index + 1);
-    if (name !== 'mkdir' && MARK_WRITERS.has(name)) targets.push(...plainArgs(args));
-    if (Object.hasOwn(SETUP_WRITERS, name)) targets.push(...SETUP_WRITERS[name](args));
+    const isMarkWriter = name !== 'mkdir' && MARK_WRITERS.has(name);
+    const isSetupWriter = Object.hasOwn(SETUP_WRITERS, name);
+    if (isMarkWriter || isSetupWriter) {
+      const args = withoutShellRedirects(words, index + 1);
+      if (isMarkWriter) targets.push(...plainArgs(args));
+      if (isSetupWriter) targets.push(...SETUP_WRITERS[name](args));
+    }
     // A find that writes changes files under where it starts: `find .githooks -exec rm {} +`.
-    if (name === 'find') targets.push(...(findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? []));
+    // Its tail holds every nested find. Read that tail once, unless it writes.
+    if (name !== 'find') continue;
+    if (!findTailRead) {
+      findTailRead = true;
+      const starts = findStarts(withoutShellRedirects(words, index + 1));
+      findTailWrites = starts.length > 0;
+      targets.push(...starts);
+      continue;
+    }
+    if (findTailWrites) targets.push(...findStarts(withoutShellRedirects(words, index + 1)));
   }
   if (targets.length === 0) return null;
   // The repo the command starts in, and its git folders: a placed path outside them all is
@@ -2184,13 +3328,229 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
 // HOME, or USERPROFILE on Windows when HOME is not set. `HOME=/tmp/x git commit` would make
 // them look in another folder, find no marks and pass. So the guard refuses these names
 // where the settings rule above does. Names on Windows ignore case, so `home=` counts too.
-// Reading $HOME is fine. XDG_CONFIG_HOME moves nothing yokoten's checks read, so it passes.
+// Reading $HOME is fine. For the lead, XDG_CONFIG_HOME moves nothing these checks read, so
+// it passes. A worker may not set it before the commit check: see checkWorkerRealHome (#739).
 const HOME_NAMES = new Set(['HOME', 'USERPROFILE']);
 const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
 
-function checkHomeSetting(words: string[]): Finding | null {
+function checkHomeSetting(words: string[], env: Env): Finding | null {
   const name = refusedSetting(words, (setting) => HOME_NAMES.has(setting.toUpperCase()));
-  return name === null ? null : finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  if (name !== null) return finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  // A worker unsets only when the script reaches the commit check: see checkWorkerRealHome.
+  if (env.YOKOTEN_ROLE === 'worker') return null;
+  const cleared = clearedHomeName(words, HOME_NAMES);
+  return cleared === null ? null : finding('home-folder', `this command unsets ${cleared}, which moves where yokoten finds your private marks`, HOME_FIX);
+}
+
+/**
+ * A home name this command clears, or null (#739). `unset NAME` holds for the rest of the
+ * line, like `export`. `env -u NAME` clears it for the one program after `env`, and only
+ * when that program is git, gh, yokoten or a shell. `env -u HOME npm test` stays allowed.
+ */
+function clearedHomeName(words: string[], names: Set<string>): string | null {
+  const isHome = (name: string) => names.has(name.toUpperCase());
+  const fromUnset = (args: string[]): string | null => {
+    for (const arg of args) {
+      if (!arg.startsWith('-') && isHome(arg)) return arg;
+    }
+    return null;
+  };
+  // env's own options, from the word after `env` to the program it runs. A cluster is read
+  // here: findPrograms does not treat `-iu` as `-u`, so `env -iu HOME git` would hide git.
+  const readEnv = (start: number): { cleared: string | null; program: number | null } => {
+    let cleared: string | null = null;
+    let index = start;
+    while (index < words.length) {
+      const word = words[index];
+      if (isAssignment(word)) {
+        index += 1;
+        continue;
+      }
+      if (!word.startsWith('-')) return { cleared, program: index };
+      const inline = /^--unset=(.*)$/.exec(word);
+      if (inline) {
+        if (cleared === null && isHome(inline[1])) cleared = inline[1];
+        index += 1;
+        continue;
+      }
+      if (word === '--unset') {
+        const next = words[index + 1] ?? '';
+        if (cleared === null && isHome(next)) cleared = next;
+        index += next === '' ? 1 : 2;
+        continue;
+      }
+      // `-u NAME`, `-uNAME`, and a cluster whose last flag is `u` (`-iuHOME`, `-iu HOME`).
+      const cluster = /^-([a-zA-Z]*)u(.*)$/.exec(word);
+      if (cluster) {
+        const rest = cluster[2];
+        if (rest === '') {
+          const next = words[index + 1] ?? '';
+          if (cleared === null && isHome(next)) cleared = next;
+          index += next === '' ? 1 : 2;
+        } else {
+          if (cleared === null && isHome(rest)) cleared = rest;
+          index += 1;
+        }
+        continue;
+      }
+      // These take the next word. Skipping it keeps a later `-u HOME` visible.
+      if (word === '-C' || word === '--chdir' || word === '-S' || word === '--split-string') {
+        index += index + 1 < words.length ? 2 : 1;
+        continue;
+      }
+      index += 1;
+    }
+    return { cleared, program: null };
+  };
+  const lastYokoten = words.findLastIndex(isYokotenWord);
+  const guarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
+  // One pass over the programs, then one pass over the words before the last of them.
+  // Reading every earlier word once per program made `find -exec find` take quadratic time.
+  let lastProgram = -1;
+  for (const place of findProgramPlaces(words)) {
+    if (place.index === -1) continue;
+    if (place.index > lastProgram) lastProgram = place.index;
+    if (programName(place.word) === 'unset') {
+      const cleared = fromUnset(words.slice(place.index + 1));
+      if (cleared !== null) return cleared;
+    }
+  }
+  for (let cursor = 0; cursor < lastProgram; cursor++) {
+    if (programName(words[cursor]) !== 'env') continue;
+    const read = readEnv(cursor + 1);
+    if (read.cleared !== null && read.program !== null && guarded(read.program)) return read.cleared;
+  }
+  return null;
+}
+
+// A worker's home before the commit check (#739). HOME and USERPROFILE move the marks file.
+// XDG_CONFIG_HOME is the same door for a worker: the desk already refuses other settings, and
+// this one must say why, before git commit, yokoten check, or a shell that runs them. The
+// lead's XDG_CONFIG_HOME is left alone. The box still refuses every other setting.
+// A shell script file is the same door with the assignment hidden in the file. The guard
+// reads the command, not the file, so a worker's `bash file` or `sh file` is refused.
+// `bash -c` stays, because that text is in the command.
+const REAL_HOME_NAMES = new Set(['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']);
+const REAL_HOME_FIX = 'the commit check needs the real home; in a desk, the runner commits for you (issue #736)';
+// Shell flags that do not name a file and do not take a value. `s` reads stdin, which the
+// reader already has when the text is in the command. Anything else may name a file.
+const SHELL_FLAG = /^-[euxnvfhlips]+$/;
+const SHELL_LONG_FLAGS = new Set(['--posix', '--noprofile', '--norc', '--login', '--noediting', '--restricted', '--help', '--version']);
+
+/** Whether the program at `at` is git commit, yokoten check, or a shell that can run them. */
+function runsCommitCheck(words: string[], at: number): boolean {
+  const program = words[at];
+  if (RUNS_LINES.test(programName(program))) return true;
+  if (isGit(program)) return gitParts(withoutShellRedirects(words, at + 1), null).sub === 'commit';
+  const tail = words.slice(at);
+  return tail.some(isYokotenWord) && tail.includes('check');
+}
+
+/** Whether any program in `words` is git commit, yokoten check, or a shell that can run them. */
+function commandReachesCheck(words: string[]): boolean {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (runsCommitCheck(words, at)) return true;
+  }
+  return false;
+}
+
+/** Whether `word` is a shell that can run a script file, in any case (`Bash`, `rbash`, `mksh`). */
+function isScriptShell(word: string): boolean {
+  const name = programName(word).toLowerCase();
+  return isShell(name) || name === 'mksh' || name === 'rbash';
+}
+
+/**
+ * Whether a shell's arguments hide the script (#739). `bash -c text` and `--command` are in
+ * the command, so they are not hidden. A file operand, an input redirect (`< file`, not a
+ * heredoc) and an option the guard does not know (`--rcfile`, `-o`) are hidden: the guard
+ * cannot tell whether that file sets HOME, so it refuses.
+ */
+function shellOperandsHide(args: string[]): boolean {
+  let index = 0;
+  let inline = false;
+  while (index < args.length) {
+    const arg = args[index];
+    if (REDIRECT.test(arg)) {
+      const operator = REDIRECT_OPERATOR.exec(arg)?.[0] ?? '';
+      if (operator.includes('<') && !operator.includes('<<') && !inline) return true;
+      index += redirectLength(args, index) || 1;
+      continue;
+    }
+    if (arg === '--') {
+      if (!inline) return true;
+      index += 1;
+      continue;
+    }
+    if (arg === '-c' || arg === '--command') {
+      const script = args[index + 1] ?? '';
+      if (script === '' || REDIRECT.test(script)) return true;
+      inline = true;
+      index += 2;
+      continue;
+    }
+    if (arg.startsWith('--command=')) {
+      if (arg.length === '--command='.length) return true;
+      inline = true;
+      index += 1;
+      continue;
+    }
+    // `-lc`, `-cecho hi`: `c` ends the flags, or the rest of the word is the script text.
+    const cluster = /^-(?:[euxnvfhlips]*)c(.*)$/s.exec(arg);
+    if (cluster && !arg.startsWith('--')) {
+      const rest = cluster[1];
+      if (rest === '') {
+        const script = args[index + 1] ?? '';
+        if (script === '' || REDIRECT.test(script)) return true;
+        index += 2;
+      } else index += 1;
+      inline = true;
+      continue;
+    }
+    if (SHELL_FLAG.test(arg) || SHELL_LONG_FLAGS.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-') || !inline) return true;
+    index += 1;
+  }
+  return false;
+}
+
+/** Whether `words` runs a shell script the guard cannot read. The lead is not asked. */
+function shellHidesScript(words: string[]): boolean {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (isScriptShell(program) && shellOperandsHide(words.slice(at + 1))) return true;
+  }
+  return false;
+}
+
+/**
+ * For a worker: a home setting that would hide the private marks from the commit check, or
+ * null. A setting for the rest of the line counts only when this script reaches that check,
+ * so `HOME+=x; rm` stays with the worker box (#591). A shell script file counts too: the
+ * guard cannot read it, so it refuses instead of guessing.
+ */
+function checkWorkerRealHome(commands: string[][]): Finding | null {
+  const reaches = commands.some(commandReachesCheck);
+  for (const words of commands) {
+    const name = refusedSetting(words, (setting) => REAL_HOME_NAMES.has(setting.toUpperCase()), (at) => runsCommitCheck(words, at), reaches);
+    if (name !== null) return finding('home-folder', `this command sets ${name}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+    if (reaches) {
+      const cleared = clearedHomeName(words, REAL_HOME_NAMES);
+      if (cleared !== null) return finding('home-folder', `this command unsets ${cleared}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+    }
+    if (shellHidesScript(words)) return finding('home-folder', 'this command runs a shell script yokoten cannot read, so the commit check might not see your private marks', REAL_HOME_FIX);
+  }
+  return null;
 }
 
 // A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads
@@ -4002,6 +5362,8 @@ let budget: { left: number } | null = null;
 class OverBudget extends Error {}
 
 function spend(amount: number): void {
+  // The same steps the budget draws. The linear tests read the count (#754).
+  noteWork(amount);
   if (budget !== null && (budget.left -= amount) < 0) throw new OverBudget('the command costs too much to read');
 }
 
@@ -4313,10 +5675,12 @@ interface Group {
 // to `out`. Returns the index after the closer, or -1 if a closer was wanted and not found.
 function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
   // Too deep to follow: fall back to the rough cut, which finds more than is there.
+  // Return -1 when a closer was wanted. text.length would look like the closer was found
+  // at the end, and the caller would read the same tail again (#754).
   if (depth > MAX_DEPTH) {
     spend(text.length - start);
     for (const words of rough(text.slice(start))) out.push(words);
-    return text.length;
+    return closer ? -1 : text.length;
   }
   const nested = (s: string) => out.push(...commandWords(s, depth + 1));
   let words: string[] = [];
@@ -4692,13 +6056,20 @@ function readDouble(text: string, index: number, depth: number, out: string[][],
       if (n && '$`"\\'.includes(n)) value += n;
       else if (n !== '\n') value += character + n;
       index += 2;
-    } else if ((character === '$' && text[index + 1] === '(') || character === '`') {
-      const from = character === '`' ? index + 1 : index + 2;
-      const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
-      if (end === -1) return RAN_OUT;
-      substitutions.push(text.slice(from, end - 1));
-      value += text.slice(index, end);
-      index = end;
+    } else if (character === '$' || character === '`') {
+      // A joined line hides the opener: `"$\⏎(sh)"` is `"$(sh)"` before parsing.
+      const opened = character === '`' ? index : skipContinuation(text, index + 1);
+      if (character === '`' || text[opened] === '(') {
+        const from = character === '`' ? index + 1 : opened + 1;
+        const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
+        if (end === -1) return RAN_OUT;
+        substitutions.push(text.slice(from, end - 1));
+        value += character === '`' ? text.slice(index, end) : '$(' + text.slice(from, end);
+        index = end;
+      } else {
+        value += character;
+        index++;
+      }
     } else {
       value += character;
       index++;

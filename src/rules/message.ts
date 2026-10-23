@@ -90,7 +90,7 @@ export const RULES = {
   'remove-git': {
     rule: 'no removing the .git folder',
     why: 'the .git folder holds the repo history, so removing it throws away every commit',
-    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git; delete only the files you mean, or clone the repo again to start over',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git, and a `find` that deletes when nothing keeps it out of .git (no test, or only tests that can match it, or a name or path whose characters name git storage such as objects, refs or a pack index and match no sample); a prune of .git, `-not -path \'*/.git/*\'`, or a start folder that cannot hold .git still passes; delete only the files you mean, or clone the repo again to start over',
   },
   'delete-default-branch': {
     rule: 'no deleting the default branch',
@@ -98,9 +98,9 @@ export const RULES = {
     check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
   },
   'pipe-to-shell': {
-    rule: 'no piping a download into a shell',
+    rule: 'no piping a download into a shell or a program named by a variable',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+    check: 'the tool-call guard stops a pipeline that feeds a download into a shell, into `eval`, into a substitution that can run it, or into a program word that is not plain text, including a name that starts with `$`. A `$` argument of a plain program passes. Save the file first, read it, then run it',
   },
   'gh-token': {
     rule: "an agent does not see or send gh's token",
@@ -188,7 +188,7 @@ export const RULES = {
   'home-folder': {
     rule: 'an agent does not change the home folder for a command (core rule 11)',
     why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
-    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); before another program, and reading $HOME, it passes',
+    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); it also stops unsetting HOME or USERPROFILE, and env -u HOME before git, gh, yokoten or a shell; before another program, and reading $HOME, it passes; a worker is also stopped from setting or unsetting HOME, USERPROFILE or XDG_CONFIG_HOME before git commit, yokoten check or a shell, and from running a shell script file (bash script, sh script) or a shell option that may name a file, because the guard cannot read that file; the commit check reads the marks file in the real home, from the password database, when HOME is missing or the file under it is missing or holds no marks: a file it cannot read stops the check, and a file it can read is used',
     docs: guide('privacy'),
   },
   secret: {
@@ -452,6 +452,18 @@ export const RULES = {
     check: "when ~/.grok is a folder, `doctor` compares the PreToolUse hook in ~/.grok/hooks/yokoten.json with what `yokoten install` writes (command, matcher, timeout, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
+  'opencode-hook': {
+    rule: "the project that uses OpenCode has yokoten's plugin",
+    why: "without the plugin, OpenCode's commands and edits in this project are not checked",
+    check: "`doctor` looks for `.opencode/` or `opencode.json`. It then reads `.opencode/plugins/yokoten.ts` and compares it with what `init` writes. A missing or old plugin is a note, not a missing step. A project with no OpenCode file is quiet",
+    docs: guide('works-with'),
+  },
+  'opencode-user-hook': {
+    rule: "OpenCode runs yokoten's command guard in every repo",
+    why: 'without it, a tag push, force push or skipped check by OpenCode in a repo without yokoten is not stopped',
+    check: "when ~/.config/opencode is a folder, `doctor` compares the plugin in its plugins folder with what `install` writes. A missing or old plugin is a note, not a missing step. `$XDG_CONFIG_HOME/opencode` counts when that variable is set",
+    docs: guide('works-with'),
+  },
   'core-rules': {
     rule: 'the core rules in AGENTS.md are the ones in the kit of the yokoten you run',
     why: 'a lesson added to the core rules reaches a project only when its AGENTS.md gets the new text',
@@ -534,6 +546,12 @@ export const RULES = {
     why: 'an agent reads git log and git show, and an author line names you',
     check: '`doctor` reads the global git setting mailmap.file; `install` points it at ~/.config/yokoten/mailmap unless you set your own',
     docs: guide('privacy'),
+  },
+  'muse-claude-rules': {
+    rule: "Muse Code does not send ~/.claude/CLAUDE.md to Muse's model",
+    why: 'the file was written for one vendor',
+    check: 'when .muse/hooks.json and ~/.claude/CLAUDE.md are both there, full `doctor` and a session note it. Outside a desk, the note says to run Muse in a desk. When YOKOTEN_DESK or YOKOTEN_TEAM is set and the file is still visible, the note says the home folder is visible and the desk needs attention. No note when the file is hidden. A note, never a failure (#681)',
+    docs: guide('works-with'),
   },
   'server-settings': {
     rule: 'doctor reads the settings the owner sets on the server, and never changes them',
@@ -697,3 +715,33 @@ export const formatFindingMarks = (f: Finding): string => {
  */
 export const formatFinding = (f: Finding): string =>
   `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
+
+// ---- Steps a scan takes (#754) ----
+//
+// The linear tests read this count, not the clock. A busy runner made an 8-times longer
+// text look 28 times slower, and eleven clock limits failed that way. Counting stays off
+// until a test asks, so a real read pays one check. The count only sees a call to noteWork.
+
+/** The steps counted while a test is measuring. Null the rest of the time. */
+let workCounter: { count: number } | null = null;
+
+/** Counts `amount` steps of a scan. Nothing while no test is measuring. */
+export function noteWork(amount: number): void {
+  if (workCounter !== null) workCounter.count += amount;
+}
+
+/**
+ * The steps `read` counts, from zero. Counting is off again after it. A measure inside a
+ * measure counts on its own, then the outer count resumes. A throw does not leave counting on.
+ */
+export function measureWork(read: () => void): number {
+  const previous = workCounter;
+  const counter = { count: 0 };
+  workCounter = counter;
+  try {
+    read();
+    return counter.count;
+  } finally {
+    workCounter = previous;
+  }
+}

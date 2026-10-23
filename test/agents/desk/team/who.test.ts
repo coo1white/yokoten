@@ -1,6 +1,7 @@
 // Tests for src/agents/desk/team/who.ts: who is who on the team, and the fence (#674).
 
 import '../../../repo/home.ts';
+import { TEST_HOME } from '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,18 +10,23 @@ import { deliveryFor } from '../../../../src/agents/desk/team/deliver.ts';
 import { appendMessage, keepReadState } from '../../../../src/agents/desk/team/outbox.ts';
 import { DESK_FILE, LEAD, makeTeam, outboxOf, prepareDeskTeam } from '../../../../src/agents/desk/team/team.ts';
 import { deskReadState, isFenced, isLockedMount, leadCheckout, whoAmI } from '../../../../src/agents/desk/team/who.ts';
-import { fence, makeTeamFixture, makeTempDir } from '../../../repo/helpers.ts';
+import { fence, makeGitFolder, makeTeamFixture, makeTempDir, stopCheckoutWalk } from '../../../repo/helpers.ts';
 
 const locked = () => true;
 
 test('whoAmI: the lead in its main checkout; a worker outside a desk has no name', () => {
-  const { main, team } = makeTeamFixture();
-  assert.deepEqual(whoAmI(main, {}), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
-  assert.deepEqual(whoAmI(join(main, 'src'), {}), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
-  const worker = whoAmI(main, { YOKOTEN_ROLE: 'worker' });
+  const { projects, main, team } = makeTeamFixture();
+  // The temp folder may sit inside a real checkout. Stop the walk there (#712).
+  stopCheckoutWalk(projects);
+  const nowhere = makeTempDir('nowhere-');
+  stopCheckoutWalk(nowhere);
+  const env = { HOME: TEST_HOME };
+  assert.deepEqual(whoAmI(main, env), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
+  assert.deepEqual(whoAmI(join(main, 'src'), env), { name: LEAD, team, readState: join(team, 'lead', 'read.json'), inDesk: false });
+  const worker = whoAmI(main, { ...env, YOKOTEN_ROLE: 'worker' });
   assert.ok('refuse' in worker);
   assert.match(worker.refuse, /worker outside a desk/);
-  assert.ok('refuse' in whoAmI(makeTempDir('nowhere-'), {}));
+  assert.ok('refuse' in whoAmI(nowhere, env));
 });
 
 test('whoAmI in a desk: the roster names the agent, the read state is the desk\'s, and only inside the fence', () => {
@@ -53,7 +59,7 @@ test('whoAmI in a desk: a desk file that names another agent, or a desk the rost
   const { desk, team } = makeTeamFixture();
   prepareDeskTeam({ team, name: 'g1', runtime: 'grok', model: 'grok-4.7', desk });
   const other = join(desk, '..', 'c1');
-  mkdirSync(join(other, '.git'), { recursive: true });
+  makeGitFolder(other);
   prepareDeskTeam({ team, name: 'c1', runtime: 'codex', model: 'gpt-5.5', desk: other });
   // g1 rewrites its own desk file to say c1 (the fence would stop it; here the file is open).
   writeFileSync(join(desk, '.git', DESK_FILE), JSON.stringify({ name: 'c1' }));
@@ -87,7 +93,7 @@ test('leadCheckout: a checkout planted inside a desk is never the lead\'s, and t
   writeFileSync(victim, '{"keep":true}\n');
   const planted = join(desk, 'sub');
   const fakeTeam = join(desk, 'sub.team');
-  mkdirSync(join(planted, '.git'), { recursive: true });
+  makeGitFolder(planted);
   writeFileSync(join(planted, '.git', DESK_FILE), JSON.stringify({ team: fakeTeam, name: 'owner', readState: victim }));
   mkdirSync(join(fakeTeam, 'outbox'), { recursive: true });
   mkdirSync(join(fakeTeam, 'lead'), { recursive: true });
@@ -108,9 +114,9 @@ test('leadCheckout: a checkout planted inside a desk is never the lead\'s, and t
 test('leadCheckout: a desk with no team (only its state folder) still counts as a desk', () => {
   const projects = makeTempDir('noteam-');
   const desk = join(projects, 'd');
-  mkdirSync(join(desk, '.git'), { recursive: true });
+  makeGitFolder(desk);
   mkdirSync(`${desk}.state`);
-  mkdirSync(join(desk, 'sub', '.git'), { recursive: true });
+  makeGitFolder(join(desk, 'sub'));
   assert.match((leadCheckout(join(desk, 'sub'), {}) as { refuse: string }).refuse, /around this one, is a desk/);
 });
 

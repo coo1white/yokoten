@@ -2,22 +2,27 @@
 
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { registerDesk } from '../../../../src/run/hook.ts';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../../../repo/helpers.ts';
+import { makeSandbox, makeTempDir, runChild } from '../../../repo/helpers.ts';
 import type { BoardAgent } from '../../../../src/commands/advice/board/agents.ts';
-import { type AgentView, collectBoard, dotOf, needsOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
+import { claudeFolder, LEAD_SESSION_FILE } from '../../../../src/commands/advice/board/feed/read/logs.ts';
+import { createBoardControls } from '../../../../src/commands/advice/board/controls.ts';
+import { boardDataBody } from '../../../../src/commands/advice/board/server.ts';
+import { readBoardSnapshot } from '../../../../src/commands/advice/board/waiting.ts';
+import { type AgentView, collectBoard, collectBoardWith, dotOf, issueNumbersOf, LEAD_ROW_CHARS, needsOf, nicknameId, nicknameOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
-const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', role: '', state: '', checks: '' };
-const PULL: BoardPull = { number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'pass', tier: 'B', review: 'none', mergedAt: '' };
+const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', log: '', updated: '', started: '', role: '', state: '', checks: '' };
+const PULL: BoardPull = { number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'pass', tier: 'B', review: 'none', isApprovedOnHead: false, mergedAt: '' };
 
 // #603: the dot says what the owner needs to know. The agent's own word wins, then its
 // checks, then how recently it wrote.
 test('board view: the dot is done, waiting, failing, working or idle', () => {
-  const recent = '2026-10-22T11:45:00Z';
+  const recent = '2026-10-22T11:55:00Z';
   assert.equal(dotOf({ ...AGENT, state: 'done', checks: 'failing', updated: recent }, NOW), 'done');
   assert.equal(dotOf({ ...AGENT, state: 'waiting', checks: 'failing' }, NOW), 'waiting');
   assert.equal(dotOf({ ...AGENT, checks: 'failing', updated: recent }, NOW), 'failing');
@@ -25,6 +30,14 @@ test('board view: the dot is done, waiting, failing, working or idle', () => {
   assert.equal(dotOf({ ...AGENT, updated: '2026-10-22T11:00:00Z' }, NOW), 'idle', 'an hour quiet');
   assert.equal(dotOf({ ...AGENT, updated: 'soon' }, NOW), 'idle', 'an odd time');
   assert.equal(dotOf({ ...AGENT, state: 'working', updated: '' }, NOW), 'idle', 'no time');
+});
+
+// The seat goes quiet at 15 minutes. The dot uses that same window (#693).
+test('board view: a working dot goes idle after 15 minutes', () => {
+  const at = (minutes: number) => new Date(NOW - minutes * 60 * 1000).toISOString();
+  assert.equal(dotOf({ ...AGENT, state: 'working', updated: at(5) }, NOW), 'working');
+  assert.equal(dotOf({ ...AGENT, state: 'working', updated: at(16) }, NOW), 'idle');
+  assert.equal(dotOf({ ...AGENT, state: 'working', updated: at(31) }, NOW), 'idle');
 });
 
 test('board view: the task names its pull request or issue, shown as a chip', () => {
@@ -38,6 +51,12 @@ test('board view: the task names its pull request or issue, shown as a chip', ()
   assert.equal(taskTitle('#7 - polish'), 'polish');
   assert.equal(taskTitle('Plan the week'), 'Plan the week');
   assert.equal(taskTitle('#7'), '#7', 'nothing but the number keeps the number');
+  // #685: the title is clean whatever the task: no leading refs, joins or links.
+  assert.equal(taskTitle('PR #683 (https://github.com/o/r/pull/683), issues #668 and #664: Board fixes'), 'Board fixes');
+  assert.equal(taskTitle(', issues #668 board'), 'board', 'what was left before');
+  assert.equal(taskTitle('PR #1, PR #2 — tidy up (see https://example.com/x)'), 'tidy up');
+  assert.equal(taskTitle('Fix 3 bugs in #12'), 'Fix 3 bugs in #12', 'a ref inside the text stays');
+  assert.equal(taskTitle('3 bugs'), '3 bugs', 'a plain number is no ref');
 });
 
 test('board view: a known vendor has its own name and colour; any other is grey', () => {
@@ -45,6 +64,24 @@ test('board view: a known vendor has its own name and colour; any other is grey'
   assert.deepEqual(vendorOf(' Muse '), { name: 'Muse', color: '#0866ff' });
   assert.deepEqual(vendorOf('acme-agent'), { name: 'acme-agent', color: '#8b8b8b' });
   assert.deepEqual(vendorOf(''), { name: 'Unknown', color: '#8b8b8b' });
+});
+
+// #693: filed names that are one vendor share one shown name. Codex shows as DeepSeek
+// only when its model is a DeepSeek model. Claude on that model stays Claude.
+test('board view: Claude, Grok, Muse and DeepSeek each have one name', () => {
+  const claude = { name: 'Claude', color: '#d97757' };
+  const grok = { name: 'Grok', color: '#9ca3af' };
+  const muse = { name: 'Muse', color: '#0866ff' };
+  const deepseek = { name: 'DeepSeek', color: '#4d6bfe' };
+  for (const filed of ['claude-code', 'claude', 'anthropic', ' Claude-Code ']) assert.deepEqual(vendorOf(filed), claude, filed);
+  for (const filed of ['grok', 'xai', 'XAI']) assert.deepEqual(vendorOf(filed), grok, filed);
+  assert.deepEqual(vendorOf('muse'), muse);
+  for (const filed of ['deepseek', 'deepseek-harness', 'codex-deepseek', 'codex on deepseek']) assert.deepEqual(vendorOf(filed), deepseek, filed);
+  assert.deepEqual(vendorOf('codex', 'deepseek-chat'), deepseek, 'codex on a DeepSeek model');
+  assert.deepEqual(vendorOf('codex', 'DeepSeek-V3'), deepseek);
+  assert.deepEqual(vendorOf('codex'), { name: 'Codex', color: '#10a37f' }, 'codex on its own model stays Codex');
+  assert.deepEqual(vendorOf('claude', 'deepseek-v3'), claude, 'Claude on a DeepSeek model stays Claude');
+  assert.deepEqual(vendorOf('claude-code', 'deepseek-reasoner'), claude);
 });
 
 // #603: four steps: Built, Checked, You (tier A only), Merged.
@@ -59,7 +96,8 @@ test('board view: each pull request stage as its steps and one word', () => {
   assert.deepEqual(shown({ checks: 'none' }), ['done,now,skip,', 'No checks yet', 'now']);
   assert.deepEqual(shown({ tier: 'A', review: 'waiting' }), ['done,done,now,', 'Needs your approval', 'now']);
   assert.deepEqual(shown({ tier: 'A', review: 'changes' }), ['done,done,fail,', 'Changes requested', 'fail']);
-  assert.deepEqual(shown({ tier: 'A', review: 'approved' }), ['done,done,done,now', 'Ready to merge', 'ok']);
+  assert.deepEqual(shown({ tier: 'A', review: 'approved', isApprovedOnHead: true }), ['done,done,done,now', 'Ready to merge', 'ok']);
+  assert.deepEqual(shown({ tier: 'A', review: 'approved', isApprovedOnHead: false }), ['done,done,now,', 'Needs your approval', 'now'], 'an Approve on an older commit still needs you');
   assert.deepEqual(shown({ tier: 'B' }), ['done,done,skip,now', 'Ready to merge', 'ok']);
   assert.equal(pullView({ ...PULL, url: 'https://example.com/pull/1' }).url, 'https://example.com/pull/1');
   assert.equal(pullView({ ...PULL, url: 'javascript:alert(1)' }).url, '', 'only http(s) addresses reach the page');
@@ -71,7 +109,7 @@ test('board view: needs you holds tier A pull requests ready for an Approve, the
   const working = { key: '~/x', name: 'Busy', dot: 'working', doing: '', task: '' } as AgentView;
   const needs = needsOf([working, waiting], [
     { ...PULL, number: 5, tier: 'A', review: 'waiting' },
-    { ...PULL, number: 6, tier: 'A', review: 'approved' },
+    { ...PULL, number: 6, tier: 'A', review: 'approved', isApprovedOnHead: true },
     { ...PULL, number: 7, tier: 'A', review: 'changes' },
     { ...PULL, number: 8, tier: 'A', checks: 'fail' },
     { ...PULL, number: 9, tier: 'A', stage: 'draft' },
@@ -82,6 +120,65 @@ test('board view: needs you holds tier A pull requests ready for an Approve, the
     ['answer', 'Calm is waiting for you', '~/w', 0],
   ]);
   assert.equal(needs[1].why, 'Asks to add a package');
+});
+
+/** A waiting agent, with only the fields Needs you reads. */
+const waitingAgent = (fields: Partial<AgentView>): AgentView => ({ key: '~/w', name: 'Calm', nickname: '', isMain: false, dot: 'waiting', doing: 'Asks a question', task: '', ref: null, title: '', vendor: vendorOf('grok'), model: '', effort: '', role: 'engineer', checks: '', age: '', updated: '', started: '', branch: '', ...fields });
+
+// #693: one row per pull request or issue. An Approve row wins that pull request.
+// Two agents with no number each keep a row, because nothing says they are the same item.
+test('board view: Needs you is one row per pull request or issue', () => {
+  const needs = needsOf(
+    [
+      waitingAgent({ key: '~/a', name: 'Ada', ref: { kind: 'pr', number: 5 }, task: 'PR #5' }),
+      waitingAgent({ key: '~/b', name: 'Bea', ref: { kind: 'pr', number: 5 }, task: 'PR #5 again' }),
+      waitingAgent({ key: '~/c', name: 'Cy', ref: { kind: 'issue', number: 9 }, task: 'issue #9' }),
+      waitingAgent({ key: '~/d', name: 'Di', ref: { kind: 'issue', number: 9 }, task: 'issue #9 too' }),
+      waitingAgent({ key: '~/e', name: 'Eve' }),
+      waitingAgent({ key: '~/f', name: 'Fay' }),
+    ],
+    [{ ...PULL, number: 5, tier: 'A', review: 'waiting' }],
+    [9],
+  );
+  assert.deepEqual(needs.map((need) => [need.kind, need.pull, need.agentKey, need.title]), [
+    ['approve', 5, '', 'Approve PR #5'],
+    ['answer', 0, '~/c', 'Cy is waiting for you'],
+    ['answer', 0, '~/e', 'Eve is waiting for you'],
+    ['answer', 0, '~/f', 'Fay is waiting for you'],
+  ]);
+});
+
+// #693: a row leaves once the pull request is approved on its head commit, or the pull
+// request or issue is merged or closed. A pull request the board has not read stays,
+// and so does an issue when the open-issue list cannot prove it is closed.
+test('board view: Needs you drops a row once it is approved on the head, or merged or closed', () => {
+  const agents = [
+    waitingAgent({ key: '~/head', name: 'Head', ref: { kind: 'pr', number: 1 } }),
+    waitingAgent({ key: '~/old', name: 'Old', ref: { kind: 'pr', number: 2 } }),
+    waitingAgent({ key: '~/merged', name: 'Merged', ref: { kind: 'pr', number: 3 } }),
+    waitingAgent({ key: '~/closed', name: 'Closed', ref: { kind: 'pr', number: 4 } }),
+    waitingAgent({ key: '~/shut', name: 'Shut', ref: { kind: 'issue', number: 8 } }),
+    waitingAgent({ key: '~/open', name: 'Open', ref: { kind: 'issue', number: 9 } }),
+    waitingAgent({ key: '~/missing', name: 'Missing', ref: { kind: 'pr', number: 99 } }),
+  ];
+  const pulls: BoardPull[] = [
+    { ...PULL, number: 1, tier: 'A', review: 'approved', isApprovedOnHead: true },
+    { ...PULL, number: 2, tier: 'A', review: 'approved', isApprovedOnHead: false },
+    { ...PULL, number: 3, stage: 'merged' },
+    { ...PULL, number: 4, stage: 'closed' },
+  ];
+  const needs = needsOf(agents, pulls, [9]);
+  assert.deepEqual(needs.map((need) => [need.kind, need.title, need.agentKey]), [
+    ['approve', 'Approve PR #2', ''],
+    ['answer', 'Open is waiting for you', '~/open'],
+    ['answer', 'Missing is waiting for you', '~/missing'],
+  ]);
+  const kept = needsOf(agents, pulls, null).filter((need) => need.kind === 'answer').map((need) => need.agentKey);
+  assert.deepEqual(kept, ['~/shut', '~/open', '~/missing'], 'an unknown issue list cannot prove an issue is closed');
+  const full = Array.from({ length: 30 }, (_, index) => ({ number: index + 1 }));
+  assert.equal(issueNumbersOf(full), null, 'a list at the cap may be cut off');
+  assert.equal(issueNumbersOf('gh could not list the open issues: run it again'), null);
+  assert.deepEqual(issueNumbersOf([{ number: 9 }, { number: 10 }]), [9, 10]);
 });
 
 // #601, #603: the data together. Without a GitHub remote, gh is never asked. Every shown
@@ -120,4 +217,239 @@ test('board data: agents, needs, pulls and worktrees; gh runs only with a GitHub
   assert.equal(outside.repo, '~');
   assert.deepEqual(outside.agents, []);
   assert.equal(outside.worktrees, 'git could not list the worktrees: run it again');
+});
+
+/** A shell call in each runtime's own shape, for its hook (#685). */
+const SHELL_CALLS: Record<string, (cwd: string) => unknown> = {
+  'claude-code': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } }),
+  grok: (cwd) => ({ cwd, hookEventName: 'PreToolUse', toolName: 'run_terminal_command', toolInput: { command: 'git status' } }),
+  muse: (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command: 'git status' } }),
+  'deepseek-harness': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } }),
+};
+
+// #685: the board fills itself. Each vendor's hook writes its worker's file in its own
+// worktree, and a desk clone (no worktree) shows too. Each vendor has its own name and
+// colour, so Grok, Muse and DeepSeek never show as one grey "other".
+test('board data: agents from each vendor\'s hook, and a desk clone, with their own colours', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const base = realpathSync(makeTempDir('yokoten-trees-'));
+  for (const agent of ['claude-code', 'muse', 'deepseek-harness']) {
+    const tree = join(base, agent);
+    sandbox.git('worktree', 'add', '-q', '-b', `w-${agent}`, tree);
+    assert.equal((await sandbox.call(['hook', '--agent', agent], { cwd: tree, input: JSON.stringify(SHELL_CALLS[agent](tree)), extra: { YOKOTEN_ROLE: 'worker' } })).status, 0);
+  }
+  // A desk: a plain clone, which `yokoten desk` notes. Its Grok agent's hook writes there.
+  const desk = join(base, 'desk');
+  assert.equal(runChild('git', ['clone', '-q', sandbox.repo, desk]).status, 0);
+  assert.equal(registerDesk(sandbox.repo, desk), '');
+  assert.equal((await sandbox.call(['hook', '--agent', 'grok'], { cwd: desk, input: JSON.stringify(SHELL_CALLS.grok(desk)), extra: { YOKOTEN_ROLE: 'worker' } })).status, 0);
+  const board = collectBoard(sandbox.repo, sandbox.env, () => '[]');
+  const shown = board.agents.map((agent) => [agent.key, agent.vendor.name, agent.vendor.color, agent.role, agent.doing]);
+  assert.deepEqual(shown, [
+    [join(base, 'claude-code'), 'Claude', '#d97757', 'engineer', 'running git status'],
+    [join(base, 'deepseek-harness'), 'DeepSeek', '#4d6bfe', 'engineer', 'running git status'],
+    [join(base, 'muse'), 'Muse', '#0866ff', 'engineer', 'running git status'],
+    [desk, 'Grok', '#9ca3af', 'engineer', 'running git status'],
+  ]);
+  assert.ok(typeof board.worktrees !== 'string' && board.worktrees.some((tree) => tree.path === desk && tree.branch === 'main'), 'the desk is listed with its branch');
+  // A desk that is gone drops off.
+  rmSync(desk, { recursive: true, force: true });
+  assert.ok(!collectBoard(sandbox.repo, sandbox.env, () => '[]').agents.some((agent) => agent.key === desk));
+});
+
+// #693: one id keeps one friendly name. A name already taken in this run takes the next pioneer.
+test('board view: the same id keeps its nickname, and one run never shares a name', () => {
+  const id = '/trees/agent-a';
+  const first = nicknameOf(id, []);
+  assert.equal(nicknameOf(id, []), first, 'the same id, read again, keeps the name');
+  assert.equal(nicknameId(id, 'status-name'), id, 'a path is the id');
+  assert.equal(nicknameId('', 'status-name'), 'status-name', 'no path: the status name is the id');
+  const taken: string[] = [];
+  const names: string[] = [];
+  for (let step = 0; step < 20; step += 1) {
+    const name = nicknameOf(id, taken);
+    assert.equal(taken.includes(name), false, name);
+    taken.push(name);
+    names.push(name);
+  }
+  assert.equal(new Set(names).size, 20, 'twenty pioneers, twenty names');
+  assert.equal(nicknameOf(id, taken), `${first.split(' ')[0]} agent`, 'every pioneer taken');
+  assert.equal(names[0], first);
+});
+
+// #698: a seat is held only while the agent is actually working. A bad seats file is ignored.
+test('board view: a stale working agent holds no seat, and seats come from the git folder', () => {
+  const sandbox = makeSandbox();
+  const status = join(sandbox.repo, '.yokoten-agent.json');
+  const clock = Date.now();
+  const read = () => collectBoard(sandbox.repo, sandbox.env, () => '[]', clock);
+  writeFileSync(status, JSON.stringify({ name: 'w', vendor: 'claude', state: 'working', updated: new Date(clock).toISOString() }));
+  assert.equal(read().agents[0].isLive, true, 'a fresh working status is live');
+  assert.equal(read().seats, null, 'no seats file');
+  const old = new Date(clock - 60 * 60 * 1000);
+  utimesSync(status, old, old);
+  assert.equal(read().agents[0].isLive, false, 'a stale working status holds no seat');
+  const tree = realpathSync(sandbox.repo);
+  const log = join(sandbox.home, '.claude', 'projects', claudeFolder(tree), 's.jsonl');
+  mkdirSync(join(log, '..'), { recursive: true });
+  writeFileSync(log, '{}\n');
+  utimesSync(log, new Date(clock), new Date(clock));
+  assert.equal(read().agents[0].isLive, true, 'a fresh session log keeps it live');
+  writeFileSync(status, JSON.stringify({ name: 'w', vendor: 'claude', state: 'done', updated: new Date(clock).toISOString() }));
+  utimesSync(status, new Date(clock), new Date(clock));
+  assert.equal(read().agents[0].isLive, false, 'a done agent holds no seat');
+  const seats = join(sandbox.repo, '.git', 'yokoten-seats.json');
+  writeFileSync(seats, 'not json');
+  assert.equal(read().seats, null, 'a bad seats file is ignored');
+  writeFileSync(seats, '{"grok":16,"claude":0,"deepseek":-1,"bad":1.5,"constructor":9,"__proto__":3}');
+  assert.deepEqual(read().seats, { grok: 16, claude: 0 });
+});
+
+// #693: the board runs in a linked worktree. The top bar still names the main folder.
+// A worker, a reviewer and a desk lead each keep their own name. The checkout lead is the main one.
+test('board view: nicknames stay with the worktree, and the top bar names the main folder', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  const work = join(sandbox.home, 'repo-688-board-fast');
+  assert.equal(sandbox.git('worktree', 'add', '-q', work, '-b', 'board-fast').status, 0);
+  const desk = join(sandbox.home, 'desk');
+  assert.equal(runChild('git', ['clone', '-q', sandbox.repo, desk]).status, 0);
+  assert.equal(registerDesk(sandbox.repo, desk), '');
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'main-lead', role: 'lead' }));
+  writeFileSync(join(work, '.yokoten-agent.json'), JSON.stringify({ name: 'worker-1', role: 'worker' }));
+  writeFileSync(join(desk, '.yokoten-agent.json'), JSON.stringify({ name: 'area-lead', role: 'lead' }));
+  const read = () => collectBoard(work, { ...sandbox.env, HOME: sandbox.home }, () => '[]', NOW);
+  const board = read();
+  assert.equal(board.repoName, 'repo');
+  assert.match(board.repo, /repo-688-board-fast$/);
+  assert.deepEqual(board.agents.map((agent) => [agent.name, agent.role, agent.isMain]), [
+    ['main-lead', 'lead', true],
+    ['worker-1', 'worker', false],
+    ['area-lead', 'lead', false],
+  ]);
+  const names = board.agents.map((agent) => agent.nickname);
+  assert.equal(new Set(names).size, names.length, 'two agents never share a name');
+  assert.ok(names.every((name) => /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(name)), names.join(', '));
+  const taken: string[] = [];
+  // git reports a resolved path. The desk list keeps the path it was given.
+  const paths = [realpathSync(sandbox.repo), realpathSync(work), desk];
+  const expectNames = ['main-lead', 'worker-1', 'area-lead'].map((name, index) => {
+    const nickname = nicknameOf(nicknameId(paths[index], name), taken);
+    taken.push(nickname);
+    return nickname;
+  });
+  assert.deepEqual(names, expectNames, 'the name comes from the worktree path');
+  assert.deepEqual(read().agents.map((agent) => agent.nickname), names, 'a second read keeps every name');
+});
+
+// #700: the lead row's one line is the first line of what the lead last said, masked and
+// cut to the row. It comes from the registered log, not from a stale status file, and not
+// from a newer log that belongs to an older session in the repo's own folder.
+test('board data: the lead line is the registered session\'s last words, masked (#700)', () => {
+  const sandbox = makeSandbox();
+  const home = sandbox.home;
+  const email = ['someone', 'personal-mail.com'].join('@');
+  const projects = join(home, '.claude', 'projects');
+  const said = (text: string) => `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })}\n`;
+  const tool = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } })}\n`;
+  const own = join(projects, claudeFolder(sandbox.repo), 'old.jsonl');
+  const live = join(projects, claudeFolder(join(home, 'parent')), 'live.jsonl');
+  const first = `Mail ${email} about ${home}/notes ${'planning the next change '.repeat(8)}`;
+  mkdirSync(join(own, '..'), { recursive: true });
+  mkdirSync(join(live, '..'), { recursive: true });
+  writeFileSync(live, `${said(`${first}\nsecond line stays off the row`)}${tool}`);
+  writeFileSync(own, said('old stuck session'));
+  const past = new Date(Date.now() - 60_000);
+  utimesSync(live, past, past);
+  writeFileSync(join(sandbox.repo, '.git', LEAD_SESSION_FILE), `${live}\n`, { mode: 0o600 });
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'Lead', vendor: 'claude-code', role: 'lead', doing: 'started an hour ago', updated: '2026-10-22T11:59:00Z' }));
+  const board = collectBoard(sandbox.repo, sandbox.env, () => '[]', NOW);
+  const doing = board.agents.find((agent) => agent.role === 'lead')?.doing ?? '';
+  assert.equal(doing.length, LEAD_ROW_CHARS);
+  assert.ok(doing.startsWith('Mail <email> about ~/notes'), doing);
+  assert.equal(doing.includes(email), false);
+  assert.equal(doing.includes(home), false);
+  assert.equal(doing.includes('second line'), false);
+  assert.equal(doing.includes('old stuck'), false);
+  assert.equal(doing.includes('started'), false);
+});
+
+// #693: /data copies the status file. Agent text is masked, the same way /feed is.
+test('board data: a home path, an email, a token and a private mark never reach /data', () => {
+  const sandbox = makeSandbox();
+  const home = dirname(sandbox.repo);
+  const env = { ...sandbox.env, HOME: home };
+  const email = ['someone', 'personal-mail.com'].join('@');
+  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  const mark = 'zebracorn';
+  const link = `https://example.com/review?token=${token}`;
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), `${mark}\n`);
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({
+    name: 'w',
+    vendor: 'claude',
+    model: 'opus',
+    effort: 'high',
+    role: `helper ${home}/role`,
+    task: `PR #5 read ${home}/task`,
+    doing: `running cat ${home}/notes/secret.txt`,
+    state: 'waiting',
+    question: `Mail ${email} about ${mark}`,
+    link,
+    updated: '2026-10-22T11:50:00Z',
+  }));
+  const board = collectBoardWith(sandbox.repo, env, null, 'no remote');
+  const snapshot = readBoardSnapshot(env, createBoardControls(join(sandbox.repo, 'board.log')), board, [{ path: sandbox.repo, branch: 'main' }], [], sandbox.repo);
+  const text = JSON.stringify({ ...board, ...snapshot });
+  for (const secret of [home, email, token, mark]) assert.equal(text.includes(secret), false, 'a private value never reaches /data');
+  const waiting = snapshot.waiting.find((row) => row.kind === 'question');
+  assert.equal(waiting?.why, 'Mail <email> about <mark>');
+  assert.equal(waiting?.link, 'https://example.com/review?token=<secret>');
+  assert.match(board.agents[0]?.doing ?? '', /^running cat ~\/notes\/secret\.txt$/);
+  assert.match(board.agents[0]?.role ?? '', /^helper ~\/role$/);
+  assert.equal(board.agents[0]?.name, 'w');
+  assert.equal(board.agents[0]?.model, 'opus');
+});
+
+// #693: /data masks every string once, at the server boundary. Run output is not a status field.
+test('board data: run output is masked with the rest of /data', () => {
+  const sandbox = makeSandbox();
+  const home = dirname(sandbox.repo);
+  const env = { ...sandbox.env, HOME: home };
+  const email = ['someone', 'personal-mail.com'].join('@');
+  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  const mark = 'zebracorn';
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), `${mark}\n`);
+  const controls = createBoardControls(join(sandbox.repo, 'board.log'));
+  controls.runs.push({
+    name: `runner ${home}/name`,
+    issue: '7',
+    vendor: 'claude',
+    model: 'opus',
+    worktree: `${home}/work`,
+    pid: 1,
+    status: 'running',
+    startedAt: '2026-10-23T00:00:00.000Z',
+    stoppedAt: '',
+    exitCode: null,
+    output: [`cat ${home}/notes/secret.txt`, `mail ${email} about ${mark}`, `token ${token}`],
+  });
+  const board = collectBoardWith(sandbox.repo, env, null, 'no remote');
+  const snapshot = readBoardSnapshot(env, controls, board, [{ path: sandbox.repo, branch: 'main' }], [], sandbox.repo);
+  const aside = `note ${home} ${email} ${token} ${mark}`;
+  const text = boardDataBody(env, sandbox.repo, { ...board, ...snapshot, aside });
+  for (const secret of [home, email, token, mark]) assert.equal(text.includes(secret), false);
+  const body = JSON.parse(text) as { runs: { name: string; output: string[] }[]; aside: string };
+  const output = body.runs[0]?.output.join('\n') ?? '';
+  assert.match(output, /~\/notes\/secret\.txt/);
+  assert.match(output, /<email>/);
+  assert.match(output, /<secret>/);
+  assert.match(output, /<mark>/);
+  assert.match(body.runs[0]?.name ?? '', /^runner ~\/name$/);
+  assert.equal(body.aside.includes(home), false);
+  assert.match(body.aside, /<email>/);
 });

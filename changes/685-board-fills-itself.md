@@ -1,0 +1,3 @@
+Added
+
+`yokoten board` fills itself. The hooks now keep each agent's `.yokoten-agent.json` up to date for every vendor: the session start writes the vendor, model, role and worktree; each allowed call says what the agent is doing (at most once every 5 seconds); a refused call sets `blocked`; the stop sets the state and the checks. The file is kept out of git through `.git/info/exclude`. Desks started by `yokoten desk` show on the board too. `yokoten board` opens the page in your browser (`--no-open` only prints the link), and the empty board says how agents appear. Agent titles no longer start with ", issues #…" when the task text names a pull request, and DeepSeek agents get their own colour (#685).

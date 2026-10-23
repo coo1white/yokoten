@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
@@ -19,6 +19,8 @@ import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets
 export interface Action {
   /** A shell command, as the agent wrote it. */
   command?: string;
+  /** Every command on one call, when it carries more than one. The guard refuses if any entry is refused. */
+  commands?: string[];
   /** The files an edit touches, absolute or relative to `cwd`. */
   paths: string[];
   cwd?: string;
@@ -83,7 +85,7 @@ export const DONE_WHEN_MS = 120_000;
 const CLOSE_GRACE_MS = 200;
 
 /** The file in a worktree's git folder that holds the task's done-when command. */
-export const DONE_WHEN_FILE = 'yokoten-done-when';
+export { DONE_WHEN_FILE };
 
 /**
  * The agent's status file, at a linked worktree's root. The lead reads it.
@@ -111,9 +113,12 @@ export function readDoneWhen(env: Env, folder: string): string | undefined {
   const fromEnv = env.YOKOTEN_DONE_WHEN?.trim();
   if (fromEnv) return fromEnv;
   const link = gitLinkAbove(folder);
-  if (!link || link.kind === 'broken') return undefined;
+  if (!link) return undefined;
+  // A broken link still fails closed: read the file on disk (#746). It runs, or the stop
+  // refuses when it fails. Never the parent's file, and never a silent skip.
+  const gitDir = link.kind === 'broken' ? join(link.top, '.git') : link.gitDir;
   try {
-    const text = readFileSync(join(link.gitDir, DONE_WHEN_FILE), 'utf8');
+    const text = readFileSync(join(gitDir, DONE_WHEN_FILE), 'utf8');
     const line = text.split('\n').find((row) => {
       const trimmed = row.trim();
       return trimmed !== '' && !trimmed.startsWith('#');
@@ -417,6 +422,167 @@ export function writeAgentChecks(folder: string, checks: 'failing' | 'passing', 
   }
 }
 
+/** How often an allowed tool call rewrites the status file, at most (#685). */
+export const STATUS_EVERY_MS = 5000;
+/** The file in a desk clone's git folder that says it is a desk (#685). `yokoten desk` writes it. */
+export const DESK_FILE = 'yokoten-desk';
+/** The file in a repo's shared git folder that lists its desks, one path a line (#685). */
+export const DESK_LIST_FILE = 'yokoten-desks';
+
+/** One checkout an agent works in: its root, its own git folder, and the shared git folder of all its worktrees. */
+export interface StatusCheckout {
+  top: string;
+  gitDir: string;
+  common: string;
+  /** A main checkout or a plain clone, not a linked worktree. */
+  isMain: boolean;
+  /** A clone that `yokoten desk` set up. */
+  isDesk: boolean;
+}
+
+/**
+ * The checkout at or above `folder` whose status file the hooks keep (#685), or null. It
+ * must hold `yokoten.json`, so a repo that does not use yokoten never gets the file.
+ * The folder's real path is used, so a link out of it names no other checkout.
+ */
+export function findStatusCheckout(folder: string): StatusCheckout | null {
+  let link: ReturnType<typeof gitLinkAbove>;
+  try {
+    link = gitLinkAbove(real(folder));
+  } catch {
+    return null;
+  }
+  if (!link || link.kind === 'broken' || !existsSync(join(link.top, 'yokoten.json'))) return null;
+  if (link.kind === 'folder') return { top: link.top, gitDir: link.gitDir, common: link.gitDir, isMain: true, isDesk: existsSync(join(link.gitDir, DESK_FILE)) };
+  return { top: link.top, gitDir: link.gitDir, common: commonGitDir(link.top) ?? link.gitDir, isMain: false, isDesk: false };
+}
+
+/**
+ * Whether a session may keep the status file of `checkout`: the main checkout's file is
+ * the lead's, so a worker writes only in its own worktree or desk.
+ */
+export const canKeepStatus = (checkout: StatusCheckout, isWorker: boolean): boolean => !isWorker || !checkout.isMain || checkout.isDesk;
+
+/** Add the status file to the repo's own exclude list once, so `git status` never shows it, even without a `.gitignore` line. */
+function excludeStatusFile(common: string): void {
+  const path = join(common, 'info', 'exclude');
+  let text = '';
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    // No exclude file yet: it is made below.
+  }
+  if (text.split(/\r?\n/).some((line) => line.trim() === AGENT_STATUS_FILE || line.trim() === `/${AGENT_STATUS_FILE}`)) return;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${text}${text && !text.endsWith('\n') ? '\n' : ''}# yokoten board: each agent's live status (#685)\n${AGENT_STATUS_FILE}\n`);
+}
+
+/** A change to a status file: `set` replaces fields (null removes one), `fill` sets fields only where they are missing. */
+export interface StatusChange {
+  set?: Record<string, string | null>;
+  fill?: Record<string, string>;
+  /** Skip the write when the file changed less than this long ago. A new file is always written. */
+  throttleMs?: number;
+}
+
+/**
+ * Change the agent's status file at `checkout`'s root (#685). Other fields stay, so an
+ * agent's own `task` or `question` is kept. `updated` is UTC. A link or any other non-file
+ * is left unchanged. The write replaces the file through a temp file, as writeAgentChecks
+ * does. Returns whether it wrote; it never throws, so the hook never fails on it.
+ */
+export function changeAgentStatus(checkout: StatusCheckout, change: StatusChange, now: Date = new Date()): boolean {
+  const path = join(checkout.top, AGENT_STATUS_FILE);
+  try {
+    let status: Record<string, unknown> = {};
+    let isNew = false;
+    try {
+      const stats = lstatSync(path);
+      if (!stats.isFile()) return false;
+      if (change.throttleMs && now.getTime() - stats.mtimeMs < change.throttleMs) return false;
+      status = parseStatus(readStatusText(path));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+      isNew = true;
+    }
+    for (const [name, value] of Object.entries(change.fill ?? {})) if (typeof status[name] !== 'string' || !status[name]) status[name] = value;
+    for (const [name, value] of Object.entries(change.set ?? {})) {
+      if (value === null) delete status[name];
+      else status[name] = value;
+    }
+    status.updated = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    if (isNew) excludeStatusFile(checkout.common);
+    writeReplacing(path, `${JSON.stringify(status, null, 2)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The shared git folder of the checkout at or above `folder`, with no git process, or null outside one. */
+export function commonGitDir(folder: string): string | null {
+  const link = gitLinkAbove(folder);
+  if (!link || link.kind === 'broken') return null;
+  if (link.kind === 'folder') return link.gitDir;
+  try {
+    return resolve(link.gitDir, readFileSync(join(link.gitDir, 'commondir'), 'utf8').trim());
+  } catch {
+    return link.gitDir;
+  }
+}
+
+/**
+ * Note a desk clone for the board (#685): a mark in the desk's own git folder, so its
+ * hooks keep a status file there, and its path on the list in the lead's repo, so the
+ * board shows it though `git worktree list` does not. Returns why it could not, or ''.
+ */
+export function registerDesk(leadFolder: string, desk: string): string {
+  const deskGit = join(desk, '.git');
+  try {
+    if (!lstatSync(deskGit).isDirectory()) return 'the desk is not a plain clone';
+    writeFileSync(join(deskGit, DESK_FILE), 'A desk that yokoten desk started: its agent shows on the lead\'s board.\n');
+  } catch {
+    return 'the desk has no git folder yet';
+  }
+  const common = commonGitDir(leadFolder);
+  if (!common) return 'the lead is not in a repo';
+  const list = join(common, DESK_LIST_FILE);
+  try {
+    let text = '';
+    try {
+      text = readFileSync(list, 'utf8');
+    } catch {
+      // The first desk makes the list.
+    }
+    const paths = text.split('\n').filter((line) => line && existsSync(line));
+    if (!paths.includes(desk)) paths.push(desk);
+    writeFileSync(list, `${paths.join('\n')}\n`);
+  } catch {
+    return 'the desk list can\'t be written';
+  }
+  return '';
+}
+
+/** The fields a session starts with: who runs, in which role, where, when it started, and that it works. */
+export function startFields(vendor: string, isWorker: boolean, checkout: StatusCheckout, model: string): { set: Record<string, string>; fill: Record<string, string> } {
+  return {
+    set: { vendor, state: 'working', ...(model ? { model } : {}) },
+    // `started` is set once. Later writes keep it, so the timeline bar does not move.
+    fill: { role: isWorker ? 'engineer' : 'lead', worktree: checkout.top, started: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') },
+  };
+}
+
+/** What a tool call does, in a few words for the board: the program it runs, or the file it edits. Secrets are hidden. */
+export function describeAction(action: Action): string {
+  if (action.command !== undefined) {
+    const words = action.command.trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    const shown = words.slice(0, 2).map((word) => word.replace(/['"`]/g, '').slice(0, 40)).filter(Boolean);
+    return shown.length ? makeSecretHider()(`running ${shown.join(' ')}`) : '';
+  }
+  const [path] = action.paths;
+  return path ? makeSecretHider()(`editing ${basename(path)}`.slice(0, 80)) : '';
+}
+
 /** The last `DONE_OUTPUT_CHARS` of `text`, with secrets and the real values of secret-looking variables in `env` replaced (#616). */
 export function shortenOutput(text: string, env: Env = {}): string {
   let hidden = makeSecretHider()(text.replace(/\s+$/, ''));
@@ -579,12 +745,16 @@ export function judge(
   const ruled = commandsOnly || !root ? repos : [{ root, config }, ...repos];
   // A command may also edit files (Codex runs apply_patch through the shell): check both.
   // The command runs in the call's folder: a hooks setting is judged in that repo (#217).
-  if (action.command !== undefined) {
+  // Every command the call carries is judged: `commands` and `command` both, so an empty list never hides one.
+  const commands = [...(action.commands ?? []), ...(action.command !== undefined && !action.commands?.includes(action.command) ? [action.command] : [])];
+  if (commands.length > 0) {
     // Titles follow a project's own rules: only its hook checks them, never the user-level one (#391).
     const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));
     const ruledRepos = ruled.map((repo) => ({ root: repo.root, leadOnly: repo.config.leadOnly }));
-    const reason = checkCommand(action.command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
-    if (reason) return reason;
+    for (const command of commands) {
+      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
+      if (reason) return reason;
+    }
   }
   // A worker's edit inside a git folder may change the worker mark (#555), in any repo;
   // one inside a team folder may speak for another agent (#674);

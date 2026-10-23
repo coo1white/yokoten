@@ -2,7 +2,7 @@
 
 ### 写给 AI agent 时代的宣言
 
-[English](../../manifesto.md) | 简体中文 | [繁體中文](../zh-TW/manifesto.md) | [日本語](../ja/manifesto.md)
+[English](../../assets/manifesto.md) | 简体中文 | [繁體中文](../zh-TW/manifesto.md) | [日本語](../ja/manifesto.md)
 
 写代码已经不值钱了。一个团队一周的活，模型一分钟写完。谁都能一句话叫来十个工程师。
 
@@ -16,7 +16,7 @@ agent 直接推到 main。测试过不了，就改测试。把你的密钥贴进
 
 ## 一、提示词是愿望，护栏才是法律
 
-叫 agent 守规矩，不等于管住了它。yokoten 在 agent 的每个动作执行之前先检查，违规就不执行。现在已经有八个 agent 跑着同一套规则。[指南里的 agent 表](guide.md#支持哪些-agent)是唯一的名单。Gemini CLI 只是列在这里，还没有完整跑过。哪个 agent 都没有特权。
+叫 agent 守规矩，不等于管住了它。yokoten 在 agent 的每个动作执行之前先检查，违规就不执行。现在已经有九个 agent 跑着同一套规则。[指南里的 agent 表](guide.md#支持哪些-agent)是唯一的名单。Gemini CLI 只是列在这里，还没有完整跑过。哪个 agent 都没有特权。
 
 ## 二、不许自己批自己的卷子
 

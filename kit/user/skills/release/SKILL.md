@@ -4,6 +4,10 @@ description: Pick the next version from the changelog and prepare a release for 
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line. Then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Prepare a release
 
 The owner decides when to release, and only the owner creates the tag (core rule 3).
@@ -65,6 +69,59 @@ release (core rule 3). Only an answer that names the version or says "release",
 2. Set the version in the project's version file, such as `package.json`.
 3. Open a pull request titled `chore: release vX.Y.Z`.
 
+## 5. Read the project's release docs
+
+Before you write the owner's steps, read the project's release docs. Look for
+`docs/server.md`, `docs/releases.md`, or a file `CONTRIBUTING.md` names. Read the
+release workflow, such as `.github/workflows/release.yml`, and any record it points to.
+
+The project's docs win over this skill. If they differ, say so in one line and follow
+the docs.
+
+## 6. Write the owner's checklist
+
+After the owner merges the release pull request, write the steps in order. Give the
+command for each step.
+
+First read `name` in `package.json`, then ask the registry for the latest version:
+`npm view <name> version`. "E404" means no version is on the registry yet.
+
+Say in the first line of the checklist which release docs you read.
+
+- The tag: `git tag -a vX.Y.Z -m "<name> X.Y.Z" && git push origin vX.Y.Z`.
+- The checks: wait for the `verify` job to pass.
+
+For a package **already on the registry**, the tag starts the release workflow. The
+`publish` job waits for the owner's approval in the `release` environment. The owner
+approves it on the run page (**Review deployments**).
+
+### The first release
+
+`npm view` finds no version. npm can add a trusted publisher only to a package that
+already exists. So your checklist must include a publish by hand:
+
+1. Push the tag and wait for the `verify` job to pass.
+2. Reject the waiting `publish` job on the run page.
+3. In a clean clone of the tag, run `npm ci` and `npm publish --access public`.
+   The owner is logged in to npm with two-factor authentication.
+4. On npmjs.com, open the package's **Settings**. Under **Publishing access**, choose
+   "Require two-factor authentication and disallow bypass 2fa tokens". Then click
+   **Update Package Settings**.
+5. Do not add the trusted publisher now. npm expires it after 2 days with no publish.
+   The owner adds it just before the next release, under **Trusted Publisher**, then
+   **GitHub Actions**. Name the repository, the workflow file and the environment.
+
+### Taking a tag back
+
+Give these forms to the owner. Never run them yourself.
+
+```sh
+git tag -d vX.Y.Z
+git push origin --delete vX.Y.Z
+```
+
+Never use `:refs/tags/vX.Y.Z`. Its words do not say what it does.
+
 ## Try the beginner road
 
 Before you ask the owner to release, have a weak model walk the beginner road.
@@ -77,9 +134,4 @@ You record that the road was walked. You leave the guard the same for every mode
 - Publish a package or create a host release. These are release actions too.
 - Start a release when the owner has not asked for one.
 
-After the owner merges, tell them the command to run: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
-If the project publishes from a release workflow with a `release` environment, also
-tell the owner: the tag starts the workflow, the checks run, and then the publish job
-waits. It publishes only after the owner approves it in the `release` environment, on
-the run page (**Review deployments**). Nothing reaches the registry before that.

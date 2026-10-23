@@ -7,28 +7,27 @@
 // Each agent's latest output shows on the page. Stopping keeps the worktree and its
 // commits.
 //
-// The waiting list at the top shows what needs the owner: tier A pull requests with
-// green checks and no Approve, guard stops, and agent questions. The list is read
+// `yokoten board --text` and /data still list what needs the owner: tier A pull
+// requests with green checks and no Approve on the head commit, guard stops, and
+// agent questions. The page lists Needs you under the header bell (#737). The list is read
 // only: no request an agent can make clears an item. There are no Approve or Merge
-// buttons anywhere; those stay on the host, with the owner. Safety: 127.0.0.1 only, a
-// random link token, the page's Origin on every change, stop only for processes this
-// board started, and every start and stop in a log file.
+// buttons anywhere; those stay on the host, with the owner. Safety: 127.0.0.1 only.
+// The page is at <repo>.localhost on a stable port. The first visit sets an HttpOnly
+// cookie and leaves the token out of the address. A change needs the page's Origin.
+// Stop only for processes this board started, and every start and stop in a log file.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as codex from '../../../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../../../agents/runtimes/deepseek-harness.ts';
+import * as deepseekHarness from '../../../agents/runtimes/small/deepseek-harness.ts';
 import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
-import { type Gh, repoOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
-import { readOriginUrl } from '../../../setup/plan.ts';
 import { markWorktree } from '../../hook.ts';
-import { ageText, BOARD_AGENT_FILE, BOARD_READ_TIMEOUT_MS, parseBoardAgent, type BoardRole, type BoardWorktree } from './agents.ts';
-import { type AgentView, type BoardData, type PullView } from './view.ts';
+import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
 /**
  * How the board starts one agent of each vendor, before the brief. Each command is the
@@ -88,11 +87,17 @@ export interface BoardRun {
   output: string[];
 }
 
-/** One open issue to start an agent on: its number, title, and link. */
+/** One open issue to start an agent on: its number, title, link, and what it waits for. */
 export interface BoardIssue {
   number: number;
   title: string;
   url: string;
+  /** When it was opened, or ''. */
+  createdAt: string;
+  /** When it last changed, or ''. */
+  updatedAt: string;
+  /** Issue numbers on a "Depends on" line. The timeline shows them on the row. */
+  dependsOn: number[];
 }
 
 /** One hold-up an agent reports in its status file: a guard stop or a question. */
@@ -126,11 +131,8 @@ export interface BoardWaiting {
   latchedAt?: string;
 }
 
-/** How many output lines a run keeps; the page shows the last BOARD_OUTPUT_SHOWN. */
+/** How many output lines a run keeps. The page shows the last 30. */
 const BOARD_OUTPUT_LINES = 100;
-
-/** How many of a run's output lines /data serves. */
-const BOARD_OUTPUT_SHOWN = 30;
 
 /** A model name: letters and numbers first, then letters, numbers, dots and dashes. */
 const BOARD_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/;
@@ -468,142 +470,6 @@ export function setBoardLimits(controls: BoardControls, fields: Record<string, s
   return { ...controls.limits, byModel: { ...controls.limits.byModel } };
 }
 
-/** The open issues, gh's order, or why gh cannot read them. */
-export function readBoardIssues(gh: Gh, repo: string): BoardIssue[] | string {
-  let text: string;
-  try {
-    text = gh(['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url']);
-  } catch {
-    return 'gh could not list the open issues: run it again';
-  }
-  let rows: unknown;
-  try {
-    rows = JSON.parse(text || '[]');
-  } catch {
-    return 'gh gave no open issue list: run it again';
-  }
-  if (!Array.isArray(rows)) return 'gh gave no open issue list: run it again';
-  return rows.flatMap((row) => {
-    if (typeof row !== 'object' || row === null) return [];
-    const fields = row as Record<string, unknown>;
-    const number = fields.number;
-    if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return [];
-    return [{ number, title: typeof fields.title === 'string' ? fields.title : '', url: typeof fields.url === 'string' ? fields.url : '' }];
-  });
-}
-
-/** Plain text of a status field, or '' when it is missing or not text. */
-function fieldText(fields: Record<string, unknown>, name: string): string {
-  const value: unknown = fields[name];
-  return typeof value === 'string' ? value : '';
-}
-
-/** The link when it is http(s), else ''. Anything else stays plain text, never a link. */
-function boardLink(url: string): string {
-  const clean = url.trim().toLowerCase();
-  return clean.startsWith('http://') || clean.startsWith('https://') ? url.trim() : '';
-}
-
-/**
- * The hold-ups the status files name: `blocked` (a guard stop that needs a decision) or
- * `question` (one line the agent asks the owner), with `link` for where to act. A file
- * that is missing, broken, or names neither is skipped.
- */
-export function readBoardAttention(trees: BoardWorktree[]): BoardAttention[] {
-  const found: BoardAttention[] = [];
-  for (const tree of trees) {
-    let text: string;
-    try {
-      text = readFileSync(join(tree.path, BOARD_AGENT_FILE), 'utf8');
-    } catch {
-      continue;
-    }
-    const agent = parseBoardAgent(text, tree.path);
-    if (!agent) continue;
-    let status: unknown;
-    try {
-      status = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const fields = status as Record<string, unknown>;
-    const link = boardLink(fieldText(fields, 'link'));
-    for (const kind of ['guard', 'question'] as const) {
-      const why = fieldText(fields, kind === 'guard' ? 'blocked' : 'question').split('\n')[0].trim().slice(0, 140);
-      if (!why) continue;
-      found.push({ name: agent.name, vendor: agent.vendor, role: agent.role, worktree: agent.worktree, updated: agent.updated, kind, why, link });
-    }
-  }
-  return found;
-}
-
-/**
- * True when the pull request waits for the owner: tier A with green checks and no
- * Approve. The page reads the same rows from `status`: `approve` is tier A, open and
- * green without an Approve, and `changes` is the same with changes asked.
- */
-function isWaitingPull(pull: PullView): boolean {
-  return pull.status === 'approve' || pull.status === 'changes';
-}
-
-/** The agent in the worktree on the pull's branch, or null when no agent is there. */
-function pullAgent(board: BoardData, branch: string): AgentView | null {
-  if (typeof board.worktrees === 'string' || !branch) return null;
-  const path = board.worktrees.find((tree) => tree.branch === branch)?.path;
-  if (!path) return null;
-  return board.agents.find((agent) => agent.key === path) ?? null;
-}
-
-/**
- * The waiting list: tier A pull requests that need the Approve, and the agents' guard
- * stops and questions. Tier A rows are live from the pull requests. Agent rows latch:
- * once a hold-up shows, it stays while the agent is here, even when its file stops
- * naming it. Only leaving (removing the file) clears a file row, and only stopping
- * clears a run's own row. `seen` keeps the latched rows; the answer copies them, so
- * callers never move the latch.
- */
-export function collectBoardWaiting(board: BoardData, attention: BoardAttention[], runs: BoardRun[], seen: BoardWaiting[], now: number = Date.now()): BoardWaiting[] {
-  const live: BoardWaiting[] = [];
-  if (typeof board.pulls !== 'string') {
-    for (const pull of board.pulls.filter(isWaitingPull)) {
-      const agent = pullAgent(board, pull.branch);
-      live.push({
-        kind: 'approve',
-        agent: agent?.name ?? '',
-        role: agent?.role ?? '',
-        wait: agent?.age ?? '',
-        why: `tier A, checks pass, needs the owner go-ahead: #${pull.number} ${pull.title}`.slice(0, 140),
-        link: pull.url,
-      });
-    }
-  }
-  const fresh: BoardWaiting[] = attention.map((held) => ({ kind: held.kind, agent: held.name, role: held.role, wait: ageText(held.updated, now), why: held.why, link: held.link }));
-  for (const run of runs.filter((one) => one.status === 'running')) {
-    const stop = run.output.filter((line) => /guard stopped/i.test(line)).at(-1);
-    if (!stop) continue;
-    if (fresh.some((row) => row.agent === run.name && row.kind === 'guard')) continue;
-    if (seen.some((row) => row.agent === run.name && row.kind === 'guard')) continue;
-    fresh.push({ kind: 'guard', agent: run.name, role: '', wait: ageText(run.startedAt, now), why: stop.slice(0, 140), link: '' });
-  }
-  for (const row of fresh) {
-    const old = seen.find((kept) => kept.agent === row.agent && kept.kind === row.kind);
-    if (old) {
-      old.role = row.role;
-      old.why = row.why;
-      old.link = row.link;
-    } else seen.push({ ...row, latchedAt: new Date(now).toISOString() });
-  }
-  // The wait counts from when the row first showed, so a rewrite never resets it.
-  for (const row of seen) {
-    if (row.latchedAt) row.wait = ageText(row.latchedAt, now);
-  }
-  const here = new Set([...board.agents.map((agent) => agent.name), ...runs.filter((run) => run.status === 'running').map((run) => run.name)]);
-  for (let at = seen.length - 1; at >= 0; at -= 1) {
-    if (!here.has(seen[at].agent)) seen.splice(at, 1);
-  }
-  return [...live, ...seen.map((row) => ({ ...row }))];
-}
-
 /** The board's data with the controls: the waiting list, the open issues, the runs, and the limits. */
 export interface BoardSnapshot {
   waiting: BoardWaiting[];
@@ -612,28 +478,10 @@ export interface BoardSnapshot {
   limits: BoardLimits;
 }
 
-/** The runs as /data serves them: worktrees hide the home folder, and only the tail of the output. */
-function snapshotRuns(runs: BoardRun[], env: Env): BoardRun[] {
-  return runs.map((run) => ({ ...run, worktree: hideHome(run.worktree, env), output: run.output.slice(-BOARD_OUTPUT_SHOWN) }));
-}
-
-/**
- * The waiting list as /data serves it: the latch time stays on the server, so the
- * rows hold what waits, who waits, how long, why, and where to act, and nothing else.
- */
-function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls: BoardControls, now: number = Date.now()): BoardWaiting[] {
-  return collectBoardWaiting(board, attention, controls.runs, controls.seen, now).map(
-    ({ latchedAt: _, ...row }) => row,
-  );
-}
-
-/** The snapshot for /data: the waiting list, the open issues, the runs, and the limits. */
-export function readBoardSnapshot(root: string, env: Env, gh: Gh, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string): BoardSnapshot {
-  const remote = repoOf(readOriginUrl(root, env));
-  return {
-    waiting: snapshotWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls),
-    issues: remote ? readBoardIssues(gh, remote) : 'this repo has no GitHub remote, so the board shows no open issues',
-    runs: snapshotRuns(controls.runs, env),
-    limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },
-  };
-}
+export {
+  collectBoardWaiting,
+  readBoardAttention,
+  readBoardIssues,
+  readBoardIssuesLater,
+  readBoardSnapshot,
+} from './waiting.ts';

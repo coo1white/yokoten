@@ -2,13 +2,14 @@
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import * as antigravity from '../agents/runtimes/antigravity.ts';
+import * as antigravity from '../agents/runtimes/small/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
+import * as deepseekHarness from '../agents/runtimes/small/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import * as opencode from '../agents/runtimes/small/opencode.ts';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
@@ -17,10 +18,15 @@ import { checkChanged, readGit } from '../run/check/inspect.ts';
 import {
   type Action,
   bumpDoneTries,
+  canKeepStatus,
+  changeAgentStatus,
   clearDoneTries,
   clearRefusedMarker,
+  describeAction,
   DONE_TRY_LIMIT,
   doneTryKey,
+  findStatusCheckout,
+  registerDesk,
   type Guard,
   guardDeadline,
   judgeWithDeadline,
@@ -29,6 +35,8 @@ import {
   readDoneWhen,
   type Repo,
   runDoneWhen,
+  startFields,
+  STATUS_EVERY_MS,
   type StopEvent,
   wasRefusedRecently,
   writeAgentChecks,
@@ -44,6 +52,7 @@ export const READERS: Record<string, (input: unknown) => Action> = {
   muse: muse.readToolCall,
   'deepseek-harness': deepseekHarness.readToolCall,
   grok: grok.readToolCall,
+  opencode: opencode.readToolCall,
 };
 
 // What a runtime reads on stdout when a call is refused, and the exit code it wants. The
@@ -54,6 +63,8 @@ const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: nu
   'claude-code': claudeCode.formatDenial,
   antigravity: antigravity.formatDenial,
   grok: grok.formatDenial,
+  // OpenCode's plugin throws the reason from stderr. Stdout stays empty.
+  opencode: opencode.formatDenial,
 };
 
 // How the owner approves a release in each runtime (#350): the command that starts it with
@@ -70,6 +81,7 @@ const RELEASE_FIXES: Record<string, string> = {
   muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
   grok: releaseFix(approve('grok')),
+  opencode: 'OpenCode is not known to pass YOKOTEN_RELEASE_APPROVAL to its plugin. If the owner asked for this, stop and tell them to release outside OpenCode; do not look for another way',
 };
 
 // The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
@@ -165,7 +177,7 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
  * A subagent is a worker only by its own type. On any error the turn ends too, with one
  * line on stderr: a broken check must not trap a session.
  */
-async function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop): Promise<number> {
+async function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop, agent: string): Promise<number> {
   const { env } = invocation;
   let event: StopEvent | null;
   try {
@@ -196,6 +208,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
     return 0;
   }
   if (event.active && !isWorker) {
+    noteLeadStop(folder, agent);
     if (json) printJson(invocation, { blocked: false, stop: true, skipped: 'the agent was already sent back once', findings: [] });
     return 0;
   }
@@ -216,7 +229,9 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   let doneWhen: { command: string; ok: boolean; output: string } | undefined;
   // A subagent runs in the worker's worktree only when the event's folder is that
   // worktree. Otherwise it shares the lead's folder (#614).
-  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : root) : folder;
+  // A broken `.git` still reads its own done-when, so run it in the desk it belongs to (#746).
+  const link = isWorker ? gitLinkAbove(folder) : null;
+  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : link?.top ?? root) : folder;
   if (isWorker && root) {
     const command = readDoneWhen(env, event.subagent ? ranIn : folder);
     if (command) {
@@ -235,8 +250,8 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
     if (isWorker) {
       forgetDoneTries(env, key);
       clearRefusedMarker(folder, key);
-      recordChecks(invocation, folder, 'passing');
-    }
+      recordChecks(invocation, folder, 'passing', agent);
+    } else noteLeadStop(folder, agent);
     if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
     // The checks pass: unread messages send the turn on once, and the next stop is checked again.
     const messages = event.active || afterMessages ? '' : await takeMessages();
@@ -258,11 +273,11 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
   // lets the stop through. A runtime that never sets stop_hook_active cannot trap it.
   if (bumped === null) {
-    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder);
+    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
     noteRefused(folder, key);
     return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
   }
-  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder);
+  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
   return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
 }
 
@@ -310,11 +325,48 @@ function staysInsideWorktree(folder: string, top: string): boolean {
   }
 }
 
-/** Write `checks` at a linked worktree's root. The main checkout is left unchanged. */
-function recordChecks(invocation: Invocation, folder: string, checks: 'failing' | 'passing'): void {
+/**
+ * Write `checks` at a worker's checkout, and that it is done (#685): its worktree or desk,
+ * when the repo uses yokoten. Else at a linked worktree's root, `checks` only. The main
+ * checkout is the lead's, so a worker leaves it unchanged.
+ */
+function recordChecks(invocation: Invocation, folder: string, checks: 'failing' | 'passing', agent: string): void {
+  const checkout = findStatusCheckout(folder);
+  if (checkout?.isMain && !checkout.isDesk) return;
+  if (checkout) {
+    const start = startFields(agent, true, checkout, '');
+    changeAgentStatus(checkout, { fill: { ...start.fill, vendor: agent }, set: { checks, state: 'done', doing: checks === 'passing' ? 'finished, checks pass' : 'stopped, checks fail', blocked: null } });
+    return;
+  }
   const root = linkedWorktree(folder);
   if (!root) return;
   writeAgentChecks(root, checks, new Date(), (line) => say(invocation, line, invocation.stderr));
+}
+
+/** The lead's turn ended: it waits for the owner (#685). Only in a repo that uses yokoten. */
+function noteLeadStop(folder: string, agent: string): void {
+  const checkout = findStatusCheckout(folder);
+  if (!checkout || !canKeepStatus(checkout, false)) return;
+  const start = startFields(agent, false, checkout, '');
+  changeAgentStatus(checkout, { fill: { ...start.fill, vendor: agent }, set: { state: 'waiting', doing: 'its turn ended: waiting for your answer' } });
+}
+
+/**
+ * Keep the session's status file for one tool call (#685). An allowed call says what it
+ * does, at most once every STATUS_EVERY_MS; a refused call always sets `blocked`. A file
+ * that does not exist yet gets the start fields, for runtimes with no session-start hook.
+ */
+function noteToolCall(folder: string, agent: string, action: Action, isWorker: boolean, found: Finding | null): void {
+  const checkout = findStatusCheckout(folder);
+  if (!checkout || !canKeepStatus(checkout, isWorker)) return;
+  const start = startFields(agent, isWorker, checkout, '');
+  const fill = { ...start.fill, vendor: agent };
+  if (found) {
+    changeAgentStatus(checkout, { fill, set: { state: 'working', blocked: `the guard stopped this: ${found.what}`.split('\n')[0].slice(0, 140) } });
+    return;
+  }
+  const doing = describeAction(action);
+  changeAgentStatus(checkout, { fill, set: { state: 'working', blocked: null, ...(doing ? { doing } : {}) }, throttleMs: STATUS_EVERY_MS });
 }
 
 /** The folder a subagent's command runs in: the linked worktree the event names, or the event's own folder. */
@@ -370,8 +422,9 @@ function allowFailingStop(
   env: Invocation['env'],
   key: string,
   folder: string,
+  agent: string,
 ): number {
-  recordChecks(invocation, folder, 'failing');
+  recordChecks(invocation, folder, 'failing', agent);
   forgetDoneTries(env, key);
   const payload = { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}), skipped: 'stopped with failing checks', ...(doneWhen ? { doneWhen: { ok: false, output: doneWhen.output, tries, limit: DONE_TRY_LIMIT } } : {}) };
   if (json) printJson(invocation, payload);
@@ -389,7 +442,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   if (options.flags.has('--stop')) {
     if (options.flags.has('--commands-only')) return usage(invocation, "--stop and --commands-only can't be used together");
     if (!Object.hasOwn(STOP_READERS, agent)) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(STOP_READERS).join(', ')}`);
-    return stopHook(invocation, json, STOP_READERS[agent]);
+    return stopHook(invocation, json, STOP_READERS[agent], agent);
   }
   const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
   if (!read) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
@@ -424,16 +477,20 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
         if (json) printJson(invocation, { blocked: false, toolCall: true, rewritten: wrapped });
         // Written as it is: hiding the home folder would change the command.
         else invocation.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
+        noteToolCall(cwd, agent, action, role !== null || action.worker, null);
         return 0;
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    noteToolCall(cwd, agent, action, role !== null || action.worker, found);
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
-      return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
+      // When the call names no other folder, the root above is this folder's: one git call, not two (#821).
+      const sessionRoot = resolve(cwd, action.cwd ?? '.') === resolve(cwd) ? root : rootOf(cwd, env);
+      return teamMessages(cwd, env, sessionRoot).then((messages) => {
         if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
         return 0;
       });
@@ -666,6 +723,9 @@ export async function runDesk(invocation: Invocation): Promise<number> {
     return fail((error as Error).message);
   }
   print(invocation, [`yokoten desk: ${runtime} in ${plan.desk} (${backend.name}); the agent may reach ${plan.hosts.join(', ')}.`], invocation.stderr);
+  // The board shows the desk's agent (#685). A desk that can't be noted still starts.
+  const unlisted = registerDesk(invocation.cwd, plan.desk);
+  if (unlisted) print(invocation, [`yokoten desk: the board won't show this desk: ${unlisted}.`], invocation.stderr);
   const refused = new Set<string>();
   const result = await startDesk(plan, backend, {
     stdio: 'inherit',

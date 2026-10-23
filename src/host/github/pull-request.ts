@@ -228,7 +228,8 @@ export function readIssue(env: Env): { title: string; labels: string[] } | Unrea
 }
 
 // The findings of a check on the pull request page (#91), so a beginner need not open the
-// log. Two parts, and neither needs a token:
+// log. The scope stops at yokoten's own check results: this repeats no other review bot
+// and reviews no code a second time. Two parts, and neither needs a token:
 // - an annotation per finding: a line on stdout, `::error file=…,line=…,title=…::message`,
 //   shown on that line of the diff (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands);
 // - Markdown appended to the file named by GITHUB_STEP_SUMMARY, shown on the run's page.

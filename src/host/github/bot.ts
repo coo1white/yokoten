@@ -138,6 +138,15 @@ export async function installationToken(config: BotConfig, repo: string): Promis
 
 // `node --test` sets NODE_TEST_CONTEXT for the test files it starts. A `node --test` that
 // inherits it reports to that parent run instead, and exits 0 even when a test fails (#168).
+// The name sits on ProcessEnv (#712). A spread of process.env that sets other keys drops
+// the index signature. delete then cannot see NODE_TEST_CONTEXT unless the name is declared.
+declare global {
+  namespace NodeJS {
+    interface ProcessEnv {
+      NODE_TEST_CONTEXT?: string;
+    }
+  }
+}
 
 /** A copy of `env` that a child `node --test` cannot mistake for a parent test run's. */
 export function cleanChildEnv(env: Env): Env {

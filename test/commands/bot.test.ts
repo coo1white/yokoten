@@ -721,8 +721,8 @@ test('bot: gh pr merge needs the owner Approve on the head; gh pr status shows i
   }
 
   // (b) The Approve is on an older commit: a code change after it is refused with the
-  // plain message, and `gh pr status` lists it. No owner Approve, or commits git cannot
-  // read, refuse the same way: fail closed.
+  // plain message, and `gh pr status` lists it. No owner Approve is the same list.
+  // Commits git cannot read are a separate list, and that list does not ask for a new Approve.
   {
     const { sandbox, sha } = baseRepo();
     sandbox.git('checkout', '-qb', 'topic');
@@ -755,13 +755,13 @@ test('bot: gh pr merge needs the owner Approve on the head; gh pr status shows i
       assert.equal(refused.stderr, `yokoten bot: ${stale}. Nothing was merged\n`);
       assert.deepEqual([await run(['gh', 'pr', 'merge', '22']), await run(['gh', 'pr', 'merge', '23'])].map((r) => [r.status, r.stderr]), [
         [1, 'yokoten bot: no owner Approve on this pull request. Nothing was merged\n'],
-        [1, `yokoten bot: could not check the owner's Approve (the commits of pull request 23 are not all in this checkout); ask the owner to approve again. Nothing was merged\n`],
+        [1, `yokoten bot: could not check the owner's Approve (the commits of pull request 23 are not all in this checkout). Nothing was merged\n`],
       ]);
       assert.deepEqual(merged(), [], 'gh pr merge never ran');
       const status = await run(['gh', 'pr', 'status']);
       assert.equal(status.status, 0, status.stderr);
       assert.equal(status.stderr, '');
-      assert.equal(status.stdout, `TABLE\nyokoten bot: these need a new owner Approve before they merge:\n- #21: ${stale}\n- #22: no owner Approve on this pull request\n- #23: could not check the owner's Approve (the commits of pull request 23 are not all in this checkout); ask the owner to approve again\n`);
+      assert.equal(status.stdout, `TABLE\nyokoten bot: these need a new owner Approve before they merge:\n- #21: ${stale}\n- #22: no owner Approve on this pull request\nyokoten bot: these could not be checked:\n- #23: could not check the owner's Approve (the commits of pull request 23 are not all in this checkout)\n`);
     } finally {
       server.close();
     }
@@ -1376,7 +1376,7 @@ test('bot: a merge URL for another repo is unsure; this checkout merges (#612)',
     // and this checkout's number 20 is never read for it.
     const refused = await sandbox.call(['bot', '--', 'gh', 'pr', 'merge', 'https://github.com/other/repo/pull/20'], { extra: bot });
     assert.equal(refused.status, 1);
-    assert.equal(refused.stderr, "yokoten bot: could not check the owner's Approve (other/repo is not this checkout, so its commits are not here); nothing was merged. Ask the owner to approve again\n");
+    assert.equal(refused.stderr, "yokoten bot: could not check the owner's Approve (other/repo is not this checkout, so its commits are not here); nothing was merged.\n");
     assert.deepEqual(merged(), [], 'a refused merge never reaches gh');
     // This checkout's own URL merges, with the Approve on the head.
     const same = await sandbox.call(['bot', '--', 'gh', 'pr', 'merge', 'https://github.com/me/repo/pull/20'], { extra: bot });

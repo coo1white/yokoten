@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
-import { docsLink, type Finding, finding, type RuleId } from '../rules/message.ts';
+import { docsLink, type Finding, finding, noteWork, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
@@ -29,9 +29,9 @@ import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
-import { gitConfig } from '../run/check/inspect.ts';
-import { indexFiles } from '../run/check/inspect.ts';
+import { gitConfig, indexFiles, remembered } from '../run/check/inspect.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
+import { nodeTestsFix } from './advice/tests-job.ts';
 import { commands, FALLBACK_RUNNERS, orList, runLines, runsTests, scriptedRuns, testLanguages } from './advice/test-commands.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -185,7 +185,10 @@ const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) ||
  * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
  * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
  */
-const ciRuns = (ci: string, command: CommandTest) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const ciRuns = (ci: string, command: CommandTest) => {
+  noteWork(ci.length);
+  return command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+};
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
 // The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).
@@ -197,11 +200,14 @@ const usesYokoten = (line: string) => {
   const head = USES_HEAD.exec(line);
   if (!head) return false;
   REF_WORD.lastIndex = head[0].length;
-  if (!REF_WORD.exec(line)) return false;
+  const first = REF_WORD.exec(line);
+  if (!first) return false;
+  noteWork(first[0].length);
   let at = REF_WORD.lastIndex;
   for (REF_GAP.lastIndex = at; REF_GAP.exec(line); REF_GAP.lastIndex = at) {
     REF_WORD.lastIndex = REF_GAP.lastIndex;
-    REF_WORD.exec(line);
+    const word = REF_WORD.exec(line);
+    noteWork(word ? word[0].length : 1);
     at = REF_WORD.lastIndex;
   }
   const quote = head[1];
@@ -218,12 +224,16 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
   const found: { prCheck: boolean }[] = [];
   const text = workflow.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const item = /^([ \t]*)-[ \t]+(.*)$/.exec(text[i]);
     if (!item) continue;
     // The item's keys sit two past the dash; its first key is on the dash line.
     const keyIndent = item[1].length + 2;
     const lines = [' '.repeat(keyIndent) + item[2]];
-    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) {
+      noteWork(text[i + 1].length + 1);
+      lines.push(text[i + 1]);
+    }
     const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
     if (!keys.some(usesYokoten)) continue;
     let inWith = false;
@@ -241,10 +251,14 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
 export const onPullRequest = (workflow: string): boolean => {
   const text = workflow.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const on = /^(?:on|"on"|'on'):(.*)$/.exec(text[i]);
     if (!on) continue;
     const block = [on[1]];
-    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) block.push(text[i + 1]);
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) {
+      noteWork(text[i + 1].length + 1);
+      block.push(text[i + 1]);
+    }
     if (block.some((l) => /(?:^|[\s[,{])pull_request(?:_target)?(?=[\s:,\]}]|$)/.test(l.replace(/#.*/, '')))) return true;
   }
   return false;
@@ -286,15 +300,17 @@ const noTests = (root: string) => {
   return describeNoTestRun(root);
 };
 /**
- * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
- * The job is one line of YAML, so the session start can show it. The command is `npm test`
- * when package.json has a test script, the workspaces command in a workspaces repo, else a
- * placeholder for the user's own.
+ * The fix for the tests step (#501, #653). The job stays one line, so a session start
+ * can show it. A Node project with a test script gets real YAML. Another project gets
+ * a placeholder for its own command.
  */
 const testsFix = (root: string) => {
+  const node = nodeTestsFix(root);
+  if (node) return node;
   const file = '.github/workflows/yokoten.yml';
-  const isNode = testScript(root) !== '' || isWorkspaces(root);
-  const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
+  // A test script does not make this Node when another language is already detected.
+  const isNode = testLanguages(root).length === 0 && (testScript(root) !== '' || isWorkspaces(root));
+  const command = !isNode ? '<your test command>' : isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : 'npm test';
   const install = isNode && existsSync(join(root, 'package-lock.json')) ? ', {run: npm ci}' : '';
   const uses = isNode ? 'the checkout and setup-node steps of the other jobs' : 'the checkout step of the other jobs';
   const steps = `[<${uses}>${install}, {run: ${command}}]`;
@@ -630,6 +646,19 @@ const keptWorkflow = (root: string, name: string, args: string, after: string): 
   return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
 };
 
+/** True when origin has a branch from this repo: a push put one there. Reads local refs, never the network. */
+const hasPushedOrigin = (root: string, env: Env): boolean => {
+  if (!gitConfig(root, 'remote.origin.url', env)) return false;
+  // Only origin's own refs count: a branch pushed to another remote is not this repo on origin (#655).
+  return remembered('remote:origin:refs', () => {
+    try {
+      return execFileSync('git', ['--no-optional-locks', 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/origin'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
+    } catch {
+      return false;
+    }
+  });
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -726,6 +755,17 @@ export const ROAD: Step[] = [
     withoutCi: 'run the tests yourself before each merge',
   },
   {
+    // One order for a new project (#655): make the repo, add the remote, push, then the
+    // CODEOWNERS handle and the labels. This step is the first of those, so it is next.
+    stage: 2,
+    key: 'remote',
+    check: (root, env) => hasPushedOrigin(root, env),
+    what: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'the origin remote has no branch from this repo, so the work is only on this machine' : 'there is no origin remote, so the work is only on this machine'),
+    fix: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'push it: `git push -u origin --all`' : 'make the repo on your code host, add it as origin (`git remote add origin <url>`), and push (`git push -u origin --all`)'),
+    why: 'the code host keeps a copy, so a lost machine does not lose the work',
+    how: 'git has an origin remote, and a branch from this repo is on it',
+  },
+  {
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
@@ -768,7 +808,7 @@ export const ROAD: Step[] = [
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
     byHand: `the repo has the labels ${lackingLabels([]).map((l) => l.name).join(', ')}`,
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
-    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, security, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',

@@ -13,7 +13,7 @@ import { isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check/inspect.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -50,7 +50,7 @@ export const SERVER_TIMEOUT_MS = 3000;
 
 /** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
 const NO_REMOTE = 'there is no origin remote yet';
-const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
+const NO_REMOTE_FIX = 'make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again';
 
 /** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
 function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
@@ -123,6 +123,8 @@ export function sessionUnsaved(root: string, env: Env, clock?: () => number): { 
 export interface SessionStart {
   sessionId: string;
   source: string;
+  /** The model the session runs, when the runtime says (#685), else ''. */
+  model?: string;
 }
 
 /** A session's file is removed after this many days. */
@@ -299,7 +301,10 @@ function doctorRun(
     const stale = pluginAgeCheck(root, env);
     if (stale) blocks.push([`yokoten: ${formatFinding(stale)}`]);
     if (!hasHome) blocks.push([`yokoten: ${NO_HOME_NOTE}`]);
-    const double = hasHome ? doubleInstallCheck(env) : null;
+    // This note only. The other privacy notes stay out of a session (#681).
+    const claudeRules = museClaudeRules(env, root);
+    if (claudeRules) blocks.push([`yokoten: ${formatFinding(claudeRules.finding)}`]);
+    const double = hasHome ? doubleInstallCheck(root, env) : null;
     if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
@@ -319,7 +324,7 @@ function doctorRun(
     const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
-    const notes = [...unsaved.notes, ...lesson.findings];
+    const notes = [...unsaved.notes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
@@ -361,6 +366,13 @@ function doctorRun(
     lines.push(`  ${core.mark.padEnd(7)} core-rules${core.mark === 'ok' ? '' : `: ${stepText(core.finding)}`}`);
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
+  }
+  // A merge made in another zone stays in history (record 0027): a count to know, never a
+  // failure, and one command shows the merges (#760). Full doctor only: a session reads no history.
+  const zones = config.privacy.utc ? mergeTimeZones(root, env) : null;
+  if (zones) {
+    lines.push(`  note    time-zone: ${stepText(zones)}`);
+    notes.push(zones);
   }
   // Work only on this machine (#365): notes, never a failure, and read only. Read here, so
   // the state file is found in the git folder it names, as a session start finds it (#453).
@@ -437,7 +449,7 @@ function doctorRun(
     lines.push(`  note    plugin: ${stepText(stale)}`);
     notes.push(stale);
   }
-  const double = hasHome ? doubleInstallCheck(env) : null;
+  const double = hasHome ? doubleInstallCheck(root, env) : null;
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);

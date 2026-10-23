@@ -5,109 +5,97 @@
 
 ### 每個 AI agent，同一套規則。
 
-AI 讓寫程式變便宜了，管程式卻沒有。yokoten 讓每個 agent 都守你的規則，拍板的永遠是你。
+寫程式變便宜了。把程式管好，沒有一起變便宜。yokoten 要各家的 agent 都遵守你的規則，也讓你在同一塊看板上看見整個團隊。決定權始終在你。
 
-**[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](../../../README.md) | [简体中文](../zh-CN/README.md) | 繁體中文 | [日本語](../ja/README.md)
+yokoten 之於 AI 寫的程式，就像 UL 認證之於電器：它不製造電器，只讓每家廠商都通過同一套安全標準。
+
+**[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](https://github.com/yokoten-labs/yokoten/blob/main/README.md) | [简体中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/README.md) | 繁體中文 | [日本語](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
-[![license](https://img.shields.io/badge/license-MIT-blue)](../../../LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/yokoten-labs/yokoten/blob/main/LICENSE)
 [![npm](https://img.shields.io/npm/v/yokoten?logo=npm)](https://www.npmjs.com/package/yokoten)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A522.23.4-5FA04E?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
 </div>
 
-<sub>這頁是從英文版翻過來的。如果讀起來卡卡的或有錯，歡迎開 issue 或 pull request 告訴我們。</sub>
+## 它做什麼
 
-## 用哪個 agent 都可以
+yokoten 在你已經在用的 agent 上面，再補三件事。hook、沙箱、設定，都沿用那家 agent 自己的，不會另外換一套。
 
-yokoten 能管住八種 AI 程式設計 agent，它們守的是同一套規矩。[指南裡的 agent 表](../../guide.md#works-with)
-（英文）是唯一的名單，寫明每種覆蓋得怎麼樣、是怎麼測的。Gemini CLI 只是列在這裡，還沒有完整跑過。
-
-- Claude Code
-- Codex CLI
-- GitHub Copilot CLI
-- Antigravity CLI
-- Muse Code
-- DeepSeek Harness
-- Grok CLI
-- Gemini CLI（列在這裡，還沒有完整跑過）
-
-用其他 agent，或完全不用 agent，提交檢查和 CI 一樣會擋下有問題的改動。
-
-## 用哪種語言都可以
-
-yokoten 本身需要 Node 22.23.4、24.22.1 或 26.12.1，或同一大版本裡更新的版本（你的電腦和 CI 上都要），但你的專案用哪種語言都可以。
-守衛、隱私與密鑰檢查、CI、issue 和 PR 檢查，在每種語言裡都一樣運作。
-
-只有一個步驟會看語言：`doctor` 會找你的測試指令。
-
-| | 語言 |
-|---|---|
-| 找得到測試指令 | JavaScript 和 TypeScript（npm、Deno）、Python、Go、Rust、Java（Maven、Gradle）、.NET、Ruby、PHP、Swift、Elixir、Dart 和 Flutter，以及有 `make test` 的專案 |
-| 開發中（[#550](https://github.com/yokoten-labs/yokoten/issues/550)） | 幫你寫好跑測試的 CI 工作，不必自己手寫 |
-
-前幾步（install、init、doctor）已經在 Python、Go、Rust、.NET、Ruby 和 PHP 專案上試過。
-目前從安裝到發版的整條路，只在 TypeScript 專案上完整走過。
-
-## 為什麼做這個
-
-好的團隊裡，每個改動都有理由、有測試、有人 review 過。這些習慣，很多人要做個好幾年、出過幾次包才學會。
-有了 yokoten，新手第一天就能照著做：規劃、開發、測試、審查、發布，一次過一關。
-AI 要闖大禍的時候，像是 force push、改測試讓它硬過、把個資推上去，橋頭會先有人擋下來。
-
-經驗也不會只留在一個專案裡。「橫展」是豐田工廠的說法：一條產線找到的對策，會推廣到所有產線。
-一個專案踩過的坑，yokoten 會把對應的檢查帶到你其他的專案。
+1. **每個 agent，同一套規則。** 守衛會在指令和修改真正執行前先看過。強制 push、發布用的 tag、跳過提交檢查、修 bug 的任務裡改測試，還有 agent 要發出去的內容裡的密鑰或個資，都會被擋下。它會告訴 agent 原因，以及該怎麼改。
+2. **規則寫進每家 agent 自己的設定。** `yokoten init` 會幫它支援的每個 agent 寫好 hook，並幫 Claude Code、Codex、Gemini CLI 和 Grok 寫好沙箱設定。就算沒有 agent，提交檢查和 CI 還是會擋下有問題的修改。
+3. **一塊看板，給一支 agent 團隊用。** 不同廠商的 agent 並排工作，各自待在圍起來的工位裡。開一個頁面，全部都看得到。
 
 ## 安裝
 
-只需要 [Node](https://nodejs.org/) 22.23.4 以上的版本（用 Node 24 的話要 24.22.1 以上，用 Node 26 要 26.12.1 以上），其他什麼都不用裝。
-22.18 到 22.23.3 雖然也能跑 yokoten，但請別再用：這幾個版本有安全漏洞，Node 已在 2026 年 10 月 21 日修好（[官方公告](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)）。
-所以安裝時 npm 會跳出警告，`yokoten doctor` 也會提醒你升級。
+只需要 [Node](https://nodejs.org/) 22.23.4 以上（Node 24 要 24.22.1 以上，Node 26 要 26.12.1 以上）。其他不用裝。
 
 ```sh
-npx yokoten install      # 每台電腦做一次
+npx yokoten install      # 每台電腦一次
 cd your-project
-npx yokoten init         # 每個專案做一次
-npx yokoten doctor       # 看你走到第幾關、下一步要做什麼
+npx yokoten init         # 每個專案一次
+npx yokoten doctor       # 你在第幾關，下一步做什麼
 ```
 
-### 先知道這幾件事
+用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
 
-- **提交時用 UTC 時間。** 用 `TZ=UTC git commit` 提交，或在 shell 設定檔加一行 `export TZ=UTC`。
-  提交裡的時區會讓陌生人猜到你大概住哪裡，所以提交檢查只接受 UTC。
-- **用 Claude Code 的話，也可以裝外掛。** 先輸入 `/plugin marketplace add yokoten-labs/yokoten`，
-  再輸入 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一就好，不要兩個都裝（[詳細說明](../../guide.md#the-claude-code-plugin)，英文）。
-- **只想在 CI 裡用？** [當成 GitHub Action 使用](../../guide.md#use-it-as-a-github-action)（英文）。
+## 你會看到的畫面
 
-## 實際用起來的樣子
+agent 嘗試強制 push。yokoten 把它擋下，說明原因，並給出改法。接著 `doctor` 只指出下一步那一件事：
 
-agent 想 force push，yokoten 把它擋下來，說明原因，再給出修正方法。接著 `doctor` 告訴你下一步該做哪件事：
+<img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/demo.svg" width="680" alt="終端機畫面。agent 執行 git push --force origin main，yokoten 的 hook 把它擋下，說明發生了什麼、為什麼危險、該怎麼改：改用 --force-with-lease。接著 yokoten doctor 顯示目前在第 1 關（共 5 關），下一步是加上測試。">
 
-<img src="../../assets/demo.svg" width="680" alt="終端機裡，agent 要執行 git push --force origin main，被 yokoten 擋了下來。yokoten 說明這個指令會做什麼、為什麼危險、該怎麼改：改用 --force-with-lease。接著執行 yokoten doctor，它顯示目前在第 1 關（共 5 關），下一步是加上測試。">
+## 讓一組 agent 一起工作
 
-## 接下來的方向
+yokoten 就是由這樣的團隊做出來的。lead 負責規劃和審查，各家廠商的工程師各自領一個 issue。
+
+- **每位工程師一個工位。** `yokoten desk` 會在 agent 自己的 clone 裡把 agent 啟動。上網只通它自己的 API。token 不會帶進去。家目錄會被藏起來。它不能 push，也不准改自己要守的規則。
+- **由 bot 開 PR。** 每個 PR 都會標出風險（tier A、B 或 C）。風險高的要等你核准。檢查通過了，才能合併。
+- **一塊看板。** `yokoten board` 在你的電腦上開一個頁面。你可以看見每個 agent 在做什麼、每個 PR 走到「開發、檢查、你（只有 tier A）、合併」的哪一步，以及有什麼在等你。手機上看得到。有四種語言。頁面不會從網路上載入任何東西。
+
+看板和工位已經在 `main` 上。下一次發布，會一起進到 npm。
+
+yokoten 在 PR 之前工作，也和 [PR 審查機器人](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) 一起工作。
+
+## 支援範圍
+
+**Agent。** 守衛可以在這些環境執行：Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness 和 Grok CLI。Gemini CLI 有列出來，但還沒有從頭到尾確認過。[agent 表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)寫著每一種是怎麼測的。
+
+**語言。** 專案用哪種語言都可以。守衛、隱私和密鑰檢查、CI，以及 issue 和 PR 檢查，在每種語言裡都一樣。`doctor` 找得到測試指令的有 JavaScript 和 TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart，還有任何提供 `make test` 的專案。其中 Go、Python、Rust、.NET、Ruby 和 PHP，`init` 會寫好執行測試的 CI 工作。
+
+## 為什麼要做
+
+好的團隊裡，每個修改都有理由、有測試、有人 review 過。這些習慣通常要做很多年才會，而且常常是出過問題之後。有了 yokoten，新手第一天就能照著做，一次過一關。AI 要闖大禍之前，守衛會先擋下來。
+
+學到的事不會只留在一個專案。「橫展」是豐田工廠的說法：一條產線找到的對策，會推到每一條產線。一個專案得到教訓，yokoten 就把對應的檢查帶到其他專案。
+
+## 這條路上
 
 <p align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../../assets/road-dark.svg">
-  <img src="../../assets/road-light.svg" width="100%" alt="一條路沿著山往上爬，經過三站：現在、黑客松、下一步。快到山頂時，其他專案的小路匯了進來。山頂插著一面旗，寫著夢想：人人都能像好團隊那樣開發軟體。">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/road-dark.svg">
+  <img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/road-light.svg" width="100%" alt="一條路沿著山往上爬，經過三站：現在、黑客松、下一步。快到山頂時，其他專案的小路匯進來。山頂插著一面旗，寫著夢想：人人都能像好團隊那樣做軟體。">
 </picture>
 </p>
 
-把關的部分已經完成，帶路的部分正在做。接下來會支援更多 AI 工具和程式碼託管平台，再把整個開發流程都帶進來。
-山頂就是「橫展」：一個專案學到的，所有專案都用得上。
-五個階段寫在[路線圖](../../guide.md#where-this-is-going)（英文），今天在做什麼可以看[看板](https://github.com/orgs/yokoten-labs/projects/1)。
+夢想：人人都能像好團隊那樣做軟體。
 
-## 了解更多
+| | 階段 | 現在到哪 |
+|---|---|---|
+| 1 | **守衛**：危險動作發生前，agent 就會被擋下 | ✅ 已完成 |
+| 2 | **帶路**：`doctor` 帶新手走完五關；agent 起草舊專案要怎麼接上 yokoten | 🚧 進行中 |
+| 3 | **一支團隊，任何工具，任何平台**：各家 agent 用同一套規則、同一塊看板；平台有 GitHub、Gitea、GitLab | 🚧 團隊看板進行中，大約在 Meta 黑客松前後；接著做 Windows 和 Gitea |
+| 4 | **整個循環**：從一份簡短說明，到開發、測試、審查、發布和維護 | 之後 |
+| 5 | **橫展**：一個專案學到的教訓變成一項檢查，再推到每個專案 | 目標 |
 
-- **[yokoten.app](https://yokoten.app/?from=github)**：官網，使用指南和決策紀錄都能直接在上面看。
-- **[使用指南](../../guide.md)**：12 條規則、所有指令、運作方式，還有它做不到的事（英文；也有[簡體中文版](../zh-CN/guide.md)）。
-- **[伺服器設定](../../server.md)**：在 GitHub 上保護 `main` 分支和發布用的 tag（英文）。
-- **[決策紀錄](../../records/)**：為什麼這樣設計（英文）。
-- **[更新紀錄](../../../CHANGELOG.md)**：每個版本改了什麼（英文）。
-- **[參與開發](../../../CONTRIBUTING.md)**：怎麼回報問題、怎麼提交修改（英文）。
-- **[資安](../../../.github/SECURITY.md)**：發現資安問題時怎麼回報（英文）。
+今天在做的事，看 [issue](https://github.com/yokoten-labs/yokoten/issues) 和 [里程碑](https://github.com/yokoten-labs/yokoten/milestones)。
+
+## 延伸閱讀
+
+- **[使用指南](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 條規則、所有指令、運作方式，以及它做不到的事。
+- **[決策紀錄](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：為什麼這樣做。
+- **[更新紀錄](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[參與開發](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[資安](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[伺服器設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 
 ---
 
-<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 和一支 AI agent 團隊打造。許多想法來自工廠現場的經驗。</sub></p>
+<p align="center"><sub>MIT · 由 <a href="https://coolwhite.us/">coolwhite</a> 和一支 AI agent 團隊做出來。不少做法，是在工廠現場學的。</sub></p>

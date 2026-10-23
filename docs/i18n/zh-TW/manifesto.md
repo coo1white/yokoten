@@ -2,7 +2,7 @@
 
 ### 寫給 AI agent 時代的宣言
 
-[English](../../manifesto.md) | [简体中文](../zh-CN/manifesto.md) | 繁體中文 | [日本語](../ja/manifesto.md)
+[English](../../assets/manifesto.md) | [简体中文](../zh-CN/manifesto.md) | 繁體中文 | [日本語](../ja/manifesto.md)
 
 寫程式碼已經不值錢了。一個團隊花一週才寫得完的東西，模型一分鐘就寫完。任何人只要一句提示詞，就能叫來十個工程師。
 
@@ -16,7 +16,7 @@ Agent 直接推送到 main。它們改測試，改到過關為止。它們把你
 
 ## 1. 提示詞是一個願望，守衛才是法律。
 
-要求 agent 守規矩，不算控管。yokoten 在每個動作執行之前先檢查。違反規則，就不讓它執行。同一套規則今天已在八個 agent 上運作。[指南裡的 agent 表](../../guide.md#works-with)（英文）是唯一的名單。Gemini CLI 只是列在這裡，還沒有完整跑過。沒有哪個 agent 能獲得通融。
+要求 agent 守規矩，不算控管。yokoten 在每個動作執行之前先檢查。違反規則，就不讓它執行。同一套規則今天已在九個 agent 上運作。[指南裡的 agent 表](../../guide.md#works-with)（英文）是唯一的名單。Gemini CLI 只是列在這裡，還沒有完整跑過。沒有哪個 agent 能獲得通融。
 
 ## 2. 沒有模型能自己批改自己的作業。
 

@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { at, fakeGh, GOOD, makeSandbox, makeTempDir, planningFound, REPO, said, serverGh, stepMark, withPlanning } from '../../repo/helpers.ts';
 import { DEFAULTS } from '../../../src/rules/config.ts';
 import { type BranchRules, type Gh, ghIn, readPlanning, readServer, type ServerSettings, type Unread } from '../../../src/host/github/index.ts';
-import { blocksToSay, doctor, listBoardSteps, saveHostCache, SERVER_TIMEOUT_MS, SESSION_UNSAVED_BUDGET, sessionsDir, sessionUnsaved, STOPPED_EARLY, UNSAVED_OFFER, noCiNote, upstreamNote } from '../../../src/setup/doctor/index.ts';
+import { blocksToSay, doctor, listBoardSteps, saveHostCache, SERVER_TIMEOUT_MS, SESSION_UNSAVED_BUDGET, sessionsDir, sessionUnsaved, STOPPED_EARLY, UNSAVED_OFFER, noCiNote, privacyNotes, upstreamNote } from '../../../src/setup/doctor/index.ts';
 import { LABELS } from '../../../src/setup/plan.ts';
 import { missingPaths, road, ROAD, serverChecks, stepFinding } from '../../../src/setup/road.ts';
 import { fakeMachine, GB, NOW } from '../../repo/helpers.ts';
@@ -150,7 +150,7 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   // No origin remote at all: say so, in one line for every step that reads the server (#208, #502).
   const cant = result.lines.filter((l) => /can't check/.test(l));
   assert.equal(cant.length, 1, cant.join('\n'));
-  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; run `git remote add origin <url>`/m);
+  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
   assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, "can't check", 'the data still has each step');
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
@@ -459,9 +459,9 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   const next = async () => (await sandbox.call(['doctor', '--session'])).stdout.split('\n')[0];
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'our rules live in the wiki for now' } }));
   assert.match(await next(), /stage 1 of 5, safety net\. Next: no tool-call guard/);
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e' } }));
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', remote: 'no remote yet' } }));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run/, 'a stage with every step not now is passed');
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', ci: 'no remote yet', issues: 'f' } }));
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', remote: 'no remote yet', ci: 'no remote yet', issues: 'f' } }));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: no issue templates and no pull request template/);
   const full = (await sandbox.call(['doctor'])).stdout;
   assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
@@ -483,6 +483,11 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', as
   // Stage 1 done, stage 2 not: init without its CI workflow.
   assert.equal((await sandbox.call(['init'])).status, 0);
   sandbox.withTests();
+  // The remote comes first (#655): make the repo, add it as origin, and push.
+  assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: there is no origin remote/);
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   rmSync(join(sandbox.repo, '.github', 'workflows', 'yokoten.yml'));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run `yokoten check`/, 'the pull request check alone is not the CI check');
   sandbox.write('TODO.md', '- one\n');
@@ -551,7 +556,7 @@ test('doctor: exits 0 on a set-up project with steps to do, and 1 on a problem (
   assert.equal((await sandbox.call(['init'])).status, 0);
   // The doctor calls here are real children: the exit code 0 and 1 come through the entry point.
   let result = sandbox.run(['doctor']);
-  assert.match(result.stdout, /\n +next +codeowners[^]*\n +to do +bot/, 'later steps are left');
+  assert.match(result.stdout, /\n +next +remote[^]*\n +to do +codeowners/, 'later steps are left');
   assert.equal(result.status, 0, result.stdout);
   assert.equal(JSON.parse((await sandbox.call(['doctor', '--json'])).stdout).ok, true);
   // A problem: a private mark in the tree.
@@ -575,7 +580,7 @@ test('doctor: lists the work only on this machine; a session hears at most three
   assert.match((await sandbox.call(['doctor'], { extra })).stdout, /^unsaved work \(only on this machine\):\n {2}note {4}uncommitted-changes: \. has 1 uncommitted file, the oldest changed 1 minute ago; /m);
   const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
   utimesSync(join(sandbox.repo, 'a.txt'), old, old);
-  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git -C . add -A && git -C . commit`; once the repo has a remote, push it.', UNSAVED_OFFER]);
+  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git add -A && git commit -m "chore: save work"`; once the repo has a remote, push it.', UNSAVED_OFFER]);
   const json = JSON.parse((await sandbox.call(['doctor', '--session', '--json'], { extra })).stdout);
   assert.deepEqual(json.notes.map((n: { id: string }) => n.id), ['uncommitted-changes']);
   assert.equal(json.ok, true, 'a note never fails doctor');
@@ -628,6 +633,150 @@ test('doctor --session: the unsaved-work read stops at its time budget and says 
   assert.equal(fast.lines.at(-1), UNSAVED_OFFER);
 });
 
+test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
+  const home = makeTempDir('yokoten-privacy-');
+  const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
+  // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it writes ~/.config/yokoten/mailmap and sets `git config --global mailmap.file ~/.config/yokoten/mailmap`, so git prints a private address in place of your email']);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), '# added by yokoten from this machine: git name\nJane Example\n');
+  assert.deepEqual(notes(), ["private-mark-kinds: optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown"]);
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'Jane Example\nFakeville\njanex.dev\n');
+  assert.deepEqual(notes(), []);
+  execFileSync('git', ['config', '--global', 'mailmap.file', '/elsewhere/mailmap'], { env: { ...process.env, ...env } });
+  assert.deepEqual(notes(), ['mailmap: git uses your own mailmap file, not ~/.config/yokoten/mailmap; add the lines of ~/.config/yokoten/mailmap to your file']);
+  // Another agent on this machine: its output is not filtered, and the note says how to opt in.
+  mkdirSync(join(home, '.codex'));
+  assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
+  assert.equal(privacyNotes(env, null, 'stop').length, 1, 'with "stop", only the mailmap note is left');
+  rmSync(home, { recursive: true, force: true });
+});
+
+// #681: outside a desk, Muse can send Claude Code's user rules to its model. A note, and
+// the file is never read. One of the two files missing, and the note stays off.
+test('doctor: notes when Muse, outside a desk, can send ~/.claude/CLAUDE.md to its model (#681)', async () => {
+  const sandbox = makeSandbox();
+  const body = 'not-sent-to-muse';
+  const rules = join(sandbox.home, '.claude', 'CLAUDE.md');
+  const hooks = join(sandbox.repo, '.muse', 'hooks.json');
+  const env = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const run = (session = false) => doctor(sandbox.repo, { env, config: DEFAULTS, session, gh: noGh });
+  const noteOf = (report: ReturnType<typeof doctor>) => report.report.notes?.filter((note) => note.id === 'muse-claude-rules') ?? [];
+  mkdirSync(dirname(rules), { recursive: true });
+  writeFileSync(rules, `${body}\n`);
+  mkdirSync(dirname(hooks), { recursive: true });
+  writeFileSync(hooks, '{}\n');
+  const what = "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model";
+  const fix = 'run Muse in a desk (`yokoten desk muse`) so the home folder stays hidden';
+  const line = `  note    muse-claude-rules: ${what}; ${fix}`;
+  const full = run();
+  assert.ok(full.lines.includes(line), full.lines.join('\n'));
+  assert.deepEqual(noteOf(full).map((note) => [note.what, note.why, note.fix]), [[what, 'the file was written for one vendor', fix]]);
+  assert.ok(!full.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  const session = run(true);
+  assert.ok(session.lines.some((text) => text.startsWith(`yokoten: ${what}.`) && text.includes('`yokoten desk muse`') && text.includes('home folder stays hidden')));
+  assert.deepEqual(noteOf(session).map((note) => note.what), [what]);
+  assert.ok(!session.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  const noteLines = [...full.lines, ...session.lines].filter((text) => text.includes('muse-claude-rules') || text.includes('~/.claude/CLAUDE.md'));
+  const noteText = JSON.stringify({ lines: noteLines, notes: [...noteOf(full), ...noteOf(session)] });
+  assert.ok(noteLines.length >= 2, 'full doctor and the session each say it');
+  assert.ok(!noteText.includes(body), 'the rules file is never read');
+  assert.ok(!noteText.includes(sandbox.home), 'the note names no home path');
+  const json = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { ok: boolean; notes: { id: string }[] };
+  assert.equal(json.ok, full.ok);
+  assert.ok(json.notes.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!JSON.stringify(json).includes(body));
+  const sessionJson = JSON.parse((await sandbox.call(['doctor', '--session', '--json'])).stdout) as { ok: boolean; notes: { id: string }[]; findings: { id: string }[] };
+  assert.equal(sessionJson.ok, session.ok);
+  assert.ok(sessionJson.notes.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!sessionJson.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.ok(!JSON.stringify(sessionJson).includes(body));
+  rmSync(rules);
+  const noRules = run();
+  const noRulesSession = run(true);
+  assert.equal(full.ok, noRules.ok, 'a note never fails doctor');
+  assert.equal(session.ok, noRulesSession.ok, 'a session note never fails doctor');
+  assert.deepEqual(noteOf(noRules), [], 'no rules file');
+  assert.deepEqual(noteOf(noRulesSession), [], 'no rules file in a session');
+  writeFileSync(rules, `${body}\n`);
+  rmSync(hooks);
+  const noHooks = run();
+  const noHooksSession = run(true);
+  assert.equal(noHooks.ok, full.ok, 'the hooks file is not what fails doctor');
+  assert.equal(noHooksSession.ok, session.ok);
+  assert.deepEqual(noteOf(noHooks), [], 'no Muse hooks');
+  assert.deepEqual(noteOf(noHooksSession), [], 'no Muse hooks in a session');
+});
+
+// #681: the same visible file, once the session names a desk. The note must not say
+// "outside a desk", and must not tell the session to do what it is already doing.
+// A home folder this process cannot see gives no note: the file is still on disk.
+test('doctor: a desk that can see ~/.claude/CLAUDE.md hears that the home folder is visible (#681)', () => {
+  const sandbox = makeSandbox();
+  const body = 'not-sent-to-muse';
+  const rules = join(sandbox.home, '.claude', 'CLAUDE.md');
+  const claudeDir = dirname(rules);
+  const hooks = join(sandbox.repo, '.muse', 'hooks.json');
+  mkdirSync(claudeDir, { recursive: true });
+  writeFileSync(rules, `${body}\n`);
+  mkdirSync(dirname(hooks), { recursive: true });
+  writeFileSync(hooks, '{}\n');
+  const desk = join(sandbox.home, 'desk');
+  const team = join(sandbox.home, 'team');
+  const base = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const inDesk = { ...base, YOKOTEN_DESK: desk, YOKOTEN_TEAM: team };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const noteOf = (env: Record<string, string>) => privacyNotes(env, sandbox.repo).filter((note) => note.finding.id === 'muse-claude-rules');
+  const outside = noteOf(base);
+  assert.equal(outside[0]?.finding.what, "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model");
+  assert.match(outside[0]?.finding.fix ?? '', /run Muse in a desk/);
+  const what = "the home folder is visible in this desk, so Muse can send ~/.claude/CLAUDE.md to Muse's model";
+  const fix = 'the desk needs attention: hide the home folder (`yokoten desk muse`)';
+  const inside = noteOf(inDesk);
+  assert.deepEqual(inside.map((note) => [note.finding.what, note.finding.why, note.finding.fix]), [[what, 'the file was written for one vendor', fix]]);
+  assert.doesNotMatch(`${inside[0]?.finding.what} ${inside[0]?.finding.fix}`, /outside a desk/);
+  assert.doesNotMatch(inside[0]?.finding.fix ?? '', /run Muse in a desk/);
+  // YOKOTEN_DESK alone is enough. The session already says it is in a desk.
+  assert.equal(noteOf({ ...base, YOKOTEN_DESK: desk })[0]?.finding.what, what);
+  assert.equal(noteOf({ ...base, YOKOTEN_TEAM: team })[0]?.finding.what, what);
+  const report = doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, gh: noGh });
+  const session = doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, session: true, gh: noGh });
+  assert.ok(report.lines.includes(`  note    muse-claude-rules: ${what}; ${fix}`), report.lines.join('\n'));
+  assert.ok(!report.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.deepEqual(report.report.notes?.filter((note) => note.id === 'muse-claude-rules').map((note) => [note.what, note.fix]), [[what, fix]]);
+  const sessionLine = session.lines.find((text) => text.includes('~/.claude/CLAUDE.md'));
+  assert.ok(sessionLine?.startsWith(`yokoten: ${what}.`), sessionLine);
+  assert.match(sessionLine ?? '', /desk needs attention/);
+  assert.doesNotMatch(sessionLine ?? '', /outside a desk/);
+  assert.ok(!session.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.equal(report.ok, doctor(sandbox.repo, { env: base, config: DEFAULTS, gh: noGh }).ok, 'a desk note never fails doctor');
+  assert.equal(session.ok, doctor(sandbox.repo, { env: base, config: DEFAULTS, session: true, gh: noGh }).ok);
+  const noteLines = [...report.lines, ...session.lines].filter((text) => text.includes('muse-claude-rules') || text.includes('~/.claude/CLAUDE.md'));
+  const shown = JSON.stringify({ lines: noteLines, notes: [...(report.report.notes ?? []), ...(session.report.notes ?? [])].filter((note) => note.id === 'muse-claude-rules') });
+  assert.ok(noteLines.length >= 2, 'full doctor and the session each say it');
+  assert.ok(!shown.includes(body), 'the rules file is never read');
+  assert.ok(!shown.includes(sandbox.home), 'the note names no home path');
+  assert.ok(!shown.includes(desk) && !shown.includes(team), 'the note names no desk path');
+  // Mode 0 stands in for a fence that hides the home folder. The file stays on disk.
+  chmodSync(claudeDir, 0);
+  try {
+    assert.equal(noteOf(inDesk).length, 0, 'a home folder this process cannot see gives no note');
+    assert.equal(doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, session: true, gh: noGh }).lines.some((text) => text.includes('~/.claude/CLAUDE.md')), false);
+  } finally {
+    chmodSync(claudeDir, 0o700);
+  }
+});
+
+// #392: lessons from other projects wait in ~/.config/yokoten/upstream. Only yokoten's own
+// repo, found by its package name, hears about them; another repo hears nothing.
 test('doctor: in the yokoten repo, the session and doctor count the notes from other projects; elsewhere nothing', async () => {
   const sandbox = makeSandbox();
   const inbox = join(sandbox.home, '.config', 'yokoten', 'upstream');
@@ -784,7 +933,7 @@ test('doctor: with "notNow" ci the default-branch lookup leaves out the Dependab
 // #453: full doctor in an empty repo started 31 child processes. git read the index three
 // times, and several config keys twice. Each git read now runs once per run, and the
 // config values come from one `git config --list`.
-test('doctor: full doctor in an empty repo starts each git read once, nine child processes in all (#453)', () => {
+test('doctor: full doctor in an empty repo starts each git read once, ten child processes in all (#453)', () => {
   const sandbox = makeSandbox();
   // As the command runs it: the environment is the process's own (src/commands/shared.ts).
   const saved = process.env.YOKOTEN_TEMP_DIRS;
@@ -809,7 +958,40 @@ test('doctor: full doctor in an empty repo starts each git read once, nine child
     else process.env.YOKOTEN_TEMP_DIRS = saved;
   }
   assert.deepEqual(runs.filter((run, i) => runs.indexOf(run) !== i), [], `a git read ran twice:\n${runs.join('\n')}`);
-  assert.equal(runs.length, 9, runs.join('\n'));
+  assert.equal(runs.length, 10, runs.join('\n'));
+});
+
+// #760, #775: a repo with a default branch reads its merge history in one git process.
+// A `for-each-ref` to pick the ref and a `log` to read it would be two (#453).
+test('doctor: a repo with a default branch reads its merge history in one git process (#453, #760)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('one.md', 'one\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'one');
+  // As the command runs it: the environment is the process's own (src/commands/shared.ts).
+  const saved = process.env.YOKOTEN_TEMP_DIRS;
+  process.env.YOKOTEN_TEMP_DIRS = '';
+  const runs: string[] = [];
+  const originals = { ...childProcess };
+  for (const name of ['execFileSync', 'spawnSync', 'execSync', 'execFile', 'spawn', 'exec'] as const) {
+    const original = originals[name] as (...args: unknown[]) => unknown;
+    (childProcess as Record<string, unknown>)[name] = (file: string, args?: unknown, options?: { cwd?: string }) => {
+      runs.push(`${Array.isArray(args) ? [file, ...args].join(' ') : file} (in ${options?.cwd === sandbox.repo ? 'the repo' : options?.cwd})`);
+      return original(file, args, options);
+    };
+  }
+  syncBuiltinESMExports();
+  try {
+    doctor(sandbox.repo, { env: process.env, config: DEFAULTS, gh: () => { throw new Error('no network in this test'); }, machine: fakeMachine(100 * GB) });
+  } finally {
+    Object.assign(childProcess, originals);
+    syncBuiltinESMExports();
+    if (saved === undefined) delete process.env.YOKOTEN_TEMP_DIRS;
+    else process.env.YOKOTEN_TEMP_DIRS = saved;
+  }
+  const logs = runs.filter((run) => run.startsWith('git log'));
+  assert.equal(logs.length, 1, runs.join('\n'));
+  assert.ok(!runs.some((run) => run.includes('for-each-ref --format=%(refname) ')), runs.join('\n'));
 });
 
 // ---- The sandbox step (#589): doctor names the one missing or too-wide sandbox. ----

@@ -358,11 +358,14 @@ function addArgs(args: string[], added: string[]): string[] {
   return end === -1 ? [...args, ...added] : [...args.slice(0, end), ...added, ...args.slice(end)];
 }
 
-/** Runs the gh the command names, with the bot's token. It throws when gh fails. */
+/**
+ * Runs the gh the command names, with the bot's token. It throws when gh fails.
+ * The error keeps gh's stderr, so a contents 404 is not a failed read.
+ */
 const ghWith =
   (file: string, cwd: string, ghEnv: Env): Gh =>
   (args) =>
-    execFileSync(file, args, { cwd, env: ghEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    execFileSync(file, args, { cwd, env: ghEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 /**
  * The milestone of the first linked issue that has one (#512). False, after saying why,
@@ -584,33 +587,40 @@ function refuseApiMerge(invocation: Invocation, gh: Gh, cwd: string, env: Env, o
   }
   const refusal = approvalRefusal(gh, cwd, env, merge.number, merge.repo);
   if (!refusal) return false;
-  print(invocation, [`yokoten bot: ${refusal}. Nothing was merged`], invocation.stderr);
+  print(invocation, [`yokoten bot: ${refusal.text}. Nothing was merged`], invocation.stderr);
   return true;
+}
+
+/** Why a merge stops. `kind` picks the status list, so the words of `text` do not. */
+interface MergeStop {
+  kind: 'unchecked' | 'needsApprove';
+  text: string;
 }
 
 /**
  * Why pull request `number` must not merge yet, or null when it may: not tier A, or the
  * owner's Approve is on its head, or only base merges came after it with the same own
- * diff. What gh or git can't answer is a refusal too: fail closed.
+ * diff. What gh or git can't answer is `unchecked`. It names the cause and does not
+ * ask for a new Approve. A missing or stale Approve is `needsApprove`.
  */
-function approvalRefusal(gh: Gh, root: string, env: Env, number: number, repo: string): string | null {
+function approvalRefusal(gh: Gh, root: string, env: Env, number: number, repo: string): MergeStop | null {
   const state = readApprovalState(gh, root, env, number, repo);
-  if ('unsure' in state) return `could not check the owner's Approve (${state.unsure}); ask the owner to approve again`;
+  if ('unsure' in state) return { kind: 'unchecked', text: `could not check the owner's Approve (${state.unsure})` };
   if (state.tier !== 'A') return null;
   const problem = checkApprovalFreshness(state);
-  return problem ? problem.what : null;
+  return problem ? { kind: 'needsApprove', text: problem.what } : null;
 }
 
 /** Refuses a `gh pr merge` the Approve check stops. True when it refused. */
 function refuseStaleMerge(invocation: Invocation, gh: Gh, cwd: string, env: Env, origin: string | null, args: string[]): boolean {
   const found = mergeRequest(gh, args, origin);
   if ('unsure' in found) {
-    print(invocation, [`yokoten bot: could not check the owner's Approve (${found.unsure}); nothing was merged. Ask the owner to approve again`], invocation.stderr);
+    print(invocation, [`yokoten bot: could not check the owner's Approve (${found.unsure}); nothing was merged.`], invocation.stderr);
     return true;
   }
   const refusal = approvalRefusal(gh, cwd, env, found.number, found.repo);
   if (!refusal) return false;
-  print(invocation, [`yokoten bot: ${refusal}. Nothing was merged`], invocation.stderr);
+  print(invocation, [`yokoten bot: ${refusal.text}. Nothing was merged`], invocation.stderr);
   return true;
 }
 
@@ -629,9 +639,9 @@ function listTier(entry: { body?: unknown; labels?: unknown }): string | null {
 
 /**
  * Runs `gh pr status`, shows its table as gh wrote it, then the Approve check for every
- * open pull request, so the lead sees a stale Approve before trying to merge. One list
- * call says each tier, and only tier A (or a row whose tier it can't say) needs the
- * deep check (#612). Only what must not merge gets a line.
+ * open pull request. One list call says each tier, and only tier A (or a row whose tier
+ * it can't say) needs the deep check (#612). A missing or stale Approve is one list.
+ * A check that could not be read is another. A list is printed only when it has a row.
  */
 function runPrStatus(invocation: Invocation, file: string, args: string[], run: { cwd: string; token: string; origin: string | null; piped: string | undefined }): number {
   const { stdout, stderr } = invocation;
@@ -660,7 +670,8 @@ function runPrStatus(invocation: Invocation, file: string, args: string[], run: 
     return 0;
   }
   if (!Array.isArray(listed)) return 0;
-  const lines: string[] = [];
+  const needsApprove: string[] = [];
+  const unchecked: string[] = [];
   for (const entry of listed) {
     if (typeof entry !== 'object' || entry === null) continue;
     const number = (entry as { number?: unknown }).number;
@@ -668,9 +679,14 @@ function runPrStatus(invocation: Invocation, file: string, args: string[], run: 
     const tier = listTier(entry as { body?: unknown; labels?: unknown });
     if (tier !== null && tier !== 'A') continue;
     const refusal = approvalRefusal(gh, run.cwd, invocation.env, number, repo);
-    if (refusal) lines.push(`- #${number}: ${refusal}`);
+    if (!refusal) continue;
+    const row = `- #${number}: ${refusal.text}`;
+    // A check that could not be read is not a missing Approve.
+    if (refusal.kind === 'unchecked') unchecked.push(row);
+    else needsApprove.push(row);
   }
-  if (lines.length) print(invocation, ['yokoten bot: these need a new owner Approve before they merge:', ...lines]);
+  if (needsApprove.length) print(invocation, ['yokoten bot: these need a new owner Approve before they merge:', ...needsApprove]);
+  if (unchecked.length) print(invocation, ['yokoten bot: these could not be checked:', ...unchecked]);
   return 0;
 }
 
