@@ -1,12 +1,12 @@
-// Tests for src/agents/runtimes/antigravity.ts.
+// Tests for src/agents/runtimes/small/antigravity.ts.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHook, projectHookState, readToolCall } from '../../../src/agents/runtimes/antigravity.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { addProjectHook, projectHookState, readToolCall } from '../../../../src/agents/runtimes/small/antigravity.ts';
+import { makeSandbox } from '../../../repo/helpers.ts';
 
 /** A PreToolUse payload as agy 1.4.2 sent it in a real run (#30): camelCase, the call under `toolCall`. */
 const payload = (workspace: string, name: string, args: Record<string, unknown>) =>
