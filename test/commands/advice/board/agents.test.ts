@@ -3,10 +3,10 @@
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
-import { ageText, readBoardAgents, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
+import { ageText, readBoardAgents, readBoardOrca, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
 
 const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', log: '', role: '', state: '', checks: '' };
 
@@ -73,4 +73,26 @@ test('board worktrees: the repo lists its own; outside a repo git cannot list th
     { path: realpathSync(second), branch: 'feature' },
   ]);
   assert.equal(readBoardWorktrees(sandbox.home, sandbox.env), 'git could not list the worktrees: run it again');
+});
+
+// #815: Orca makes a worktree per task under ~/orca/workspaces/<repo>/<name>. Its .git
+// file points back to this repo, so the board lists it with the repo's own worktrees.
+test('board worktrees: an Orca worktree under ~/orca/workspaces is listed (#815)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  const orca = join(sandbox.home, 'orca', 'workspaces', basename(sandbox.repo), 'fix-cart');
+  mkdirSync(dirname(orca), { recursive: true });
+  assert.equal(sandbox.git('worktree', 'add', '-q', orca, '-b', 'orca-task').status, 0);
+  assert.deepEqual(readBoardOrca(sandbox.repo, sandbox.env), [{ path: realpathSync(orca), branch: 'orca-task' }]);
+  const listed = readBoardWorktrees(sandbox.repo, sandbox.env);
+  assert.ok(typeof listed !== 'string');
+  assert.deepEqual(listed, [
+    { path: realpathSync(sandbox.repo), branch: 'main' },
+    { path: realpathSync(orca), branch: 'orca-task' },
+  ]);
+  // Another repo's folder of the same name is not this repo's worktree.
+  const other = join(sandbox.home, 'orca', 'workspaces', `${basename(sandbox.repo)}-other`, 'fix-cart');
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, '.git'), `gitdir: ${join(sandbox.repo, '.git', 'worktrees', 'missing')}\n`);
+  assert.deepEqual(readBoardOrca(sandbox.repo, sandbox.env), [{ path: realpathSync(orca), branch: 'orca-task' }]);
 });

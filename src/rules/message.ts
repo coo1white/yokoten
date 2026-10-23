@@ -143,6 +143,12 @@ export const RULES = {
     check: 'for a worker (YOKOTEN_ROLE=worker, a subagent named worker, or any agent in a worktree `yokoten worker mark` marked), the tool-call guard stops an edit or a shell write to a file that yokoten.json "leadOnly" matches, and a git commit that changes one; for a worker by YOKOTEN_ROLE=worker or the mark, the commit check refuses it too. YOKOTEN_LEAD_ONLY_OK lists the paths the lead allows',
     docs: guide('the-core-rules'),
   },
+  safeguard: {
+    rule: 'in a repo without yokoten.json, an agent does not change CI files or git hooks (record 0034)',
+    why: 'CI and the commit check are what catch a mistake, and an agent that edits them can turn a check off before anyone reads the change',
+    check: 'where a repo has no yokoten.json, the tool-call guard stops an edit or a shell write to `.github/workflows`, `.github/actions`, `.githooks` or `.husky`, or to a folder that holds one, and a commit that changes one. `yokoten init` adds the project\'s own rules, and then the lead decides',
+    docs: guide('under-orca'),
+  },
   'worker-push': {
     rule: 'a worker commits in its worktree and never pushes or posts',
     why: 'the lead reviews the work before it leaves the machine, and pushes and posts it as the bot',

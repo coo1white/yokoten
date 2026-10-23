@@ -330,6 +330,26 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
 只有这个工具的主目录在（`~/.copilot`、`~/.codex`、`~/.config/muse`、`~/.grok`），`doctor` 才查它。
 主目录在、文件却没有或读不了时，`doctor` 会说 "can't check"（查不了），不会说 ok。
 
+### 在 Orca 下面用 yokoten
+
+[Orca](https://github.com/stablyai/orca) 是一个桌面 agent IDE。yokoten 在它下面工作，不跟它抢：
+Orca 负责启动 agent，yokoten 是每次调用下面的规则层。
+
+在机器上装一次 yokoten 就行：用上面的 Claude Code 插件，或者 `npx yokoten install`。
+项目里不需要跑 `yokoten init`。
+
+Orca 默认用 Bypass Permissions 模式启动 Claude Code。这关掉了 Claude Code 自己的权限询问，
+所以只剩 yokoten 的钩子这一道检查。钩子照样会跑：Orca 启动的是 Claude Code，Claude Code
+会在 worktree 里跑用户级钩子。
+
+2026-10-24 在原生 Windows 上做过一次试验（issue #815），用的是 Orca 2026.10 和 Claude Code
+2.1.309。守卫拒绝了强制推送、带 `--no-verify` 的提交、推送 tag，还有 `rm -rf .git`。
+在没有 `yokoten.json` 的仓库里，用 shell 写 CI 文件或 git 钩子会被兜底规则拒绝（record
+0034）。只是读，会放行。
+
+Orca 每个任务建一个 worktree，放在 `~/orca/workspaces/<仓库>/<名字>`。看板会把它和仓库
+自己的 worktree 列在一起：运行 `yokoten board`。
+
 worker 靠 `YOKOTEN_ROLE=worker` 认出来。在 Codex 里，子 agent 的 `agent_type` 带 worker
 字样的，也算 worker。Copilot CLI、Antigravity CLI 和 DeepSeek Harness 调钩子时不说是哪种子 agent，只看
 `YOKOTEN_ROLE`。Gemini CLI 开了严格的环境变量清理后，钩子里拿不到 `YOKOTEN_ROLE`。

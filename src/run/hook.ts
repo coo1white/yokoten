@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkSafeguardEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
@@ -749,7 +749,7 @@ export function judge(
     const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));
     const ruledRepos = ruled.map((repo) => ({ root: repo.root, leadOnly: repo.config.leadOnly }));
     for (const command of commands) {
-      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
+      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos, safeguard: true });
       if (reason) return reason;
     }
   }
@@ -762,6 +762,13 @@ export function judge(
       const reason = checkWorkerMarkEdit(resolve(folder, p), folder, env) ?? checkTeamEdit(resolve(folder, p));
       if (reason) return reason;
     }
+  }
+  // The safeguard holds in a repo that never ran `yokoten init` (record 0034): CI and the
+  // hooks are the owner's. It reads the file's own repo, so the user-level hook sees an
+  // edit in a worktree outside the session's folder too (#815).
+  for (const p of action.paths) {
+    const reason = checkSafeguardEdit(resolve(action.cwd ?? root ?? cwd, p));
+    if (reason) return reason;
   }
   if (!ruled.length) return null;
   const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));

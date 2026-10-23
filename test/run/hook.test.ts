@@ -72,6 +72,29 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
 });
 
+// #815, record 0034: the user-level hook runs in a repo that never ran `yokoten init`.
+// The safeguard refuses a CI or hook write there, for the lead too, and a read passes.
+test('hook: the safeguard refuses CI and hook writes with no yokoten.json (#815)', async () => {
+  const sandbox = makeSandbox();
+  const tool = (tool_input: object) => JSON.stringify({ cwd: sandbox.repo, tool_input });
+  const call = (tool_input: object) => sandbox.call(['hook', '--commands-only'], { input: tool(tool_input) });
+  for (const command of ['echo x >> .github/workflows/test.yml', 'rm -rf .github', 'cp x .husky/pre-commit']) {
+    const result = await call({ command });
+    assert.equal(result.status, 2, command);
+    assert.match(result.stderr, /CI files and git hooks are the owner's/, command);
+    assert.doesNotMatch(result.stderr, /PreToolUse:Bash hook error/, command);
+  }
+  assert.equal((await call({ command: 'cat .github/workflows/test.yml' })).status, 0, 'a read passes');
+  assert.equal((await call({ command: 'echo x > src/a.ts' })).status, 0, 'another write passes');
+  // An edit, through the user-level hook: no yokoten.json, so the safeguard answers.
+  const options = { root: sandbox.repo, config: DEFAULTS, env: {}, cwd: sandbox.repo, commandsOnly: true };
+  assert.equal(judge({ paths: [join(sandbox.repo, '.github/workflows/test.yml')], worker: false }, options)?.id, 'safeguard');
+  assert.equal(judge({ paths: [join(sandbox.repo, 'src/a.ts')], worker: false }, options), null);
+  // With a yokoten.json the project decides, and the lead may change CI.
+  sandbox.write('yokoten.json', '{}\n');
+  assert.equal((await call({ command: 'echo x >> .github/workflows/test.yml' })).status, 0);
+});
+
 test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#571)', () => {
   const sandbox = makeSandbox();
   const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
