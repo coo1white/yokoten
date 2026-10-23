@@ -573,6 +573,10 @@ are two ways to install: the Claude Code plugin, or the `install` command, from 
 from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
 on Windows, use Git Bash.
 
+Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copies the
+skills only. A skill is advice to the agent; the guard is what stops a command. So skills
+alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -605,8 +609,11 @@ Claude Code runs the plugin's `.ts` files with `node`. Node can do this because 
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
 does not update on its own until you turn on auto-update for it. From your shell,
-`claude plugin update yokoten@yokoten` does the same; restart Claude Code after it. When the
-plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
+`claude plugin update yokoten@yokoten` does the same. The next tool call runs the updated
+guard. A session which still has the old hook command needs one restart. If Claude Code
+removes the old plugin folder while a session still runs, the tool call is refused and
+asks for a restart. When the plugin is older than the yokoten that runs `doctor`,
+`doctor` says so in a note.
 
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
