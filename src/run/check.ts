@@ -11,7 +11,8 @@ import { checkEdit, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { loadIgnores, type MarkScan, loadMarkScan, notUtc, scanHashedMarks, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { type IgnoreDirective } from '../rules/secrets.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
@@ -387,6 +388,26 @@ export function readBlobs(root: string, ids: string[], env: Env, cap = BATCH_CAP
 const looksBinary = (buf: Buffer) => buf.subarray(0, BINARY_PEEK).includes(0);
 
 /**
+ * Privacy hits in one text. The plain marks are used when the marks file can be read.
+ * Hashes stand in for a desk, and a closed scan adds no mark hit of its own: the caller
+ * already recorded why the check stopped.
+ */
+function scanPrivacy(text: string, file: string, scan: MarkScan, allow: string[], ignores: IgnoreDirective[], env: Env): Finding[] {
+  const plain = scan.hashed || scan.closed ? [] : scan.marks;
+  const found = scanText(text, { file, marks: plain, logins: plain.length ? scan.logins : [], allow, kinds: scan.kinds, ignores, env });
+  if (scan.hashed) found.push(...scanHashedMarks(text, file, scan.hashed.salt, scan.hashed.values, ignores));
+  return found;
+}
+
+/** The mark scan for this check. A note goes to `notes`; a stop goes to `problems`. */
+function openMarkScan(root: string, config: Config, env: Env, notes: Finding[], problems: Finding[], useHashes = true): MarkScan {
+  const scan = loadMarkScan(withWorkerMark(env, [root]), root, config.privacy, useHashes);
+  if (scan.closed) problems.push(scan.closed);
+  if (scan.note) notes.push(scan.note);
+  return scan;
+}
+
+/**
  * A file in the work tree as git would store it: a symlink's link text, never its
  * target. Undefined for a deleted file or anything else that is not a file (a submodule).
  */
@@ -413,16 +434,13 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   // The index is read once, here or in the run around this check (#453).
   let index: string[] | undefined;
   const indexed = () => (index ??= indexFiles(root, env));
-  const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
-  const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
-  const markKinds = mapMarkKinds(kinds);
+  const scan = openMarkScan(root, config, env, notes, problems); // plain marks, or salted hashes in a desk (#736)
   const skip = matcher(config.privacy.skip);
   const ignoreFile = loadIgnores(root);
   problems.push(...ignoreFile.problems);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
-    const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
+    const found = scanPrivacy(buf.toString('utf8'), path, scan, config.privacy.allow, ignoreFile.entries, env);
     for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
   };
   if (staged) {
@@ -499,10 +517,7 @@ export const changedFiles = (root: string, env: Env): string[] =>
  */
 export function checkChanged(root: string, { config, env, notes = [] }: { config: Config; env: Env; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
-  const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
-  const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
-  const markKinds = mapMarkKinds(kinds);
+  const scan = openMarkScan(root, config, env, notes, problems); // plain marks, or salted hashes in a desk (#736)
   const skip = matcher(config.privacy.skip);
   const ignoreFile = loadIgnores(root);
   problems.push(...ignoreFile.problems);
@@ -512,7 +527,7 @@ export function checkChanged(root: string, { config, env, notes = [] }: { config
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
     if (buf && !looksBinary(buf)) {
-      const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
+      const found = scanPrivacy(buf.toString('utf8'), path, scan, config.privacy.allow, ignoreFile.entries, env);
       for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
     }
   }
@@ -566,21 +581,18 @@ export function checkHistory(root: string, { config, env, notes = [] }: { config
   const add = (found: Finding[]) => {
     for (const f of found) (isFailingFinding(f) ? problems : warnings).set(JSON.stringify(f), f);
   };
-  const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
-  const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
-  const markKinds = mapMarkKinds(kinds);
+  const scan = openMarkScan(root, config, env, notes, []); // a stop is added below, with the other problems
+  if (scan.closed) add([scan.closed]);
   const skip = matcher(config.privacy.skip);
   const ignoreFile = loadIgnores(root);
   add(ignoreFile.problems);
-  const opts = { marks, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env };
 
   const log = git(root, env, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {
     const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
     if (!hash) continue;
-    add(scanText(`${author}\n${committer}`, { file: `commit ${hash} (author/committer)`, ...opts }));
-    add(scanText(message ?? '', { file: `commit ${hash} (message)`, ...opts }));
+    add(scanPrivacy(`${author}\n${committer}`, `commit ${hash} (author/committer)`, scan, config.privacy.allow, ignoreFile.entries, env));
+    add(scanPrivacy(message ?? '', `commit ${hash} (message)`, scan, config.privacy.allow, ignoreFile.entries, env));
   }
 
   // Every blob ever committed, with the first path it was seen at.
@@ -598,7 +610,7 @@ export function checkHistory(root: string, { config, env, notes = [] }: { config
   for (const [sha, { bytes, whole }] of readBlobs(root, wanted, env, BATCH_CAP)) {
     if (!whole || looksBinary(bytes)) continue;
     // The blob's path places an added forge login (#410); the finding is named below.
-    const hits = scanText(bytes.toString('utf8'), { file: blobs.get(sha) ?? '', ...opts, logins });
+    const hits = scanPrivacy(bytes.toString('utf8'), blobs.get(sha) ?? '', scan, config.privacy.allow, ignoreFile.entries, env);
     if (hits.length) found.set(sha, hits);
   }
   // Name each blob by the commit that added it (#208), read only when there is a hit.
@@ -611,6 +623,58 @@ export function checkHistory(root: string, { config, env, notes = [] }: { config
   }
   notes.push(...warnings.values());
   return [...problems.values()];
+}
+
+/** A git object id, SHA-1 or SHA-256, or the all-zero id a push uses for a new or deleted ref. */
+const isGitSha = (sha: string): boolean => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(sha);
+const isZeroSha = (sha: string): boolean => /^0+$/i.test(sha);
+
+/**
+ * The privacy check on the commits a push sends (#736): from `remoteSha` to `localSha`,
+ * as the pre-push hook names them. An all-zero local id is a delete, and nothing is
+ * scanned. An all-zero remote id is a new branch: every commit on the local id. This
+ * reads the private-marks file. It does not accept hashes in place of that file.
+ */
+export function checkPush(root: string, { config, env, remoteSha, localSha, notes = [] }: { config: Config; env: Env; remoteSha: string; localSha: string; notes?: Finding[] }): Finding[] {
+  if (!isGitSha(remoteSha) || !isGitSha(localSha)) {
+    return [finding('git-read', 'check --push was not given two git object ids', 'pass the remote sha and the local sha from the pre-push hook')];
+  }
+  if (isZeroSha(localSha)) return [];
+  const problems: Finding[] = [];
+  const scan = openMarkScan(root, config, env, notes, problems, false);
+  const ignoreFile = loadIgnores(root);
+  problems.push(...ignoreFile.problems);
+  const skip = matcher(config.privacy.skip);
+  const spec = isZeroSha(remoteSha) ? localSha : `${remoteSha}..${localSha}`;
+  const add = (found: Finding[]) => {
+    for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
+  };
+  const log = git(root, env, ['log', '--format=%H%x00%ae%x00%ce%x00%B%x1e', '--end-of-options', spec]);
+  for (const entry of log.split('\x1e')) {
+    const [hash, author, committer, message] = entry.replace(/^\n/, '').split('\0');
+    if (!hash) continue;
+    const short = hash.slice(0, 8);
+    add(scanPrivacy(`${author}\n${committer}`, `commit ${short} (author/committer)`, scan, config.privacy.allow, ignoreFile.entries, env));
+    add(scanPrivacy(message ?? '', `commit ${short} (message)`, scan, config.privacy.allow, ignoreFile.entries, env));
+  }
+  const blobs = new Map<string, string>();
+  for (const line of git(root, env, ['rev-list', '--objects', '--end-of-options', spec]).split('\n')) {
+    const space = line.indexOf(' ');
+    if (space === -1) continue;
+    const sha = line.slice(0, space);
+    const path = line.slice(space + 1);
+    if (sha && path && !blobs.has(sha)) blobs.set(sha, path);
+  }
+  if (blobs.size === 0) return problems;
+  const types = gitBytes(root, env, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], [...blobs.keys()].join('\n') + '\n')
+    .toString('utf8')
+    .split('\n');
+  const wanted = types.filter((line) => line.endsWith(' blob')).map((line) => line.split(' ')[0]).filter((sha) => sha && !skip(blobs.get(sha) ?? ''));
+  for (const [sha, { bytes, whole }] of readBlobs(root, wanted, env)) {
+    if (!whole || looksBinary(bytes)) continue;
+    add(scanPrivacy(bytes.toString('utf8'), blobs.get(sha) ?? sha, scan, config.privacy.allow, ignoreFile.entries, env));
+  }
+  return problems;
 }
 
 /**

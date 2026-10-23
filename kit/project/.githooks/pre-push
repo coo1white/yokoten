@@ -1,0 +1,14 @@
+#!/bin/sh
+# The full privacy check on the commits being pushed (#736).
+# A desk commit checks salted hashes. This hook reads the private-marks file.
+# Without the runtime, one plain line, and the push waits until the runtime is back.
+[ -f "{{cli}}" ] || { echo 'yokoten: the push check cannot run, because {{cli}} is missing. Restore it from git, or run yokoten init again' >&2; exit 1; }
+zero40=0000000000000000000000000000000000000000
+zero64=0000000000000000000000000000000000000000000000000000000000000000
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "$local_sha" ] || continue
+  case "$local_sha" in
+    "$zero40"|"$zero64") continue ;;
+  esac
+  node "{{cli}}" check --push "$remote_sha" "$local_sha" || exit 1
+done

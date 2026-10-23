@@ -1261,6 +1261,17 @@ function writeGithooks(root: string, cli: string, kit: string, handOff: boolean,
     }
     if (old) lines.push(`kept your ${old.file}: ${rel} runs it${isCommitHook(hook) ? ' after the check' : ''}`);
   }
+  // The push check (#736): full marks on the commits being pushed. A file already there
+  // is kept, including one that only hands off to an older pre-push.
+  const pushRel = '.githooks/pre-push';
+  const push = join(root, pushRel);
+  if (!existsSync(push)) {
+    const text = render(readFileSync(join(kit, '.githooks', 'pre-push'), 'utf8'), { cli, version: VERSION });
+    mkdirSync(dirname(push), { recursive: true });
+    writeFileSync(push, text, { mode: 0o755 });
+    chmodSync(push, 0o755);
+    lines.push(`wrote ${pushRel}`);
+  } else lines.push(`kept ${pushRel}`);
   return lines;
 }
 

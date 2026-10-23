@@ -7,12 +7,15 @@
 //   These live in a file OUTSIDE the repo (~/.config/yokoten/private-marks, one per line),
 //   because a list of what must not be published cannot itself be published. CI does not
 //   have the file, so CI checks the patterns only; the commit check on the owner's machine
-//   checks both.
+//   checks both. A desk cannot see that file (#736). The lead writes salted hashes of the
+//   marks, and the commit check in the desk matches hashed word windows against them. The
+//   lead's push still reads the marks themselves.
 // - Secrets: tokens and private keys, in secrets.ts. Their hits pass through scanText too,
 //   so every caller (the commit, CI, the history) catches them.
 
 import { execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
@@ -878,6 +881,248 @@ export function describeMark(kind: string | null | undefined): { what: string; f
   const known = MARK_KINDS[kind];
   const what = `matches ${known?.name ?? `your ${kind}`} (a private mark yokoten added by itself)`;
   return { what, fix: known?.off ? `${MARK_REWORD}. To stop checking ${known.name}, run \`yokoten marks off ${known.off}\`` : `${MARK_REWORD}. ${MARK_ALLOW}` };
+}
+
+// ---- Salted hashes for a desk (#665, #736) ----
+//
+// A desk hides the private-marks file, so the commit check there cannot read the marks.
+// The lead writes this file before the fence starts: a salt and one sha256 per mark, never
+// the mark. The check hashes word windows of each line and looks for those hashes. It says
+// so in one note. The lead's push still reads the marks. A window does not cross a line, so
+// a mark split over two lines is missed, as the plain check misses it too. Words joined with
+// no character (`quietvale` for `quiet vale`) and a mark that is only part of a longer token
+// are missed here and caught by the plain check.
+
+/** The file in a clone's git folder: salt and hashes, never a mark. */
+export const MARK_HASH_NAME = 'yokoten-mark-hashes';
+
+const MARK_HASH_HEADER = '# yokoten mark hashes: salt and hashes only';
+/** How many words a window may hold. A name is shorter than this. */
+const HASH_WINDOW_LIMIT = 8;
+/** Letter-runs kept from one line. A longer line is checked only for its first runs. */
+const HASH_WORD_CAP = 256;
+
+/** A mark as one string the hash uses: folded, and the words of a name joined by one space. Empty when the fold leaves nothing. */
+export function canonicalMark(mark: string): string {
+  const folded = foldMark(mark);
+  if (!folded) return '';
+  const words = nameWords(folded);
+  return words ? words.join(' ') : folded;
+}
+
+/** sha256 of the salt, a NUL, and the canonical mark. Empty when the mark folds away. */
+export function hashMark(salt: string, mark: string): string {
+  const canonical = canonicalMark(mark);
+  if (!canonical) return '';
+  return createHash('sha256').update(`${salt}\0${canonical}`).digest('hex');
+}
+
+/**
+ * Write `file` with a fresh salt and one hash per mark. The text holds the salt and the
+ * hashes only. A mark that folds to nothing is left out.
+ */
+export function writeMarkHashes(file: string, marks: string[]): void {
+  const salt = randomBytes(16).toString('hex');
+  const lines = [MARK_HASH_HEADER, `salt ${salt}`];
+  const seen = new Set<string>();
+  for (const mark of marks) {
+    const hash = hashMark(salt, mark);
+    if (!hash || seen.has(hash)) continue;
+    seen.add(hash);
+    lines.push(hash);
+  }
+  writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o644 });
+}
+
+/** The salt and the hashes in `file`, or null when the file is missing, unreadable, or not in this shape. */
+export function readMarkHashes(file: string): { salt: string; values: Set<string> } | null {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const lines = text.split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+  const salt = /^salt ([0-9a-f]{32})$/.exec(lines[0] ?? '')?.[1];
+  if (!salt) return null;
+  const values = new Set<string>();
+  for (const line of lines.slice(1)) {
+    if (!/^[0-9a-f]{64}$/.test(line)) return null;
+    values.add(line);
+  }
+  return { salt, values };
+}
+
+/**
+ * The strings to hash from one line: windows of letter-runs joined by one space, and each
+ * whitespace token with its edge punctuation taken off, so an address or a domain is kept.
+ * Windows do not cross a line.
+ */
+export function listWordWindows(line: string): string[] {
+  const lower = foldLine(line).lower;
+  const words = lower.match(/[\p{L}\p{M}]+/gu) ?? [];
+  const seen = new Set<string>();
+  const count = Math.min(words.length, HASH_WORD_CAP);
+  const widest = Math.min(HASH_WINDOW_LIMIT, count);
+  for (let size = 1; size <= widest; size++) {
+    for (let start = 0; start + size <= count; start++) seen.add(words.slice(start, start + size).join(' '));
+  }
+  for (const raw of lower.split(/\s+/)) {
+    if (!raw) continue;
+    const token = raw.replace(/^[^\p{L}\p{N}.@+-]+|[^\p{L}\p{N}.@+-]+$/gu, '');
+    if (token) seen.add(token);
+  }
+  return [...seen];
+}
+
+/**
+ * Private-mark hits from hashed windows. One hit per line. The mark is never printed.
+ * A `private-mark` line in the ignore file keeps the hit and does not fail it. The reason
+ * is not copied: it could hold the mark.
+ */
+export function scanHashedMarks(text: string, file: string, salt: string, hashes: ReadonlySet<string>, ignores: IgnoreDirective[] = []): Finding[] {
+  if (hashes.size === 0) return [];
+  const ignored = ignores.some((entry) => entry.rule === 'private-mark') ? 'named in .yokotenignore' : undefined;
+  const problems: Finding[] = [];
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index++) {
+    const hit = listWordWindows(lines[index]).some((window) => {
+      const hash = hashMark(salt, window);
+      return hash !== '' && hashes.has(hash);
+    });
+    if (!hit) continue;
+    const { what, fix } = describeMark(undefined);
+    problems.push(finding('private-mark', what, fix, { file, line: index + 1, grade: 'sure', ...(ignored === undefined ? {} : { ignored }) }));
+  }
+  return problems;
+}
+
+/** Whether the private-marks files can be read. `missing` when none is there. `unreadable` when one is there but this check cannot read it. */
+export function readMarksState(env: Env): 'ready' | 'missing' | 'unreadable' {
+  const files = marksFiles(env);
+  if (!files.length) return 'missing';
+  let saw = false;
+  for (const file of files) {
+    try {
+      readFileSync(file);
+      saw = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return 'unreadable';
+    }
+  }
+  return saw ? 'ready' : 'missing';
+}
+
+/**
+ * The hash file for this run: `YOKOTEN_MARK_HASHES` when it is set, even if that path is
+ * missing, otherwise `.git/yokoten-mark-hashes` when that file is there. A set name that
+ * cannot be read must not fall through to "no marks".
+ */
+export function findMarkHashFile(env: Env, root: string): string | null {
+  const named = env.YOKOTEN_MARK_HASHES?.trim();
+  if (named) return named;
+  const candidate = join(root, '.git', MARK_HASH_NAME);
+  try {
+    if (statSync(candidate).isFile() && !isLink(candidate)) return candidate;
+  } catch {
+    // No file in this clone.
+  }
+  return null;
+}
+
+/** What the privacy check uses for marks: the plain marks, or salted hashes, or one finding that stops the check. */
+export interface MarkScan {
+  marks: string[];
+  logins: string[];
+  kinds: Map<string, string | null>;
+  hashed: { salt: string; values: ReadonlySet<string> } | null;
+  /** A note when this check used hashes, or when a worker defers the marks check. It does not fail the check. */
+  note: Finding | null;
+  /** A problem that stops the check, because the marks or the hash file could not be read. */
+  closed: Finding | null;
+}
+
+/** The note a desk prints when it checked hashes instead of the marks file. */
+export function hashCheckNote(): Finding {
+  return finding('private-mark', 'private marks are checked as salted hashes in this desk', "the lead's push runs the full check", { why: 'the desk cannot read the private-marks file' });
+}
+
+/** The note a worker prints when this commit could not read the marks and has no hash file. It does not fail the commit. */
+export function marksDeferralNote(): Finding {
+  return finding('private-mark', "the private-marks check waits for the lead's push", "the lead's push runs the full check", { why: 'this desk cannot read the private-marks file' });
+}
+
+/** The check stops: a marks file is there and cannot be read, and hashes are not standing in. */
+export function marksUnreadableFinding(): Finding {
+  return finding('private-mark', "a private-marks file can't be read, so this check stops", 'make ~/.config/yokoten/private-marks readable, and check that YOKOTEN_PRIVATE_MARKS, if set, names a file you can read', {
+    grade: 'sure',
+    why: 'a check that cannot read the marks would let a mark through',
+  });
+}
+
+/** The check stops: the desk was given a hash file and that file cannot be used. */
+export function hashFileUnreadableFinding(): Finding {
+  return finding('private-mark', "the desk's mark-hash file can't be read, so this check stops", 'start the desk again so the lead can write a new hash file', {
+    grade: 'sure',
+    why: 'a check that cannot read the hashes would let a mark through',
+  });
+}
+
+/** The push check refuses to run on hashes alone. */
+export function pushNeedsMarksFinding(): Finding {
+  return finding('private-mark', 'the push check needs the private-marks file, and this desk has only hashes', "run the push from the lead's checkout, where the marks file can be read", {
+    grade: 'sure',
+    why: 'a push that checked only hashes could let a mark through',
+  });
+}
+
+/** A worker's push stops when the marks file is not there. A hidden file looks the same. */
+export function workerPushFinding(): Finding {
+  return finding('private-mark', "a worker's push cannot read the private-marks file, so this check stops", "run the push from the lead's checkout, where the marks file can be read", {
+    grade: 'sure',
+    why: 'a push that cannot read the marks would let a mark through',
+  });
+}
+
+/**
+ * Marks for one check. The plain file wins when it can be read, so a hash file never
+ * weakens the lead's check. When the file is hidden, a hash file stands in and `note`
+ * says so. A worker with no hash file gets one note, and the commit is not stopped.
+ * A lead whose file cannot be read stops. A push never uses hashes. A missing marks
+ * file is no marks, as in CI. A desk that has only hashes stops. A worker's push
+ * stops too, because a hidden file looks the same as a missing one.
+ */
+export function loadMarkScan(env: Env, root: string, privacy?: Partial<Pick<Config['privacy'], 'skipOwnName'>>, useHashes = true): MarkScan {
+  const empty: MarkScan = { marks: [], logins: [], kinds: new Map(), hashed: null, note: null, closed: null };
+  const state = readMarksState(env);
+  if (state === 'ready') {
+    try {
+      const kinds = repoMarkKinds(env, root, privacy);
+      return { ...empty, marks: kinds.map((mark) => mark.value), logins: autoLogins(kinds), kinds: mapMarkKinds(kinds) };
+    } catch {
+      return { ...empty, closed: marksUnreadableFinding() };
+    }
+  }
+  // A lead whose marks file cannot be read stops. A hash file must not stand in for them.
+  // A worker's desk is the other case: the file is hidden, and hashes or one note stand in.
+  if (state === 'unreadable' && env.YOKOTEN_ROLE !== 'worker') return { ...empty, closed: marksUnreadableFinding() };
+  const file = findMarkHashFile(env, root);
+  // A push never accepts hashes, and never passes when this desk cannot read the marks.
+  if (!useHashes) {
+    if (state === 'unreadable') return { ...empty, closed: marksUnreadableFinding() };
+    if (file) return { ...empty, closed: pushNeedsMarksFinding() };
+    if (env.YOKOTEN_ROLE === 'worker') return { ...empty, closed: workerPushFinding() };
+    return empty;
+  }
+  if (file) {
+    const read = readMarkHashes(file);
+    if (!read) return { ...empty, closed: hashFileUnreadableFinding() };
+    return { ...empty, hashed: read, note: hashCheckNote() };
+  }
+  // No hash file. A worker says so in one note, and the commit is not stopped.
+  if (env.YOKOTEN_ROLE === 'worker') return { ...empty, note: marksDeferralNote() };
+  return empty;
 }
 
 /** The tracked file that gives a reason for a finding the project lets through. */

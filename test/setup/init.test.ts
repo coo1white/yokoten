@@ -161,6 +161,9 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept AGENTS\.md/);
   assert.match(result.stdout, /wrote \.githooks\/pre-commit/);
+  assert.match(result.stdout, /wrote \.githooks\/pre-push/);
+  assert.match(readFileSync(join(sandbox.repo, '.githooks', 'pre-push'), 'utf8'), /check --push/);
+  assert.ok(statSync(join(sandbox.repo, '.githooks', 'pre-push')).mode & 0o100);
   assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), ours);
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.equal(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
@@ -180,6 +183,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   // Again: nothing changes.
   result = await sandbox.call(['init']);
+  assert.match(result.stdout, /kept \.githooks\/pre-push/);
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.match(result.stdout, /kept \.github\/dependabot\.yml/);
   assert.match(result.stdout, /kept CHANGELOG\.md/);

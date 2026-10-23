@@ -995,8 +995,8 @@ export const AGENT_ENV: RuntimeEnv = { login: ['OPENAI_API_KEY', 'CODEX_API_KEY'
  * `auth.json` is copied in, never `config.toml`: pass a provider with `-c` on the command.
  * Hosts: the OpenAI API, and DeepSeek's, which yokoten's DeepSeek workers reach through
  * Codex. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`. The binary names
- * HTTPS_PROXY and ALL_PROXY. Inside the desk Codex runs with `--sandbox danger-full-access`:
- * its own sandbox blocks `.git` and the pipes tests use.
+ * HTTPS_PROXY and ALL_PROXY. The desk adds this clone's `.git` as a writable root, so
+ * Codex's workspace-write sandbox can commit here and in no other clone (#736).
  */
 export const DESK: RuntimeDesk = {
   leadState: (env) => [env.CODEX_HOME || join(homeIn(env), '.codex')],

@@ -28,6 +28,7 @@ import {
   makeTranslatedRepo,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
+import { MARK_HASH_NAME, writeMarkHashes } from '../../src/rules/privacy.ts';
 import {
   assumeEmptyFolder,
   batchBlobs,
@@ -108,6 +109,114 @@ test('check --staged: a default marks file it can not read fails closed, whateve
     const r = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_PRIVATE_MARKS: other } });
     assert.notEqual(r.status, 0, 'fails closed');
     assert.ok(!/mycity|otherword/i.test(r.stdout + r.stderr));
+  } finally {
+    chmodSync(own, 0o600);
+  }
+});
+
+// A desk has no private-marks file. It checks a salt and hashes the lead wrote (#736).
+// Words joined with nothing pass that check and still fail the lead's push.
+test('check --staged and check --push: a desk uses salted hashes, and the lead\'s push still refuses a mark (#736)', async () => {
+  const sandbox = makeSandbox();
+  const mark = [['s', 'am'].join(''), ['exa', 'mple'].join('')].join(' ');
+  const shaped = mark.split(' ').join('_');
+  const joined = mark.replaceAll(' ', '');
+  const hashes = join(sandbox.repo, '.git', MARK_HASH_NAME);
+  writeMarkHashes(hashes, [mark]);
+  const stored = readFileSync(hashes, 'utf8');
+  assert.equal(stored.includes(mark), false);
+  assert.equal(stored.includes(shaped), false);
+  assert.equal(stored.includes(joined), false);
+  const emptyHome = join(sandbox.home, 'no-marks');
+  mkdirSync(emptyHome);
+  const desk = { HOME: emptyHome, YOKOTEN_MARK_HASHES: hashes };
+  const quiet = (result: { stdout: string; stderr: string }) => {
+    const said = result.stdout + result.stderr;
+    assert.equal(said.includes(mark), false);
+    assert.equal(said.includes(shaped), false);
+    assert.equal(said.includes(joined), false);
+  };
+
+  sandbox.write('src/a.md', 'a clean note\n');
+  sandbox.git('add', 'src/a.md');
+  const pass = await sandbox.call(['check', '--staged'], { extra: desk });
+  assert.equal(pass.status, 0, pass.stderr);
+  assert.match(pass.stdout, /salted hashes/);
+  quiet(pass);
+  const fromGit = await sandbox.call(['check', '--staged'], { extra: { HOME: emptyHome } });
+  assert.equal(fromGit.status, 0, fromGit.stderr);
+  assert.match(fromGit.stdout, /salted hashes/, 'the hash file in .git still counts when the setting is unset');
+
+  sandbox.write('src/b.md', `${shaped}\n`);
+  sandbox.git('add', 'src/b.md');
+  const refused = await sandbox.call(['check', '--staged'], { extra: desk });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /private-marks file/);
+  quiet(refused);
+
+  writeFileSync(hashes, 'not hashes\n');
+  const closed = await sandbox.call(['check', '--staged'], { extra: desk });
+  assert.notEqual(closed.status, 0);
+  assert.match(closed.stderr, /mark-hash file/);
+  quiet(closed);
+  const missing = await sandbox.call(['check', '--staged'], { extra: { HOME: emptyHome, YOKOTEN_MARK_HASHES: join(emptyHome, 'missing') } });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /mark-hash file/);
+
+  writeMarkHashes(hashes, [mark]);
+  sandbox.git('rm', '-q', '--cached', 'src/b.md');
+  rmSync(join(sandbox.repo, 'src/b.md'));
+  assert.equal(sandbox.git('commit', '-qm', 'clean').status, 0);
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/c.md', `${joined}\n`);
+  sandbox.git('add', 'src/c.md');
+  const marks = join(sandbox.home, 'marks');
+  writeFileSync(marks, `${mark}\n`);
+  const plain = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
+  assert.equal(plain.status, 1, 'a readable marks file still runs the full check');
+  assert.doesNotMatch(plain.stdout, /salted hashes/);
+  quiet(plain);
+  const missed = await sandbox.call(['check', '--staged'], { extra: desk });
+  assert.equal(missed.status, 0, missed.stderr);
+  assert.match(missed.stdout, /salted hashes/);
+  quiet(missed);
+  assert.equal(sandbox.git('commit', '-qm', 'joined').status, 0);
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+
+  const pushed = await sandbox.call(['check', '--push', base, head], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
+  assert.equal(pushed.status, 1);
+  assert.match(pushed.stderr, /private-marks file/);
+  quiet(pushed);
+  const hashesOnly = await sandbox.call(['check', '--push', base, head], { extra: desk });
+  assert.notEqual(hashesOnly.status, 0);
+  assert.match(hashesOnly.stderr, /only hashes/);
+  quiet(hashesOnly);
+  const zero = '0'.repeat(40);
+  const created = await sandbox.call(['check', '--push', zero, head], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
+  assert.equal(created.status, 1, 'a new branch is checked from its tip');
+  quiet(created);
+  const deleted = await sandbox.call(['check', '--push', head, zero], { extra: { YOKOTEN_PRIVATE_MARKS: marks } });
+  assert.equal(deleted.status, 0, deleted.stderr);
+});
+
+test('check --staged: a worker whose marks file cannot be read still commits, and names the lead\'s push (#736)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+  const sandbox = makeSandbox();
+  const config = join(sandbox.home, '.config', 'yokoten');
+  mkdirSync(config, { recursive: true });
+  const own = join(config, 'private-marks');
+  const mark = [['s', 'am'].join(''), ['exa', 'mple'].join('')].join(' ');
+  writeFileSync(own, `${mark}\n`);
+  chmodSync(own, 0o000);
+  sandbox.write('src/a.md', 'a clean note\n');
+  sandbox.git('add', 'src/a.md');
+  try {
+    const lead = await sandbox.call(['check', '--staged']);
+    assert.notEqual(lead.status, 0);
+    assert.match(lead.stderr, /can't be read/);
+    const worker = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+    assert.equal(worker.status, 0, worker.stderr);
+    assert.match(worker.stdout, /waits for the lead's push/);
+    assert.equal(`${worker.stdout}${worker.stderr}`.includes(mark), false);
   } finally {
     chmodSync(own, 0o600);
   }

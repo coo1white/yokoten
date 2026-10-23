@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -22,11 +23,13 @@ import {
   describeMark,
   foldLine,
   foldText,
+  hashMark,
   hasMark,
   isBotProgram,
   hideHome,
   homeIn,
   loadMarkKinds,
+  loadMarkScan,
   loadMarks,
   lonePost,
   machineAllowed,
@@ -41,10 +44,13 @@ import {
   POSITIVE_CONTROL,
   privateRemoteHosts,
   readMachineAllow,
+  readMarkHashes,
   repoKey,
   repoMarkKinds,
+  scanHashedMarks,
   scanText,
   withHome,
+  writeMarkHashes,
 } from '../../src/rules/privacy.ts';
 
 // Samples are built from pieces so this file passes its own check.
@@ -2341,4 +2347,94 @@ test('machineAllowFile: with no home folder there is no allow file, never one be
   assert.throws(() => machineAllowFile(env), /no home folder/);
   assert.deepEqual(readMachineAllow(env), { entries: [] });
   assert.deepEqual(loadMarks(env), ['quietvale'], 'the setting\'s marks are still read');
+});
+
+// A desk checks salted hashes, never the marks themselves (#736). The plain check still
+// catches a mark whose words are joined with nothing, and a mark that is only part of a
+// longer token. A window does not cross a line, and neither does the plain check.
+test('writeMarkHashes: the file holds a salt and hashes, never a mark, and the windows miss what the plain check catches (#736)', () => {
+  const dir = makeTempDir('hashes-');
+  const file = join(dir, 'hashes');
+  const shaped = FULL.split(' ').join('_');
+  const joined = FULL.replaceAll(' ', '');
+  const longer = ['not', DOMAIN].join('');
+  writeMarkHashes(file, [FULL, DOMAIN, FULL]);
+  const text = readFileSync(file, 'utf8');
+  assert.equal(text.includes(FULL), false);
+  assert.equal(text.includes(shaped), false);
+  assert.equal(text.includes(joined), false);
+  assert.equal(text.includes(DOMAIN), false);
+  assert.match(text, /^# yokoten mark hashes: salt and hashes only\nsalt [0-9a-f]{32}\n(?:[0-9a-f]{64}\n){2}$/);
+  const read = readMarkHashes(file);
+  assert.ok(read);
+  assert.equal(read.values.has(hashMark(read.salt, FULL)), true);
+  assert.equal(read.values.has(hashMark(read.salt, DOMAIN)), true);
+  assert.equal(read.values.size, 2, 'the same mark is stored once');
+  const hits = (sample: string) => scanHashedMarks(sample, 'a.md', read.salt, read.values);
+  const said = (sample: string) => JSON.stringify(hits(sample));
+  assert.equal(hits(shaped).length, 1, 'a name joined by _ is caught');
+  assert.equal(said(shaped).includes(FULL), false, 'a hit never holds the mark');
+  assert.equal(hits(`${FULL.split(' ')[0]}\n${FULL.split(' ')[1]}\n`).length, 0, 'a mark split over two lines is missed');
+  assert.equal(scanText(`${FULL.split(' ')[0]}\n${FULL.split(' ')[1]}\n`, { file: 'a.md', marks: [FULL] }).length, 0, 'the plain check misses a split line too');
+  assert.equal(hits(joined).length, 0, 'words joined with nothing are missed');
+  assert.equal(scanText(joined, { file: 'a.md', marks: [FULL] }).length, 1, 'the plain check catches words joined with nothing');
+  assert.equal(hits(longer).length, 0, 'a mark that is only part of a longer token is missed');
+  assert.equal(scanText(longer, { file: 'a.md', marks: [DOMAIN] }).length, 1, 'the plain check catches a mark inside a longer token');
+  writeFileSync(file, `${FULL}\n`);
+  assert.equal(readMarkHashes(file), null, 'a file that is not salt and hashes is refused');
+  assert.equal(readFileSync(file, 'utf8').includes(FULL), true);
+
+  const home = makeTempDir('hash-home-');
+  const scan = loadMarkScan({ HOME: home, YOKOTEN_MARK_HASHES: join(dir, 'hashes') }, dir);
+  assert.match(scan.closed?.what ?? '', /mark-hash file/);
+  assert.equal(scan.note, null);
+  assert.equal(JSON.stringify(scan).includes(FULL), false);
+  writeMarkHashes(file, [FULL]);
+  const desk = loadMarkScan({ HOME: home, YOKOTEN_MARK_HASHES: file }, dir);
+  assert.equal(desk.closed, null);
+  assert.match(desk.note?.what ?? '', /salted hashes/);
+  assert.ok(desk.hashed);
+  const push = loadMarkScan({ HOME: home, YOKOTEN_MARK_HASHES: file }, dir, undefined, false);
+  assert.match(push.closed?.what ?? '', /only hashes/);
+  assert.equal(push.hashed, null);
+  const deferred = loadMarkScan({ HOME: home, YOKOTEN_ROLE: 'worker' }, dir);
+  assert.equal(deferred.closed, null);
+  assert.equal(deferred.hashed, null);
+  assert.match(deferred.note?.what ?? '', /waits for the lead's push/);
+  assert.match(deferred.note?.why ?? '', /cannot read the private-marks file/);
+  const workerPushMissing = loadMarkScan({ HOME: home, YOKOTEN_ROLE: 'worker' }, dir, undefined, false);
+  assert.match(workerPushMissing.closed?.what ?? '', /worker's push/);
+  assert.equal(workerPushMissing.note, null);
+  const ciPush = loadMarkScan({ HOME: home }, dir, undefined, false);
+  assert.equal(ciPush.closed, null);
+  assert.equal(ciPush.note, null);
+
+  const marksHome = makeTempDir('plain-home-');
+  const marks = join(marksHome, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(marksHome, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(marks, `${FULL}\n`);
+  const plain = loadMarkScan({ HOME: marksHome, YOKOTEN_MARK_HASHES: file }, dir);
+  assert.equal(plain.hashed, null);
+  assert.equal(plain.note, null);
+  assert.equal(plain.closed, null);
+  assert.ok(plain.marks.includes(FULL));
+  if (process.platform === 'win32' || process.getuid?.() === 0) return;
+  chmodSync(marks, 0o000);
+  try {
+    const stopped = loadMarkScan({ HOME: marksHome, YOKOTEN_MARK_HASHES: file }, dir);
+    assert.match(stopped.closed?.what ?? '', /can't be read/);
+    assert.equal(stopped.hashed, null, 'an unreadable marks file does not fall back to hashes');
+    assert.equal(JSON.stringify(stopped).includes(FULL), false);
+    const worker = loadMarkScan({ HOME: marksHome, YOKOTEN_ROLE: 'worker' }, dir);
+    assert.equal(worker.closed, null);
+    assert.match(worker.note?.what ?? '', /waits for the lead's push/);
+    const workerHashes = loadMarkScan({ HOME: marksHome, YOKOTEN_ROLE: 'worker', YOKOTEN_MARK_HASHES: file }, dir);
+    assert.equal(workerHashes.closed, null);
+    assert.match(workerHashes.note?.what ?? '', /salted hashes/);
+    assert.ok(workerHashes.hashed);
+    const workerPush = loadMarkScan({ HOME: marksHome, YOKOTEN_ROLE: 'worker' }, dir, undefined, false);
+    assert.match(workerPush.closed?.what ?? '', /can't be read/);
+  } finally {
+    chmodSync(marks, 0o600);
+  }
 });

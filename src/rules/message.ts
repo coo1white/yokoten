@@ -170,7 +170,7 @@ export const RULES = {
   'private-mark': {
     rule: 'nothing in the repo points at you: your name, city, domain or servers (core rule 11)',
     why: 'a line of your private-marks file names something that points at you',
-    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; a hit is `sure`, and only a `private-mark: reason` line in `.yokotenignore`, which is lead-only, keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes)',
+    check: 'the commit check reads ~/.config/yokoten/private-marks, outside the repo, and looks for each line; CI does not have the file; a hit is `sure`, and only a `private-mark: reason` line in `.yokotenignore`, which is lead-only, keeps it in the output but does not fail it; the tool-call guard also checks the text an agent posts with gh (issues, pull requests, comments, release notes). A desk cannot read that file (#736): the lead writes salted hashes into the desk, the commit check matches hashed word windows and says so in one note; with no hash file, a worker\'s commit says the check waits for the lead\'s push; a worker\'s push that cannot read the marks file stops; `check --push` on the lead\'s side reads the marks file',
     docs: guide('privacy'),
   },
   ignore: {

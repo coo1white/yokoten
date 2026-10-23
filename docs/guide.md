@@ -882,6 +882,7 @@ It puts three safe defaults in `.github/` too:
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
+| `check --push <remote-sha> <local-sha>` | The full privacy check on the commits a push sends. The pre-push hook passes the two shas. A desk commit uses salted hashes. This check reads the private-marks file. See [The desk](#the-desk) |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
@@ -908,7 +909,7 @@ when it is in a file. `yokoten explain <id>` takes the `id`. No field holds a pr
 value.
 
 - `check --json`: `{ check, ok, findings, notes }`. `check` is `tree`, `staged`,
-  `history`, `pr` or `issue`. A note never fails the check. When the CI run has no
+  `history`, `push`, `pr` or `issue`. A note never fails the check. When the CI run has no
   pull request or issue, `check --pr` and `check --issue` are ok and add `skipped`, the reason.
 - `doctor --json`: `{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
   notes, server, lessons }`. The findings of a lesson are in `notes`; a new lesson has `isNew: true`. With `--session`, only the next step, the private-marks finding, and `core-rules` when the rules are behind. Then `notes` holds the work only on this machine and the findings of a lesson the session just heard about, if there are any.
@@ -1675,16 +1676,16 @@ next start. Remove the state folder with the desk.
 | Agent | `<agent>` | Points the agent at its state with | Login file copied | API hosts | Command inside the desk |
 |---|---|---|---|---|---|
 | Claude Code | `claude-code` | `CLAUDE_CONFIG_DIR` | `.credentials.json` | `api.anthropic.com`, and `platform.claude.com` to renew a login | `claude -p "<brief>"` |
-| Codex, and DeepSeek through Codex | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`, `api.deepseek.com` | `codex exec --sandbox danger-full-access "<brief>"` |
+| Codex, and DeepSeek through Codex | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`, `api.deepseek.com` | `codex exec "<brief>"` |
 | Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<brief>"` |
 | Muse Code | `muse` | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<brief>"` |
 
 - **Claude Code** renews a login at `platform.claude.com`. A token from `claude setup-token`
   in `CLAUDE_CODE_OAUTH_TOKEN`, or an API key, needs no renewal and passes in as a login.
-- **Codex** runs with `--sandbox danger-full-access` inside the desk. Its own
-  `workspace-write` sandbox makes `.git` read-only and blocks the pipes that tests use. The
-  desk is the fence instead. Your `config.toml` stays out: give a provider with `-c` on the
-  command. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`.
+- **Codex** keeps its `workspace-write` sandbox. The desk adds this clone's `.git` as a
+  writable root, so a commit works here and in no other clone. Your `config.toml` stays
+  out. Give a provider with `-c` on the command. A ChatGPT login also needs
+  `--host chatgpt.com,auth.openai.com`.
 - **Grok**: turn off `--sandbox` inside the desk if it stops a commit or a test.
 - **More hosts**: `--host <host>` lets the agent reach another API host on port 443.
   Separate several with commas.
@@ -1710,12 +1711,14 @@ git diff main refs/desks/42
 `.git/config` and `.git/hooks` are read-only in the desk, so a worker can't plant a hook or
 an alias there. Set an upstream or other config from outside, before you start the desk.
 
-**The commit check and your private marks.** The commit check reads your private-marks
-file. An agent that can read the file can also print it. So the desk hides it by default,
-and the check in the desk does not see your marks. Until marks are kept as hashes (#665),
-run the check yourself, outside the desk. Check out the fetched branch in your own
-checkout, then run `yokoten check` there; it checks the whole tree. `--marks` shows the file in the
-desk, read-only. Use it only for an agent you trust with the words.
+**The commit check and your private marks.** The desk hides your private-marks file.
+The lead writes a file of salted hashes into the desk's `.git` before the fence starts.
+That file stays read-only. The commit check in the desk matches hashed word windows to
+that file, and prints one note. It never prints a mark. With no hash file, a worker's
+commit says that the private-marks check waits for the lead's push. A push from that desk stops, because it cannot read the marks file. A mark whose words are joined
+with nothing between them, or a mark that is only part of a longer token, can pass the
+desk. The lead's push runs the full check on the plain marks, and still refuses those.
+`--marks` shows the plain file, read-only. Use it only for an agent you trust with the words.
 
 **Systems.**
 

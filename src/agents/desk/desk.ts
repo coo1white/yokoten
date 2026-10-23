@@ -25,8 +25,8 @@
 import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Env } from '../../rules/config.ts';
-import { homeIn } from '../../rules/privacy.ts';
+import { loadConfig, type Env } from '../../rules/config.ts';
+import { homeIn, MARK_HASH_NAME, readMarksState, repoMarkKinds, writeMarkHashes } from '../../rules/privacy.ts';
 import { DESK as CLAUDE_CODE } from '../runtimes/claude-code.ts';
 import { DESK as CODEX } from '../runtimes/codex.ts';
 import { DESK as GROK } from '../runtimes/grok.ts';
@@ -68,7 +68,7 @@ export interface DeskPlan {
   readable: string[];
   /** Folders that are not visible at all: home folders, other drives, the desk's parent folder. */
   hidden: string[];
-  /** Files and folders inside a writable folder that stay read-only: `.git/config`, `.git/hooks`, the worker mark. */
+  /** Files and folders inside a writable folder that stay read-only: `.git/config`, `.git/hooks`, the worker mark, the mark-hash file. */
   locked: string[];
   /** The hosts the proxy lets the agent reach. */
   hosts: string[];
@@ -90,7 +90,7 @@ export interface DeskRequest {
   extraHosts?: string[];
   /** yokoten runtime folders to show read-only: this copy and the installed one. */
   runtimes?: string[];
-  /** The private-marks file, shown read-only only when the lead asks (`--marks`). Off by default until #665. */
+  /** The private-marks file, shown read-only only when the lead asks (`--marks`). Off by default: the desk gets salted hashes (#736). */
   marks?: string;
   /** The system the plan is for: its hidden folders differ. */
   platform?: NodeJS.Platform;
@@ -257,6 +257,12 @@ export function planDesk(request: DeskRequest): DeskPlan {
     requireReal(path, kind);
     locked.push(path);
   }
+  // Salted hashes of the marks, written out here where the marks can be read, then locked
+  // so the desk can check commits and cannot replace the file (#736).
+  const hashFile = join(desk, '.git', MARK_HASH_NAME);
+  if (isLink(hashFile)) throw new Error(`${hashFile} is a link. Remove it, then run the desk again.`);
+  writeMarkHashes(hashFile, marksForDesk(desk, env));
+  locked.push(hashFile);
   const state = prepareDeskState(runtime, request.runtime, desk, env);
   // The team (#674): its folder read-only, the agent's own outbox writable, and the desk file that names the agent locked.
   const writable = [state];
@@ -279,9 +285,38 @@ export function planDesk(request: DeskRequest): DeskPlan {
     hidden,
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv } }), ...runtime.stateEnv(state), TZ: 'UTC' },
-    command: request.command,
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', YOKOTEN_MARK_HASHES: hashFile, ...teamEnv } }), ...runtime.stateEnv(state), TZ: 'UTC' },
+    command: deskCommand(request.runtime, request.command, desk),
   };
+}
+
+/**
+ * The marks to hash for a desk: the ones the lead's check would use in this clone.
+ * No marks file means an empty list, and the desk still gets a hash file so the check
+ * can say it ran. An unreadable file stops the desk. The message never holds a mark.
+ */
+function marksForDesk(desk: string, env: Env): string[] {
+  const state = readMarksState(env);
+  if (state === 'missing') return [];
+  if (state === 'unreadable') throw new Error("this desk can't read the private-marks file, so it has no hashes for the commit check. Make ~/.config/yokoten/private-marks readable, then start the desk again.");
+  try {
+    return repoMarkKinds(env, desk, loadConfig(desk).privacy).map((mark) => mark.value);
+  } catch (error) {
+    const message = (error as Error).message ?? '';
+    if (message.startsWith('yokoten.json')) throw error;
+    throw new Error("this desk can't read the private-marks file, so it has no hashes for the commit check. Make ~/.config/yokoten/private-marks readable, then start the desk again.");
+  }
+}
+
+/**
+ * Codex keeps its own workspace-write sandbox, which remounts a child `.git` read-only.
+ * Naming this clone's git folder as a writable root leaves that folder writable, and no
+ * other clone's (#736). A later `-c` of the same key on the command replaces this one.
+ */
+function deskCommand(runtime: string, command: string[], desk: string): string[] {
+  if (runtime !== 'codex' || command.length === 0) return command;
+  const gitDir = join(desk, '.git');
+  return [command[0], '-c', `sandbox_workspace_write.writable_roots=[${JSON.stringify(gitDir)}]`, ...command.slice(1)];
 }
 
 /** The names that point an agent at the proxy. Upper and lower case: programs read either. */

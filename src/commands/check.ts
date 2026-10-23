@@ -19,7 +19,7 @@ import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
-import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
+import { check, checkHistory, checkPush, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
@@ -31,21 +31,28 @@ const GH_TIMEOUT_MS = 15000;
 export async function runCheck(invocation: Invocation): Promise<number> {
   const options = parse('check', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
-  const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
+  const modes = ['--staged', '--history', '--pr', '--issue', '--push'].filter((m) => options.flags.has(m));
   if (modes.length > 1) return usage(invocation, `${modes.join(' and ')} can't be used together`);
   const mode = modes[0]?.slice(2) ?? 'tree';
   // A number goes with --pr only (#377): that pull request, read through gh.
-  const number = options.positional[0];
-  if (number !== undefined && mode !== 'pr') return usage(invocation, `unexpected argument ${number}: a number goes with --pr`);
+  // --push takes the remote sha and the local sha, as the pre-push hook prints them (#736).
+  const [first, second] = options.positional;
+  if (mode === 'push') {
+    if (first === undefined || second === undefined) return usage(invocation, 'check --push needs the remote sha and the local sha');
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(first) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(second)) return usage(invocation, 'check --push needs two git shas');
+  } else if (mode === 'pr') {
+    if (second !== undefined) return usage(invocation, `unexpected argument ${second}`);
+  } else if (first !== undefined) return usage(invocation, `unexpected argument ${first}: a number goes with --pr`);
+  const number = first;
   const json = options.flags.has('--json');
   const root = requireRoot(invocation, invocation.cwd, json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
   if (!root) return 1;
   const config = loadConfig(root);
-  const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
+  const name = `yokoten check${mode === 'pr' || mode === 'issue' || mode === 'push' ? ` --${mode}` : ''}`;
   const notes: Finding[] = [];
   let problems: Finding[];
   try {
-    problems = await runMode(invocation, mode, root, config, notes, { name, json, number });
+    problems = await runMode(invocation, mode, root, config, notes, { name, json, number, remoteSha: first, localSha: second });
   } catch (err) {
     // A git read the check depends on gave no answer (#403): one finding, and the check fails.
     if (!(err instanceof GitReadError)) throw err;
@@ -74,7 +81,7 @@ function unstageLines(root: string, env: Invocation['env'], mode: string, proble
 const SKIPPED: Finding[] = [];
 
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
-async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Promise<Finding[]> {
+async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number, remoteSha, localSha }: { name: string; json: boolean; number?: string; remoteSha?: string; localSha?: string }): Promise<Finding[]> {
   const { env } = invocation;
   let problems: Finding[];
   if (mode === 'issue') {
@@ -171,6 +178,9 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       notes.push(...split.notes);
       printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
     }
+  } else if (mode === 'push') {
+    problems = checkPush(root, { config, env, remoteSha: remoteSha ?? '', localSha: localSha ?? '', notes });
+    if (!json) for (const note of notes) print(invocation, [`${name}: ${isWarningFinding(note) ? 'warning' : 'note'}: ${formatFinding(note)}`]);
   } else {
     problems = mode === 'history' ? checkHistory(root, { config, env, notes }) : check(root, { config, env, staged: mode === 'staged', notes });
     // A translation behind its English source (#87) is a note, for the whole tree only.
