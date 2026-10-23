@@ -450,6 +450,10 @@ Codex 0.163.0 已经不接受 `wire_api = "chat"`。它会提示找不到 `deeps
 下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
 Windows 上请用 Git Bash。
 
+也有人只装了技能：`npx skills add yokoten-labs/yokoten` 只复制技能。技能只是给 agent 的
+说明，真正拦住命令的是守卫。所以只装技能等于没有守卫：要跑 `npx yokoten install`，或者用插件，
+守卫才会打开。
+
 ### 用 Claude Code 插件装
 
 在 Claude Code 里输入：
