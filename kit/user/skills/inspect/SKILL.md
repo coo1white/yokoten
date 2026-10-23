@@ -55,3 +55,7 @@ question, and is written as one. End with what was not checked.
 
 Post the findings on the pull request. Only the owner approves. Never approve with
 the owner's account, and never merge a SHA other than the one reviewed.
+
+## How you name an issue
+
+Write `issue #N` or `PR #N`. A bare `#N` is not a name.

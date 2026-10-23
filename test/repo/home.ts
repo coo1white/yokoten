@@ -4,10 +4,23 @@
 // real home folder or ~/.config/yokoten, even when the suite runs without
 // HOME=$(mktemp -d), and a test that still reaches for the home folder fails the same way on
 // every machine. Child processes inherit it. The architecture test checks the import.
+//
+// Yokoten's own variables are removed too (#712). A test must not see the session that
+// started the suite: YOKOTEN_ROLE, YOKOTEN_DESK and the rest. The architecture test checks it.
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/**
+ * Drop yokoten's own variables from `env` (#712). A test must not see the session
+ * that started the suite.
+ */
+export function clearYokotenEnv(env: NodeJS.ProcessEnv): void {
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('YOKOTEN_')) delete env[name];
+  }
+}
 
 /** Variables that point into the real home folder, or at a file kept there. */
 export const HOME_VARIABLES = [
@@ -28,6 +41,7 @@ export const HOME_VARIABLES = [
 /** The empty home folder this test file runs with. Removed when the process exits. */
 export const TEST_HOME = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
 
+clearYokotenEnv(process.env);
 for (const name of HOME_VARIABLES) delete process.env[name];
 // Nothing a child leaves running may write into a test's folder after the test removed it
 // (#436). gh sends telemetry from a process it leaves behind, which writes into the home

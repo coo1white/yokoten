@@ -2775,6 +2775,7 @@ test('guard: an alias is refused, not parsed (#560)', () => {
 });
 
 // #560: the .git folder holds the repo history, so removing it is refused.
+// #573: a find that names .git and deletes, and a null split handed to xargs, do too.
 test('guard: removing .git is refused (#560)', () => {
   for (const command of [
     'rm -rf .git',
@@ -2782,14 +2783,51 @@ test('guard: removing .git is refused (#560)', () => {
     'sudo rm -rf .git',
     'rm -- .git',
     'rmdir .git',
+    'echo .git | xargs rm -rf',
+    'find . -name .git -delete',
+    'find . -name ".git" -delete',
+    'find . -iname .GIT -delete',
+    'find . -name .gi? -delete',
+    'find . -path ./.git -delete',
+    'find . -path "*/.git" -delete',
+    'find . -name .git -exec rm -rf {} +',
+    'find . -name .git -exec rm {} \\;',
+    'find . -name .git -execdir rm -rf {} +',
+    'find . -name .git -exec nice rm -rf {} +',
+    'find . -name .git -exec command rm {} +',
+    'find . -name .git -exec env FOO=1 rm {} +',
+    "find . -name .git -exec env -S 'rm {}' \\;",
+    "find . -name .git -exec sh -c 'rm -rf {}' \\;",
+    "printf '%s\\0' .git | xargs -0 rm -rf",
+    "printf '%s\\0' .git | xargs -d '\\0' rm -rf",
+    // Every -regex is refused: the guard cannot prove one safe (#573).
+    "find . -regex '.*' -delete",
+    "find . -iregex '.*\\.git' -delete",
+    "find . -regex '.*\\.log' -delete",
   ]) refusedAs(command, 'remove-git');
   for (const command of [
     'rm -rf dist',
     'rm file.txt',
     'rm -rf dist/* node_modules',
     'cat .git/config',
+    'find . -name .git',
+    "find . -name '*.log' -delete",
+    'find dist -delete',
+    "find src -name '*.tmp' -delete",
+    "find . -name '*.log' -exec nice rm {} +",
+    'find . -name .git -exec command -v rm {} +',
+    "find . -name .git -exec sh -c 'echo ok' \\;",
+    "find . -name '*.log' -exec sh -c 'rm {}' \\;",
+    'echo dist | xargs rm -rf',
+    "printf '%s\\0' dist | xargs -d '\\0' rm -rf",
   ]) allowed(command);
+  // #744 names this loss more exactly: the start is `.git` and `-delete` removes the history.
+  // `find .githooks -delete` stays hooks-path; that folder holds the commit check, not the history.
+  refusedAs('find .git -delete', 'remove-git');
+  assert.equal(checkCommand('find . -name .git -delete', { cwd: process.cwd(), env: { YOKOTEN_ROLE: 'worker' } })?.id, 'worker-mark');
   assert.match(checkCommand('rm -rf .git', { cwd: process.cwd(), env: {} })?.fix ?? '', /clone the repo again/);
+  assert.match(checkCommand('find . -name .git -delete', { cwd: process.cwd(), env: {} })?.fix ?? '', /clone the repo again/);
+  assert.match(checkCommand("printf '%s\\0' .git | xargs -0 rm -rf", { cwd: process.cwd(), env: {} })?.fix ?? '', /clone the repo again/);
 });
 
 // #744: `find . -delete` walks into `.git`. Refuse a deleting find unless a prune, an

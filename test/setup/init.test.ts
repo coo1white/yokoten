@@ -215,10 +215,14 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600_000 }] }]);
   // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +codex-hook: \.codex\/hooks\.json is in place; trust not checked, no ~\/\.codex\n +ok +gemini-hook\n +ok +antigravity-hook/);
-  assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks\n.*to trust them in Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
+  // No agent home: init prints no trust step. One line names the guide (#654).
+  assert.doesNotMatch(result.stdout, /Codex runs the hooks/);
+  assert.doesNotMatch(result.stdout, /to trust them in Codex/);
+  assert.doesNotMatch(result.stdout, /GitHub Copilot CLI runs the hooks/);
+  assert.doesNotMatch(result.stdout, /to trust this folder in Copilot CLI/);
+  assert.equal(result.stdout.split('\n').filter((line) => line === 'other agents: see the guide').length, 1);
   // Antigravity CLI (#30): its own file, and Copilot CLI reads .claude/settings.json.
   assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
-  assert.match(result.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder\n.*to trust this folder in Copilot CLI: run `copilot` in this folder/);
   const agents = JSON.parse(readFileSync(join(sandbox.repo, '.agents', 'hooks.json'), 'utf8'));
   assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent antigravity'));
   // The pre-commit hook runs the vendored check on a real commit.
@@ -240,6 +244,67 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   result = await sandbox.call(['doctor', '--session']);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /^yokoten: stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
+});
+
+const GUIDE_LINE = 'other agents: see the guide';
+const HOOK_ON_LINE = 'git hook: on (the commit check runs from .githooks)';
+
+/** How many times `line` is a whole line of `text`. */
+const countLines = (text: string, line: string): number => text.split('\n').filter((item) => item === line).length;
+
+test('init: with no agent installed, the git hook line leads and trust steps fold into the guide (#654)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
+  assert.doesNotMatch(result.stdout, /GitHub Copilot CLI runs the hooks/);
+  assert.doesNotMatch(result.stdout, /to trust this folder in Copilot CLI/);
+  assert.doesNotMatch(result.stdout, /Codex runs the hooks/);
+  assert.doesNotMatch(result.stdout, /to trust them in Codex/);
+  assert.doesNotMatch(result.stdout, /Muse Code runs the hooks/);
+  assert.doesNotMatch(result.stdout, /Grok CLI runs the hooks/);
+  assert.doesNotMatch(result.stdout, /dsh plugin --profile/);
+  assert.doesNotMatch(result.stdout, /dsh <profile> --patch/);
+  assert.equal(countLines(result.stdout, GUIDE_LINE), 1);
+  for (const file of ['.codex/hooks.json', '.muse/hooks.json', '.claude/settings.json', '.gemini/settings.json', '.agents/hooks.json', '.grok/hooks/yokoten.json', '.dsh/hooks.json']) {
+    assert.ok(existsSync(join(sandbox.repo, file)), file);
+  }
+});
+
+test('init: a Codex home shows the Codex trust steps, and the other agents stay one line (#654)', async () => {
+  const sandbox = makeSandbox();
+  mkdirSync(join(sandbox.home, '.codex'));
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks\n.*to trust them in Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
+  assert.equal(countLines(result.stdout, GUIDE_LINE), 1);
+  assert.doesNotMatch(result.stdout, /GitHub Copilot CLI runs the hooks/);
+  assert.doesNotMatch(result.stdout, /Muse Code runs the hooks/);
+  assert.doesNotMatch(result.stdout, /Grok CLI runs the hooks/);
+  assert.doesNotMatch(result.stdout, /dsh plugin --profile/);
+});
+
+test('init: every installed agent gets its trust step, and the guide line stays out (#654)', async () => {
+  const sandbox = makeSandbox();
+  mkdirSync(join(sandbox.home, '.copilot'));
+  mkdirSync(join(sandbox.home, '.codex'));
+  mkdirSync(join(sandbox.home, '.config', 'muse'), { recursive: true });
+  mkdirSync(join(sandbox.home, '.grok'));
+  mkdirSync(join(sandbox.home, '.dsh', 'profiles'), { recursive: true });
+  const result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder\n.*to trust this folder in Copilot CLI: run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"/);
+  assert.match(result.stdout, /Codex runs the hooks in \.codex\/hooks\.json only after you trust this folder and the hooks\n.*to trust them in Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
+  assert.match(result.stdout, /Muse Code runs the hooks in \.muse\/hooks\.json only after you trust this folder/);
+  assert.match(result.stdout, /^Grok CLI runs the hooks in \.grok\/hooks\/yokoten\.json only after you trust this folder: run `grok` in this folder and type `\/hooks-trust`$/m);
+  if (process.platform === 'win32') {
+    assert.match(result.stdout, /not checked on Windows yet/);
+    assert.doesNotMatch(result.stdout, /dsh plugin --profile/);
+  } else {
+    assert.match(result.stdout, /dsh plugin --profile <profile> add @deepseek-ai\/dsh-hooks-claude-code@0\.2\.1-rc\.2 && dsh plugin --profile <profile> add @deepseek-ai\/dsh-hook-protocol@0\.2\.1-rc\.2/);
+    assert.match(result.stdout, /dsh <profile> --patch \.dsh\/yokoten\.patch\.yml/);
+  }
+  assert.equal(countLines(result.stdout, GUIDE_LINE), 0);
 });
 
 test('init: safe defaults, Dependabot and a security policy; doctor lists the security switches (#35)', async () => {
@@ -721,7 +786,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.match(result.stdout, /wrote \.husky\/pre-merge-commit: the commit check \(kept core\.hooksPath \(husky\)/, 'a merge commit is checked too (#239)');
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-merge-commit'), 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\n`);
   assert.ok(statSync(join(sandbox.repo, '.husky/pre-merge-commit')).mode & 0o100, 'executable');
-  assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
+  assert.doesNotMatch(result.stdout, /git hook: on/);
+  assert.match(result.stdout.split('\n')[0], /^added the check to \.husky\/pre-commit:/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
   const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
@@ -825,6 +891,8 @@ test('init: a core.hooksPath outside the repo is kept, and the advice is the lin
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
+  assert.ok(result.stdout.startsWith('kept core.hooksPath:'), result.stdout);
+  assert.doesNotMatch(result.stdout, /git hook: on/);
   assert.ok(result.stdout.includes(`Add this line to its pre-commit and pre-merge-commit: ${checkLine}\n`), result.stdout);
 });
 
@@ -881,7 +949,7 @@ test('init: a pre-commit in .git/hooks keeps running, after the check, from .git
   assert.match(result.stdout, /^kept your \.git\/hooks\/pre-commit: \.githooks\/pre-commit runs it after the check$/m);
   assert.match(result.stdout, /^kept your \.git\/hooks\/pre-merge-commit: \.githooks\/pre-merge-commit runs it after the check$/m);
   assert.match(result.stdout, /^note: lefthook\.yml is here; \.githooks runs these hooks in \.git\/hooks: \.git\/hooks\/pre-commit \(after the check\), \.git\/hooks\/pre-merge-commit \(after the check\)\. /m);
-  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   assert.ok(existsSync(join(gitDir, 'hooks', 'pre-commit')), 'the old hook stays where it was');
   assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
@@ -942,7 +1010,7 @@ test('init: a pre-commit in .git/hooks that git skips does not hold the check ba
   assert.ok(doctor.includes(`commit-check (OSPS-BR-07.01): commits are not checked: core.hooksPath is not set; \`yokoten init\` sets it up; ${note}\n`), doctor);
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
   assert.ok(result.stdout.includes(`\n${note}\n`), result.stdout);
   assert.doesNotMatch(result.stdout, /kept your/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
@@ -1015,6 +1083,8 @@ test('init: an old hook that reads stdin, next to a .githooks one of the project
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^left core\.hooksPath unset, so the commit check is not on yet: \.githooks\/pre-push is the project's own and reads stdin, as \.git\/hooks\/pre-push does, so yokoten can't run both from one file\. To keep \.git\/hooks\/pre-push, make \.githooks\/pre-push save stdin to a file and give it to both: its own lines, and \.git\/hooks\/pre-push with the same arguments; then run `git config core\.hooksPath \.githooks`$/m);
+  assert.ok(result.stdout.startsWith('left core.hooksPath unset, so the commit check is not on yet:'));
+  assert.doesNotMatch(result.stdout, /git hook: on/);
   assert.equal(readFileSync(join(sandbox.repo, '.githooks', 'pre-push'), 'utf8'), before);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
   assert.match((await sandbox.call(['doctor'])).stdout, /commits are not checked: core\.hooksPath is not set; \.githooks\/pre-push is the project's own and reads stdin/);
@@ -1088,6 +1158,8 @@ test('init: the reviewer\'s own hook with the check in an `if` is kept as it is,
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), own);
   assert.match(result.stdout, /^a hook this clone had is switched off: \.githooks\/pre-commit is the project's own, and yokoten can't tell where its check ends\. To keep \.git\/hooks\/pre-commit, add this line after the check: yokoten_old=/m);
+  assert.ok(result.stdout.startsWith('a hook this clone had is switched off:'));
+  assert.doesNotMatch(result.stdout, /git hook: on/);
 });
 
 test('init: with a global core.hooksPath, the files in .git/hooks are dead and are not handed off to (#256)', { skip: NO_EXEC_BIT }, async () => {
@@ -1106,7 +1178,7 @@ test('init: with a global core.hooksPath, the files in .git/hooks are dead and a
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /kept your|note:/);
-  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
   assert.doesNotMatch(readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), /git-common-dir/);
   assert.ok(!existsSync(join(sandbox.repo, '.githooks', 'commit-msg')));
   sandbox.git('add', '.');
