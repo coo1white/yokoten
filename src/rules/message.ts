@@ -90,7 +90,7 @@ export const RULES = {
   'remove-git': {
     rule: 'no removing the .git folder',
     why: 'the .git folder holds the repo history, so removing it throws away every commit',
-    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git; delete only the files you mean, or clone the repo again to start over',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git, and a `find` that deletes when nothing keeps it out of .git (no test, or only tests that can match it, or a name or path whose characters name git storage such as objects, refs or a pack index and match no sample); a prune of .git, `-not -path \'*/.git/*\'`, or a start folder that cannot hold .git still passes; delete only the files you mean, or clone the repo again to start over',
   },
   'delete-default-branch': {
     rule: 'no deleting the default branch',
