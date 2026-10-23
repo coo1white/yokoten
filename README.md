@@ -28,39 +28,34 @@ It is not an AI agent, not a chat tool, and not a team page.
 
 ## What it does
 
-From v0.1.1, five protections are on for everyone, with no setup.
-The agent cannot:
+yokoten protects five things: your work, your secrets, your releases, the code you run,
+and the safeguard itself.
 
-1. **Lose your work.** No force push, no hard reset, and no delete of `.git` or the history.
-2. **Leak a secret.** No keys, tokens, email addresses, or home paths in a commit or a post.
-3. **Publish for you.** No tags, no releases, no packages, and no making a repo public. Only you decide when to release.
-4. **Run code from the internet unread.** No download piped into a shell.
-5. **Take the safeguard apart.** No turning off CI, hooks, or the rules. Only you open a change to the rules.
+Some of that is on now. The guard stops a force push, a delete of `.git`, a tag push, a
+package publish, a download piped into a shell, and a skipped commit check.
+The commit check stops a secret in a commit. It needs `yokoten init` in the project.
+The rest of the five protections come in v0.1.1.
 
 The guard is invisible: it works when you type nothing.
 A few commands are for you, such as `yokoten install` and `yokoten doctor`.
-Team commands come next, in v0.1.2.
-They are not in this release.
-From the command line you will add, list, change, and remove agents, tasks, and machines.
+Team commands are planned for v0.1.2 ([issue #823](https://github.com/yokoten-labs/yokoten/issues/823)).
 
-The safeguard was tested first in Claude Code and Muse.
-OpenCode with DeepSeek, Codex, Grok, and Gemini are in the code and are being tested.
-Not every agent is finished.
+yokoten guards nine AI coding agents with the same rules: Claude Code, GitHub Copilot CLI,
+Antigravity CLI, Codex CLI, Muse Code, DeepSeek Harness, Grok CLI, Gemini CLI, and OpenCode.
+Seven are verified end to end. Gemini CLI and OpenCode are in the code but not run end to end.
 
 When yokoten stops an action, a non-coder can act on the answer.
-It says what was stopped, why, a sentence to tell the AI, a command to run yourself, and then the rule.
+It says what was stopped, why, and what to do instead, then links the guide.
 
 ```
-yokoten stopped this: creating the tag v1.2.0.
-Why: a tag publishes a release, and only you decide when to release.
-Tell the AI: "I will publish this release myself."
-Or run it yourself: git tag v1.2.0
+yokoten: git push origin v1.2.0 pushes a release tag. Only the owner decides when to release. If the owner asked for this, they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 claude` (or your agent's command); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## One engine, many safeguards
 
 yokoten is a library of safeguards with one engine behind it.
-The five protections are the first set of rules, and they are on by default.
+The five protections are the first set of rules, and they come on for everyone in v0.1.1.
 Each rule says three things: where it checks, what it looks for, and what it says when it stops an action.
 
 The same rules hold at each checkpoint:
@@ -101,15 +96,17 @@ An agent tries a force push. yokoten stops it, says why, and gives the fix. Then
 
 ## Coming next
 
-Team commands come in v0.1.2.
+Team commands are planned for v0.1.2 ([issue #823](https://github.com/yokoten-labs/yokoten/issues/823)).
 You will add, list, change, and remove agents, tasks, and machines from the command line.
 A team page is a preview.
 It is not part of the 0.1 releases.
 
 ## Works with
 
-**Agents.** Tested first in Claude Code and Muse.
-OpenCode with DeepSeek, Codex, Grok, and Gemini are in the code and are being tested.
+**Agents.** yokoten guards nine AI coding agents with the same rules: Claude Code, GitHub
+Copilot CLI, Antigravity CLI, Codex CLI, Muse Code, DeepSeek Harness, Grok CLI, Gemini
+CLI, and OpenCode. Seven are verified end to end. Gemini CLI and OpenCode are in the code
+but not run end to end.
 The [agent table](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)
 says how each one was tested.
 
@@ -144,7 +141,7 @@ The dream: anyone can build software the way good teams do.
 |---|---|---|
 | 1 | **Guard**: agents are stopped before a dangerous action | ✅ done |
 | 2 | **Guide**: `doctor` walks a beginner through five stages; an agent drafts how an old project adopts yokoten | 🚧 now |
-| 3 | **Team commands**: add, list, change, and remove agents, tasks, and machines from the command line | 🚧 coming in v0.1.2; a team page is a preview, not in the 0.1 releases |
+| 3 | **Team commands**: add, list, change, and remove agents, tasks, and machines from the command line | 🚧 planned for v0.1.2 ([issue #823](https://github.com/yokoten-labs/yokoten/issues/823)); a team page is a preview, not in the 0.1 releases |
 | 4 | **The whole cycle**: from a short spec to build, test, review, release and upkeep | later |
 | 5 | **Yokoten**: a lesson one project learns becomes a check, and the check spreads to every project | the goal |
 
