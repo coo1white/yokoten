@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -277,6 +277,30 @@ test('private marks file: a missing default file fails closed when the real home
     chmodSync(hidden, 0o600);
     restore();
   }
+});
+
+// The preload is --require, not --import (#750). A child must still get an empty real home,
+// and useRealHome must stack on that same slot. Nothing here prints a path or a mark.
+test('private marks: a node child keeps the empty real-home stand-in (#739)', () => {
+  const root = join(import.meta.dirname, '..', '..');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', [
+    "import { mkdtempSync } from 'node:fs';",
+    "import { tmpdir } from 'node:os';",
+    "import { join } from 'node:path';",
+    "import { loadMarks, useRealHome } from './src/rules/privacy.ts';",
+    "const key = Symbol.for('yokoten.readRealHome');",
+    "const preload = globalThis[key];",
+    "if (typeof preload !== 'function' || preload() !== '') process.exit(2);",
+    "const home = mkdtempSync(join(tmpdir(), 'yokoten-child-home-'));",
+    "if (loadMarks({ HOME: home }).length !== 0) process.exit(3);",
+    "const restore = useRealHome(() => join(tmpdir(), 'not-a-home'));",
+    "const swapped = globalThis[key]() !== '';",
+    "restore();",
+    "if (!swapped || globalThis[key] !== preload) process.exit(4);",
+    "process.stdout.write('ok');",
+  ].join('\n')], { cwd: root, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'ok');
 });
 
 test('private marks file: a missing real-home file stays empty, and a readable one is used (#739)', () => {

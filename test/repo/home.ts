@@ -8,10 +8,9 @@
 // Yokoten's own variables are removed too (#712). A test must not see the session that
 // started the suite: YOKOTEN_ROLE, YOKOTEN_DESK and the rest. The architecture test checks it.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
 
 /**
  * Drop yokoten's own variables from `env` (#712). A test must not see the session
@@ -74,12 +73,16 @@ const { useRealHome } = await import('../../src/rules/privacy.ts');
 useRealHome(() => '');
 
 // A child does not import this file: that would point its HOME at a new empty folder.
-// The preload only turns the same read off. It is a data URL, so it needs no file (#739, #356).
-const privacyModule = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), '../../src/rules/privacy.ts')).href;
-const preloadSource = `import { useRealHome } from ${JSON.stringify(privacyModule)};\nuseRealHome(() => '');\n`;
-const preload = `data:text/javascript,${encodeURIComponent(preloadSource)}`;
-const flag = `--import ${JSON.stringify(preload)}`;
-process.env.NODE_OPTIONS = process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${flag}` : flag;
+// --import would load the child program as an ES module. Node then refuses a name it
+// does not know, such as the fake gh.exe (#750). --require runs CommonJS, sets the same
+// slot as useRealHome, and leaves the program's own format alone. The script is in the
+// temp folder, so test/repo stays at 7 files (#739, #356).
+const preloadFile = join(tmpdir(), 'yokoten-real-home.cjs');
+writeFileSync(preloadFile, "globalThis[Symbol.for('yokoten.readRealHome')] = () => '';\n");
+const flag = `--require ${JSON.stringify(preloadFile)}`;
+if (!process.env.NODE_OPTIONS?.includes(flag)) {
+  process.env.NODE_OPTIONS = process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${flag}` : flag;
+}
 
 // Tests call the guard without the hook. The host command list registers when its module
 // loads. Load it here, after HOME is set, so nothing it imports reads the real home folder.
