@@ -1543,11 +1543,22 @@ test('suite time: a run over the budget fails and says why; one under passes; th
   const under = judgeSuite(tapReport(30_000));
   assert.equal(under.isOver, false);
   assert.equal(under.text, `The tests took 30.0 s, under the budget of ${SUITE_BUDGET} s.\n\nThe slowest tests:\n- 12.0 s: check: a slow one\n- 4.2 s: install: the copy runs\n- 0.0 s: names: a # in a name\n`);
-  const over = judgeSuite(tapReport(SUITE_BUDGET * 1000 + 1));
+  const over = judgeSuite(tapReport(SUITE_BUDGET * 1000 * 1.5 + 1));
   assert.equal(over.isOver, true);
-  assert.match(over.text, new RegExp(`^The tests took ${SUITE_BUDGET}\\.0 s, over the budget of ${SUITE_BUDGET} s by 0\\.0 s\\. Find what made them slow: .*use sandbox\\.call`));
-  assert.equal(judgeSuite(tapReport(95_000), 90).text.split('\n')[0], 'The tests took 95.0 s, over the budget of 90 s by 5.0 s. Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.', 'a budget of its own');
-  assert.throws(() => readReport('TAP version 13\nok 1 - cut off\n'), /no '# duration_ms' line/);
+  assert.match(over.text, new RegExp(`^The tests took ${SUITE_BUDGET * 1.5}\\.0 s, over the budget of ${SUITE_BUDGET} s by ${SUITE_BUDGET * 0.5}\\.0 s, past the room a busy runner needs \\(50%\\)\\. Find what made them slow: .*use sandbox\\.call`));
+  assert.equal(judgeSuite(tapReport(140_000), 90).text.split('\n')[0], 'The tests took 140.0 s, over the budget of 90 s by 50.0 s, past the room a busy runner needs (50%). Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.', 'a budget of its own');
+  assert.throws(() => readReport('TAP version 13\nok 1 - cut off\n'), /no \'# duration_ms\' line/);
+});
+
+test('suite time: a busy runner gets 50% more time for the same work, and a child per test still fails the cap (#783)', () => {
+  // The same report, 20% slower: the runner was busy, not the tests.
+  const slowRunner = judgeSuite(tapReport(SUITE_BUDGET * 1000 * 1.2));
+  assert.equal(slowRunner.isOver, false);
+  assert.match(slowRunner.text, /inside the room a busy runner needs \(50%\)/);
+
+  // One child process per test is work, not load: the cap still catches it.
+  const childPerTest = Array.from({ length: 5 }, (_, index) => `test('case ${index}', () => {\n  sandbox.run(['doctor']);\n});`).join('\n');
+  assert.match(childProblems({ 'test/a.test.ts': childPerTest }, [], {})[0], /starts 5 child processes.*over its cap of 4/);
 });
 
 test('suite time: it reads the report node --test writes on this Node (#475)', () => {
