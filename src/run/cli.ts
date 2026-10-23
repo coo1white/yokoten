@@ -288,7 +288,11 @@ export const COMMANDS: Command[] = [
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
     usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
-    text: ['Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.', 'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.'],
+    text: [
+      'Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.',
+      "With --agent claude-code, it answers as Claude Code's PreToolUse hook: a deny in JSON on stdout, exit 0. YOKOTEN_HOOK_DENIAL=exit2 keeps exit 2.",
+      'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.',
+    ],
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness, grok or opencode' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
