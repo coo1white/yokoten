@@ -27,6 +27,7 @@ import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
 import { markWorktree } from '../../hook.ts';
 import { ageText, BOARD_AGENT_FILE, BOARD_READ_TIMEOUT_MS, parseBoardAgent, type BoardRole, type BoardWorktree } from './agents.ts';
+import { dependsOf } from './feed/desk.ts';
 import { type AgentView, type BoardData, type PullView } from './view.ts';
 
 /**
@@ -87,11 +88,17 @@ export interface BoardRun {
   output: string[];
 }
 
-/** One open issue to start an agent on: its number, title, and link. */
+/** One open issue to start an agent on: its number, title, link, and what it waits for. */
 export interface BoardIssue {
   number: number;
   title: string;
   url: string;
+  /** When it was opened, or ''. */
+  createdAt: string;
+  /** When it last changed, or ''. */
+  updatedAt: string;
+  /** Issue numbers on a "Depends on" line. The timeline shows them on the row. */
+  dependsOn: number[];
 }
 
 /** One hold-up an agent reports in its status file: a guard stop or a question. */
@@ -469,7 +476,7 @@ export function setBoardLimits(controls: BoardControls, fields: Record<string, s
 
 /** The gh query for the open issues. */
 function boardIssueQuery(repo: string): string[] {
-  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url'];
+  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url,body,createdAt,updatedAt'];
 }
 
 /** The open issues, gh's order, or why gh cannot read them. */
@@ -508,7 +515,15 @@ function boardIssuesOf(text: string): BoardIssue[] | string {
     const fields = row as Record<string, unknown>;
     const number = fields.number;
     if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return [];
-    return [{ number, title: typeof fields.title === 'string' ? fields.title : '', url: typeof fields.url === 'string' ? fields.url : '' }];
+    const body = typeof fields.body === 'string' ? fields.body : '';
+    return [{
+      number,
+      title: typeof fields.title === 'string' ? fields.title : '',
+      url: typeof fields.url === 'string' ? fields.url : '',
+      createdAt: typeof fields.createdAt === 'string' ? fields.createdAt : '',
+      updatedAt: typeof fields.updatedAt === 'string' ? fields.updatedAt : '',
+      dependsOn: dependsOf(body),
+    }];
   });
 }
 

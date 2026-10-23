@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
 import { ageText, readBoardAgents, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
 
-const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', role: '', state: '', checks: '' };
+const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '' };
 
 // #601, #603: one status file per worktree, at its root, read in worktree order. A
 // missing, broken or odd file never breaks the board; a missing name is the worktree's
@@ -21,7 +21,7 @@ test('board agents: every worktree root as an agent; the odd ones are skipped or
   const listed = makeTempDir('yokoten-board-');
   const odd = makeTempDir('yokoten-board-');
   const blocked = makeTempDir('yokoten-board-');
-  const full = { name: 'b-worker', vendor: 'codex', model: 'gpt-x', effort: 'high', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z', role: 'engineer', state: 'waiting', checks: 'failing' };
+  const full = { name: 'b-worker', vendor: 'codex', model: 'gpt-x', effort: 'high', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z', started: '', role: 'engineer', state: 'waiting', checks: 'failing' };
   writeFileSync(join(first, '.yokoten-agent.json'), JSON.stringify(full));
   writeFileSync(join(second, '.yokoten-agent.json'), JSON.stringify({ task: 'only a task', role: 'lead' }));
   writeFileSync(join(broken, '.yokoten-agent.json'), '{oops');

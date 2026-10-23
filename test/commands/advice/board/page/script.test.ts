@@ -8,6 +8,7 @@ import type { FeedEvent } from '../../../../../src/commands/advice/board/feed/st
 import { ageOf, clearedId, githubNote, groupFeed, loadUi, localDay, type PageData, type PageState, pickLang, renderCenter, renderLimits, renderOutput, renderRight, renderRuns, renderSide, renderStart, renderWaiting, roleGroup, saveUi, say, summaryOf } from '../../../../../src/commands/advice/board/page/script.ts';
 import type { BoardWaiting } from '../../../../../src/commands/advice/board/controls.ts';
 import { LANG_NAMES, WORDS } from '../../../../../src/commands/advice/board/page/words.ts';
+import { EMPTY_DESK } from '../../../../../src/commands/advice/board/feed/desk.ts';
 import { type AgentView, pullView, vendorOf } from '../../../../../src/commands/advice/board/view.ts';
 
 /** One node of the fake document: a tag, its attributes, its children, or its text. */
@@ -45,7 +46,7 @@ const fakeDocument = {
 };
 Object.assign(globalThis, { document: fakeDocument });
 
-const agent = (fields: Partial<AgentView>): AgentView => ({ key: '~/w', name: 'w', vendor: vendorOf('muse'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: 'u1', branch: '', ...fields });
+const agent = (fields: Partial<AgentView>): AgentView => ({ key: '~/w', name: 'w', vendor: vendorOf('muse'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: 'u1', started: '', branch: '', ...fields });
 const event = (kind: FeedEvent['kind'], text: string): FeedEvent => ({ kind, text, time: '2026-10-22T10:00:00Z' });
 
 function makeState(data: PageData, lang = 'en'): PageState {
@@ -55,7 +56,7 @@ function makeState(data: PageData, lang = 'en'): PageState {
 }
 
 function makeData(fields: Partial<PageData>): PageData {
-  return { repo: '~/repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} }, ...fields };
+  return { repo: '~/repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} }, ...fields };
 }
 
 test('board script: three or more routine steps fold; waits, failures and the latest step never do', () => {
@@ -178,7 +179,7 @@ test('board script: the waiting list shows what waits for you', () => {
 // form, the runs the board started with their stop buttons, and the live output.
 test('board script: the controls start and stop agents from the page', () => {
   const data = makeData({
-    issues: [{ number: 603, title: 'board agents', url: '' }],
+    issues: [{ number: 603, title: 'board agents', url: '', createdAt: '', updatedAt: '', dependsOn: [] }],
     runs: [
       { name: 'issue-603-codex', issue: '603', vendor: 'codex', model: 'model-a', worktree: '~/repo/.worktrees/603', pid: 1000, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: ['hello', 'world'] },
       { name: 'issue-604-codex', issue: '604', vendor: 'codex', model: 'model-a', worktree: '', pid: null, status: 'stopped', startedAt: '', stoppedAt: '', exitCode: 1, output: [] },
@@ -242,7 +243,7 @@ test('board script: no control approves or merges', () => {
 test('board script: issue titles and run output stay text', () => {
   const hostile = '<img src=x onerror=alert(1)>';
   const data = makeData({
-    issues: [{ number: 603, title: hostile, url: '' }],
+    issues: [{ number: 603, title: hostile, url: '', createdAt: '', updatedAt: '', dependsOn: [] }],
     runs: [{ name: hostile, issue: '603', vendor: hostile, model: hostile, worktree: hostile, pid: null, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: [hostile] }],
     waiting: [{ kind: 'question', agent: hostile, role: '', wait: hostile, why: hostile, link: '' }],
   });

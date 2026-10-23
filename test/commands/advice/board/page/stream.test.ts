@@ -8,6 +8,7 @@ import { boardScript } from '../../../../../src/commands/advice/board/page/page.
 import { loadUi, type PageData, type PageState, renderCenter } from '../../../../../src/commands/advice/board/page/script.ts';
 import { addStream, emptyStream, newStreamNode, renderStream, stepsLabel } from '../../../../../src/commands/advice/board/page/stream.ts';
 import { LANG_NAMES, WORDS } from '../../../../../src/commands/advice/board/page/words.ts';
+import { EMPTY_DESK } from '../../../../../src/commands/advice/board/feed/desk.ts';
 import { type AgentView, vendorOf } from '../../../../../src/commands/advice/board/view.ts';
 
 /** One node of the fake document. */
@@ -48,8 +49,8 @@ Object.assign(globalThis, {
   },
 });
 
-const agent: AgentView = { key: '~/w', name: 'w', vendor: vendorOf('claude'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: 'the task', ref: null, doing: 'reading the issue', checks: '', age: '', updated: 'u1', branch: '' };
-const data: PageData = { repo: '~/repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} } };
+const agent: AgentView = { key: '~/w', name: 'w', vendor: vendorOf('claude'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: 'the task', ref: null, doing: 'reading the issue', checks: '', age: '', updated: 'u1', started: '', branch: '' };
+const data: PageData = { repo: '~/repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} } };
 
 function makeState(): PageState {
   const ui = loadUi(false);

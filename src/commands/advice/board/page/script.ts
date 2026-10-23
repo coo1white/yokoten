@@ -7,6 +7,7 @@
 import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../controls.ts';
 import type { FeedEvent } from '../feed/steps.ts';
 import type { AgentView, BoardData, NeedView, PullView } from '../view.ts';
+import { renderDesk, renderTimeline } from './desk.ts';
 import { followStream, renderStream, type StreamView } from './stream.ts';
 
 /** The page's data: what /data sends. The waiting list, the open issues, the board's own runs, and its limits ride with the board. */
@@ -225,7 +226,9 @@ function needRow(state: PageState, need: NeedView): HTMLElement {
 export function renderSide(state: PageState, data: PageData): [HTMLElement, HTMLElement] {
   const lead = data.agents.find((agent) => agent.role === 'lead');
   const pinned = el('div', { class: 'pinned' }, el('h2', { class: 'sh lead-h' }, icon('msg', true), say(state, 'lead')));
-  pinned.append(lead ? agentRow(state, lead) : el('div', { class: 'row lead-row still' }, el('span', { class: 'r1' }, el('span', { class: 'dot idle' }), el('span', { class: 'ttl' }, say(state, 'noLead'))), el('span', { class: 'r3 wrap' }, say(state, 'noLeadHow', { file: state.agentFile }))));
+  // The lead box is a desk (#701). With no lead and no desk file, the old empty row stays.
+  const hasDesk = !!data.desk && (data.desk.now !== '' || data.desk.decisions.length > 0 || data.desk.reply !== '');
+  pinned.append(lead || hasDesk ? renderDesk(state, data, lead) : el('div', { class: 'row lead-row still' }, el('span', { class: 'r1' }, el('span', { class: 'dot idle' }), el('span', { class: 'ttl' }, say(state, 'noLead'))), el('span', { class: 'r3 wrap' }, say(state, 'noLeadHow', { file: state.agentFile }))));
   pinned.append(el('h2', { class: 'sh need', title: say(state, 'needsYouHint') }, icon('bell', true), say(state, 'needsYou'), el('span', { class: 'n' }, String(data.needs.length))));
   pinned.append(...(data.needs.length ? data.needs.map((need) => needRow(state, need)) : [el('p', { class: 'quiet' }, say(state, 'nothingNeeds'))]));
   const list = el('div', { class: 'agents' });
@@ -280,6 +283,8 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
   const foot = agent.dot === 'done'
     ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
     : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
+  // The lead's middle is the timeline (#701). Another agent's session is unchanged (#694).
+  if (isLead) return el('section', { class: 'center-in' }, head, renderTimeline(state, data), foot);
   // The agent's own session when its log is found (#694); else the steps the board saw.
   const stream = renderStream(state, agent);
   if (stream) {
@@ -520,7 +525,7 @@ export function showToast(state: PageState, key: string, cleared: string[], merg
 
 /** One click anywhere: each control says what it does in a data- attribute. */
 export function onClick(state: PageState, event: Event): void {
-  const target = (event.target as Element).closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme');
+  const target = (event.target as Element).closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme');
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
@@ -552,6 +557,7 @@ export function onClick(state: PageState, event: Event): void {
   else if (ask('data-show-cleared')) ui.showCleared = !ui.showCleared;
   else if (ask('data-restore')) ui.cleared = ui.cleared.filter((id) => id !== ask('data-restore'));
   else if (ask('data-group')) ui.open[ask('data-group') as string] = !ui.open[ask('data-group') as string];
+  else if (ask('data-reply')) ui.open['lead-reply'] = !ui.open['lead-reply'];
   else if (ask('data-clear-merged')) {
     ui.mergedCleared = localDay(Date.now());
     showToast(state, 'mergedHidden', [], true);

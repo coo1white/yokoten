@@ -220,10 +220,10 @@ function readLeadSession(tree: string, env: Env): FoundLog | null {
 }
 
 /**
- * The first non-empty line of the newest thing the agent said in `file`, or ''.
- * Only the end of a long log is read. Tool calls with no text are skipped.
+ * The newest thing the agent said in `file`, or ''. Only the end of a long log is read.
+ * Tool calls with no text are skipped.
  */
-export function lastAssistantLine(file: string, source: StreamSource, tree: string): string {
+function lastAssistantSay(file: string, source: StreamSource, tree: string): string {
   const reader = LINE_READERS[source];
   let opened: number | null = null;
   try {
@@ -248,9 +248,7 @@ export function lastAssistantLine(file: string, source: StreamSource, tree: stri
         continue;
       }
       const said = reader(record, tree).find((item) => item.kind === 'say');
-      if (!said) continue;
-      const line = said.text.split('\n').map((part) => part.trim()).find(Boolean);
-      if (line) return line;
+      if (said?.text.trim()) return said.text;
     }
     return '';
   } catch {
@@ -258,6 +256,16 @@ export function lastAssistantLine(file: string, source: StreamSource, tree: stri
   } finally {
     if (opened !== null) closeSync(opened);
   }
+}
+
+/** The first non-empty line of the newest thing the agent said in `file`, or ''. */
+export function lastAssistantLine(file: string, source: StreamSource, tree: string): string {
+  return lastAssistantSay(file, source, tree).split('\n').map((part) => part.trim()).find(Boolean) ?? '';
+}
+
+/** The newest thing the agent said in `file`, or ''. The desk shows its first sentence. */
+export function lastAssistantText(file: string, source: StreamSource, tree: string): string {
+  return lastAssistantSay(file, source, tree).trim();
 }
 
 /** The newest Claude Code log of a worktree: its own sessions, or a subagent whose task names it. */

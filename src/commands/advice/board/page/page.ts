@@ -4,6 +4,7 @@
 // The GitHub mark: Octicons, MIT license, GitHub, Inc.
 
 import { BOARD_AGENT_FILE } from '../agents.ts';
+import { DESK_FUNCTIONS } from './desk.ts';
 import { PAGE_FUNCTIONS } from './script.ts';
 import { STREAM_FUNCTIONS } from './stream.ts';
 import { LANG_NAMES, WORDS } from './words.ts';
@@ -12,11 +13,11 @@ import { LANG_NAMES, WORDS } from './words.ts';
 export const BOARD_REFRESH_SECONDS = 15;
 
 const STYLE = `
-:root{color-scheme:light;--bg:#fff;--fg:#0a0a0a;--card:#fff;--muted:#f5f5f5;--mut-fg:#6b6b6b;--accent:#f0f0f0;--border:#e5e5e5;--ring:#a1a1a1;--side:#fafafa;--side-accent:#efefef;--panel:#fafafa;
+:root{color-scheme:light;--bg:#fff;--fg:#0a0a0a;--card:#fff;--muted:#f5f5f5;--mut-fg:#6b6b6b;--accent:#f0f0f0;--border:#e5e5e5;--ring:#a1a1a1;--side:#fafafa;--side-accent:#efefef;--panel:#fafafa;--track:#ececec;
 --brand:#b4532a;--ok:#16a34a;--wait:#b45309;--bad:#dc2626;--merged:#8250df;--open:#1a7f37;--radius:10px;
 --mono:ui-monospace,'SF Mono',SFMono-Regular,'Cascadia Code',Menlo,Consolas,'Liberation Mono',monospace}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}}
-:root[data-theme=dark]{color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--track:#2a2a2a;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--track:#2a2a2a;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}
 :root{--wait-bg:color-mix(in srgb,var(--wait) 11%,var(--bg));--bad-bg:color-mix(in srgb,var(--bad) 8%,var(--bg))}
 *{box-sizing:border-box}
 ::selection{background:color-mix(in srgb,var(--brand) 28%,transparent)}
@@ -173,7 +174,29 @@ h2.sh{line-height:inherit}
 .toast{position:fixed;left:10px;bottom:38px;width:292px;max-width:calc(100vw - 20px);justify-content:space-between;background:var(--fg);color:var(--bg);padding:8px 12px;border-radius:8px;font-size:12px;display:flex;gap:12px;align-items:center;box-shadow:0 4px 16px rgb(0 0 0/.25)}
 .toast[hidden]{display:none}
 .toast button{font-weight:600;text-decoration:underline}
-@media (prefers-reduced-motion:reduce){.sh .f>svg:first-child,.grp>svg{transition:none}}
+.lead-desk{border:1px solid var(--border);background:var(--card);border-radius:8px;padding:8px 10px 10px;margin:0 0 8px}
+.lead-desk h3{margin:8px 0 2px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut-fg)}
+.lead-desk h3:first-child{margin-top:0}
+.lead-desk .now{display:block;width:100%;text-align:left;font-weight:500;margin:0}
+.lead-desk .now[aria-current=true]{color:var(--fg)}
+.lead-desk .decision{margin:0 0 8px}
+.lead-desk .ask-line,.lead-desk .rec,.lead-desk .rest{margin:0}
+.lead-desk .rec,.lead-desk .rest{color:var(--mut-fg);font-size:12px;margin-top:2px}
+.lead-desk .rest{white-space:pre-wrap}
+.lead-desk .answers{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 0}
+.lead-desk .ans{display:inline-flex;align-items:center;height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px;background:var(--muted);font-size:12px}
+.lead-desk .reply{display:block;width:100%;text-align:left;font-size:12px;color:var(--fg)}
+.gantt{display:flex;flex-direction:column;gap:8px;padding:12px 20px 24px;overflow:auto}
+.gantt .scale{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut-fg)}
+.gantt-row{display:grid;grid-template-columns:minmax(0,34%) minmax(0,1fr);gap:8px;align-items:center}
+.gantt-name{min-width:0}
+.gantt-name .ttl{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt-name .waits{display:block;font-size:11px;color:var(--mut-fg)}
+.gantt-track{position:relative;height:16px;border-radius:8px;background:var(--track)}
+.gantt-bar{position:absolute;top:3px;height:10px;border-radius:5px;min-width:4px}
+.gantt-bar.live{animation:desk-breathe 2.4s ease-in-out infinite}
+@keyframes desk-breathe{0%,100%{opacity:1}50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.sh .f>svg:first-child,.grp>svg{transition:none}.gantt-bar.live{animation:none}}
 @media (max-width:1100px){
 .app{height:auto;min-height:100vh;grid-template-rows:48px auto 28px}
 .main{grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto auto 1fr;grid-template-areas:"pinned center" "agents center" "right center"}
@@ -185,7 +208,10 @@ h2.sh{line-height:inherit}
 .app{grid-template-rows:52px auto auto;align-content:start}
 .main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;align-content:start;grid-template-areas:"pinned" "center" "agents" "right"}
 #pinned,#agents,#right{border-right:0}
-#pinned .lead-h,#pinned .lead-row{display:none}
+#pinned .lead-row{display:none}
+.gantt{padding:8px}
+.gantt-row{grid-template-columns:minmax(0,1fr)}
+.lead-desk .ans{min-height:40px;padding:0 12px}
 #center{min-height:0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
 .ch{padding:12px 14px}.feed{padding:10px 8px 16px}.ro{margin:0 12px 12px}
 .bar{height:auto;flex-wrap:wrap;padding:6px 12px;white-space:normal}
@@ -233,7 +259,7 @@ export function boardScript(): string {
   const settings = { token: '', refreshMs: BOARD_REFRESH_SECONDS * 1000, agentFile: BOARD_AGENT_FILE, words: WORDS, langNames: LANG_NAMES, data: null, ui: null, live: 'loading', isMenuOpen: false, toast: null, toastTimer: 0, readAt: 0 };
   return [
     '"use strict";',
-    ...[...PAGE_FUNCTIONS, ...STREAM_FUNCTIONS].map(String),
+    ...[...PAGE_FUNCTIONS, ...STREAM_FUNCTIONS, ...DESK_FUNCTIONS].map(String),
     `const state = ${JSON.stringify(settings).replace(/</g, '\\u003c')};`,
     "state.token = new URLSearchParams(location.search).get('t') || '';",
     'startPage(state);',

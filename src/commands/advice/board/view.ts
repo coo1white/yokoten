@@ -1,12 +1,15 @@
 // What the board shows (#603): the agents, what needs the owner, and each pull request's
 // steps. Plain data built on the server, so the page, `--text` and the tests read the same.
 
+import { statSync } from 'node:fs';
+import { join } from 'node:path';
 import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
-import { ageText, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardWorktrees } from './agents.ts';
+import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardWorktrees } from './agents.ts';
+import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/desk.ts';
 import { findAgentLog, lastAssistantLine } from './feed/logs.ts';
 import { makeFeedMask } from './feed/route.ts';
 
@@ -108,6 +111,8 @@ export interface AgentView {
   checks: BoardAgent['checks'];
   age: string;
   updated: string;
+  /** When this work started. The file's `started`, else the file's birth, else `updated`. */
+  started: string;
   branch: string;
 }
 
@@ -199,6 +204,18 @@ function leadLine(tree: string, vendor: string, env: Env, root: string, fallback
   }
 }
 
+/** When the work started: the filed time, else the status file's birth, else the last write. */
+function workStarted(agent: BoardAgent, tree: string): string {
+  if (!Number.isNaN(Date.parse(agent.started))) return agent.started;
+  try {
+    const born = statSync(join(tree, BOARD_AGENT_FILE)).birthtimeMs;
+    if (born > 0) return new Date(born).toISOString();
+  } catch {
+    // No file time: the last write stands in.
+  }
+  return agent.updated;
+}
+
 /** One found agent as the page shows it. */
 function agentView({ agent, tree }: FoundAgent, env: Env, now: number, root: string): AgentView {
   return {
@@ -216,6 +233,7 @@ function agentView({ agent, tree }: FoundAgent, env: Env, now: number, root: str
     checks: agent.checks,
     age: ageText(agent.updated, now),
     updated: agent.updated,
+    started: workStarted(agent, tree.path),
     branch: tree.branch,
   };
 }
@@ -231,6 +249,8 @@ export interface BoardData {
   pulls: PullView[] | string;
   merged: MergedView[];
   worktrees: BoardWorktree[] | string;
+  /** The lead's desk: what it is doing, the decisions, and its last reply (#701). */
+  desk: LeadDesk;
   /** When the data was read. */
   updated: string;
 }
@@ -248,13 +268,22 @@ export function collectBoard(root: string, env: Env, gh: Gh, now: number = Date.
   return collectBoardWith(root, env, remote, remote ? readBoardPulls(gh, remote) : BOARD_NO_REMOTE_PULLS, now);
 }
 
+/** The lead's desk for this read: the file when it is good, and the reply from its session. */
+function leadDesk(root: string, env: Env, found: FoundAgent[]): LeadDesk {
+  const filed = readLeadDesk(root, env);
+  const lead = found.find((one) => one.agent.role === 'lead');
+  const reply = lead ? readLeadReply(lead.tree.path, lead.agent.vendor, env, root) : { reply: '', rest: '' };
+  return { ...(filed ?? EMPTY_DESK), reply: reply.reply, rest: reply.rest };
+}
+
 /**
  * The board's data with pull requests already read, or why there are none (#688). Only
  * the local parts are read here: the status files and `git worktree list`.
  */
 export function collectBoardWith(root: string, env: Env, remote: string | null, pulls: BoardPull[] | string, now: number = Date.now()): BoardData {
   const worktrees = readBoardWorktrees(root, env);
-  const agents = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees).map((found) => agentView(found, env, now, root));
+  const found = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees);
+  const agents = found.map((one) => agentView(one, env, now, root));
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {
     repo: hideHome(root, env),
@@ -266,6 +295,7 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
       .filter((pull) => pull.stage === 'merged' && now - Date.parse(pull.mergedAt) < MERGED_WINDOW_MS)
       .map((pull) => ({ number: pull.number, title: pull.title, url: webUrl(pull.url), mergedAt: pull.mergedAt })),
     worktrees: typeof worktrees === 'string' ? worktrees : worktrees.map((tree) => ({ path: hideHome(tree.path, env), branch: tree.branch })),
+    desk: leadDesk(root, env, found),
     updated: new Date(now).toISOString(),
   };
 }

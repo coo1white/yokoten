@@ -520,11 +520,12 @@ export function registerDesk(leadFolder: string, desk: string): string {
   return '';
 }
 
-/** The fields a session starts with: who runs, in which role, where, and that it works. */
+/** The fields a session starts with: who runs, in which role, where, when it started, and that it works. */
 export function startFields(vendor: string, isWorker: boolean, checkout: StatusCheckout, model: string): { set: Record<string, string>; fill: Record<string, string> } {
   return {
     set: { vendor, state: 'working', ...(model ? { model } : {}) },
-    fill: { role: isWorker ? 'engineer' : 'lead', worktree: checkout.top },
+    // `started` is set once. Later writes keep it, so the timeline bar does not move.
+    fill: { role: isWorker ? 'engineer' : 'lead', worktree: checkout.top, started: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') },
   };
 }
 

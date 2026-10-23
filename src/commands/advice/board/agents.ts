@@ -35,6 +35,8 @@ export interface BoardAgent {
   doing: string;
   /** When the agent last wrote, as filed, or '' when unknown. */
   updated: string;
+  /** When this work started, as filed, or '' when the file does not say. */
+  started: string;
   role: BoardRole;
   /** What the agent says of itself: still working, waiting for the owner, or done. */
   state: '' | 'working' | 'waiting' | 'done';
@@ -73,6 +75,7 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     worktree: fieldText(fields, 'worktree'),
     doing: fieldText(fields, 'doing'),
     updated: fieldText(fields, 'updated'),
+    started: fieldText(fields, 'started'),
     role: pickWord(fields, 'role', ROLES),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),

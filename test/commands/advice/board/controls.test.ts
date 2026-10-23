@@ -28,6 +28,7 @@ import type { Env } from '../../../../src/rules/config.ts';
 import { workerMarkAt, workerRole } from '../../../../src/rules/guards.ts';
 import * as codexHooks from '../../../../src/agents/runtimes/codex.ts';
 import * as grokHooks from '../../../../src/agents/runtimes/grok.ts';
+import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/desk.ts';
 import { type AgentView, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 
 // #603: a fake agent process. Tests pass it, so they never start a real agent. Each
@@ -43,7 +44,7 @@ function fakeAgents(): { spawner: BoardSpawner; started: { command: string; args
   return { spawner, started, killed };
 }
 
-const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', branch: '', ...fields });
+const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', started: '', branch: '', ...fields });
 
 // #603: the brief names the issue, the worktree and the model; each vendor starts with
 // its own headless command, and an unknown vendor has none.
@@ -84,8 +85,8 @@ test('board controls: the limits change', () => {
 
 // #603: the open issues as rows, or why gh cannot read them.
 test('board controls: the open issues', () => {
-  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }, { number: 'x' }, null]);
-  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }]);
+  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603', body: 'Depends on #601.', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z' }, { number: 'x' }, null]);
+  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z', dependsOn: [601] }]);
   assert.equal(readBoardIssues(() => { throw new Error('no net'); }, 'octo/demo'), 'gh could not list the open issues: run it again');
   assert.equal(readBoardIssues(() => 'oops', 'octo/demo'), 'gh gave no open issue list: run it again');
 });
@@ -109,7 +110,7 @@ test('board controls: the attention in the status files', () => {
 // #603: the waiting list latches an agent row while the agent is here, and drops it
 // when it leaves; Approve rows follow the pulls.
 test('board controls: the waiting list latches while the agent is here', () => {
-  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
+  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], desk: EMPTY_DESK, updated: '' };
   const held = [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated: '2026-10-22T10:00:00Z', kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
   const seen: BoardWaiting[] = [];
   assert.deepEqual(collectBoardWaiting(board, held, [], seen).map((row) => row.kind), ['guard']);
@@ -120,7 +121,7 @@ test('board controls: the waiting list latches while the agent is here', () => {
 // #603 re-inspection (LOW): a waiting row counted from the agent's last write, so a
 // rewrite reset the wait. The wait counts from when the row first showed instead.
 test('board controls: the wait counts from when the row first showed', () => {
-  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
+  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], desk: EMPTY_DESK, updated: '' };
   const seen: BoardWaiting[] = [];
   const at = Date.parse('2026-10-22T10:00:00Z');
   const held = (updated: string) => [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated, kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
@@ -196,7 +197,7 @@ test('board controls: an exited run frees its slot and answers already-stopped',
   assert.equal(stopBoardAgent(controls, first.name), `${first.name} already stopped`);
   const second = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a' });
   assert.ok(typeof second !== 'string', `the slot is free: ${second}`);
-  assert.deepEqual(collectBoardWaiting({ repo: 'r', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' }, [], controls.runs, []), [], 'a stopped run clears its rows');
+  assert.deepEqual(collectBoardWaiting({ repo: 'r', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '' }, [], controls.runs, []), [], 'a stopped run clears its rows');
 });
 
 // Board hygiene: the start log line holds the whole brief, so it must stay one line.
