@@ -129,7 +129,8 @@ export function killedLine(testName: string | undefined, command: string, timeou
  */
 export function runChild(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, 'encoding'> = {}): SpawnSyncReturns<string> {
   const timeout = options.timeout ?? CHILD_TIMEOUT_MS;
-  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, timeout, encoding: 'utf8' });
+  // Never a shell: the command and its arguments go to the program as they are, so no test value is read as shell code.
+  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, shell: false, timeout, encoding: 'utf8' });
   const line = killedLine(testNames.at(-1), command, timeout, result);
   if (line) process.stderr.write(line);
   return result;
