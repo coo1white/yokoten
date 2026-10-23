@@ -51,7 +51,10 @@ test('layers: no module imports from a layer above its own', () => {
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
 // and invoke.ts, which runs a command in-process (#475).
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
+// agent-count.test.ts checks the manifesto count against the guide (#487).
+const TEST_TOP = ['repo/agent-count.test.ts', 'repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
+// Kit prose has no src module. This test reads the skill files (#531).
+const PROSE_TESTS = ['setup/kit-habits.test.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -70,7 +73,7 @@ const filesUnder = (folder: string) =>
 function testFileProblems(modules: string[], tests: string[]): string[] {
   const problems: string[] = [];
   for (const path of tests) {
-    if (TEST_TOP.includes(path)) continue;
+    if (TEST_TOP.includes(path) || PROSE_TESTS.includes(path)) continue;
     const module = path.replace(/\.test\.ts$/, '.ts');
     if (module === path || !modules.includes(module)) problems.push(`test/${path} is not the test file of a src module (src/${module})`);
   }
@@ -85,7 +88,7 @@ function testFileProblems(modules: string[], tests: string[]): string[] {
 
 test('test files: each one is the test file of a src module, at the same path (#152)', () => {
   const modules = ['run/check.ts', 'setup/advice/adopt.ts', ...NO_TEST_FILE];
-  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts']), []);
+  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts', 'setup/kit-habits.test.ts']), []);
   assert.deepEqual(testFileProblems(modules, ['run/check.test.ts', 'setup/advice/adopt.test.ts', 'run/gone.test.ts', 'run/check/pr.test.ts', 'run/util.ts', 'top.test.ts']), [
     'test/run/gone.test.ts is not the test file of a src module (src/run/gone.ts)',
     'test/run/check/pr.test.ts is not the test file of a src module (src/run/check/pr.ts)',

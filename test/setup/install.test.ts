@@ -655,17 +655,21 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   assert.match(result.stdout, /^added your git name to the private marks \(not shown\)$/m);
   assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
   assert.match(result.stdout, /^optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown$/m);
+  assert.match(result.stdout, /^for example: your city, a company domain, a server name$/m);
+  assert.match(result.stdout, /type one; it is not shown\nfor example: your city, a company domain, a server name\n/);
+  assert.match(readFileSync(marks, 'utf8'), /^# for example: your city, a company domain, a server name$/m);
   assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
   assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git name\nJane Example\n# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   // git prints the placeholder at the source.
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');
   assert.match(sandbox.git('log', '-1').stdout, /^Author: owner <owner@noreply\.invalid>$/m);
-  // A second run appends nothing.
+  // A second run appends nothing. It still asks: the city and the domains are not in the file yet.
   const before = readFileSync(marks, 'utf8');
   result = await sandbox.call(['install']);
   assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks$/m);
   assert.doesNotMatch(result.stdout, /already has what/, 'the file is named once');
+  assert.match(result.stdout, /^optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown\nfor example: your city, a company domain, a server name$/m);
   assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/mailmap: it already maps your emails$/m);
   assert.equal(readFileSync(marks, 'utf8'), before);
   // The user's own mailmap.file stays.
@@ -673,6 +677,25 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   result = await sandbox.call(['install']);
   assert.match(result.stdout, /^kept your own git mailmap.file setting; add the lines of ~\/\.config\/yokoten\/mailmap to that file$/m);
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '/elsewhere/mailmap\n');
+});
+
+test('install: the mark example follows an empty file, and a later run that does not ask leaves it out (#525)', async () => {
+  const sandbox = makeSandbox();
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  const example = 'for example: your city, a company domain, a server name';
+  // The sandbox git name is a shared account, and its email is a public noreply: no mark is added.
+  let result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^~\/\.config\/yokoten\/private-marks has no marks yet; run `yokoten marks add` and type your name, your city or a domain; it is not shown\nfor example: your city, a company domain, a server name$/m);
+  assert.equal(result.stdout.split('\n').filter((line) => line === example).length, 1);
+  assert.match(readFileSync(marks, 'utf8'), /^# for example: your city, a company domain, a server name$/m);
+  // A city and a domain are the kinds install asked for. The next run does not ask.
+  writeFileSync(marks, `${readFileSync(marks, 'utf8')}mycity\nexample.com\n`);
+  result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /has no marks yet|optional: add /);
+  assert.doesNotMatch(result.stdout, /for example: your city, a company domain, a server name/);
+  assert.ok(!result.stdout.includes('mycity'), 'install printed a mark');
 });
 
 test('install: an existing mailmap keeps its lines and gets only the missing ones; a privacy step never stops install (#390)', async () => {

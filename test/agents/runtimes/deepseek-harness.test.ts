@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { addProjectHooks, initLines, PATCH, profilesWithBridge, projectHooksState, readToolCall, WINDOWS_GAP } from '../../../src/agents/runtimes/deepseek-harness.ts';
-import { agentHooks } from '../../../src/setup/doctor.ts';
+import { agentHooks } from '../../../src/setup/doctor/index.ts';
 import { makeSandbox } from '../../repo/helpers.ts';
 
 /** A PreToolUse payload in the shape the dsh 0.2.1-rc.2 hook bridge sent it in a real run (#334). */
@@ -65,8 +65,9 @@ test('deepseek-harness project files: init writes the guard and the launch patch
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /added the DeepSeek Harness tool-call hook in \.dsh\/hooks\.json/);
   assert.match(result.stdout, /added the DeepSeek Harness launch patch in \.dsh\/yokoten\.patch\.yml/);
-  assert.match(result.stdout, /dsh plugin --profile <profile> add @deepseek-ai\/dsh-hooks-claude-code@0\.2\.1-rc\.2 && dsh plugin --profile <profile> add @deepseek-ai\/dsh-hook-protocol@0\.2\.1-rc\.2/);
-  assert.match(result.stdout, /dsh <profile> --patch \.dsh\/yokoten\.patch\.yml/);
+  // DSH_HOME has no profiles directory yet, so the bridge commands stay out (#654).
+  assert.doesNotMatch(result.stdout, /dsh plugin --profile/);
+  assert.doesNotMatch(result.stdout, /dsh <profile> --patch/);
   const written = JSON.parse(readFileSync(file, 'utf8'));
   assert.deepEqual(Object.keys(written.hooks), ['PreToolUse'], 'no Stop hook: the bridge sends it back with no loop guard');
   assert.equal(written.hooks.PreToolUse.length, 2, "another hook's group stays");
@@ -87,6 +88,10 @@ test('deepseek-harness project files: init writes the guard and the launch patch
   writeFileSync(join(modules, 'dsh-hook-protocol', 'package.json'), '{}');
   assert.deepEqual(profilesWithBridge({ DSH_HOME: dshHome }), { found: ['tui'], all: ['tui'] });
   assert.match(await doctor(), /ok +deepseek-harness-hook: the bridge is in profile tui; .*Only a real deny proves it/);
+  // The profiles directory is dsh's home, so init prints the bridge commands (#654).
+  const withDsh = await sandbox.call(['init'], { extra: { DSH_HOME: dshHome } });
+  assert.match(withDsh.stdout, /dsh plugin --profile <profile> add @deepseek-ai\/dsh-hooks-claude-code@0\.2\.1-rc\.2 && dsh plugin --profile <profile> add @deepseek-ai\/dsh-hook-protocol@0\.2\.1-rc\.2/);
+  assert.match(withDsh.stdout, /dsh <profile> --patch \.dsh\/yokoten\.patch\.yml/);
   // Out of date, then a file init can't edit.
   writeFileSync(join(sandbox.repo, '.dsh', 'yokoten.patch.yml'), '[]\n');
   assert.match(await doctor(), /note +deepseek-harness-hook: \.dsh\/yokoten\.patch\.yml is out of date/);
