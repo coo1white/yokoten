@@ -54,6 +54,7 @@ svg.i.s{width:14px;height:14px}
 @keyframes need-pulse{0%{transform:scale(1)}40%{transform:scale(1.35)}100%{transform:scale(1)}}
 .badge.pulse{animation:need-pulse .7s ease-out 1}
 .needs-panel{width:min(360px,calc(100vw - 16px));max-height:min(420px,70dvh);overflow:auto}
+.phone-desk{display:none}
 .need-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;padding:8px 10px;border-radius:8px}
 .need-item:hover,.need-item:focus-visible{background:var(--accent)}
 .need-item .ttl{white-space:normal}
@@ -224,6 +225,7 @@ h2.sh{line-height:inherit}
 .app{grid-template-rows:52px auto auto;align-content:start}
 .main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;align-content:start;grid-template-areas:"center" "agents"}
 #pinned{display:none}
+.phone-desk{display:block;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
 #agents{border-right:0}
 .gantt{padding:8px}
 .gantt-row{grid-template-columns:minmax(0,1fr)}

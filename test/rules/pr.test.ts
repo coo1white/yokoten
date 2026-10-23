@@ -22,6 +22,7 @@ import {
   checkIssueTitle,
   checkOwnedTier,
   hasMadeWith,
+  parseMadeWith,
   checkPullRequest,
   checkPullRequestBody,
   checkPullRequestTitle,
@@ -186,6 +187,51 @@ test('pull request body: the last line is `Made with <agent> (<model>)` (#570)',
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides it');
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- 🤖 Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides the emoji line');
   assert.deepEqual(bodies(`${goodPr().body}<!-- a note -->\n`), [], 'a trailing comment is set aside');
+});
+
+// #673: the line may name the reviewers; the roles can be read back.
+test('pull request body: the Made with line may name one or two reviewers (#673)', () => {
+  const made = '\nMade with worker (opus)\n';
+  const bodies = (line: string) => checkPullRequestBody({ body: goodPr().body.replace(made, `\n${line}\n`), files: goodPr().files }, DEFAULTS);
+  const full = '🤖 Made with worker Claude Code (Opus 5.5), reviewed by Grok (grok-5) and Muse (Spark), lead Claude Code (Opus 5.5)';
+  // Positive controls: with two reviewers, with one, and the old forms without any.
+  assert.deepEqual(bodies(full), []);
+  assert.deepEqual(bodies('🤖 Made with worker Claude Code (Opus 5.5), reviewed by Grok (grok-5), lead Claude Code (Opus 5.5)'), []);
+  assert.deepEqual(bodies('🤖 Made with worker Claude Code (Opus 5.5), lead Claude Code (Opus 5.5)'), []);
+  assert.deepEqual(bodies('Made with worker (opus)'), []);
+  // The roles come back for a later count.
+  assert.deepEqual(parseMadeWith(full)?.roles, {
+    writers: [{ vendor: 'Claude Code', model: 'Opus 5.5' }],
+    reviewers: [{ vendor: 'Grok', model: 'grok-5' }, { vendor: 'Muse', model: 'Spark' }],
+    leads: [{ vendor: 'Claude Code', model: 'Opus 5.5' }],
+    others: [],
+  });
+  assert.deepEqual(parseMadeWith('Made with worker Claude Code (Opus 5.5), lead Claude Code (Opus 5.5)')?.roles?.reviewers, []);
+  assert.deepEqual(parseMadeWith('Made with worker X (a), reviewed by Grok (grok-5), lead Z (c)')?.roles, { writers: [{ vendor: 'X', model: 'a' }], reviewers: [{ vendor: 'Grok', model: 'grok-5' }], leads: [{ vendor: 'Z', model: 'c' }], others: [] });
+  // Two workers or two leads are all kept.
+  const twin = parseMadeWith('Made with worker A (a), worker B (b), lead C (c), lead D (d)')?.roles;
+  assert.deepEqual([twin?.writers.map((x) => x.vendor), twin?.leads.map((x) => x.vendor)], [['A', 'B'], ['C', 'D']]);
+  // Role words ignore case and extra spaces; names are trimmed.
+  assert.deepEqual(parseMadeWith('Made with Worker  X (a),  Reviewed  by  Y (b)  and  Z (c),  LEAD W (d)')?.roles, { writers: [{ vendor: 'X', model: 'a' }], reviewers: [{ vendor: 'Y', model: 'b' }, { vendor: 'Z', model: 'c' }], leads: [{ vendor: 'W', model: 'd' }], others: [] });
+  assert.deepEqual(parseMadeWith('Made with lead (opus), worker (sonnet)')?.roles?.others, [{ vendor: 'lead', model: 'opus' }, { vendor: 'worker', model: 'sonnet' }]);
+  assert.equal(parseMadeWith('nothing here'), null);
+  // A malformed reviewed-by part is reported with a fix line.
+  for (const bad of [
+    'Made with worker X (a), reviewed by Y, lead Z (c)',
+    'Made with worker X (a), reviewed by Y (b) and, lead Z (c)',
+    'Made with worker X (a), reviewed by Y (b) and Z (c) and W (d), lead Z (c)',
+    'Made with worker X (a), reviewed by (b), lead Z (c)',
+    'Made with worker X (a), reviewed by Y (b), reviewed by Z (c), reviewed by W (d), lead L (e)',
+    'Made with worker X (a), reviewed by Y (b) and Z (c), reviewed by W (d), lead L (e)',
+    'Made with worker X (a), reviewed by Y (b), and Z (c), lead L (e)',
+    'Made with worker X (a), reviewed by Y (b) and Z (c) and W (d), not-a-pair',
+  ]) {
+    const found = bodies(bad);
+    assert.deepEqual(found.map((p) => p.id), ['pr-made-with'], bad);
+    assert.match(found[0].what, /reviewed by/, bad);
+    assert.match(found[0].fix, /^write `reviewed by <agent> \(<model>\)`/, bad);
+    assert.equal(hasMadeWith(bad), false, bad);
+  }
 });
 
 test('pull request: docs, tests and CI need no changelog line; a reason lets code through (#47)', () => {

@@ -79,7 +79,7 @@ export const RULES = {
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
     why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
-    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c` and `--config-env`. It stops GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and a shell write to .git/config, .git/hooks or .githooks (a redirect, cp, mv, tee, sed -i, rm, chmod, ln, install, truncate); reading them passes. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
   alias: {
@@ -101,6 +101,17 @@ export const RULES = {
     rule: 'no piping a download into a shell',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
     check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+  },
+  'gh-token': {
+    rule: "an agent does not see or send gh's token",
+    why: "with gh's token, curl or a script calls the host directly, around every rule the guard keeps for gh",
+    check: "the tool-call guard stops, for every agent, the gh commands that print the token (`gh auth token`, `gh auth status --show-token`, `gh auth git-credential`, `gh config get oauth_token`), git's and the system's credential reads (`git credential fill`, a credential helper's `get`, `-c credential.*`, `~/.git-credentials`, gh's hosts.yml, `security find-…-password -w`, `secret-tool lookup`), GIT_TRACE_REDACT turned off, the token's variables (GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN) expanded in bash, PowerShell or cmd or named to a program that runs code, and `-c` or git settings in the environment for the bot's git; run gh itself, which uses the token without showing it",
+    docs: guide('what-it-doesnt-do'),
+  },
+  'workflow-disable': {
+    rule: 'an agent does not turn a workflow off',
+    why: 'a workflow that is off runs no checks, on any pull request, until someone turns it on again',
+    check: 'the tool-call guard stops `gh workflow disable` for every agent; only the owner turns a workflow off',
   },
   'run-remove': {
     rule: 'no agent cancels or deletes an Actions run',
@@ -174,6 +185,12 @@ export const RULES = {
     check: '`check --pr` lists each `yokoten-ignore` comment on a line the pull request adds, and each line it adds to `.yokotenignore`, as a notice on the pull request page; it never fails the check',
     docs: guide('privacy'),
   },
+  'home-folder': {
+    rule: 'an agent does not change the home folder for a command (core rule 11)',
+    why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
+    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); before another program, and reading $HOME, it passes',
+    docs: guide('privacy'),
+  },
   secret: {
     rule: 'no secret in the repo: no token and no private key (core rule 11)',
     why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone',
@@ -245,8 +262,8 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-made-with': {
-    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
-    why: 'every pull request names each AI and model that made it',
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, and optionally one `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)` part, at most two reviewers (core rule 8)',
+    why: 'every pull request names each AI and model that made it, and the ones that reviewed it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },

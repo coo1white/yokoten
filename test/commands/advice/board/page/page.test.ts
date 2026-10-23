@@ -114,6 +114,9 @@ test('board page: the desk and the timeline fit light, dark and a phone', () => 
   assert.match(phone, /\.gantt\{padding:8px\}/);
   assert.match(phone, /\.gantt-row\{grid-template-columns:minmax\(0,1fr\)\}/);
   assert.match(phone, /\.lead-desk \.ans\{min-height:40px/);
+  assert.match(phone, /#pinned\{display:none\}/, 'a phone still hides the lead column');
+  assert.ok(page.indexOf('.phone-desk{display:none}') < page.indexOf('@media (max-width:700px)'), 'a wide screen hides the bell copy of the desk');
+  assert.match(phone, /\.phone-desk\{display:block/, 'a phone shows the desk under the bell');
 });
 
 // A positive control: the break check catches each way out of the script tag.

@@ -5,7 +5,7 @@ import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EMPTY_DESK } from '../../../../../../src/commands/advice/board/feed/read/desk.ts';
-import { renderSide } from '../../../../../../src/commands/advice/board/page/browser/column.ts';
+import { fillNeeds, renderSide } from '../../../../../../src/commands/advice/board/page/browser/column.ts';
 import { loadUi, type PageData, type PageState } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
 import { boardScript } from '../../../../../../src/commands/advice/board/page/page.ts';
 import { LANG_NAMES, WORDS } from '../../../../../../src/commands/advice/board/page/words.ts';
@@ -30,6 +30,10 @@ class FakeNode {
   append(...nodes: FakeNode[]): void {
     this.children.push(...nodes);
   }
+  hidden = false;
+  replaceChildren(...nodes: Array<FakeNode | null | undefined>): void {
+    this.children = nodes.filter((node): node is FakeNode => node != null);
+  }
   get textContent(): string {
     return this.tag === '#text' ? this.text : this.children.map((child) => child.textContent).join('');
   }
@@ -38,7 +42,7 @@ class FakeNode {
 Object.assign(globalThis, {
   document: {
     createElement: (tag: string) => new FakeNode(tag),
-    createElementNS: (_space: string, tag: string) => new FakeNode(tag),
+    createElementNS: (_: string, tag: string) => new FakeNode(tag),
     createTextNode: (text: string) => Object.assign(new FakeNode('#text'), { text }),
   },
   localStorage: { getItem: () => null, setItem: () => undefined },
@@ -81,4 +85,31 @@ test('board column: each drawing function is in the page script once', () => {
     const found = script.match(new RegExp(`function ${name}\\b`, 'g')) ?? [];
     assert.equal(found.length, 1, name);
   }
+});
+
+test('board column: the bell carries the desk, for a phone', () => {
+  const menu = new FakeNode('div');
+  const pageDocument = globalThis.document as { getElementById?: (id: string) => FakeNode | null };
+  pageDocument.getElementById = (id: string) => (id === 'needs-menu' ? menu : null);
+  const data: PageData = {
+    repo: '~/repo', repoName: 'repo', repoUrl: '',
+    agents: [agent({}), agent({ key: '~/desk', name: 'Bea', nickname: 'Bold Ada', isMain: false, role: 'lead' })],
+    needs: [{ kind: 'approve', title: 'Approve PR #7', why: 'secret approval row', agentKey: '', pull: 7 }],
+    pulls: [], merged: [], worktrees: [],
+    desk: { ...EMPTY_DESK, now: 'Writing the timeline', decisions: [{ question: 'Ship the board?', recommend: 'yes', answers: ['yes', 'no'] }] },
+    updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} },
+  };
+  const state = makeState(data);
+  state.isNeedsOpen = true;
+  fillNeeds(state, data);
+  const phone = menu.children.find((node) => node.getAttribute('class') === 'phone-desk');
+  assert.ok(phone, 'the desk sits in the bell');
+  assert.match(phone.textContent, /Ship the board\?/);
+  assert.match(phone.textContent, /Writing the timeline/);
+  assert.match(menu.textContent, /Needs your approval/, 'Needs you stays in the bell');
+  assert.match(menu.textContent, /PR #7/);
+  const quiet: PageData = { ...data, agents: [], needs: [], desk: EMPTY_DESK };
+  fillNeeds(makeState(quiet), quiet);
+  assert.equal(menu.children.some((node) => node.getAttribute('class') === 'phone-desk'), false, 'an empty desk stays out of the bell');
+  assert.match(menu.textContent, /Nothing needs you right now/);
 });

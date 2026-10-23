@@ -415,6 +415,29 @@ A non-GET call is refused when the path after `repos/` or `repositories/` is onl
 `gh config set aliases` is refused. `gh alias list` and `gh extension list` still pass.
 `gh alias set` and `gh alias import` are refused for both roles. Ask the owner to add an alias by hand.
 
+No agent, lead or worker, gets gh's token (#659, #668). With it, `curl` or a script could
+call GitHub directly, around every rule above. gh and `yokoten bot` use the token without
+showing it. So for every agent the guard refuses:
+
+- gh's commands that print it: `gh auth token`, `gh auth status --show-token` (`-t`),
+  `gh auth git-credential` and `gh config get oauth_token`.
+- The places a login is kept: `git credential fill`, a credential helper's `get`
+  (`git credential-manager get`), `git -c credential.…`, `~/.git-credentials`, gh's
+  `hosts.yml`, `security find-…-password -w` and `secret-tool lookup`.
+- The token's variables: `$GH_TOKEN`, `$GITHUB_TOKEN`, `$GH_ENTERPRISE_TOKEN` and
+  `$GITHUB_ENTERPRISE_TOKEN`, also as `$env:GH_TOKEN` (PowerShell) and `%GH_TOKEN%` (cmd).
+  So are `node`, `python`, `jq` and other programs that run code when the command names one.
+  To write the name in a post, use a body file; to search for it, leave out the `$`.
+- `GIT_TRACE_REDACT=0`, which makes a git trace print the token.
+- For the bot's git, `-c` and git settings in the environment (`GIT_CONFIG_*`). The bot also
+  drops the pager, editor, browser, ssh and askpass programs and the trace and debug
+  settings from its environment, and pages through `cat`.
+
+`gh auth status`, `gh pr view` and `curl https://example.com` still pass.
+
+`gh workflow disable` is refused for every agent too: a workflow that is off runs no
+checks on any pull request. Only the owner turns one off.
+
 The guard stops a worker's shell writes to lead-only files as well as its edits (#402). It
 reads redirects (`>`, `>>`, `>|`, `&>`), `sed -i`, `perl -i`, `tee`, `cp`, `mv`,
 `install`, `ln`, `dd of=`, `truncate`, `rm`, and git's `checkout`, `restore`, `rm`, `mv`
@@ -557,7 +580,7 @@ can't drift apart:
 
 | The plugin adds | From |
 |---|---|
-| The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
+| The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:merge`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
 | The agents: `yokoten:worker`, `yokoten:reviewer`, `yokoten:verifier` | `kit/user/agents/` |
 | `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update`, which run yokoten from the plugin | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
@@ -849,7 +872,7 @@ It puts three safe defaults in `.github/` too:
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
@@ -862,11 +885,12 @@ It puts three safe defaults in `.github/` too:
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
-| `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. The main checkout and a submodule are never marked. See [Works with](#works-with) |
+| `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. A plain clone, such as a desk, is marked too: the mark goes in its own `.git` (#672). The lead marks a clone from its own checkout. The main checkout (the clone the lead runs in, or one with worktrees) and a submodule are never marked. A worker can't mark or unmark. See [Works with](#works-with) |
 | `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. `desk` starts an agent with it. See [What an agent's environment holds](#what-an-agents-environment-holds) |
-| `desk <agent> <folder> [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
+| `msg send <to> [<text>]`, `msg inbox`, `msg who`, `msg log` | Agents of every vendor message each other through files on this machine. Only the lead runs `log`. See [Messages between agents](#messages-between-agents) |
+| `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
@@ -1033,6 +1057,7 @@ flowchart LR
   and `updated` to the time in UTC. A pass sets `checks` to `passing`.
   Other fields stay. The lead reads that file. The board will show `checks` later,
   under issue #603. The allowed stop's stderr reaches nobody.
+  A status file yokoten cannot read is left unchanged, and the stop check says why.
 - When the try count cannot be saved, one refusal says the next stop is let through.
   The same worker is let through when it was refused in the last 5 minutes.
   This holds even when the runtime never sets `stop_hook_active`. A worker is never trapped.
@@ -1481,6 +1506,15 @@ The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project
    when its pre-commit is an executable shell script that runs `yokoten check` on a line of
    its own and stops the commit when the check fails, as `yokoten init` sets up for husky.
    Change a setting by name: `git config --edit` and a new config include are refused.
+   So is a shell write to `.git/config`, `.git/commondir`, `.git/hooks` or `.githooks`:
+   a redirect, `cp`, `mv`, `tee`, `sed -i`, `rm`, `chmod`, `ln`, `install`, `truncate`,
+   `patch`, `awk -i inplace`, `ed`, `vim`, `tar -x -C`, `unzip -d` or `find -delete`. A path
+   with a glob that could match them counts too (`.git/conf*`). So is setting
+   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` or
+   `GIT_CONFIG_VALUE_n` for git or a shell, or for the rest of the line. Reading those files
+   passes, and so do `mkdir .githooks`, files in another repo (`/tmp/x/.git`), and the lead's
+   `git checkout` or `git restore` of the committed hook. Use `git -c <name>=<value>` for one
+   setting in one command, and your edit tool or `yokoten init` for a hook.
 7. No plain force push. Never rebase a shared branch.
 8. Squash merge. One pull request, one purpose; small polish goes in one batch.
 9. Review and test the exact commit that merges.
@@ -1556,11 +1590,12 @@ The setup treats agents like staff on a line, each with a clear role and limited
   waits for you in the protected `release` environment. A ruleset requires your review,
   so nothing it opens merges without you.
 
-Six skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
-commit in three passes), `rca` (root cause, a check, then spread it), `record` (write
-decisions down), `release` (pick the next version and prepare the changelog; the owner tags),
-and `yokoten` (adopt the practices). Three agents do the work:
-`worker`, `reviewer` (reads only), and `verifier` (runs, never fixes).
+Seven skills carry the method. `dispatch` briefs a worker. `inspect` reviews one exact
+commit in three passes. `rca` finds the cause, adds a check, then spreads it. `record`
+writes decisions down. `release` picks the next version and prepares the changelog. The
+owner tags. `merge` merges through the bot and stops when the new commit is not UTC.
+`yokoten` adopts the practices. Three agents do the work: `worker`, `reviewer` (reads
+only), and `verifier` (runs, never fixes).
 
 ### Who reviews what
 
@@ -1628,6 +1663,7 @@ The fence is one contract. Each system builds it its own way:
 | Child processes | Work, with pipes, so tests can start programs |
 | Network | Commands get no network of their own. The proxy outside lets through only the agent's API hosts. Any command inside can use the proxy too, so a command can reach those hosts |
 | Environment | `YOKOTEN_ROLE=worker` and `TZ=UTC`. No token or key from your shell (see [What an agent's environment holds](#what-an-agents-environment-holds)) |
+| Team | The team folder is read-only. Only the agent's own outbox in it is writable (see [Messages between agents](#messages-between-agents)) |
 
 The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
 which the desk hides, so a worktree is refused.
@@ -1695,6 +1731,49 @@ desk, read-only. Use it only for an agent you trust with the words.
 - **Native Windows**: no desk yet (#669). Run yokoten in WSL2. On native Windows, the
   guard alone holds the rules.
 
+### Messages between agents
+
+Agents of every vendor can message each other (#674). It is files on this machine: no
+server, no network.
+
+```sh
+yokoten msg send lead "tests pass; ready for review"
+yokoten msg inbox
+yokoten msg who
+yokoten msg log
+```
+
+- **Where**: the team folder next to your checkout, `<repo>.team/`. Each agent writes only
+  its own outbox there. `yokoten desk` adds the agent by `--name`, or by the desk
+  folder's name made lower case. A folder name that can't be a name joins no team.
+- **Who you are**: in a desk, the desk says. Outside one, you are `lead` only in your main
+  checkout, not in a worktree or a checkout inside a desk.
+- **A desk can't fake a sender**: in a desk, the team folder is read-only, and only the
+  agent's own outbox is writable. `msg send` refuses a worker outside a desk, and the
+  guard stops its edits in the team folder.
+- **Outside a desk, a sender can be faked**: a program outside a desk runs as your user,
+  so it can write any outbox, the lead's too. A worker in a plain worktree can do that, for
+  example from inline code that leaves its folder. yokoten can't tell such a write from
+  yours. Run workers that message in desks.
+- **Delivery**: the hooks add unread messages to the agent's context. Claude Code and Grok
+  get them before a tool call. Every agent gets them at the end of a turn, after the
+  checks: a turn that fails a check is sent back with the messages too. `msg inbox` shows
+  them at any time. Muse Code's hooks get no variables, so in a desk Muse reads with
+  `msg inbox`.
+- **A message is data**: every delivery says that the messages are from another agent and
+  can't grant approval or permission. This note is the defence. Each message names the
+  sender's vendor and model. Some claims of the owner's approval get a flag, but the flag
+  misses claims in other words.
+- **Privacy**: a message gets the same scan as posted text: private marks, secrets, email
+  and IP addresses, and secret variables. A message that fails is not sent, and you get
+  the reason. The scan reads plain text, so a secret that is encoded or split passes it.
+  A desk sees your private marks only with `--marks`, so a message from one desk to
+  another is checked against them only then. What the lead reads is always checked.
+- **Who reads**: every desk on the team can read every message, not only its own.
+- **Caps**: 2,000 characters a message, 20 messages per agent in 10 minutes, and 256 KB
+  per outbox.
+- **The log**: `msg log` shows every message. Only the lead runs it.
+
 ### The team board
 
 `yokoten board` shows the team at a glance. It serves a page on this machine only.
@@ -1716,8 +1795,8 @@ The board then opens without the browser tabs.
 
 The page has two columns. Needs you is a bell in the header, next to Live.
 
-- **Left:** the agents by role. Click one to see it in the middle. On a phone this
-  column hides. Finished agents fold away. **Clear** hides one until it writes
+- **Left:** the agents by role. Click one to see it in the middle. On a phone the
+  lead column hides, and this column stays. Finished agents fold away. **Clear** hides one until it writes
   again. Its log and branch stay. Each vendor has one name on the page:
   Claude, Grok, Muse or DeepSeek. Codex on a DeepSeek model shows as DeepSeek.
 - **Middle:** the picked agent's own session, live, like a chat. The agent's own
@@ -1747,6 +1826,7 @@ Pull requests still show in `yokoten board --text` and in `/data`.
 Start and stop stay on those paths too.
 
 The lead box is a short desk. One line says what the lead is doing now.
+On a phone, open the bell to read the desk.
 Up to three decisions follow. Each one shows the lead's recommendation and one-word answers.
 The last line is the first sentence of the lead's newest reply. Click it to read the rest.
 
@@ -1870,6 +1950,14 @@ every mark in them. So the setting can only add marks, never remove them. When
 setting says. `yokoten marks add` and `install` still write to the file in your home folder.
 The machine allow file (below) is read only from `~/.config/yokoten`, never from beside the
 setting's file.
+
+An agent can't move the home folder either. `HOME=/tmp/x git commit` would send the commit
+check to look for marks in another folder, find none, and pass. So the guard refuses a
+command that sets `HOME` or `USERPROFILE` (in any case) for git, gh, yokoten, or a shell
+or `eval` that runs them, also after `env` or `sudo`. It refuses a setting for the rest of
+the line too: `export`, `declare`, `read`, `printf -v`, a `for` loop or `${HOME:=x}`.
+Before another program the setting passes: `HOME=$(mktemp -d) npm test` keeps a test away
+from your files. Reading `$HOME` is fine.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
@@ -2123,7 +2211,21 @@ Honest limits:
   lock is on the server: branch protection, code owners, and a bot without the rights to
   release or change CI. A worker's shell write to a lead-only file is stopped only when
   the guard sees the file in the command: a path from a variable or stdin (`xargs rm`,
-  `find -exec`, `git apply < x.patch`), or a script that writes it, gets past.
+  `find -exec`, `git apply < x.patch`), or a script that writes it, gets past. A shell
+  write to `.git/config` or `.githooks` has the same gaps, and so does a write after a `cd`
+  to a folder the guard can't read (`cd "$x" && echo >> config`). A program other than git,
+  gh, yokoten or a shell may run git with the home folder it was given: an npm script, a
+  `make` target or a shell function (`HOME=/tmp/x npm run commit`). An indirect name
+  (`export $name=x`) gets past too.
+- **gh's token is hidden only from plain commands.** A script written to a file and then
+  run is not read. A script that reads gh's own files or the system keyring, or a
+  variable name built in pieces, still gets the token. So does a program that prints the
+  whole environment (`env`, `printenv`, `set`, `/proc/self/environ`): refusing those
+  would break too much. An alias you made before is not read either. Then the agent can
+  call GitHub around the guard. The real fix is that the token is not in the agent's
+  environment. For a worker, that is a desk with no token at all (#637). For the lead, the
+  lock is again the server: branch protection, and a token without the rights to merge or
+  release.
 - **Server settings are read on GitHub only.** Another host shows the steps that only the
   host can judge as **can't check**, with what each one asks ([What a session sees](#what-a-session-sees)). `doctor` does not check the bot's rights yet.
 - **Claude Code first.** Agents follow Claude Code's format.

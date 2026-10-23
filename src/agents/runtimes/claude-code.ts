@@ -38,6 +38,12 @@ export function readToolCall(input: unknown): Action {
 export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
 
 /**
+ * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`
+ * on exit 0, with no decision, so Claude Code's own permission rules still decide the call.
+ */
+export const formatContext = (text: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
+
+/**
  * How the hook changes a shell command before it runs (#390): PreToolUse's
  * `updatedInput`, on exit 0. It replaces the whole tool input, so the other fields
  * (description, timeout) are copied. Claude Code applies `updatedInput` only with a

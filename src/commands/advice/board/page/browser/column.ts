@@ -64,13 +64,21 @@ export function renderNeedItem(state: PageState, need: NeedView, now: number): H
   return el('div', { class: 'need-item', role: 'listitem', tabindex: '0' }, el('span', { class: 'ttl' }, what), line ? el('span', { class: 'meta' }, line) : null, age ? el('span', { class: 'age' }, age) : null, link);
 }
 
-/** Fill the header panel from the latest rows. A finished row is already gone from the data. */
+/**
+ * Fill the header panel from the latest rows. A finished row is already gone from the data.
+ * On a phone the lead column is hidden, so the same desk is drawn here too. Wide screens
+ * hide that copy with CSS.
+ */
 export function fillNeeds(state: PageState, data: PageData): void {
   const menu = document.getElementById('needs-menu');
   if (!menu) return;
   menu.hidden = state.isNeedsOpen !== true;
   const rows = data.needs.length ? data.needs.map((need) => renderNeedItem(state, need, Date.now())) : [el('p', { class: 'quiet' }, say(state, 'nothingNeeds'))];
-  menu.replaceChildren(el('div', { role: 'list' }, ...rows));
+  const parts: HTMLElement[] = [el('div', { role: 'list' }, ...rows)];
+  const lead = data.agents.find((agent) => isCheckoutLead(agent));
+  const hasDesk = !!data.desk && (data.desk.now !== '' || data.desk.decisions.length > 0 || data.desk.reply !== '');
+  if (lead || hasDesk) parts.push(el('div', { class: 'phone-desk' }, renderDesk(state, data, lead)));
+  menu.replaceChildren(...parts);
 }
 
 export function vendorChip(agent: AgentView): HTMLElement {

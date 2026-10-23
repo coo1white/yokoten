@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
@@ -319,15 +319,26 @@ function readSmallFile(path: string): string | null {
 
 /**
  * Why the checkout at or above `folder` makes a session a worker: `mark`, its git folder
- * holds the mark or its path is on the worker list (#566); `broken`, its `.git` or the
- * git folder it names can't be read, so the guard fails closed; null, it does not (a main
- * checkout, an unmarked worktree, no checkout). `env` finds the worker list; without a
+ * holds the mark (a worktree's, or a marked clone's own `.git`, #672) or its path is on the
+ * worker list (#566); `broken`, its `.git` or the git folder it names can't be read, so the
+ * guard fails closed; null, it does not (an unmarked main checkout or worktree, no checkout). `env` finds the worker list; without a
  * home folder there is no list, and only the mark counts.
  */
 export function workerMarkAt(folder: string, env: Env = {}): 'mark' | 'broken' | null {
   const link = gitLinkAbove(folder);
-  if (link === null || link.kind === 'folder') return listedWorker(folder, env) ? 'mark' : null;
+  if (link === null) return listedWorker(folder, env) ? 'mark' : null;
   if (link.kind === 'broken') return 'broken';
+  if (link.kind === 'folder') {
+    // A plain clone the lead marked, such as a desk (#672): the mark is in its own `.git`.
+    // Muse Code drops YOKOTEN_ROLE from its hooks, so there this file alone makes a worker.
+    try {
+      statSync(join(link.gitDir, WORKER_MARK));
+      return 'mark';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+    return listedWorker(folder, env) ? 'mark' : null;
+  }
   try {
     statSync(join(link.gitDir, WORKER_MARK));
     return 'mark';
@@ -375,6 +386,9 @@ export function markNote(folders: string[], env: Env = {}): string {
     const main = link?.kind === 'file' ? mainCheckout(link.gitDir) : null;
     const lead = main ? `the lead works in the main checkout, ${main}` : 'the lead works in the main checkout';
     if (why === 'broken') return `yokoten treats this session as a worker because the .git link in ${link?.top ?? folder} can't be read; ${lead}`;
+    if (link?.kind === 'folder' && existsSync(join(link.gitDir, WORKER_MARK))) {
+      return `this clone (${link.top}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; the lead works outside it`;
+    }
     if (link?.kind === 'file') return `this worktree (${link?.top ?? folder}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
     return `this folder (${folder}) is on the worker list, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
   }
@@ -496,6 +510,8 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
   const finds: { starts: string[]; args: string[] }[] = [];
   const gitFolders: { path: string; written: string }[] = [];
   const home = homeOf(env);
+  // A find's start folders: the find loop below decides whether it reaches a git folder.
+  const findStarts = new Set<string>();
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
@@ -512,6 +528,7 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
       if (found) {
         finds.push(found);
         targets.push(...found.starts);
+        for (const start of found.starts) findStarts.add(start);
       }
     }
     if (isGit(program)) {
@@ -546,19 +563,27 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
       if (held.some((dir) => dir === full || dir.startsWith(inside))) return markFinding(`this command changes files under ${start}, which holds a git folder, where the worker mark is kept`);
     }
   }
-  for (const target of targets) {
-    const refusal = configTargetRefusal(target, context);
+  for (const written of targets) {
+    const refusal = configTargetRefusal(written, context);
     if (refusal) return refusal;
-    if (mayBeGitPath(target)) return markFinding(`this command changes ${target}, which may be a .git folder or the worker mark`);
+    if (mayBeGitPath(written)) return markFinding(`this command changes ${written}, which may be a .git folder or the worker mark`);
+    // `$PWD` and `~+` are the folder the command runs in, `~` and `$HOME` the home folder (#672).
+    const target = folder === null ? written : withHomeRead(written.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder), home, folder);
     if (/[$`]/.test(target)) {
-      if (namesGitDir(command)) return markFinding(`this command changes ${target}, a path yokoten can't read, and names a git folder`);
+      if (namesGitDir(command)) return markFinding(`this command changes ${written}, a path yokoten can't read, and names a git folder`);
       continue;
     }
     if (folder === null && !isAbsolute(target)) continue;
     dirs ??= folder === null ? [] : protectedGitDirs(folder);
     if (!dirs.length) continue;
     const full = realPath(resolve(folder ?? '/', target));
-    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${target}, which is inside a git folder, where the worker mark is kept`);
+    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${written}, which is inside a git folder, where the worker mark is kept`);
+    // A folder that holds the git folder: removing or replacing it drops the mark (#672).
+    if (findStarts.has(written)) continue;
+    const top = gitLinkAbove(folder ?? '/');
+    const held = [...dirs, ...(top ? [realPath(join(top.top, '.git'))] : [])];
+    const inside = full.endsWith(sep) ? full : full + sep;
+    if (held.some((dir) => dir.startsWith(inside))) return markFinding(`this command changes ${written}, which holds a git folder, where the worker mark is kept`);
   }
   return null;
 }
@@ -1195,6 +1220,28 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
   return null;
 }
 
+/**
+ * A worker's edit inside a team folder (#674): `<repo>.team/{agents,outbox,lead}`, next to a
+ * checkout named `<repo>`. Outside a desk nothing else fences it, and an edit there would
+ * speak for another agent. A desk's agent sends with `yokoten msg send`. Any other folder
+ * whose name ends in `.team` is not a team folder.
+ */
+export function checkTeamEdit(path: string): Finding | null {
+  for (const form of new Set([resolve(path), realPath(path)])) {
+    const parts = form.split(sep);
+    for (let at = 1; at + 1 < parts.length; at++) {
+      const name = parts[at];
+      if (!name.toLowerCase().endsWith('.team') || name.length <= '.team'.length || !TEAM_PARTS.has(parts[at + 1].toLowerCase())) continue;
+      const checkout = [...parts.slice(0, at), name.slice(0, -'.team'.length), '.git'].join(sep) || sep;
+      if (existsSync(checkout)) return finding('lead-only', 'this edit is inside a team folder (<repo>.team), where the agents\' messages and the roster are kept', 'send with `yokoten msg send <to> <text>` from a desk, or report to the lead');
+    }
+  }
+  return null;
+}
+
+// The parts of a team folder (agents/desk/team/team.ts).
+const TEAM_PARTS = new Set(['agents', 'outbox', 'lead']);
+
 // Cancelling a run, an alias, and a command the host did not ship (#650). The host adapter
 // owns the command names, the routes and the finding text. Both roles hear it before the
 // worker's own send rule: the fix is to ask the owner, and the lead cannot do it either.
@@ -1204,6 +1251,10 @@ export interface HostCommands {
   hostRunRemoval(words: string[]): Finding | undefined;
   hostAlias(words: string[]): Finding | undefined;
   hostHiddenCommand(words: string[]): Finding | undefined;
+  /** A gh command that prints its token (#668). */
+  hostTokenReveal(words: string[]): Finding | undefined;
+  /** A gh command that turns a workflow off (#668). */
+  hostWorkflowOff(words: string[]): Finding | undefined;
 }
 
 /** The host adapter's checks, once it has loaded. Until then a `gh` command is refused, never let through. */
@@ -1229,6 +1280,14 @@ function hostAlias(words: string[]): Finding | null {
 
 function hostHiddenCommand(words: string[]): Finding | null {
   return hostCommands?.hostHiddenCommand(words) ?? null;
+}
+
+function hostTokenReveal(words: string[]): Finding | null {
+  return hostCommands?.hostTokenReveal(words) ?? null;
+}
+
+function hostWorkflowOff(words: string[]): Finding | null {
+  return hostCommands?.hostWorkflowOff(words) ?? null;
 }
 
 // ---- What a worker sends (#555) ----
@@ -1285,7 +1344,11 @@ function checkWorkerUnmark(words: string[]): Finding | null {
     if (cli === -1) continue;
     const plain = plainArgs(withoutShellRedirects(words, cli + 1));
     if (plain[0] === 'worker' && plain[1] === 'unmark') {
-      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review');
+      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review, from its own checkout');
+    }
+    // A worker that marks the lead's checkout makes the lead a worker too (#672).
+    if (plain[0] === 'worker' && plain[1] === 'mark') {
+      return finding('worker-mark', '`yokoten worker mark` sets a worker mark, and only the lead marks a worktree or a clone', 'commit in your worktree and report; the lead marks checkouts, from its own');
     }
   }
   return null;
@@ -1402,6 +1465,11 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A download piped into a shell runs code nobody read (#560).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
+  const token = checkTokenUse(command, commands);
+  if (token) return token;
+  // Rules that refuse any form of a setting or a write (#361, #664). They answer after the
+  // rest, which name the case more exactly; the first one found is kept.
+  let later: Finding | null = null;
   for (const words of commands) {
     const mayWrite = heredoc !== undefined || fills || writesFile(words) || isUnsure(words) || writers.some((other) => other !== words);
     // The name is built only on a refusal (#498).
@@ -1412,12 +1480,13 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       hostRunRemoval(words) ??
       hostAlias(words) ??
       hostHiddenCommand(words) ??
+      hostWorkflowOff(words) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       // An alias runs another command under a new name: refused, not parsed (#560).
       // For a worker the worker rule already answers, with its own id.
       checkShellAlias(words, env) ??
-      // Removing the .git folder throws away every commit (#560). For a worker the
+      // Removing the .git folder throws away every commit (#560, #573). For a worker the
       // mark rule above already answers, with its own id.
       checkRemoveGit(words) ??
       checkHooksEnvironment(words) ??
@@ -1426,10 +1495,16 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
+    later ??=
+      checkGitConfigEnvironment(words) ??
+      // The likely folder, read as written: a write there is refused, never let through.
+      checkGitSetupWrites(words, { folder: nearCwd, from, env }) ??
+      // A changed home folder hides the private marks (#664).
+      checkHomeSetting(words);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null;
+  return (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null) ?? later;
 }
 
 /**
@@ -1591,17 +1666,67 @@ function checkShellAlias(words: string[], env: Env): Finding | null {
 const REMOVE_PROGRAMS = new Set(['rm', 'rmdir', 'unlink', 'shred']);
 const REMOVE_GIT_FIX = 'delete only the files you mean (a tracked file with `git rm <path>`); to start over, clone the repo again';
 
-/** `rm` and friends on a path that can be `.git`. For a worker the mark rule answers first. */
+/**
+ * Whether a find's tests can select a `.git` entry (#573). The name and path tests are
+ * mayReachGitFolder's, including a join (`-o`, `!`) that can turn a test around. A find
+ * that names nothing does not (`find dist -delete`). Every `-regex` counts: the guard
+ * cannot prove one safe.
+ */
+function findNamesDotGit(args: string[]): boolean {
+  if (args.some((arg) => arg === '-regex' || arg === '-iregex')) return true;
+  if (!args.some((arg) => FIND_NAME_TESTS.has(arg) || FIND_PATH_TESTS.has(arg))) return false;
+  return mayReachGitFolder(args);
+}
+
+/** A find that deletes an entry its tests can select as `.git`. `-fprint` only writes a list. */
+function findDeletesDotGit(args: string[]): boolean {
+  return findNamesDotGit(args) && (args.includes('-delete') || findActionRemoves(args));
+}
+
+/** Where a find action's command ends: the next action, `;`, or `{} +`. */
+function actionEnd(args: string[], index: number): number {
+  let end = index;
+  while (end < args.length && !FIND_ACTIONS.has(args[end]) && args[end] !== ';' && !(args[end] === '+' && args[end - 1] === '{}')) end++;
+  return end;
+}
+
+/** Whether these words run `rm`, `rmdir`, `unlink` or `shred`. */
+function commandRemoves(words: string[]): boolean {
+  return findPrograms(words).some((program) => REMOVE_PROGRAMS.has(programName(program)));
+}
+
+/**
+ * Whether a find action runs `rm`, `rmdir`, `unlink` or `shred`. A launcher, an
+ * assignment, `env -S` and a shell string count. `command -v` runs nothing.
+ */
+function findActionRemoves(args: string[]): boolean {
+  for (let index = 0; index < args.length; index++) {
+    if (!FIND_ACTIONS.has(args[index])) continue;
+    const action = args.slice(index + 1, actionEnd(args, index + 1));
+    if (commandRemoves(action)) return true;
+    const at = runnerAt(action);
+    if (at !== -1 && commandWords(runString(action, at)).some(commandRemoves)) return true;
+  }
+  return false;
+}
+
+/** `rm` and friends on a path that can be `.git`, and a find that deletes one (#560, #573). For a worker the mark rule answers first. */
 function checkRemoveGit(words: string[]): Finding | null {
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
     if (at === -1) continue;
     from = at + 1;
-    if (!REMOVE_PROGRAMS.has(programName(program))) continue;
-    const target = plainArgs(withoutShellRedirects(words, at + 1)).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
-    if (target !== undefined) {
-      return finding('remove-git', `\`${programName(program)}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+    const name = programName(program);
+    const args = withoutShellRedirects(words, at + 1);
+    if (REMOVE_PROGRAMS.has(name)) {
+      const target = plainArgs(args).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
+      if (target !== undefined) {
+        return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+      }
+    }
+    if (name === 'find' && findDeletesDotGit(args)) {
+      return finding('remove-git', '`find` can delete the .git folder, which holds the repo history', REMOVE_GIT_FIX);
     }
   }
   return null;
@@ -1648,9 +1773,10 @@ function isDefaultBranch(name: string, dir: string | null, env: Env): boolean {
 }
 
 const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
-const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget']);
+// A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
+const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read. */
+/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1659,15 +1785,71 @@ function checkPipeToShell(command: string): Finding | null {
     // linear time. A shell in the first segment has nothing before it, so it passes.
     let downloader: string | undefined;
     for (const segment of segments) {
-      const programs = commandWords(segment).flatMap(findPrograms).map(programName);
-      const shell = programs[0] ?? '';
-      if ((shell === 'powershell' || isShell(shell)) && downloader !== undefined) {
+      const commands = commandWords(segment);
+      const programs = commands.flatMap(findPrograms).map(programName);
+      const shell = findPipeShell(programs, commands);
+      if (shell !== undefined && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
-      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program));
+      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program.toLowerCase()));
     }
   }
   return null;
+}
+
+/** The program that would run this segment, when that program is a shell. Case is folded here only (#574). */
+function findPipeShell(programs: string[], commands: string[][]): string | undefined {
+  const first = programs[0];
+  if (first !== undefined && isPipeShell(first)) return first;
+  // A nested `$(sudo -s)` belongs to the outer program. That program reads the pipe.
+  for (const words of outerCommands(commands)) {
+    const shell = findShellRunner(words);
+    if (shell !== undefined) return shell;
+  }
+  return undefined;
+}
+
+/** The segment's own commands. A list whose text sits in one word of another list belongs to that command. */
+function outerCommands(commands: string[][]): string[][] {
+  spend(commands.length);
+  return commands.filter((words, index) => {
+    const text = words.join(' ');
+    return text !== '' && !commands.some((other, otherIndex) => otherIndex !== index && other.some((word) => word.includes(text)));
+  });
+}
+
+/** Whether `name` is a shell. `powershell` stays beside `isShell`, which names `pwsh` (#574). */
+function isPipeShell(name: string): boolean {
+  const folded = name.toLowerCase();
+  return folded === 'powershell' || isShell(folded);
+}
+
+/**
+ * `sudo -s`, `sudo -i` or `doas -s` reads stdin as a shell when no program follows.
+ * The flag meaning is `RUNNERS`. A later program is that program, so `sudo tee` passes.
+ */
+function findShellRunner(words: string[]): string | undefined {
+  spend(words.length);
+  let index = skipPrefix(words, 0);
+  while (index < words.length) {
+    if (HEADS.has(words[index])) return undefined;
+    const name = programName(words[index]);
+    const folded = name.toLowerCase();
+    if (!Object.hasOwn(LAUNCHERS, folded)) return undefined;
+    const launcher = LAUNCHERS[folded];
+    const shellFlag = folded === 'sudo' || folded === 'doas' ? RUNNERS[folded] : null;
+    index++;
+    let readsShell = false;
+    while (index < words.length && words[index].startsWith('-')) {
+      if (shellFlag !== null && shellFlag.test(words[index])) readsShell = true;
+      index += launcher.options.includes(words[index]) ? 2 : 1;
+    }
+    index += launcher.operands ?? 0;
+    // A redirect names a file. `sudo -s > saved` still reads the pipe as a shell.
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (readsShell && index >= words.length) return name;
+  }
+  return undefined;
 }
 
 /** The command's pipelines: cut at ; && || and line ends, outside quotes and groups. */
@@ -1795,15 +1977,14 @@ function checkHooksSettings(settings: string[], fromEnvironment: string[]): Find
 // what `git -c` does, and so does GIT_CONFIG_PARAMETERS, the variable `-c` itself sets.
 // An assignment counts when it stands before the program, after env, sudo or export, or
 // anywhere before a git word. So `grep GIT_CONFIG_KEY_0=core.hooksPath file` is a read.
-// `NAME+=value` counts as `NAME=value`: it adds to a value the guard can't see, so a key
-// added to is refused, and a value added to is never read as .githooks.
+// `NAME+=value` counts as `NAME=value`. A key that names core.hooksPath is refused
+// whatever value goes with it: any GIT_CONFIG_KEY_n is refused below anyway (#361).
 const ASSIGNERS = new Set(['env', 'sudo', 'doas', 'export', 'declare', 'typeset', 'readonly', 'local']);
 // `NAME+=value` adds to a setting: it is an assignment too.
 const isAssignment = (word: string) => /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(word);
 
 function checkHooksEnvironment(words: string[]): Finding | null {
   const lastGit = words.findLastIndex(isGit);
-  let values: Map<string, string> | null = null; // GIT_CONFIG_VALUE_n, the first of each n
   let isPrefix = true; // every word before this one is an assignment, an option or an assigner
   for (const [index, word] of words.entries()) {
     const variable = /^GIT_CONFIG_(KEY_(\d+)|PARAMETERS)(\+?)=(.*)$/is.exec(word);
@@ -1819,27 +2000,197 @@ function checkHooksEnvironment(words: string[]): Finding | null {
     }
     if (adds) return hooksPath(`GIT_CONFIG_KEY_${number}+= adds to a key yokoten can't see, which may make core.hooksPath and skip the commit check`);
     if (isInclude(setting)) return includes(`GIT_CONFIG_KEY_${number} ${setting.trim()}`);
-    if (!isHooksPath(setting)) continue;
-    values ??= configValues(words);
-    if (values.get(number) !== HOOKS_DIR) {
-      return hooksPath(`GIT_CONFIG_KEY_${number} names core.hooksPath with a value other than .githooks, which skips the commit check`);
-    }
+    if (isHooksPath(setting)) return hooksPath(`GIT_CONFIG_KEY_${number} names core.hooksPath, which can skip the commit check`);
   }
   return null;
 }
 
-// Each GIT_CONFIG_VALUE_n=value in the words, by n as written: the first one counts. A
-// `GIT_CONFIG_VALUE_n+=` adds to a value the guard can't see: that n is read as unknown.
-function configValues(words: string[]): Map<string, string> {
-  const values = new Map<string, string>();
-  const added = new Set<string>();
-  for (const word of words) {
-    const value = /^GIT_CONFIG_VALUE_(\d+)(\+?)=(.*)$/is.exec(word);
-    if (value?.[2]) added.add(value[1]);
-    else if (value && !values.has(value[1])) values.set(value[1], value[3]);
+// ---- Settings an agent may not make (#361, #664) ----
+//
+// Some variables change what the commit check reads. HOME and USERPROFILE move the home
+// folder, where the private marks are; GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and
+// GIT_CONFIG_COUNT/KEY_n/VALUE_n give git settings the guard does not read one by one. A
+// name counts as set:
+// - for one program, by an assignment just before it, also after env, sudo or another
+//   launcher: `HOME=x git commit`, `env HOME=x gh issue create`;
+// - for the rest of the line, by an assignment with no program after it, by export,
+//   declare and the like, by read, mapfile, printf -v, getopts, let, a for or select
+//   loop, and by `${NAME:=x}` or `${NAME=x}`.
+// A setting for the rest of the line is refused. A setting for one program is refused when
+// that program is git, gh, yokoten, or a shell or eval that runs another line. Before any
+// other program it passes: `HOME=$(mktemp -d) npm test` keeps a test away from your files.
+// The guard reads names, not grammar: an indirect name (`export $name=x`) gets past.
+
+/** A name a command sets, and the index of the one program it is set for (null: the rest of the line). */
+type Setting = { name: string; program: number | null };
+
+// Programs that run another command line, so a setting before them reaches git too.
+const RUNS_LINES = /^(sh|bash|zsh|dash|ksh|mksh|fish|eval|source|\.|xargs|exec|su|sudo|doas|env|nohup|setsid|script)$/;
+const isYokotenWord = (word: string) => /^yokoten(\.[cm]?[jt]s)?$/i.test(base(word));
+// read, mapfile and readarray set every name after them; printf only the one after -v.
+const NAME_READERS = new Set(['read', 'mapfile', 'readarray']);
+const nameOf = (word: string) => word.slice(0, word.indexOf('=')).replace(/\+$/, '');
+
+function settingsIn(words: string[]): Setting[] {
+  const settings: Setting[] = [];
+  const programs: number[] = [];
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    programs.push(at);
+    from = at + 1;
   }
-  for (const number of added) values.set(number, '+=');
-  return values;
+  // For each word: the program right after it, when only assignments, options and
+  // launchers stand between them. One pass from the end keeps it linear.
+  const isProgram = new Set(programs);
+  const programAfter: number[] = new Array(words.length).fill(-1);
+  let next = -1;
+  for (let index = words.length - 1; index >= 0; index--) {
+    if (isProgram.has(index)) {
+      next = index;
+      continue;
+    }
+    programAfter[index] = next;
+    const word = words[index];
+    if (!isAssignment(word) && !word.startsWith('-') && !Object.hasOwn(LAUNCHERS, programName(word))) next = -1;
+  }
+  let isPrefix = true; // every word before this one is an assignment, an option or an assigner
+  for (const [index, word] of words.entries()) {
+    const wasPrefix = isPrefix;
+    isPrefix = isPrefix && (isAssignment(word) || word.startsWith('-') || ASSIGNERS.has(base(word)));
+    if (isAssignment(word)) {
+      if (programAfter[index] !== -1) settings.push({ name: nameOf(word), program: programAfter[index] });
+      else if (wasPrefix) settings.push({ name: nameOf(word), program: null });
+    }
+    // `${NAME:=x}` and `${NAME=x}` set NAME wherever they stand.
+    for (const [, name] of word.matchAll(/\$\{([A-Za-z_]\w*):?=/g)) settings.push({ name, program: null });
+  }
+  for (const at of programs) {
+    const name = programName(words[at]);
+    const args = words.slice(at + 1);
+    if (NAME_READERS.has(name)) args.forEach((arg) => settings.push({ name: arg.replace(/^-[A-Za-z]*a/, ''), program: null }));
+    if (name === 'let') args.filter(isAssignment).forEach((arg) => settings.push({ name: nameOf(arg), program: null }));
+    if (name === 'printf') {
+      args.forEach((arg, index) => {
+        if (arg === '-v' && index + 1 < args.length) settings.push({ name: args[index + 1], program: null });
+        else if (/^-v./.test(arg)) settings.push({ name: arg.slice(2), program: null });
+      });
+    }
+    // `getopts optstring name`: the second plain word.
+    if (name === 'getopts') {
+      const plain = args.filter((arg) => !arg.startsWith('-'));
+      if (plain[1] !== undefined) settings.push({ name: plain[1], program: null });
+    }
+  }
+  // `for NAME in ...` and `select NAME in ...`: only the name slot.
+  const head = words.findIndex((word) => !KEYWORDS.has(word));
+  if ((words[head] === 'for' || words[head] === 'select') && words[head + 1] !== undefined) settings.push({ name: words[head + 1], program: null });
+  return settings;
+}
+
+/** The settings in `words` whose name passes `isNamed`, that the rule refuses: see above. */
+function refusedSetting(words: string[], isNamed: (name: string) => boolean): string | null {
+  const settings = settingsIn(words).filter((setting) => isNamed(setting.name));
+  if (settings.length === 0) return null;
+  const lastYokoten = words.findLastIndex(isYokotenWord);
+  const runsGuarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
+  return settings.find((setting) => setting.program === null || runsGuarded(setting.program))?.name ?? null;
+}
+
+// git's config variables (#361). GIT_CONFIG_PARAMETERS is read above, for core.hooksPath.
+const GIT_CONFIG_NAME = /^GIT_CONFIG_(GLOBAL|SYSTEM|COUNT|KEY_\d+|VALUE_\d+)$/i;
+
+function checkGitConfigEnvironment(words: string[]): Finding | null {
+  const name = refusedSetting(words, (setting) => GIT_CONFIG_NAME.test(setting));
+  if (name === null) return null;
+  const shown = name.toUpperCase().replace(/_\d+$/, '_n');
+  const what = /_(GLOBAL|SYSTEM)$/.test(shown) ? 'points git at another config file' : 'sets git settings yokoten does not read one by one';
+  return hooksPath(`${shown} ${what}, which can set core.hooksPath and skip the commit check`, 'run git without it; to set one setting for one command, use `git -c <name>=<value>`, which the guard can check');
+}
+
+// ---- Shell writes to git's config and hooks (#361) ----
+//
+// `git config` is read setting by setting above. A shell write to the same files is not:
+// `printf '[core]\nhooksPath=x' >> .git/config`, `sed -i` on it, or `rm`/`chmod -x` on
+// `.githooks/pre-commit` can each turn the commit check off. So a command that names
+// `.git/config`, `.git/commondir`, `.git/hooks` or `.githooks` as a file it writes is
+// refused, for lead and worker: a redirect, the files of the writers in WRITERS (cp, mv,
+// tee, sed -i, rm, ln, install, truncate, patch, vim, tar -C, ...) and of chmod and the
+// rest of MARK_WRITERS. `mkdir` passes, and so do the lead's `git checkout` and
+// `git restore`, which bring back the committed hook. A path is placed from the likely
+// folder, so `cd .git && echo >> config` is refused, and one in another repo (`/tmp/x/.git`)
+// passes. A path with a glob (`*?[{`) is refused when it could reach into `.git` or `.githooks`.
+// A read (`cat .git/config`, `git config --get`) writes nothing and passes.
+const GIT_SETUP_FILE = /(^|\/)\.git(\/?$|\/config(\.worktree)?$|\/hooks(\/|$)|\/commondir$|\/worktrees\/[^/]+\/(config\.worktree|commondir)$)|(^|\/)\.githooks(\/|$)/i;
+const GIT_SETUP_FIX = 'change a git setting with `git config <name> <value>`, and a hook with your edit tool or `yokoten init`, so the guard can check it';
+
+// Whether a path, as text, may be git's config or hooks; with a glob, whether it could match one.
+function namesGitSetup(path: string): boolean {
+  const plain = posix.normalize(path.replace(/\\/g, '/'));
+  if (GIT_SETUP_FILE.test(plain)) return true;
+  if (!HAS_GLOB.test(plain)) return false;
+  return braceForms(plain, 0).some((form) => {
+    const parts = form.split('/');
+    return parts.some((part, at) =>
+      // A glob for the .git folder itself (`chmod 000 .gi?`) is left to the other rules.
+      (HAS_GLOB.test(part) && ((at < parts.length - 1 && globMatches(part, '.git')) || globMatches(part, '.githooks'))) ||
+      (/^\.git(hooks)?$/i.test(part) && parts.slice(at + 1).some((rest) => HAS_GLOB.test(rest))) ||
+      GIT_SETUP_FILE.test(form));
+  });
+}
+
+const isInside = (path: string, folder: string) => path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
+
+function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: string | null; from: string | null; env: Env }): Finding | null {
+  const known = new Map<string, string | null>();
+  const isWorker = env.YOKOTEN_ROLE === 'worker';
+  const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known), { keepsRestores: isWorker }).map((target) => target.path);
+  let at = 0;
+  for (const program of findPrograms(words)) {
+    const index = words.indexOf(program, at);
+    if (index === -1) continue;
+    at = index + 1;
+    const name = programName(program);
+    const args = withoutShellRedirects(words, index + 1);
+    if (name !== 'mkdir' && MARK_WRITERS.has(name)) targets.push(...plainArgs(args));
+    if (Object.hasOwn(SETUP_WRITERS, name)) targets.push(...SETUP_WRITERS[name](args));
+    // A find that writes changes files under where it starts: `find .githooks -exec rm {} +`.
+    if (name === 'find') targets.push(...(findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? []));
+  }
+  if (targets.length === 0) return null;
+  // The repo the command starts in, and its git folders: a placed path outside them all is
+  // another repo's file, such as a test repo in /tmp.
+  const root = from === null ? null : gitRootAbove(from, known);
+  const held = root === null ? [] : [realPath(root), ...protectedGitDirs(from ?? root)];
+  const home = homeOf(env);
+  const target = targets.find((path) => {
+    const expanded = /^~(?=[\\/]|$)/.test(path) ? (home === null ? null : join(home, path.slice(1))) : path;
+    const isPlaced = expanded !== null && !/[$`]/.test(path) && (folder !== null || isAbsolute(expanded));
+    if (!isPlaced || held.length === 0) return namesGitSetup(path);
+    const full = realPath(resolve(folder ?? '/', expanded));
+    const holders = held.filter((dir) => isInside(full, dir));
+    if (holders.length === 0) return false;
+    // Inside the work tree, the path from its root; inside a git folder, the path in `.git`.
+    const inside = (dir: string) => relative(dir, full).split(sep).join('/');
+    return holders.some((dir) => namesGitSetup(dir === held[0] ? inside(dir) || '.' : posix.join('.git', inside(dir)))) || namesGitSetup(path);
+  });
+  return target === undefined ? null : hooksPath(`this command changes ${target}, which holds git's settings or the commit check`, GIT_SETUP_FIX);
+}
+
+// ---- The home folder (#664) ----
+//
+// The commit check and the guard for gh posts read the private marks from the home folder:
+// HOME, or USERPROFILE on Windows when HOME is not set. `HOME=/tmp/x git commit` would make
+// them look in another folder, find no marks and pass. So the guard refuses these names
+// where the settings rule above does. Names on Windows ignore case, so `home=` counts too.
+// Reading $HOME is fine. XDG_CONFIG_HOME moves nothing yokoten's checks read, so it passes.
+const HOME_NAMES = new Set(['HOME', 'USERPROFILE']);
+const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
+
+function checkHomeSetting(words: string[]): Finding | null {
+  const name = refusedSetting(words, (setting) => HOME_NAMES.has(setting.toUpperCase()));
+  return name === null ? null : finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
 }
 
 // A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads
@@ -2897,7 +3248,8 @@ function gitRootAbove(folder: string, known: Map<string, string | null>): string
   return found;
 }
 
-function writeTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf']): WriteTarget[] {
+// `keepsRestores`: false leaves out `git checkout` and `git restore`, which bring back committed files.
+function writeTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf'], { keepsRestores = true } = {}): WriteTarget[] {
   const targets: WriteTarget[] = [];
   const marks = unquotedRedirects.get(words);
   for (const [index, word] of words.entries()) {
@@ -2915,7 +3267,10 @@ function writeTargets(words: string[], folder: string | null, rootOf: FileRules[
     from = at + 1;
     const name = programName(program);
     const args = withoutShellRedirects(words, at + 1);
-    if (isGit(program)) targets.push(...gitWrites(args, folder, rootOf));
+    if (isGit(program)) {
+      if (!keepsRestores && ['checkout', 'restore'].includes(gitParts(args, folder).sub ?? '')) continue;
+      targets.push(...gitWrites(args, folder, rootOf));
+    }
     else if (Object.hasOwn(WRITERS, name)) targets.push(...WRITERS[name](args, folder).map((path) => ({ path, from: folder })));
   }
   return targets;
@@ -3045,6 +3400,37 @@ const WRITERS: Record<string, (args: string[], folder: string | null) => string[
   // A download writes its output file, or into its output folder (#591).
   curl: (args) => optionValues(args, ['o'], ['--output', '--output-dir']),
   wget: (args) => optionValues(args, ['O', 'o', 'a', 'P'], ['--output-document', '--output-file', '--append-output', '--directory-prefix']),
+};
+
+const PATCH_VALUES = ['-i', '--input', '-o', '--output', '-p', '-d', '--directory', '-B', '--prefix', '-D', '-F', '-r', '--reject-file', '-z', '--suffix', '-V', '-Y', '--basename-prefix'];
+const EDITOR_VALUES = ['-c', '--cmd', '-S', '-u', '-U', '-i', '-T', '-w', '-W', '-s', '-t', '-q', '--listen'];
+
+// vim and its kin: every file named; `+cmd` is a command, not a file.
+const editorTargets = (args: string[]) => plainArgs(args, EDITOR_VALUES).filter((arg) => !arg.startsWith('+'));
+
+// `awk -i inplace`: the files after the program text, or every plain word with -f or -e.
+function awkTargets(args: string[]): string[] {
+  const isInPlace = args.some((arg, at) => arg === '-iinplace' || arg === '--include=inplace' || ((arg === '-i' || arg === '--include') && args[at + 1] === 'inplace'));
+  if (!isInPlace) return [];
+  const plain = plainArgs(args, ['-f', '--file', '-v', '--assign', '-i', '--include', '-F', '--field-separator', '-l', '--load', '-e', '--source']);
+  return args.some((arg) => /^(-[fe]|--file|--source)/.test(arg)) ? plain : plain.slice(1);
+}
+
+// More writers, read for git's config and hooks only (#361): editors and patchers change the
+// files they name. A patch with no file named changes the files in the patch, which the
+// guard does not read. They are not in WRITERS, whose files the lead-only rule also reads.
+const SETUP_WRITERS: Record<string, (args: string[]) => string[]> = {
+  patch: (args) => [...plainArgs(args, PATCH_VALUES).slice(0, 1), ...optionValues(args, ['o', 'd', 'r'], ['--output', '--directory', '--reject-file'])],
+  ed: (args) => plainArgs(args, ['-p', '--prompt']),
+  ex: (args) => editorTargets(args),
+  vi: (args) => editorTargets(args),
+  vim: (args) => editorTargets(args),
+  nvim: (args) => editorTargets(args),
+  awk: (args) => awkTargets(args),
+  gawk: (args) => awkTargets(args),
+  // An archive unpacks into its folder: `tar -x -C dir`, `unzip -d dir`.
+  tar: (args) => (/^[A-Za-z]*x[A-Za-z]*$/.test(args[0] ?? '') || args.some((arg) => /^(-[A-Za-z]*x[A-Za-z]*|--extract|--get)$/.test(arg)) ? optionValues(args, ['C'], ['--directory']) : []),
+  unzip: (args) => optionValues(args, ['d'], []),
 };
 
 /**
@@ -3695,6 +4081,57 @@ function xargsCommand(words: string[]): string | null {
   return words.slice(index).join(' ');
 }
 
+/** Whether a delimiter word is a null: a real null, or printf's `\0`, `\000` or `\x00`. */
+const isNullDelimiter = (text: string) => text === '\0' || /^\\0{1,3}$/.test(text) || /^\\x00$/i.test(text);
+
+/** Whether xargs splits its input on a null: `-0`, `--null`, `-d '\0'`, or a short cluster that holds `0` (`-r0`). */
+function xargsUsesNull(words: string[]): boolean {
+  let index = words.findIndex((word) => programName(word) === 'xargs');
+  if (index === -1) return false;
+  for (index++; index < words.length && /^--?[^-]/.test(words[index]); ) {
+    const word = words[index];
+    if (word === '--null') return true;
+    if (word === '--delimiter' || word.startsWith('--delimiter=')) {
+      const inline = word.startsWith('--delimiter=');
+      const delim = inline ? word.slice('--delimiter='.length) : (words[index + 1] ?? '');
+      if (isNullDelimiter(delim)) return true;
+      index += inline ? 1 : 2;
+      continue;
+    }
+    if (word.startsWith('--')) {
+      index += LAUNCHERS.xargs.options.includes(word) ? 2 : 1;
+      continue;
+    }
+    let valued = false;
+    for (let letter = 1; letter < word.length; letter++) {
+      if (word[letter] === '0') return true;
+      if (word[letter] === 'd') {
+        const rest = word.slice(letter + 1);
+        if (isNullDelimiter(rest || (words[index + 1] ?? ''))) return true;
+        valued = rest === '';
+        break;
+      }
+      // A valued short option takes the rest of the word (`-s0` is -s 0, not -0).
+      if (LAUNCHERS.xargs.options.includes(`-${word[letter]}`)) {
+        valued = letter === word.length - 1;
+        break;
+      }
+    }
+    index += valued || LAUNCHERS.xargs.options.includes(word) ? 2 : 1;
+  }
+  return false;
+}
+
+// printf leaves a null as `\0`, `\000` or `\x00`. A later shell read swallows the
+// backslash (`\0` becomes `0`), so xargs -0 would not see the word in front of it.
+const PRINTF_NULL = /\\(?:0{1,3}(?![0-7])|x00(?![0-9A-Fa-f]))/gi;
+
+/** The text xargs reads, as words. `xargs -0` also splits on a null (#573). */
+function xargsInput(words: string[], text: string): string {
+  const split = xargsUsesNull(words) ? text.replace(PRINTF_NULL, ' ').replace(/\0/g, ' ') : text;
+  return split.replace(/\s+/g, ' ');
+}
+
 // What a command prints, as the command it pipes into reads it: for printf, its format
 // filled in (see printfText); for any other, its words after the program, as echo prints
 // them, with each \n a line end. Over-reading is fine: `cat x` "prints" x.
@@ -3968,7 +4405,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (reads) for (const body of carried) nested(body);
       // `{ echo push --force; } | xargs git`: xargs hands the bodies to its program as words.
       const handed = reads ? null : xargsCommand(words);
-      if (handed !== null) nested(`${handed} ${carried.join(' ').replace(/\s+/g, ' ')}`);
+      if (handed !== null) nested(`${handed} ${xargsInput(words, carried.join(' '))}`);
       if (reads || handed !== null || !pipe) carried = [];
     }
     if (closed) {
@@ -4014,12 +4451,14 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     // All of them in one group: in a group piped to a shell, every line is read as commands.
     if (substitutions.length > 0 && (at !== -1 || isSource(words))) nested(`{ ${substitutions.join('\n')}\n} | bash`);
     // `echo push | xargs git`: xargs hands what comes in to its program as words.
+    // `xargs -0` also splits on a null, which printf writes as `\0` (#573).
     const handed = piped ? xargsCommand(words) : null;
-    if (piped && handed !== null) nested(`${handed} ${printedText(piped).replace(/\s+/g, ' ')}`);
+    if (piped && handed !== null) nested(`${handed} ${xargsInput(words, printedText(piped))}`);
     // `cat <(x) | bash`, `echo "$(x)" | xargs git`: the command before the pipe may print
     // what x prints. In a group piped on, each line x prints reaches the reader.
     if (pipedSubstitutions.length > 0 && (at !== -1 || handed !== null)) {
-      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : `xargs ${handed}`}`);
+      const xargs = xargsUsesNull(words) ? `xargs -0 ${handed}` : `xargs ${handed}`;
+      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : xargs}`);
     }
     if (pipe && piped !== null && passesOn(words)) {
       // `echo x | tee f | bash`: tee hands on what echo printed. Its own `$(x)` and `<(x)`
@@ -4361,7 +4800,7 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
     // `xargs git <<EOF`: the body's words are the program's words.
     if (!handedTo.has(doc.cmd)) handedTo.set(doc.cmd, xargsCommand(line[doc.cmd] ?? []));
     const handed = handedTo.get(doc.cmd) ?? null;
-    if (handed !== null) out.push(...commandWords(`${handed} ${body.replace(/\s+/g, ' ')}`, depth + 1));
+    if (handed !== null) out.push(...commandWords(`${handed} ${xargsInput(line[doc.cmd] ?? [], body)}`, depth + 1));
     const last = ends[doc.cmd] ?? doc.cmd;
     const isOpenPipe = last > doc.cmd && line[last].length === 0;
     const isRead = doc.group ? doc.group.reads : feedsShell(line[doc.cmd] ?? []);
@@ -4434,4 +4873,105 @@ function rough(text: string): string[][] {
     .split(/[;|&()\r\n]+/)
     .map((s) => s.trim().split(/\s+/).filter(Boolean))
     .filter((words) => words.length > 0);
+}
+
+// gh's token can do all that the guard stops in gh: with it, curl or a script calls the host
+// itself (#659, #668). No agent needs to see it, since gh and `yokoten bot` use it without
+// showing it. So, for every agent, the guard refuses the plain ways to print or send it:
+// gh's own commands that print it, a gh alias (which can run them under another name), the
+// token's variables, git's and the system's credential stores, and settings that make the
+// bot's gh or git run another program in the bot's environment, which holds the token.
+// It reads characters, not code: a script written and then run, or one that reads gh's
+// files itself, gets past (guide: What it doesn't do).
+
+const TOKEN_FIX = 'run gh itself, or `yokoten bot -- gh …`, which use the token without showing it; `gh auth status` says whether gh is signed in';
+// The names, with a way around a refusal that only mentions one.
+const NAME_FIX = `${TOKEN_FIX}. To write the name in a post, put the text in a body file; to search for it, leave out the \`$\` (\`rg GH_TOKEN\`)`;
+const BOT_FIX = 'run the bot\'s gh or git with no settings in front and no `-c`; a pager, an editor or a credential helper would run in the bot\'s environment, which holds its token';
+
+const TOKEN_NAMES = 'GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN';
+// `$GH_TOKEN`, `${GH_TOKEN}`, `${GH_TOKEN:-x}`, `${#GH_TOKEN}`, `${!GH_TOKEN}`, in any quotes.
+const TOKEN_VARIABLE = new RegExp(String.raw`\$\{?[#!]?(?:${TOKEN_NAMES})(?!\w)`);
+// PowerShell's `$env:GH_TOKEN` and cmd's `%GH_TOKEN%`. Windows names ignore case.
+const WINDOWS_VARIABLE = new RegExp(String.raw`\$env:(?:${TOKEN_NAMES})(?!\w)|%(?:${TOKEN_NAMES})%`, 'i');
+const TOKEN_NAME = new RegExp(String.raw`(?<!\w)(?:${TOKEN_NAMES})(?!\w)`);
+// Programs that run the code they are given, or print a variable by name: `process.env.GH_TOKEN`
+// in `node -e` reads the token. A shell is left out: the guard reads `bash -c` text as commands.
+const READS_ENV = /^(python[\d.]*|node|nodejs|deno|bun|tsx|ts-node|perl|ruby|php|lua|osascript|pwsh|powershell|printenv|awk|gawk|mawk|jq|Rscript|tclsh|java)$/;
+// Git prints the Authorization header in a trace only when this is turned off.
+const TRACE_UNREDACTED = /(?<!\w)GIT_TRACE_REDACT=(?!["']?(?:1|true|yes|on)(?:["'\s;&|)]|$))/i;
+// Git settings in the environment: they reach the bot's git, which keeps the variables it is given.
+const GIT_CONFIG_VARIABLE = /(?<!\w)GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)=/;
+// The files gh and git keep a login in, as plain text.
+const CREDENTIAL_FILE = /(?:^|[\\/])(?:\.git-credentials|gh[\\/]hosts\.ya?ml)$/;
+const shows = (what: string, fix = TOKEN_FIX) => finding('gh-token', what, fix);
+
+/** The keys git's `-c key=value` and `--config-env key=VAR` set before git's command, in lower case. */
+function gitSettings(args: string[]): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (!word.startsWith('-')) break;
+    let setting: string | undefined;
+    if (word === '-c' || word === '--config-env') setting = args[++index];
+    else if (word.startsWith('--config-env=')) setting = word.slice('--config-env='.length);
+    else if (word.startsWith('-c')) setting = word.slice(2);
+    else if (GIT_VALUE_OPTIONS.has(word)) index++;
+    if (setting !== undefined) keys.push(setting.split('=')[0].toLowerCase());
+  }
+  return keys;
+}
+
+/** Where the bot's command starts in the words (`yokoten bot -- git …`), or -1. */
+const botAt = (words: string[]) => {
+  const at = words.findIndex((word, index) => word === 'bot' && words[index + 1] === '--');
+  return at === -1 ? -1 : at + 2;
+};
+
+/** For every agent: a command that shows gh's token, or lets a program take it, or null. */
+function checkTokenUse(command: string, commands: string[][]): Finding | null {
+  if (TOKEN_VARIABLE.test(command) || WINDOWS_VARIABLE.test(command)) {
+    return shows("the command expands gh's token from the environment, so it can reach the host around the guard", NAME_FIX);
+  }
+  if (TRACE_UNREDACTED.test(command)) return shows('GIT_TRACE_REDACT turned off makes a git trace print the token git sends');
+  const bot = commands.some((words) => botAt(words) !== -1);
+  if (bot && GIT_CONFIG_VARIABLE.test(command)) return shows('git settings in the environment reach the bot\'s git, and can run a program where the bot\'s token is', BOT_FIX);
+  for (const raw of commands) {
+    // A here-string is read as a command of its own: `bash <<< 'gh auth token'`.
+    const words = raw[0] === '<<<' ? raw.slice(1) : raw;
+    const names = words.map(programName);
+    const runner = names.find((name) => READS_ENV.test(name));
+    if (runner && words.some((word) => TOKEN_NAME.test(word))) return shows(`\`${runner}\` is given the name of gh's token, so it can read the token and reach the host around the guard`, NAME_FIX);
+    if (words.some((word) => CREDENTIAL_FILE.test(word))) return shows('the command names a file where gh or git keeps a login as plain text');
+    const reached = checkCredentialStores(words, names) ?? checkTokenGit(words) ?? hostTokenReveal(words);
+    if (reached) return reached;
+  }
+  return null;
+}
+
+/** The system's password stores and git's credential helpers, asked for a password. */
+function checkCredentialStores(words: string[], names: string[]): Finding | null {
+  const at = (name: string) => names.indexOf(name);
+  const security = at('security');
+  if (security !== -1 && /^find-(internet|generic)-password$/.test(words[security + 1] ?? '') && words.some((word) => /^-[a-zA-Z]*[wg]$/.test(word))) {
+    return shows('`security find-…-password -w` prints a password from the keychain, where gh may keep its token');
+  }
+  const secretTool = at('secret-tool');
+  if (secretTool !== -1 && words[secretTool + 1] === 'lookup') return shows('`secret-tool lookup` prints a password from the keyring, where gh may keep its token');
+  if (names.some((name) => name.startsWith('git-credential')) && words.includes('get')) return shows('a git credential helper with `get` prints the password it keeps, which may be gh\'s token');
+  return null;
+}
+
+/** git: a credential read, a credential helper set with `-c`, and any setting given to the bot's git. */
+function checkTokenGit(words: string[]): Finding | null {
+  const at = words.findIndex(isGit);
+  if (at === -1) return null;
+  const args = withoutShellRedirects(words, at + 1);
+  const keys = gitSettings(args);
+  if (at === botAt(words) && keys.length) return shows(`\`-c ${keys[0]}\` on the bot's git can run a program where the bot's token is`, BOT_FIX);
+  if (keys.some((key) => key.startsWith('credential.'))) return shows('a credential helper set with `-c` runs a program that gets git\'s login');
+  const [sub, action] = plainArgs(args, [...GIT_VALUE_OPTIONS]);
+  if (sub === 'credential' && action === 'fill') return shows("`git credential fill` prints the password git keeps for a host, which is gh's token when gh signs git in");
+  if (sub?.startsWith('credential-') && args.includes('get')) return shows(`\`git ${sub} get\` prints the password it keeps, which may be gh's token`);
+  return null;
 }

@@ -12,7 +12,8 @@ import {
   isWarningFinding,
 } from '../../src/rules/message.ts';
 import { addedIgnores, loadIgnores, scanText } from '../../src/rules/privacy.ts';
-import { findEnvironmentValues, findLineIgnores, SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { findEnvironmentValues, findLineIgnores, findSecretCandidates, findSecretHits, makeSecretHider, SECRET, SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { assertLinear } from '../../scripts/linear.ts';
 import { at, makeTempDir } from '../repo/helpers.ts';
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in
@@ -42,6 +43,31 @@ const SECRETS: [string, string][] = [
   ['Meta key', `META_API_KEY=${'LL'}M_${'123456789012345'}_${alnum(40)}`],
 ];
 
+const NEAR_MISSES = [
+  `${'gh'}p_${alnum(20)}`, // too short
+  `${'gh'}x_${alnum(36)}`, // not a GitHub prefix
+  `my${'gh'}p_${alnum(36)}`, // inside a longer word
+  `${'npm'}_${alnum(30)}`,
+  `npm_config_registry`,
+  `${'AK'}IA${upper(15)}`, // one short
+  `${'AK'}IA${upper(17)}`, // inside a longer run
+  `${'AK'}IA${'IOSFODNN7'}EXAMPLE`, // AWS's own docs example
+  `${'AK'}IA${'abcdefghijklmnop'}`, // lowercase
+  `${'xo'}xb-not-a-token`,
+  `${'sk'}_test_${alnum(24)}`, // Stripe test key
+  `${'sk'}_live_short`,
+  `${'AI'}za${alnum(20)}`,
+  `${'sk'}-ant-api03-short`,
+  `${'sk'}-proj-short`,
+  `${'sk'}-${alnum(48)}`, // no marker
+  `${'LL'}M_${'12345'}_${alnum(40)}`, // Meta: app id too short
+  `${'LL'}M_${'123456789012345'}_short`, // Meta: secret too short
+  `${'LL'}M_app_${alnum(40)}`, // Meta: no numeric app id
+  `MY_${'LL'}M_${'123456789012345'}_${alnum(40)}`, // Meta: inside a longer word
+  'const ghp_prefix = "ghp_"; // prefixes as words',
+  'sha512-' + alnum(86) + '==', // a lockfile integrity hash
+];
+
 test('secrets: the positive control is caught', () => {
   assert.equal(scanText(SECRET_CONTROL, { file: 'x' }).length, 2);
 });
@@ -52,6 +78,54 @@ test('secrets: each kind is caught, by place and kind, never by content (#8)', (
     // The whole output, word for word: the secret is not in it.
     assert.deepEqual(problems, [{ id: 'secret', what: `a secret (${kind})`, why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone', fix: 'remove it, rotate it, and keep it outside the repo', docs: `${DOCS_URL}#privacy`, file: 'conf.env', line: 2, grade: 'sure' }], line);
   }
+});
+
+test('secrets: one anchor pass selects every fixed pattern and the PEM header (#710)', () => {
+  const indexed: [string, number[]][] = [
+    ['ghp_', [0]], ['gho_', [0]], ['ghu_', [0]], ['ghs_', [0]], ['ghr_', [0]],
+    ['github_pat_', [1]], ['npm_', [2]], ['AKIA', [3]], ['ASIA', [3]],
+    ['xoxa-', [4]], ['xoxb-', [4]], ['xoxp-', [4]], ['xoxr-', [4]], ['xoxs-', [4]],
+    ['sk_live_', [5]], ['rk_live_', [5]], ['AIza', [6]], ['sk-ant-', [7, 9]],
+    ['sk-proj-', [8, 9]], ['sk-svcacct-', [8, 9]], ['sk-admin-', [8, 9]], ['sk-', [9]], ['LLM_', [10]],
+  ];
+  for (const [line, patterns] of indexed) assert.deepEqual(findSecretCandidates(line).patterns, patterns, line);
+  assert.deepEqual(findSecretCandidates('ordinary words and code'), { patterns: [], hasPrivateKey: false });
+  assert.deepEqual(findSecretCandidates(`-----BEGIN RSA ${'PRIVATE'} KEY-----`), { patterns: [], hasPrivateKey: true });
+});
+
+test('secrets: each fixed kind is found directly, and every near miss passes (#710)', () => {
+  for (const [kind, line] of SECRETS) assert.deepEqual(findSecretHits([line]).map((hit) => hit.kind), [kind], kind);
+  for (const line of NEAR_MISSES) assert.deepEqual(findSecretHits([line]), [], line);
+});
+
+test('secrets: the hider redacts every fixed kind and leaves no secret content (#710)', () => {
+  for (const [kind, line] of SECRETS) {
+    const [hit] = findSecretHits([line]);
+    const value = line.slice(hit.start, hit.end);
+    const hidden = makeSecretHider()(line);
+    assert.ok(hidden.includes(SECRET), `${kind}: no hidden marker`);
+    assert.ok(!hidden.includes(value), `${kind}: a secret remains`);
+  }
+  const example = `${'AK'}IA${'IOSFODNN7'}EXAMPLE`;
+  assert.equal(makeSecretHider()(example), example, 'the AWS docs example stays');
+});
+
+test('secrets: the hider keeps PEM state across pieces (#710)', () => {
+  const body = 'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn';
+  const header = pem('RSA ');
+  const end = `-----END RSA ${'PRIVATE'} KEY-----`;
+  const hide = makeSecretHider();
+  assert.equal(hide(`${header}\n`), `${SECRET}\n`);
+  assert.equal(hide(`${body}\n`), `${SECRET}\n`);
+  assert.equal(hide(`${end}\n`), `${SECRET}\n`);
+  assert.equal(hide('ordinary line\n'), 'ordinary line\n');
+});
+
+test('secrets: a long clean line and a token at the end scan linearly (#710)', () => {
+  const clean = (size: number) => 'ordinary words and code '.repeat(Math.ceil(size / 24)).slice(0, size);
+  const withToken = (size: number) => `${clean(size)} ${'gh'}p_${alnum(36)}`;
+  assertLinear('secret scan: a long clean line', clean, (line) => assert.deepEqual(findSecretHits([line]), []), 1 << 15);
+  assertLinear('secret scan: a token at the end', withToken, (line) => assert.equal(findSecretHits([line]).length, 1), 1 << 15);
 });
 
 test('secrets: a sure hit fails, a likely hit warns, and an unknown hit warns (#616)', () => {
@@ -207,30 +281,7 @@ test('secrets: PEM private keys with a body are caught, a header alone is not (#
 });
 
 test('secrets: near-misses are not caught (#8)', () => {
-  for (const ok of [
-    `${'gh'}p_${alnum(20)}`, // too short
-    `${'gh'}x_${alnum(36)}`, // not a GitHub prefix
-    `my${'gh'}p_${alnum(36)}`, // inside a longer word
-    `${'npm'}_${alnum(30)}`,
-    `npm_config_registry`,
-    `${'AK'}IA${upper(15)}`, // one short
-    `${'AK'}IA${upper(17)}`, // inside a longer run
-    `${'AK'}IA${'IOSFODNN7'}EXAMPLE`, // AWS's own docs example
-    `${'AK'}IA${'abcdefghijklmnop'}`, // lowercase
-    `${'xo'}xb-not-a-token`,
-    `${'sk'}_test_${alnum(24)}`, // Stripe test key
-    `${'sk'}_live_short`,
-    `${'AI'}za${alnum(20)}`,
-    `${'sk'}-ant-api03-short`,
-    `${'sk'}-proj-short`,
-    `${'sk'}-${alnum(48)}`, // no marker
-    `${'LL'}M_${'12345'}_${alnum(40)}`, // Meta: app id too short
-    `${'LL'}M_${'123456789012345'}_short`, // Meta: secret too short
-    `${'LL'}M_app_${alnum(40)}`, // Meta: no numeric app id
-    `MY_${'LL'}M_${'123456789012345'}_${alnum(40)}`, // Meta: inside a longer word
-    'const ghp_prefix = "ghp_"; // prefixes as words',
-    'sha512-' + alnum(86) + '==', // a lockfile integrity hash
-  ]) {
+  for (const ok of NEAR_MISSES) {
     assert.deepEqual(scanText(ok, { file: 'a' }), [], ok);
   }
 });

@@ -93,8 +93,16 @@ never changes lead-only files (the guard stops it).
    the guard treats you as a worker. End the body with one line that names the agent
    and the model that made it, for example `🤖 Made with Claude Code (Claude Opus 5.5)`;
    `yokoten bot` refuses a body without it. When workers ran on another model, name both.
+   Add each reviewer from the `inspect` skill too, after the worker and before the lead:
+   `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)`.
+   One reviewer is `reviewed by <Y> (<model>)`.
 5. After 3 review rounds on one task, stop before the next one. Decide whether the
    task, the brief or the worker is the problem, and change that. Don't just send
    round 4.
 6. Remove the worktree once the pull request is merged: `git worktree remove <dir>`.
    That removes the mark too.
+
+## When several pull requests wait
+
+With two or more pull requests open, name a merge order before you merge one.
+After each merge, update the order for the rest.

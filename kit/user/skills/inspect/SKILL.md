@@ -25,6 +25,11 @@ Give the diff to the `reviewer` agent (it reads only) for:
 3. **Compliance**: does the diff do what its issue and record say, no more and no less?
    Does it break a core rule in `AGENTS.md`?
 
+Each reviewer that read the diff goes on the pull request's last line, after the worker
+and before the lead, in one part with at most two reviewers:
+`🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)`.
+One reviewer is `reviewed by <Y> (<model>)`. Add them when you write or edit the line.
+
 Give it to the `verifier` agent (it runs, never fixes) to run the tests and the "done
 when" command from the issue, and paste the output.
 
@@ -50,3 +55,7 @@ question, and is written as one. End with what was not checked.
 
 Post the findings on the pull request. Only the owner approves. Never approve with
 the owner's account, and never merge a SHA other than the one reviewed.
+
+## How you name an issue
+
+Write `issue #N` or `PR #N`. A bare `#N` is not a name.

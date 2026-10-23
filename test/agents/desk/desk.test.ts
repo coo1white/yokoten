@@ -4,10 +4,12 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
+import { markWorktree } from '../../../src/commands/hook.ts';
+import { workerMarkAt } from '../../../src/rules/guards.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
 import { TEST_HOME } from '../../repo/home.ts';
 
@@ -19,6 +21,15 @@ function makeDesk(): { projects: string; desk: string } {
   execFileSync('git', ['clone', '-q', join(projects, 'origin'), join(projects, 'desk')]);
   return { projects, desk: join(projects, 'desk') };
 }
+
+// markWorktree runs git, so it gets the PATH that has git on it.
+const gitEnv = () => ({ ...env(), PATH: process.env.PATH ?? '' });
+
+/** A stand-in for `markWorktree`: the mark file, as the lead writes it. */
+const writeMark = (desk: string) => {
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'mark\n');
+  return { top: desk };
+};
 
 const env = () => ({ HOME: TEST_HOME, PATH: dirname(process.execPath), GH_TOKEN: 'not-a-real-token', SECRET_THING: 'x' });
 
@@ -55,7 +66,7 @@ test('hiddenFolders: every home, other drives, and the desk parent; only those t
 
 test('planDesk: the desk and its own state writable, a token dropped, role and time zone fixed', () => {
   const { projects, desk } = makeDesk();
-  const plan = planDesk({ runtime: 'claude-code', desk, command: ['node', 'x.js'], env: env(), extraHosts: ['api.deepseek.com'] });
+  const plan = planDesk({ runtime: 'claude-code', desk, command: ['node', 'x.js'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), extraHosts: ['api.deepseek.com'] });
   assert.equal(plan.desk, desk);
   assert.deepEqual(plan.state, [`${desk}.state/claude-code`]);
   assert.equal(plan.env.CLAUDE_CONFIG_DIR, `${desk}.state/claude-code`, "the agent uses the desk's state, not the lead's");
@@ -69,7 +80,17 @@ test('planDesk: the desk and its own state writable, a token dropped, role and t
   assert.equal(plan.env.TZ, 'UTC');
   assert.equal(plan.env.GH_TOKEN, undefined);
   assert.equal(plan.env.SECRET_THING, undefined);
-  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks')], "git's config and hooks stay read-only");
+  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')], "git's config and hooks, and the worker mark, stay read-only");
+  // #672: the desk clone carries the worker mark, so a runtime that drops YOKOTEN_ROLE (Muse Code) is a worker there.
+  assert.equal(workerMarkAt(desk, {}), 'mark');
+});
+
+test('planDesk: a desk that cannot be marked does not start, with the plain reason (#672)', () => {
+  const { projects, desk } = makeDesk();
+  // From inside the desk the lead would mark its own checkout: markWorktree refuses, and so does the desk.
+  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(desk, folder, gitEnv()) }), /can't mark the desk as a worker's: .*is the main checkout, the lead's/);
+  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: () => ({ top: desk }) }), /can't mark the desk as a worker's: no mark in /);
+  assert.ok(existsSync(join(projects, 'origin')));
 });
 
 test('prepareDeskState: only the login file comes from the lead; a newer one is copied again; a link is refused', () => {
@@ -105,29 +126,29 @@ test('planDesk: the marks file only with --marks; the worker mark is locked', ()
   const marks = join(makeTempDir('config-'), 'private-marks');
   writeFileSync(marks, 'x\n');
   writeFileSync(join(desk, '.git', 'yokoten-worker'), 'mark\n');
-  assert.ok(!planDesk({ runtime: 'grok', desk, command: ['node'], env: env() }).readable.includes(realpathSync(marks)));
-  const plan = planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), marks });
+  assert.ok(!planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark }).readable.includes(realpathSync(marks)));
+  const plan = planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark, marks });
   assert.ok(plan.readable.includes(realpathSync(marks)));
   assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')]);
   // Positive control: a link in place of .git/config would show the lead's file, so it is refused.
   rmSync(join(desk, '.git', 'config'));
   symlinkSync(marks, join(desk, '.git', 'config'));
-  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env() }), /is a link/);
+  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark }), /is a link/);
 });
 
 test('planDesk: refuses an unknown agent, a worktree, a folder that is no clone, and a path that opens a hidden folder', () => {
   const { projects, desk } = makeDesk();
-  assert.throws(() => planDesk({ runtime: 'gemini', desk, command: ['node'], env: env() }), /DeepSeek runs through codex/);
-  assert.throws(() => planDesk({ runtime: 'codex', desk: projects, command: ['node'], env: env() }), /not a git clone/);
+  assert.throws(() => planDesk({ runtime: 'gemini', desk, command: ['node'], env: env(), markDesk: writeMark }), /DeepSeek runs through codex/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk: projects, command: ['node'], env: env(), markDesk: writeMark }), /not a git clone/);
   execFileSync('git', ['-C', desk, 'worktree', 'add', '-q', join(projects, 'tree')]);
-  assert.throws(() => planDesk({ runtime: 'codex', desk: join(projects, 'tree'), command: ['node'], env: env() }), /is a worktree/);
-  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), extraReadable: [projects] }), /would open a hidden folder/);
-  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), extraReadable: ['/'] }), /whole system/);
-  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['no-such-agent'], env: env() }), /can't find no-such-agent/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk: join(projects, 'tree'), command: ['node'], env: env(), markDesk: writeMark }), /is a worktree/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), markDesk: writeMark, extraReadable: [projects] }), /would open a hidden folder/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: env(), markDesk: writeMark, extraReadable: ['/'] }), /whole system/);
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['no-such-agent'], env: env(), markDesk: writeMark }), /can't find no-such-agent/);
   const leadCodex = makeTempDir('codex-home-');
   mkdirSync(join(leadCodex, 'sessions'));
-  assert.ok(planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: leadCodex } }).hidden.includes(realpathSync(leadCodex)), "the lead's CODEX_HOME is hidden wherever it is");
-  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: leadCodex }, extraReadable: [join(leadCodex, 'sessions')] }), /lead's own codex state/);
+  assert.ok(planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: leadCodex }, markDesk: writeMark }).hidden.includes(realpathSync(leadCodex)), "the lead's CODEX_HOME is hidden wherever it is");
+  assert.throws(() => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: leadCodex }, markDesk: writeMark, extraReadable: [join(leadCodex, 'sessions')] }), /lead's own codex state/);
 });
 
 test('proxyEnv: every proxy name in both cases, and Node told to read them', () => {
@@ -135,4 +156,19 @@ test('proxyEnv: every proxy name in both cases, and Node told to read them', () 
   for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) assert.equal(names[name], 'http://127.0.0.1:3128');
   assert.equal(names.NODE_USE_ENV_PROXY, '1');
   assert.equal(names.NO_PROXY, '');
+});
+
+test('planDesk: on a team, the team folder read-only, only the own outbox writable, the desk file locked (#674)', () => {
+  const { projects, desk } = makeDesk();
+  const team = join(projects, 'origin.team');
+  const plan = planDesk({ runtime: 'grok', desk, command: ['node', '--model', 'grok-4.7'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: team, name: 'g1' } });
+  assert.ok(plan.readable.includes(team));
+  assert.ok(plan.state.includes(join(team, 'outbox', 'g1.jsonl')));
+  assert.ok(!plan.state.some((path) => path === team || path === join(team, 'outbox')), 'the team folder itself is not writable');
+  assert.ok(plan.locked.includes(join(desk, '.git', 'yokoten-desk.json')));
+  assert.match(readFileSync(join(team, 'agents', 'g1.json'), 'utf8'), /"model": "grok-4.7"/);
+  // Without a team, an old desk file goes: the agent has no name on a team.
+  planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) });
+  assert.ok(!readdirSync(join(desk, '.git')).includes('yokoten-desk.json'));
+  assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: projects, name: 'g1' } }), /would open a hidden folder or the desk/);
 });

@@ -1,12 +1,12 @@
-// Tests for src/agents/desk/bridge.ts.
+// Tests for src/agents/desk/network/bridge.ts.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { connect, createServer } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { readBridgeArgs, runBridge, startBridge } from '../../../src/agents/desk/bridge.ts';
-import { makeTempDir } from '../../repo/helpers.ts';
+import { readBridgeArgs, runBridge, startBridge } from '../../../../src/agents/desk/network/bridge.ts';
+import { makeTempDir } from '../../../repo/helpers.ts';
 
 test('readBridgeArgs: socket, port, --, then the command', () => {
   assert.deepEqual(readBridgeArgs(['/s.sock', '3128', '--', 'claude', '-p', 'x']), { socket: '/s.sock', port: 3128, command: ['claude', '-p', 'x'] });
