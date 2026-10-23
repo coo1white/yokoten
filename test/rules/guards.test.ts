@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
+import { hookEnvironment, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -1631,7 +1631,7 @@ test('bash: a command the reader cannot read is refused with exit 2, not let thr
   const tooBig = `bash -c "${':;'.repeat(300000)}"`;
   assert.equal(checkCommand(tooBig, { cwd: process.cwd(), env: {} })?.id, 'unreadable-command');
   const done = await invoke(['hook'], {
-    env: { ...process.env },
+    env: hookEnvironment(),
     cwd: tmpdir(),
     stdin: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
   });

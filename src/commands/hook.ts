@@ -264,7 +264,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   }
   if (!isWorker) {
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
-    print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
+    print(invocation, [...refusalLines(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return withMessages(invocation, 2, await takeMessages());
   }
   const bumped = bumpDoneTries(env, key);
@@ -382,6 +382,12 @@ function forgetDoneTries(env: Invocation['env'], key: string): void {
   }
 }
 
+/**
+ * Each finding as the refusal a tool denial prints (#707): title, why, do instead, more.
+ * The board splits the same four parts from an end-of-turn refusal as from a denial.
+ */
+const refusalLines = (findings: Finding[]): string[] => findings.map((found) => formatRefusal(found));
+
 /** The lines that send a worker back, and, on the last refusal, what to tell the lead. */
 function refuseFailingStop(
   invocation: Invocation,
@@ -393,7 +399,7 @@ function refuseFailingStop(
   saved: boolean,
 ): number {
   const lines: string[] = [];
-  if (findings.length) lines.push(`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the task:`, ...bullets(findings));
+  if (findings.length) lines.push(...refusalLines(findings));
   if (notes.length) lines.push(`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes));
   if (doneWhen?.ok === false) {
     lines.push('yokoten: the done-when check failed. Fix what it reports, then end the task again:');
@@ -436,7 +442,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const options = parse('hook', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const json = options.flags.has('--json');
-  const agent = options.values['--agent'] ?? 'claude-code';
+  const namedAgent = options.values['--agent'];
+  const agent = namedAgent ?? 'claude-code';
   if (options.flags.has('--stop')) {
     if (options.flags.has('--commands-only')) return usage(invocation, "--stop and --commands-only can't be used together");
     if (!Object.hasOwn(STOP_READERS, agent)) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(STOP_READERS).join(', ')}`);
@@ -496,7 +503,12 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // Every rule gives the same four parts (#707): title, why, do instead, more.
     const reason = formatRefusal(found);
     say(invocation, `${reason}\n`, invocation.stderr);
-    const denial = Object.hasOwn(DENIALS, agent) ? DENIALS[agent](reason, invocation.env) : { stdout: '', exitCode: 2 };
+    // The --agent the hook was installed with decides the answer, never an environment
+    // variable another host could inherit (#707). An unnamed hook may be read by another
+    // host through the shared .claude/settings.json, so it keeps exit 2.
+    const denial = namedAgent !== undefined && Object.hasOwn(DENIALS, agent)
+      ? DENIALS[agent](reason, invocation.env)
+      : agent === 'claude-code' ? claudeCode.fallbackDenial(reason) : { stdout: '', exitCode: 2 };
     if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
     return json ? 2 : denial.exitCode;
   });

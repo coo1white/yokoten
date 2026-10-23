@@ -208,6 +208,17 @@ test('output colour: a mark in green, red or yellow, a heading in bold, a comman
   assert.equal(styleLine('yokoten stopped this: a tag push [release]', true), '\u001b[1;31myokoten stopped this: a tag push [release]\u001b[0m');
   assert.equal(styleLine('  1. safety net', true), '\u001b[1m  1. safety net\u001b[0m');
   assert.equal(styleLine('Run `yokoten init` first', true), 'Run \u001b[36m`yokoten init`\u001b[0m first');
+  // A command inside a coloured line closes the colour, so the outer style is opened again
+  // after it; otherwise the rest of a red refusal or a bold heading goes plain (#707).
+  assert.equal(
+    styleLine('yokoten stopped this: run `yokoten init` now [release]', true),
+    '\u001b[1;31myokoten stopped this: run \u001b[36m`yokoten init`\u001b[0m\u001b[1;31m now [release]\u001b[0m',
+  );
+  assert.equal(
+    styleLine('the road: run `yokoten doctor` next', true),
+    '\u001b[1mthe road: run \u001b[36m`yokoten doctor`\u001b[0m\u001b[1m next\u001b[0m',
+  );
+  assert.equal(styleLine('project: `yokoten init`', true), '\u001b[1mproject: \u001b[36m`yokoten init`\u001b[0m\u001b[0m', 'a command at the end needs no re-open');
   assert.equal(styleText('project:\n  ok      done', false), 'project:\n  ok      done');
   assert.ok(!styleText('project:\n  ok      done', false).includes('\u001b'));
 });

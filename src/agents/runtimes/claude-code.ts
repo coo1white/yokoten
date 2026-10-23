@@ -30,25 +30,28 @@ export function readToolCall(input: unknown): Action {
 }
 
 /**
- * Whether the hook runs inside Claude Code itself. GitHub Copilot CLI reads this file's
- * hooks too (checked with 1.0.98 on 2026-10-19), and it refuses on exit 2 but tells the
- * agent only "hook exited with code 2", unless stdout names the reason. So the newer
- * structured answer goes to Claude Code alone; every other reader keeps exit 2, the
- * fallback yokoten always had, so a refusal can never turn into an allowed call.
- */
-export const isClaudeCode = (env: Env): boolean => env.YOKOTEN_HOOK_DENIAL !== 'exit2' && (env.CLAUDECODE === '1' || (env.CLAUDE_CODE_ENTRYPOINT !== undefined && env.CLAUDE_CODE_ENTRYPOINT !== ''));
-
-/**
- * How a refusal reaches the agent (#707). Claude Code's PreToolUse takes a `deny` in
- * `hookSpecificOutput` on exit 0, and shows its reason to the agent as it is: no
- * "PreToolUse:Bash hook error:" line and no shell wrapper around it. GitHub Copilot CLI
- * gets the old answer on stdout and exit 2, because it refuses on the exit code alone.
- * `YOKOTEN_HOOK_DENIAL=exit2` puts Claude Code back on that old answer too.
+ * How a refusal reaches Claude Code (#707). Its hook docs
+ * (https://code.claude.com/docs/en/hooks) say "Exit 0 means success, and is the intended
+ * exit code when you print JSON for structured control", and that
+ * `permissionDecision: "deny"` "prevents the tool call". So a hook that was installed with
+ * `--agent claude-code` answers in `hookSpecificOutput` on exit 0: no "PreToolUse:Bash
+ * hook: error" line and no shell wrapper around the reason.
+ *
+ * The `--agent` the hook was installed with decides, never an environment variable: another
+ * host that inherits `CLAUDECODE` must not get an answer that treats exit 0 as a block.
+ * `YOKOTEN_HOOK_DENIAL=exit2` is the way back to the older answer.
  */
 export const formatDenial = (reason: string, env: Env): { stdout: string; exitCode: number } =>
-  isClaudeCode(env)
-    ? { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }), exitCode: 0 }
-    : { stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 };
+  env.YOKOTEN_HOOK_DENIAL === 'exit2'
+    ? fallbackDenial(reason)
+    : { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }), exitCode: 0 };
+
+/**
+ * The answer for a hook not installed as Claude Code's: the reason as JSON on stdout, and
+ * exit 2. GitHub Copilot CLI reads the same `.claude/settings.json` and refuses on the exit
+ * code alone, so its hook keeps this answer.
+ */
+export const fallbackDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
 
 /**
  * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`
@@ -192,7 +195,10 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
   checkHooksFile(path, USER_EVENTS);
   return {
     doctor: addHook(path, 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
-    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing, { isToolCall: true })),
+    // `--agent claude-code` names the host at install time (#707): only this file is read by
+    // Claude Code alone, so only this hook answers with a JSON deny on exit 0. The project
+    // hook is shared with Copilot CLI and Grok CLI, so it keeps exit 2.
+    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only --agent claude-code', missing, { isToolCall: true })),
   };
 }
 // With no home folder there are no user settings to read: nothing is on (#356).

@@ -174,17 +174,23 @@ const COMMAND = /`[^`\n]+`/g;
  */
 export function styleLine(line: string, isColour: boolean): string {
   if (!isColour) return line;
-  let styled = line;
   const mark = MARK.exec(line);
+  // The style of the whole line, when one covers it. A command's reset would end that
+  // style for the rest of the line, so it is opened again after each command (#707).
+  let outer: string | undefined;
+  let styled = line;
   if (line.startsWith('yokoten stopped this: ')) {
-    styled = paint(line, `${BOLD};${RED}`, true);
+    outer = `${BOLD};${RED}`;
   } else if (mark) {
     const colour = mark[2] === 'ok' || mark[2] === 'done' ? GREEN : mark[2] === 'MISSING' ? RED : YELLOW;
     styled = `${mark[1] ?? ''}${paint(mark[2] ?? '', colour, true)}${mark[3] ?? ''}${mark[4] ?? ''}`;
   } else if (HEADING.test(line) || STAGE.test(line)) {
-    styled = paint(line, BOLD, true);
+    outer = BOLD;
   }
-  return styled.replace(COMMAND, (command) => paint(command, CYAN, true));
+  const painted = styled.replace(COMMAND, (command, offset: number) =>
+    `${paint(command, CYAN, true)}${outer !== undefined && offset + command.length < styled.length ? `\u001b[${outer}m` : ''}`,
+  );
+  return outer === undefined ? painted : paint(painted, outer, true);
 }
 
 /** A whole text, line by line. */
