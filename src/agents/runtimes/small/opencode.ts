@@ -20,7 +20,10 @@
 // - The action string for a shell call. This tries bash and shell.
 // - The action string for a file write. This tries edit, write and patch.
 // - Whether resources holds the command text or the file paths.
-// The command is read from resources, then metadata.command, then metadata.input.
+// A known shell reads the command from resources, then metadata.command, then metadata.input.
+// An unknown action is judged on every command field: metadata.command, metadata.input,
+// metadata.input.command, metadata.input.code, and each resource. One refusal blocks it.
+// OpenCode 1 reads command and code from any tool, and filePath, path and file_path.
 // An action that is not plainly read-only, with no command and no path, is refused
 // in the plugin. An empty Action would let the hook allow it.
 //
@@ -87,6 +90,26 @@ const commandText = (resources: string[], metadata: Record<string, unknown>): st
   return textOf(asRecord(input).command);
 };
 
+/**
+ * Every command-like string on an action that is not a known shell or edit.
+ * A benign resource must not hide a command in another field. Each one is judged
+ * on its own. The guard refuses the call when any of them is refused.
+ */
+const unknownCommands = (resources: string[], metadata: Record<string, unknown>): string[] => {
+  const input = metadata.input;
+  const nested = asRecord(input);
+  const found: string[] = [];
+  const add = (value: string | undefined) => {
+    if (value !== undefined && !found.includes(value)) found.push(value);
+  };
+  add(textOf(metadata.command));
+  add(textOf(input));
+  add(textOf(nested.command));
+  add(textOf(nested.code));
+  for (const item of resources) add(item);
+  return found;
+};
+
 /** One file from metadata, when resources are not the paths. */
 const filePathOf = (metadata: Record<string, unknown>): string | undefined => {
   const input = asRecord(metadata.input);
@@ -106,6 +129,8 @@ const hasShellMark = (value: string): boolean => /[\s;&|`$<>]/.test(value);
 
 interface ReadEvent {
   command?: string;
+  /** Set when the action carries more than one command. Each entry is judged alone. */
+  commands?: string[];
   paths: string[];
   cwd?: string;
   /** skip: plainly read-only. deny: nothing to judge. ask: send it to the guard. */
@@ -130,19 +155,26 @@ function readEvaluate(call: Record<string, unknown>): ReadEvent {
     const kind = paths.length === 0 && command === undefined ? 'deny' : 'ask';
     return { command, paths, cwd, kind };
   }
-  const command = commandText(resources, metadata);
+  const commands = unknownCommands(resources, metadata);
   const fromFields = pathList([], metadata, false);
   const fromResources = resources.filter(looksLikePath);
   const paths = [...fromResources, ...fromFields.filter((item) => !fromResources.includes(item))];
-  const kind = command === undefined && paths.length === 0 ? 'deny' : 'ask';
-  return { command, paths, cwd, kind };
+  const kind = commands.length === 0 && paths.length === 0 ? 'deny' : 'ask';
+  // One command stays in `command`. Several stay apart, so a quote in one cannot hide the next.
+  return {
+    command: commands.length === 1 ? commands[0] : undefined,
+    commands: commands.length > 1 ? commands : undefined,
+    paths,
+    cwd,
+    kind,
+  };
 }
 
 /**
  * A tool call, as an Action. OpenCode 1 sends `{ tool, args, directory }`.
  * OpenCode 2's evaluate event sends `{ action, resources, metadata }`.
- * `shell` and `bash` give the command. `write`, `edit` and `patch` give the files.
- * A plainly read-only action gives neither. So does an event with no command and no path:
+ * Any other tool gives `command` and `code`, and a file from `filePath`, `path` or `file_path`.
+ * A plainly read-only tool gives neither. So does a call with no command and no path:
  * the hook would allow that empty Action, so the plugin refuses it before the guard runs.
  * The call names no subagent role.
  */
@@ -150,15 +182,27 @@ export function readToolCall(input: unknown): Action {
   const call = isObject(input) ? input : {};
   if (typeof call.action === 'string' && typeof call.tool !== 'string') {
     const read = readEvaluate(call);
-    return { command: read.command, paths: read.paths, cwd: read.cwd, worker: false };
+    return { command: read.command, ...(read.commands !== undefined ? { commands: read.commands } : {}), paths: read.paths, cwd: read.cwd, worker: false };
   }
   const args = isObject(call.args) ? call.args : {};
-  const name = typeof call.tool === 'string' ? call.tool : '';
-  const file = textOf(args.filePath);
+  const name = (typeof call.tool === 'string' ? call.tool : '').trim().toLowerCase();
+  const cwd = textOf(call.directory) ?? textOf(call.cwd);
+  if (READS.has(name)) return { command: undefined, paths: [], cwd, worker: false };
+  const lines: string[] = [];
+  const addLine = (value: string | undefined) => {
+    if (value !== undefined && !lines.includes(value)) lines.push(value);
+  };
+  addLine(textOf(args.command));
+  addLine(textOf(args.code));
+  const file = textOf(args.filePath) ?? textOf(args.path) ?? textOf(args.file_path);
+  // A shell line filed as a path is still judged as a command.
+  if (file !== undefined && hasShellMark(file)) addLine(file);
+  const many = lines.length > 1 ? lines : undefined;
   return {
-    command: SHELL.has(name) ? textOf(args.command) : undefined,
-    paths: EDITS.has(name) && file ? [file] : [],
-    cwd: textOf(call.directory) ?? textOf(call.cwd),
+    command: lines.length === 1 ? lines[0] : undefined,
+    ...(many !== undefined ? { commands: many } : {}),
+    paths: file !== undefined ? [file] : [],
+    cwd,
     worker: false,
   };
 }
@@ -212,6 +256,24 @@ export function pluginSource(command: string, timeoutMs = PLUGIN_TIMEOUT_MS): st
       return text(record(input).command);
     };
 
+    // An unknown action: every command-like field, so one benign resource cannot hide code.
+    const commandFields = (resources, metadata) => {
+      const meta = record(metadata);
+      const input = meta.input;
+      const nested = record(input);
+      const found = [];
+      const add = (value) => {
+        const item = text(value);
+        if (item && !found.includes(item)) found.push(item);
+      };
+      add(meta.command);
+      add(text(input));
+      add(nested.command);
+      add(nested.code);
+      for (const item of list(resources)) add(item);
+      return found;
+    };
+
     const pathsOf = (resources, metadata, fromResources) => {
       if (fromResources && resources.length > 0) return resources;
       const meta = record(metadata);
@@ -229,7 +291,7 @@ export function pluginSource(command: string, timeoutMs = PLUGIN_TIMEOUT_MS): st
         if (pathsOf(items, metadata, true).length > 0) return 'ask';
         return commandOf([], metadata) ? 'ask' : 'deny';
       }
-      if (commandOf(items, metadata)) return 'ask';
+      if (commandFields(items, metadata).length > 0) return 'ask';
       return pathsOf([], metadata, false).length > 0 ? 'ask' : 'deny';
     };
 
@@ -285,7 +347,12 @@ export function pluginSource(command: string, timeoutMs = PLUGIN_TIMEOUT_MS): st
         return {
           'tool.execute.before': async (hookInput, output) => {
             const tool = hookInput && typeof hookInput.tool === 'string' ? hookInput.tool : '';
-            const args = output && output.args && typeof output.args === 'object' ? output.args : {};
+            const name = tool.trim().toLowerCase();
+            if (reads.has(name)) return;
+            const args = output && output.args && typeof output.args === 'object' && !Array.isArray(output.args) ? output.args : {};
+            const command = text(args.command) || text(args.code);
+            const file = text(args.filePath) || text(args.path) || text(args.file_path);
+            if (!command && !file) throw new Error(unreadable);
             const reason = ask({ tool, args, directory: root }, root);
             if (reason) throw new Error(reason);
           },

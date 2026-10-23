@@ -162,6 +162,35 @@ test('hook --agent opencode: a force push and a .git edit match Claude Code; ls 
   assert.equal(listed.stdout.trim(), 'ALLOWED');
 });
 
+test('OpenCode 1 server() refuses command and code on any tool, and a git path under path or file_path', () => {
+  const sandbox = makeSandbox();
+  const push = 'git push --force origin main';
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const run = (tool: string, args: Record<string, unknown>) => runPlugin(sandbox.repo, sandbox.env, source, { tool, args });
+  const refused = (tool: string, args: Record<string, unknown>) => {
+    const ran = run(tool, args);
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.stdout.split('\n')[0], 'REFUSED', tool);
+    return ran.stdout;
+  };
+  const reasonOf = async (input: unknown) => {
+    const plain = await sandbox.call(['hook', '--agent', 'opencode'], { input: JSON.stringify(input), extra: worker });
+    assert.equal(plain.status, 2, plain.stderr);
+    return plain.stderr.trim();
+  };
+  const pushReason = reasonOf({ tool: 'bash', args: { command: push }, directory: sandbox.repo });
+  const editReason = reasonOf({ tool: 'edit', args: { filePath: '.git/config' }, directory: sandbox.repo });
+  return Promise.all([pushReason, editReason]).then(([pushText, editText]) => {
+    assert.ok(refused('code', { code: push }).includes(pushText), 'code');
+    assert.ok(refused('task', { command: push }).includes(pushText), 'task');
+    assert.ok(refused('write', { path: '.git/config' }).includes(editText), 'path');
+    assert.ok(refused('edit', { file_path: '.git/config' }).includes(editText), 'file_path');
+    assert.ok(refused('shell', {}).includes(UNREADABLE_CALL));
+    assert.equal(run('shell', { command: 'ls' }).stdout.trim(), 'ALLOWED');
+    assert.equal(run('read', { filePath: '.git/config' }).stdout.trim(), 'ALLOWED');
+  });
+});
+
 test('OpenCode readToolCall: v1 tools, and an evaluate event read from resources then metadata', () => {
   assert.deepEqual(readToolCall({ tool: 'shell', args: { command: 'ls' }, directory: '/work' }), { command: 'ls', paths: [], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ tool: 'bash', args: { command: 'pwd' } }), { command: 'pwd', paths: [], cwd: undefined, worker: false });
@@ -169,6 +198,11 @@ test('OpenCode readToolCall: v1 tools, and an evaluate event read from resources
     assert.deepEqual(readToolCall({ tool, args: { filePath: '.git/config' }, directory: '/work' }), { command: undefined, paths: ['.git/config'], cwd: '/work', worker: false });
   }
   assert.deepEqual(readToolCall({ tool: 'read', args: { filePath: '.git/config' }, directory: '/work' }), { command: undefined, paths: [], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ tool: 'code', args: { code: 'git push --force origin main' } }), { command: 'git push --force origin main', paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ tool: 'task', args: { command: 'git push --force origin main' } }), { command: 'git push --force origin main', paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ tool: 'write', args: { path: '.git/config' } }), { command: undefined, paths: ['.git/config'], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ tool: 'edit', args: { file_path: '.git/config' } }), { command: undefined, paths: ['.git/config'], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ tool: 'shell', args: {} }), { command: undefined, paths: [], cwd: undefined, worker: false });
   for (const input of [null, 'x', [], { tool: 'shell', args: [] }]) {
     assert.deepEqual(readToolCall(input), { command: undefined, paths: [], cwd: undefined, worker: false });
   }
@@ -189,6 +223,13 @@ test('OpenCode readToolCall: v1 tools, and an evaluate event read from resources
   assert.deepEqual(readToolCall({ action: 'edit', resources: [push], directory: '/work' }), { command: push, paths: [push], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ action: 'read', resources: ['.git/config'], directory: '/work' }), { command: undefined, paths: [], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ action: 'custom', resources: ['.git/config'], directory: '/work' }), { command: '.git/config', paths: ['.git/config'], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ action: 'code', resources: ['main.ts'], metadata: { input: { code: push } } }), {
+    command: undefined,
+    commands: [push, 'main.ts'],
+    paths: [],
+    cwd: undefined,
+    worker: false,
+  });
   assert.deepEqual(readToolCall({ action: 'custom', metadata: {} }), { command: undefined, paths: [], cwd: undefined, worker: false });
   assert.deepEqual(readToolCall({ action: 'bash', resources: [] }), { command: undefined, paths: [], cwd: undefined, worker: false });
 
@@ -287,6 +328,35 @@ test("OpenCode 2 setup: a force push is denied, ls stays allowed, a failing guar
   const failed = JSON.parse(failedLine) as { results: { effect: string; message: string }[] };
   assert.equal(failed.results[0]?.effect, 'deny');
   assert.match(failed.results[0]?.message ?? '', /guard failed/);
+});
+
+test('OpenCode 2 refuses an unknown action when any command field is refused', async () => {
+  const sandbox = makeSandbox();
+  const push = 'git push --force origin main';
+  const event = { action: 'code', resources: ['main.ts'], metadata: { input: { code: push } }, directory: sandbox.repo };
+  const plain = await sandbox.call(['hook', '--agent', 'opencode'], { input: JSON.stringify(event), extra: worker });
+  assert.equal(plain.status, 2, plain.stderr);
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const ran = runSetup(sandbox.repo, sandbox.env, source, [
+    { label: 'code', hook: 'permission:evaluate', event: allow('code', { resources: ['main.ts'], metadata: { input: { code: push } } }) },
+    { label: 'ls-code', hook: 'permission:evaluate', event: allow('code', { resources: ['main.ts'], metadata: { input: { code: 'ls' } } }) },
+    { label: 'ls', hook: 'permission:evaluate', event: allow('bash', { resources: ['ls'] }) },
+    { label: 'read', hook: 'permission:evaluate', event: allow('read', { resources: ['.git/config'] }) },
+  ]);
+  assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+  const line = ran.stdout.split('\n').find((item) => item.startsWith('{'));
+  assert.ok(line, ran.stdout);
+  const body = JSON.parse(line) as { results: { label: string; effect: string | null; message: string | null }[] };
+  const step = (label: string) => {
+    const found = body.results.find((item) => item.label === label);
+    assert.ok(found, label);
+    return found;
+  };
+  assert.equal(step('code').effect, 'deny');
+  assert.equal(step('code').message, plain.stderr.trim());
+  assert.equal(step('ls-code').effect, 'allow');
+  assert.equal(step('ls').effect, 'allow');
+  assert.equal(step('read').effect, 'allow');
 });
 
 test('the OpenCode plugin refuses the call when the guard fails or times out', () => {
