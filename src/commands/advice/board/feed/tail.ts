@@ -49,12 +49,12 @@ export interface StreamStore {
   cache: LogCache;
   count: number;
   mask: (text: string) => string;
-  find: (tree: string, vendor: string) => FoundLog | null;
+  find: (tree: string, vendor: string, log: string) => FoundLog | null;
 }
 
-export function makeStreamStore(env: Env, mask: (text: string) => string, find?: (tree: string, vendor: string) => FoundLog | null): StreamStore {
+export function makeStreamStore(env: Env, mask: (text: string) => string, find?: (tree: string, vendor: string, log: string) => FoundLog | null): StreamStore {
   const cache: LogCache = new Map();
-  return { tails: new Map(), found: new Map(), used: new Map(), cache, count: 0, mask, find: find ?? ((tree, vendor) => findAgentLog(tree, vendor, env, cache)) };
+  return { tails: new Map(), found: new Map(), used: new Map(), cache, count: 0, mask, find: find ?? ((tree, vendor, log) => findAgentLog(tree, vendor, env, cache, log)) };
 }
 
 /** One answer of /feed: the log's runtime (`doing` with no log), its session, the cursor to send next, and the new items. */
@@ -109,16 +109,21 @@ export function readTail(tail: LogTail, mask: (text: string) => string): boolean
   return isHeld || tail.offset < size;
 }
 
-/** One line of the log as masked items, and how many it made. A line that is not JSON is skipped. */
+/** One line of the log as masked items, and how many it made. A JSON line that is not JSON is skipped. */
 function takeLine(tail: LogTail, line: string, mask: (text: string) => string): number {
   if (!line.trim()) return 0;
-  let record: unknown;
-  try {
-    record = JSON.parse(line);
-  } catch {
-    return 0;
+  let items: StreamItem[];
+  if (tail.source === 'plain') {
+    items = LINE_READERS.plain(line, tail.tree);
+  } else {
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return 0;
+    }
+    items = LINE_READERS[tail.source](record, tail.tree);
   }
-  const items = LINE_READERS[tail.source](record, tail.tree);
   for (const item of items) {
     const kept: StreamItem = { kind: item.kind, text: mask(item.text), time: item.time };
     if (item.tool) kept.tool = item.tool;
@@ -162,12 +167,12 @@ function openTail(store: StreamStore, log: FoundLog, tree: string): LogTail {
 }
 
 /** The log of an agent, found again when the last look is older than FIND_AGAIN_MS. */
-function logOf(store: StreamStore, key: string, tree: string, vendor: string, now: number): FoundLog | null {
+function logOf(store: StreamStore, key: string, tree: string, vendor: string, log: string, now: number): FoundLog | null {
   const last = store.found.get(key);
   if (last && now - last.at < FIND_AGAIN_MS) return last.log;
-  const log = store.find(tree, vendor);
-  store.found.set(key, { log, at: now });
-  return log;
+  const found = store.find(tree, vendor, log);
+  store.found.set(key, { log: found, at: now });
+  return found;
 }
 
 /** `<session>:<number>` as its parts, or null. */
@@ -181,9 +186,9 @@ function parseCursor(cursor: string): { session: string; at: number } | null {
  * worktree and `vendor` its runtime as its status file says. No log: source `doing`, and the
  * page shows the agent's `doing` steps.
  */
-export function readStream(store: StreamStore, key: string, tree: string, vendor: string, cursor: string, now: number = Date.now()): StreamAnswer {
+export function readStream(store: StreamStore, key: string, tree: string, vendor: string, cursor: string, now: number = Date.now(), logPath = ''): StreamAnswer {
   store.used.set(key, now);
-  const log = logOf(store, key, tree, vendor, now);
+  const log = logOf(store, key, tree, vendor, logPath, now);
   if (!log) {
     store.tails.delete(key);
     return { source: 'doing', session: '', next: '', reset: true, more: false, items: [] };
