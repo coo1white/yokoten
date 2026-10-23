@@ -655,7 +655,9 @@ test('board server: /data answers at once while gh sleeps', async () => {
     const answer = await boardGet(`${base}data`, { cookie });
     const took = performance.now() - asked;
     assert.equal(answer.status, 200);
-    assert.ok(took < 200, `/data took ${took.toFixed(0)} ms while gh sleeps`);
+    // gh sleeps 10 s: an answer well inside that did not wait for it. A tighter bound measured
+    // the runner, not the board, and failed on a busy macOS runner (#754).
+    assert.ok(took < 5000, `/data took ${took.toFixed(0)} ms while gh sleeps`);
     const shown = JSON.parse(answer.text) as GitHubShown;
     assert.deepEqual(shown.agents.map((agent) => agent.name), ['w'], 'the agents show at once');
     assert.equal(shown.pulls, 'reading GitHub…');
