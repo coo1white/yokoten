@@ -1582,7 +1582,7 @@ test('borrowed: the watch reads only whole headers in src/borrowed/', () => {
 const file = (path: string, overrides: Partial<BorrowedFile> = {}): BorrowedFile => ({ path, source: SOURCE, commit: SHA, license: 'MIT', ...overrides });
 const hostOf = (commits: Record<string, UpstreamCommit[] | null>, dates: Record<string, string | null> = {}): BorrowedHost => ({
   commits: (source) => commits[source] ?? null,
-  commitDate: (_source, sha) => dates[sha] ?? null,
+  commitDate: (_, sha) => dates[sha] ?? null,
 });
 const commit = (sha: string, message: string, date?: string): UpstreamCommit => ({ sha, message, ...(date === undefined ? {} : { date }) });
 
