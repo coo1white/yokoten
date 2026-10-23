@@ -121,7 +121,7 @@ export const hasProjectHook = (root: string, cli: string): boolean => projectHoo
 const userHooks = (env: Env) => join(homeIn(env), '.gemini', 'config', 'hooks.json');
 
 /** The user's file as the report shows it. */
-export const userHooksFile = (_env: Env): string => '~/.gemini/config/hooks.json';
+export const userHooksFile = (_: Env): string => '~/.gemini/config/hooks.json';
 
 /** The user-level guard: shell calls only, as Claude Code's and Codex's user guards are. */
 const userGroup = (cli: string, missing: string) => ({

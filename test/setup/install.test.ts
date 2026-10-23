@@ -293,7 +293,7 @@ test('install: the user-level command guard for Antigravity CLI and Copilot CLI,
   assert.equal(cp.status, 2);
   assert.match(cp.stderr, /git push --tags pushes tags/);
   // uninstall takes the guard out and leaves the user's own entries.
-  const removed = sandbox.run(['uninstall']);
+  const removed = await sandbox.call(['uninstall']);
   assert.equal(removed.status, 0, removed.stderr);
   assert.match(removed.stdout, /^removed the Antigravity CLI command guard in ~\/\.gemini\/config\/hooks\.json$/m);
   assert.match(removed.stdout, /^removed the Copilot CLI command guard in ~\/\.copilot\/hooks\/yokoten\.json$/m);
