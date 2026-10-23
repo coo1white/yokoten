@@ -589,8 +589,14 @@ test('doctor: lists the work only on this machine; a session hears at most three
     utimesSync(join(tree, 'b.txt'), old, old);
   }
   const lines = (await session()).slice(3);
-  assert.equal(lines.length, 5, lines.join('\n'));
+  // Four worktrees with no core.hooksPath: three lines, then how many more (#789).
+  assert.equal(lines.length, 9, lines.join('\n'));
   assert.equal(lines[3], 'yokoten: 2 more like this; `yokoten doctor` lists them all.');
+  assert.equal(lines[4], UNSAVED_OFFER);
+  assert.match(lines[5], /worktree ~\/w1 has no core\.hooksPath/);
+  assert.match(lines[6], /worktree ~\/w2 has no core\.hooksPath/);
+  assert.match(lines[7], /worktree ~\/w3 has no core\.hooksPath/);
+  assert.equal(lines[8], 'yokoten: 1 more like this; `yokoten doctor` lists them all.');
   assert.ok(lines.every((line) => !line.includes(sandbox.home)), 'never the full home path');
   const full = await sandbox.call(['doctor'], { extra });
   assert.equal(full.stdout.match(/^ {2}note {4}(uncommitted-changes|unpushed-commits): /gm)?.length, 5);

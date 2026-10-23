@@ -523,19 +523,6 @@ function readDeskPaths(root: string): string[] {
     .filter((path) => path && existsSync(join(path, '.git')));
 }
 
-/** Every worktree path `git worktree list` names, or just `root` when git can't answer. */
-function readWorktreePaths(root: string, env: Env): string[] {
-  try {
-    const text = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    return text
-      .split('\n')
-      .filter((line) => line.startsWith('worktree '))
-      .map((line) => line.slice('worktree '.length));
-  } catch {
-    return [root];
-  }
-}
-
 /** Whether `path` is a linked worktree (its `.git` is a file) or a desk clone. A main checkout is neither. */
 function placeKind(path: string, desks: Set<string>): HookPlace['kind'] | 'main' {
   try {
@@ -549,16 +536,25 @@ function placeKind(path: string, desks: Set<string>): HookPlace['kind'] | 'main'
 
 /**
  * Desks and linked worktrees of this repo whose commit hook may be off (#789).
- * A main checkout is left to the commit-check step. A path git can't read is skipped.
+ * `worktreePaths` comes from the worktree list doctor already read. A linked worktree
+ * uses this repo's `core.hooksPath` from that same config list. A desk is its own clone,
+ * so its value is read there. A main checkout is left to the commit-check step.
  */
-export function hookPlaces(root: string, env: Env): HookPlace[] {
+export function hookPlaces(root: string, env: Env, worktreePaths: string[]): HookPlace[] {
   const desks = new Set(readDeskPaths(root).map(realPath));
-  const paths = new Set([realPath(root), ...readWorktreePaths(root, env).map(realPath), ...desks]);
+  const here = realPath(root);
+  const sharedHooks = gitConfig(root, 'core.hooksPath', env);
   const places: HookPlace[] = [];
-  for (const path of paths) {
+  const seen = new Set<string>();
+  for (const listed of [...worktreePaths, ...desks]) {
+    const path = realPath(listed);
+    if (seen.has(path)) continue;
+    seen.add(path);
     const kind = placeKind(path, desks);
     if (kind === 'main') continue;
-    places.push({ kind, path, hooksPath: gitConfig(path, 'core.hooksPath', env) });
+    // A linked worktree shares this repo's config. A desk clone does not.
+    const hooksPath = kind === 'worktree' || path === here ? sharedHooks : gitConfig(path, 'core.hooksPath', env);
+    places.push({ kind, path, hooksPath });
   }
   return places;
 }
