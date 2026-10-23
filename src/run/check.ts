@@ -714,6 +714,10 @@ export function parseBorrowedHeader(text: string): BorrowedHeader | null {
 }
 
 const isUrl = (source: string): boolean => /^https?:\/\/\S+$/i.test(source);
+// The watch reads a GitHub file page: owner, repo, `blob`, a ref and a path. Any other
+// URL would pass the header and then fail in the watch, so the check refuses it too.
+const isBorrowedSource = (source: string): boolean =>
+  /^https?:\/\/(?:www\.)?github\.com\/[^/\s?#]+\/[^/\s?#]+\/blob\/[^/\s?#]+\/\S+$/i.test(source);
 const isAllowedLicense = (license: string): boolean =>
   BORROWED_LICENSES.some((allowed) => allowed.toLowerCase() === license.toLowerCase());
 
@@ -729,6 +733,7 @@ export function borrowedProblems(path: string, text: string): Finding[] {
   const at = { file: path };
   if (!header?.source) problems.push(finding('borrowed', 'borrowed code with no source URL', 'add `// source: <the upstream file URL>` at the top of the file', at));
   else if (!isUrl(header.source)) problems.push(finding('borrowed', 'the borrowed source is not a URL', 'write the upstream file URL as `// source: https://…` at the top of the file', at));
+  else if (!isBorrowedSource(header.source)) problems.push(finding('borrowed', 'the borrowed source is not a GitHub file link', 'write `// source: https://github.com/<owner>/<repo>/blob/<commit>/<path>` at the top of the file, because the watch reads only GitHub', at));
   if (!header?.commit) problems.push(finding('borrowed', 'borrowed code with no upstream commit', 'add `// commit: <the 40-character upstream commit sha>` at the top of the file', at));
   else if (!FULL_COMMIT.test(header.commit)) problems.push(finding('borrowed', 'the upstream commit is not a full 40-character sha', 'write the commit the code was taken from as `// commit: <40 lowercase hex digits>` at the top of the file', at));
   if (!header?.license) problems.push(finding('borrowed', 'borrowed code with no license', 'add `// license: <SPDX name>` at the top of the file: MIT, BSD-2-Clause, BSD-3-Clause, ISC or Apache-2.0', at));
@@ -757,7 +762,7 @@ export function borrowedFiles(paths: string[], read: (path: string) => string | 
     const text = read(path);
     if (text === null) continue;
     const header = parseBorrowedHeader(text);
-    if (!header || !isUrl(header.source) || !FULL_COMMIT.test(header.commit) || !header.license) continue;
+    if (!header || !isBorrowedSource(header.source) || !FULL_COMMIT.test(header.commit) || !header.license) continue;
     files.push({ path, source: header.source, commit: header.commit, license: header.license });
   }
   return files;
@@ -775,6 +780,8 @@ export interface UpstreamCommit {
 export interface BorrowedHost {
   /** Commits that touched the source file on the default branch, newest first; null when the host can't tell. */
   commits(source: string): UpstreamCommit[] | null;
+  /** One commit's date, to compare it with the list when the list does not hold it; null when the host can't tell. */
+  commitDate?(source: string, commit: string): string | null;
 }
 
 /** One source upstream has moved past: the local files, and what upstream did. */
@@ -819,19 +826,47 @@ export function watchBorrowed(files: BorrowedFile[], host: BorrowedHost): Borrow
   const watch: BorrowedWatch = { changed: [], unreadable: [] };
   for (const [source, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
     const paths = group.map((file) => file.path);
-    const borrowedCommit = group[0].commit;
     const commits = host.commits(source);
     if (commits === null) {
       watch.unreadable.push({ source, files: paths, reason: 'the host gave no answer' });
       continue;
     }
     if (commits.length === 0) {
-      watch.changed.push({ source, files: paths, borrowedCommit, latestCommit: null, commits: [], isSecurity: false, note: 'the file is gone from the default branch' });
+      watch.changed.push({ source, files: paths, borrowedCommit: group[0].commit, latestCommit: null, commits: [], isSecurity: false, note: 'the file is gone from the default branch' });
       continue;
     }
-    const at = commits.findIndex((commit) => commit.sha === borrowedCommit);
-    if (at === 0) continue; // upstream's newest change to the file is the one we took
-    const newer = at > 0 ? commits.slice(0, at) : commits;
+    // Compare every file in the group, not only the first: two wheels may share a source
+    // and hold different commits. The one with the most commits behind names the issue.
+    let borrowedCommit = group[0].commit;
+    let newer: UpstreamCommit[] = [];
+    let unknown: string | null = null;
+    for (const file of group) {
+      const at = commits.findIndex((commit) => commit.sha === file.commit);
+      if (at === 0) continue; // this file holds the newest change to the file
+      let after: UpstreamCommit[];
+      if (at > 0) {
+        after = commits.slice(0, at);
+      } else {
+        // Our commit is not in the list: it may be a snapshot that never touched the
+        // file, so compare by date instead of calling every listed commit newer.
+        const borrowedDate = host.commitDate?.(source, file.commit) ?? null;
+        if (!borrowedDate) {
+          unknown = file.commit;
+          continue;
+        }
+        after = commits.filter((commit) => commit.date !== undefined && commit.date > borrowedDate);
+        if (after.length === 0) continue;
+      }
+      if (after.length > newer.length) {
+        newer = after;
+        borrowedCommit = file.commit;
+      }
+    }
+    if (unknown) {
+      watch.unreadable.push({ source, files: paths, reason: `the host does not hold commit ${unknown} in the file's history, and did not give its date` });
+      continue;
+    }
+    if (newer.length === 0) continue;
     watch.changed.push({
       source,
       files: paths,

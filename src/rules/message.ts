@@ -234,7 +234,7 @@ export const RULES = {
   borrowed: {
     rule: 'borrowed code carries its source, upstream commit, license and copyright notice (record 0024)',
     why: 'copied code is only safe and legal when its source, license and notice are kept, and when upstream fixes reach it',
-    check: '`yokoten check` reads the header at the top of every file in `src/borrowed/`; a license outside MIT, BSD-2-Clause, BSD-3-Clause, ISC and Apache-2.0 is refused. `scripts/borrowed-watch.ts` compares each upstream commit with the default branch and opens one issue per source that moved',
+    check: '`yokoten check` reads the header at the top of every file in `src/borrowed/`; a license outside MIT, BSD-2-Clause, BSD-3-Clause, ISC and Apache-2.0 is refused. `yokoten borrowed` compares each upstream commit with the default branch and opens one issue per source that moved',
     docs: guide('borrowed-code'),
   },
   'pr-title': {

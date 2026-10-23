@@ -881,6 +881,10 @@ test('borrowed: the issue names the source and the security fix, and a second ru
   assert.equal(hasOpenIssue(gh, source), true);
   assert.equal(hasOpenIssue(gh, 'https://github.com/example/elsewhere/blob/main/x.ts'), false);
   assert.match(calls[0].join(' '), /issue list --state open/);
+  // An answer that is not a list is a gap: stop, never open a duplicate (#676).
+  for (const answer of ['not json', '{}', 'null']) {
+    assert.throws(() => hasOpenIssue(() => answer, source), /did not give an issue list/, answer);
+  }
 });
 
 test('borrowed --dry-run: a repo with no wheel writes nothing and says so', async () => {

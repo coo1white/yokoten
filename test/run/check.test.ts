@@ -1528,6 +1528,12 @@ test('borrowed: each missing field is reported with the file and a fix', () => {
 
 test('borrowed: a field that is there but wrong is still refused', () => {
   assert.match(borrowedProblems(PATH, wheel([], { source: 'git://example.com/thing.ts' }))[0].what, /not a URL/);
+  // The watch reads only a GitHub file page, so the check refuses any other host (#676).
+  const otherHost = borrowedProblems(PATH, wheel([], { source: 'https://gitlab.com/example/upstream/blob/main/src/thing.ts' }));
+  assert.equal(otherHost.length, 1);
+  assert.match(otherHost[0].what, /not a GitHub file link/);
+  assert.match(otherHost[0].fix, /github\.com\/<owner>\/<repo>\/blob/);
+  assert.match(borrowedProblems(PATH, wheel([], { source: 'https://github.com/example/upstream/tree/main/src' }))[0].what, /not a GitHub file link/);
   assert.match(borrowedProblems(PATH, wheel([], { commit: SHA.slice(0, 7) }))[0].what, /not a full 40-character sha/);
   // Code before the header leaves every field out: the header must start the file.
   const late = `export const thing = 1;\n\n${wheel()}`;
@@ -1565,6 +1571,8 @@ test('borrowed: the watch reads only whole headers in src/borrowed/', () => {
     [`${BORROWED_DIR}b.ts`]: wheel(['commit']),
     'src/rules/c.ts': wheel(),
     [`${BORROWED_DIR}d.ts`]: null,
+    // A source the watch cannot read is not taken in, so the check and the watch agree.
+    [`${BORROWED_DIR}e.ts`]: wheel([], { source: 'https://example.com/upstream/blob/main/src/thing.ts' }),
   };
   assert.deepEqual(borrowedFiles(Object.keys(texts), (path) => texts[path]).map((file) => file.path), [`${BORROWED_DIR}a.ts`]);
 });
@@ -1572,8 +1580,11 @@ test('borrowed: the watch reads only whole headers in src/borrowed/', () => {
 // ---- The watch ----
 
 const file = (path: string, overrides: Partial<BorrowedFile> = {}): BorrowedFile => ({ path, source: SOURCE, commit: SHA, license: 'MIT', ...overrides });
-const hostOf = (commits: Record<string, UpstreamCommit[] | null>): BorrowedHost => ({ commits: (source) => commits[source] ?? null });
-const commit = (sha: string, message: string): UpstreamCommit => ({ sha, message });
+const hostOf = (commits: Record<string, UpstreamCommit[] | null>, dates: Record<string, string | null> = {}): BorrowedHost => ({
+  commits: (source) => commits[source] ?? null,
+  commitDate: (_source, sha) => dates[sha] ?? null,
+});
+const commit = (sha: string, message: string, date?: string): UpstreamCommit => ({ sha, message, ...(date === undefined ? {} : { date }) });
 
 test('watch: upstream is where we left it', () => {
   const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(SHA, 'feat: the version we took')] }));
@@ -1612,12 +1623,52 @@ test('watch: a source the host cannot answer for is a gap, never a pass', () => 
   assert.equal(watch.unreadable[0].reason, 'the host gave no answer');
 });
 
-test('watch: a file gone upstream, or a commit the list no longer holds, still counts as changed', () => {
+test('watch: a file gone upstream is a change', () => {
   const gone = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [] }));
   assert.equal(gone.changed[0].latestCommit, null);
   assert.match(gone.changed[0].note ?? '', /gone/);
-  // A force-push can drop our commit from the list: every commit the host shows is newer.
-  const rewritten = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug'), commit('2222222222222222222222222222222222222222', 'feat: base')] }));
-  assert.equal(rewritten.changed[0].commits.length, 2);
+});
+
+test('watch: a snapshot commit that never touched the file is not taken as everything newer', () => {
+  const base = '2222222222222222222222222222222222222222';
+  // The borrowed sha is not in the list, and its date is after every listed commit: no issue.
+  const snapshot = watchBorrowed(
+    [file(PATH)],
+    hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug', '2026-09-01T00:00:00Z'), commit(base, 'feat: base', '2026-08-01T00:00:00Z')] }, { [SHA]: '2026-10-01T00:00:00Z' }),
+  );
+  assert.deepEqual(snapshot, { changed: [], unreadable: [] });
+});
+
+test('watch: a commit missing from the list counts only the commits its date says are newer', () => {
+  const newer = '1111111111111111111111111111111111111111';
+  const watch = watchBorrowed(
+    [file(PATH)],
+    hostOf({ [SOURCE]: [commit(newer, 'fix: later', '2026-10-02T00:00:00Z'), commit(OLDER, 'docs: earlier', '2026-09-01T00:00:00Z')] }, { [SHA]: '2026-09-15T00:00:00Z' }),
+  );
+  assert.equal(watch.changed.length, 1);
+  assert.deepEqual(watch.changed[0].commits.map((c) => c.sha), [newer]);
+});
+
+test('watch: a commit missing from the list with no date is a gap, never a false issue', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug', '2026-09-01T00:00:00Z')] }));
+  assert.deepEqual(watch.changed, []);
+  assert.equal(watch.unreadable.length, 1);
+  assert.match(watch.unreadable[0].reason, /0123456789abcdef/);
+});
+
+test('watch: files that share a source are each compared, not only the first', () => {
+  const other = `${BORROWED_DIR}other.ts`;
+  const newest = '1111111111111111111111111111111111111111';
+  const middle = '2222222222222222222222222222222222222222';
+  const watch = watchBorrowed(
+    [file(PATH), file(other, { commit: OLDER })],
+    hostOf({
+      [SOURCE]: [commit(newest, 'fix: newest', '2026-10-03T00:00:00Z'), commit(middle, 'docs: middle', '2026-10-02T00:00:00Z'), commit(OLDER, 'the version the other file took', '2026-09-01T00:00:00Z')],
+    }, { [SHA]: '2026-10-02T12:00:00Z' }),
+  );
+  assert.equal(watch.changed.length, 1);
+  assert.deepEqual(watch.changed[0].files, [PATH, other]);
+  assert.equal(watch.changed[0].borrowedCommit, OLDER);
+  assert.deepEqual(watch.changed[0].commits.map((c) => c.sha), [newest, middle]);
 });
 

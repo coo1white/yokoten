@@ -1325,8 +1325,9 @@ Only the first comment block counts. When a field is written twice, the first on
 
 `yokoten check` reads the header of every file in `src/borrowed/`, in the whole tree and
 in the commit about to be made. It reports each field that is missing, with the file and
-the line to add. A commit with a bad header does not pass. A source that is not a URL, or
-a commit that is not a full sha, is refused too.
+the line to add. A commit with a bad header does not pass. A source that is not a GitHub
+file link, or a commit that is not a full sha, is refused too. The watch reads only
+`github.com/<owner>/<repo>/blob/...`, so the check refuses any other host with a fix.
 
 A license outside the five above is refused, even when the header is complete. The fix
 is `use the clean-room road in record 0024`. The same applies to a license name the
@@ -1337,10 +1338,16 @@ asks GitHub for the commits on upstream's default branch that touched the source
 a commit comes after the one we took, upstream has moved.
 
 The command opens **one issue per source**, not one per file. It looks for an open issue
-that already names the source, so a later run adds nothing. The issue lists the local
-files, the commit we took, and the newer upstream commits. A commit message that names a
-security fix gets the title `check: take a borrowed security fix`; other changes get
-`check: review borrowed code upstream`.
+that already names the source, so a later run adds nothing. If the host cannot list the
+open issues, the run stops with an error; it never opens a second issue. The issue lists
+the local files, the commit we took, and the newer upstream commits. A commit message
+that names a security fix gets the title `check: take a borrowed security fix`; other
+changes get `check: review borrowed code upstream`.
+
+When files that share a source took different commits, the command compares each one. If
+the commit we took is not in the list the host gives, it compares dates instead of
+calling every listed commit newer: a snapshot commit that never touched the file opens
+no issue. When the host can give neither the list nor that date, the source is a gap.
 
 A source the host cannot answer for is a gap, not a pass. The job says which source, and
 fails, so nobody reads silence as "upstream did not change". To see the report without

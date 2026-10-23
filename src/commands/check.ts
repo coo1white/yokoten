@@ -624,16 +624,20 @@ export function borrowedIssue(change: BorrowedChange): { title: string; body: st
   return { title, body: `${body}\n`, labels };
 }
 
-/** Whether an open issue already names this source, so a later run opens no second one. */
+/**
+ * Whether an open issue already names this source, so a later run opens no second one.
+ * An answer that is not a list throws: it is a gap, not "none open", so the run stops
+ * instead of opening a duplicate.
+ */
 export function hasOpenIssue(gh: Gh, source: string): boolean {
   const text = gh(['issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,body']);
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
-    return false;
+    throw new Error('gh did not give an issue list');
   }
-  if (!Array.isArray(json)) return false;
+  if (!Array.isArray(json)) throw new Error('gh did not give an issue list');
   return json.some((issue) => isObject(issue) && asText(issue.body).includes(source));
 }
 
@@ -676,8 +680,9 @@ export async function runBorrowed(invocation: Invocation): Promise<number> {
       }
       gh(['issue', 'create', ...issue.labels.flatMap((label) => ['--label', label]), '--title', issue.title, '--body', issue.body]);
       print(invocation, [`opened: ${issue.title} for ${change.source}`]);
-    } catch {
-      print(invocation, [`borrowed: couldn't open an issue for ${change.source}`], invocation.stderr);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      print(invocation, [`borrowed: couldn't open an issue for ${change.source}: ${reason}`], invocation.stderr);
       failed = true;
     }
   }

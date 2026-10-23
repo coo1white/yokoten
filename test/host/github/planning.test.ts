@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir } from '../../repo/helpers.ts';
-import { borrowedHost, type Gh, parseBorrowedSource, parseCommits, readIssueMilestone, readLocalLogins, readLogin, repoOf } from '../../../src/host/github/planning.ts';
+import { borrowedHost, type Gh, parseBorrowedSource, parseCommitDate, parseCommits, readIssueMilestone, readLocalLogins, readLogin, repoOf } from '../../../src/host/github/planning.ts';
 import { syncBoard } from '../../../scripts/board-sync.ts';
 
 test('repo: read from https and ssh remotes', () => {
@@ -198,4 +198,18 @@ test('borrowed host: reads the default branch for the borrowed path, and gives n
 
   assert.equal(borrowedHost(() => { throw new Error('no network'); }).commits(SOURCE), null);
   assert.equal(borrowedHost(() => '[]').commits('https://example.com/a/b/blob/main/c.ts'), null);
+});
+
+test('borrowed host: reads one commit’s date, and gives null when it cannot', () => {
+  assert.equal(parseCommitDate(JSON.stringify({ commit: { author: { date: '2026-10-01T08:00:00Z' } } })), '2026-10-01T08:00:00Z');
+  for (const bad of ['{', '{}', '[]', JSON.stringify({ commit: { author: {} } })]) assert.equal(parseCommitDate(bad), null, bad);
+  const calls: string[][] = [];
+  const gh: Gh = (args) => {
+    calls.push(args);
+    return JSON.stringify({ commit: { author: { date: '2026-10-01T08:00:00Z' } } });
+  };
+  assert.equal(borrowedHost(gh).commitDate?.(SOURCE, SHA), '2026-10-01T08:00:00Z');
+  assert.deepEqual(calls, [['api', `repos/example/upstream/commits/${SHA}`]]);
+  assert.equal(borrowedHost(() => { throw new Error('no network'); }).commitDate?.(SOURCE, SHA), null);
+  assert.equal(borrowedHost(() => '{}').commitDate?.('https://example.com/a/b/blob/main/c.ts', SHA), null);
 });

@@ -346,6 +346,21 @@ export function parseCommits(text: string): UpstreamCommit[] | null {
   return commits;
 }
 
+/** The date on gh's answer to `repos/<repo>/commits/<sha>`; null when it is not there. */
+export function parseCommitDate(text: string): string | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObject(json)) return null;
+  const commit = isObject(json.commit) ? json.commit : {};
+  const author = isObject(commit.author) ? commit.author : {};
+  const date = asText(author.date);
+  return date || null;
+}
+
 /**
  * The watch's host: GitHub's default branch answers `sha=`-less reads, so the newest
  * commits that touched the borrowed path are exactly the ones the default branch holds.
@@ -361,5 +376,16 @@ export const borrowedHost = (gh: Gh): BorrowedHost => ({
       return null; // the host gave no answer: the watch reports a gap, never a pass
     }
     return parseCommits(text);
+  },
+  commitDate(source, commit) {
+    const parsed = parseBorrowedSource(source);
+    if (!parsed) return null;
+    let text: string;
+    try {
+      text = gh(['api', `repos/${parsed.repo}/commits/${commit}`]);
+    } catch {
+      return null;
+    }
+    return parseCommitDate(text);
   },
 });
