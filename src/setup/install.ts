@@ -113,6 +113,22 @@ function writeSharedSkill(linkFile: string, targetFile: string, content: string,
 /** The skills folder a skill file is in, for the report: `~/.claude/skills`. */
 export const skillsDir = (file: string): string => dirname(dirname(file));
 
+/** The home skill folders that hold a managed yokoten skill, for the duplicate note (#540). */
+export function installedSkillDirs(env: Env): string[] {
+  return [...new Set(kitSkills().flatMap((name) => skillFiles(env, name).filter(isManaged).map(skillsDir)))];
+}
+
+/**
+ * The project folders that hold one managed yokoten skill, relative to `root`, for the
+ * duplicate note (#540): `.agents/skills/dispatch` and so on. `npx skills add` puts a copy
+ * in `.agents/skills` or `.claude/skills`. The note names each folder, never the whole
+ * folder above it, which holds other packages' skills too.
+ */
+export function projectSkillDirs(root: string): string[] {
+  const dirs = ['.agents/skills', '.claude/skills'];
+  return dirs.flatMap((dir) => kitSkills().filter((name) => isManaged(join(root, dir, name, 'SKILL.md'))).map((name) => `${dir}/${name}`));
+}
+
 /** The example install prints when it asks the owner to type a mark (#525). */
 const MARK_EXAMPLE = 'for example: your city, a company domain, a server name';
 
@@ -420,8 +436,8 @@ export function installedPieces(env: Env): string[] {
   const pieces: string[] = [];
   const hooks = [hasSessionDoctor(env) && 'the SessionStart doctor', hasUserGuard(env) && 'the command guard'].filter((hook) => hook !== false);
   if (hooks.length) pieces.push(`${hooks.join(' and ')} in ${join(userDir(env), 'settings.json')}`);
-  const skillDirs = new Set(kitSkills().flatMap((name) => skillFiles(env, name).filter(isManaged).map(skillsDir)));
-  if (skillDirs.size) pieces.push(`the skills in ${[...skillDirs].join(' and ')}`);
+  const skillDirs = installedSkillDirs(env);
+  if (skillDirs.length) pieces.push(`the skills in ${skillDirs.join(' and ')}`);
   if (kitAgents().some((file) => isManaged(agentFile(env, file)))) pieces.push(`the agents in ${join(userDir(env), 'agents')}`);
   if (existsSync(paths(env).runtime)) pieces.push(paths(env).runtime);
   return pieces;
