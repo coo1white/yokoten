@@ -145,7 +145,7 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
   assert.match(broken.stderr, /Cannot find module/);
 });
 
-test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', async () => {
+test('init: adds the practices, keeps what is there, and doctor asks for the remote next', async () => {
   const sandbox = makeSandbox();
   // An AGENTS.md with `## This project` is left to `update` (#378).
   const ours = '# our own rules\n\n## This project\n\nours\n';
@@ -161,6 +161,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept AGENTS\.md/);
   assert.match(result.stdout, /wrote \.githooks\/pre-commit/);
+  assert.match(result.stdout, /wrote \.yokoten\/ \(a copy of yokoten, about 90 files; committing it is the point\)/);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths; make the repo, add the remote and push, then put your GitHub handle in place of @YOUR_GITHUB_HANDLE\)/);
   assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), ours);
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.equal(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
@@ -238,12 +240,12 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   sandbox.git('reset', '-q', 'leak.md');
-  // init does all of stages 1 to 3 but the tests, so with tests the road goes on to stage 4.
+  // init does all of stages 1 to 3 but the tests, so with tests the road goes on to the remote.
   assert.match((await sandbox.call(['doctor', '--session'])).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no workflow runs a test command/);
   sandbox.withTests();
   result = await sandbox.call(['doctor', '--session']);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /^yokoten: stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
+  assert.match(result.stdout, /^yokoten: stage 2 of 5, issues and pull requests\. Next: there is no origin remote, so the work is only on this machine; make the repo on your code host, add it as origin \(`git remote add origin <url>`\), and push \(`git push -u origin --all`\)/);
 });
 
 const GUIDE_LINE = 'other agents: see the guide';
@@ -1514,7 +1516,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   // --github --yes asked for changes on GitHub; with no remote none were made, so it fails (#208).
   result = await sandbox.call(['init', '--github', '--yes'], { extra });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /GitHub: skipped, because there is no origin remote yet\. Add one on GitHub, then run `yokoten init --github --yes`/);
+  assert.match(result.stderr, /GitHub: skipped, because there is no origin remote yet\. Make the repo on GitHub, add it as origin, and push; then run `yokoten init --github --yes`/);
   assert.match(result.stderr, /\nyokoten init: --github --yes changed nothing on GitHub \(the reason is above\)\. The project files are as listed above\.\n$/);
   assert.equal(calls().length, 0);
   sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
@@ -1592,6 +1594,9 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   const sandbox = makeSandbox();
   const extra = stubGh(sandbox, { 'api users/octo --jq .type': 'User', 'api repos/octo/app --jq .private': 'true' });
   sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  // The remote step is done once a branch is pushed; a local ref is enough for the road.
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/dependabot.yml'];
   const isThere = (file: string) => existsSync(join(sandbox.repo, file));
   const notNow = () => JSON.parse(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8')).notNow;
