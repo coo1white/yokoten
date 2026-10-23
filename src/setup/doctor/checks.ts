@@ -345,7 +345,7 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
 }
 
 /** The one command that updates the plugin, from a shell. */
-export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`, then restart Claude Code';
+export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart';
 
 /** The default branch refs doctor compares against, the first one present wins. Local only, no fetch. */
 const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/heads/main'];
