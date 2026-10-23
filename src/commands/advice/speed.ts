@@ -7,7 +7,7 @@
 
 import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { mergeReports, readTapReport, readTestSources, SPEED_BUDGET, speedAdvice, speedView, type SpeedReport } from '../../setup/advice/ci-speed.ts';
+import { mergeReports, readTapReport, readTestSources, SPEED_BUDGET, speedAdvice, speedView, testsByFile, type SpeedReport } from '../../setup/advice/ci-speed.ts';
 import { hideHome } from '../../rules/privacy.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../shared.ts';
 
@@ -58,7 +58,8 @@ export function runSpeed(invocation: Invocation): number {
   const view = speedView(merged, { budgetSeconds, sources });
   const lines = [...view.lines];
   if (view.isOver) {
-    const advice = speedAdvice(root, sources);
+    const slowFiles = testsByFile(merged.tests, sources).map((file) => file.path);
+    const advice = speedAdvice(root, sources, slowFiles);
     if (advice.length) {
       lines.push('', 'What you can do:');
       for (const group of advice) lines.push('', `- ${group.title}: ${group.text}.`, `  ${group.files.join(', ')}`);

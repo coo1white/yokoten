@@ -82,9 +82,9 @@ test('speed: advice names the real test files and the workflow that holds one jo
     'test/four.test.ts': "test('is plain', () => { assert.equal(1, 1); });\n",
     '.github/workflows/ci.yml': 'jobs:\n  tests:\n    steps:\n      - run: npm test\n',
   });
-  const groups = speedAdvice(root);
+  const groups = speedAdvice(root, undefined, ['test/two.test.ts']);
   const byTitle = new Map(groups.map((group) => [group.title, group]));
-  assert.deepEqual(byTitle.get('Tests start a process per call')?.files, ['test/one.test.ts', 'test/two.test.ts']);
+  assert.deepEqual(byTitle.get('Tests start a process per call')?.files, ['test/two.test.ts', 'test/one.test.ts'], 'the file that took longer comes first');
   assert.deepEqual(byTitle.get('The same fixture is built again and again')?.files, ['test/one.test.ts']);
   assert.deepEqual(byTitle.get('Timing tests flake on a busy runner')?.files, ['test/three.test.ts']);
   assert.deepEqual(byTitle.get('One job does everything')?.files, ['.github/workflows/ci.yml']);

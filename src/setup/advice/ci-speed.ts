@@ -220,9 +220,15 @@ export function speedView(report: SpeedReport, { budgetSeconds = SPEED_BUDGET, p
   return { isOver, lines };
 }
 
-/** The files whose text matches `pattern`, up to the cap. */
+/** The files whose text matches `pattern`, in no order, up to a cap. */
 const filesMatching = (sources: TestSource[], pattern: RegExp): string[] =>
-  sources.filter((source) => pattern.test(source.text)).map((source) => source.path).slice(0, NAMED);
+  sources.filter((source) => pattern.test(source.text)).map((source) => source.path).slice(0, MAX_TEST_FILES);
+
+/** The files that took the most time first: advice opens the ones that caused the slow run. */
+function orderFiles(files: string[], slowFiles: string[]): string[] {
+  const order = new Map(slowFiles.map((path, index) => [path, index]));
+  return [...files].sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER) || left.localeCompare(right));
+}
 
 /** Workflows that run the tests in one job, with no shard and no matrix. */
 export function workflowsWithoutShards(root: string): string[] {
@@ -252,13 +258,14 @@ export function workflowsWithoutShards(root: string): string[] {
  * cause. No group when nothing matches: doctor and CI stay quiet about a fast suite.
  * `sources` is passed by the caller that already read the test files.
  */
-export function speedAdvice(root: string, sources: TestSource[] = readTestSources(root)): AdviceGroup[] {
+export function speedAdvice(root: string, sources: TestSource[] = readTestSources(root), slowFiles: string[] = []): AdviceGroup[] {
   const groups: AdviceGroup[] = [];
-  const child = filesMatching(sources, /\b(?:execFileSync|execFile|execSync|spawnSync|spawn|fork)\s*\(/);
+  const names = (pattern: RegExp) => orderFiles(filesMatching(sources, pattern), slowFiles).slice(0, NAMED);
+  const child = names(/\b(?:execFileSync|execFile|execSync|spawnSync|spawn|fork)\s*\(/);
   if (child.length) groups.push({ title: 'Tests start a process per call', files: child, text: 'call the code in the test process, and keep one or two real end-to-end tests' });
-  const fixtures = filesMatching(sources, /\bgit\s+init\b|['"]git['"]\s*,\s*\[[^\]]*['"]init['"]/);
+  const fixtures = names(/\bgit\s+init\b|['"]git['"]\s*,\s*\[[^\]]*['"]init['"]/);
   if (fixtures.length) groups.push({ title: 'The same fixture is built again and again', files: fixtures, text: 'build it once per test process and copy it, instead of making it for each test' });
-  const timing = filesMatching(sources, /\b(?:performance|Date)\.now\s*\(/).filter((path) => sources.find((source) => source.path === path)?.text.includes('assert'));
+  const timing = names(/\b(?:performance|Date)\.now\s*\(/).filter((path) => sources.find((source) => source.path === path)?.text.includes('assert'));
   if (timing.length) groups.push({ title: 'Timing tests flake on a busy runner', files: timing, text: 'measure the best of several runs, and leave room for noise, instead of one wall-clock sample' });
   const workflows = workflowsWithoutShards(root);
   if (workflows.length) groups.push({ title: 'One job does everything', files: workflows, text: 'split the tests into shards, and set `fail-fast: false` so one red shard does not cancel the rest' });
