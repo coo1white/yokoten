@@ -91,7 +91,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   trustFolder(sandbox.home, realpathSync(sandbox.repo));
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook/);
   const trusted = await sandbox.call(['init']);
-  assert.match(trusted.stdout, /same the Muse Code tool-call hook/);
+  assert.match(trusted.stdout, /kept the Muse Code tool-call hook/);
   assert.match(trusted.stdout, /Muse Code runs the hooks in \.muse\/hooks\.json only after you trust this folder/);
   written.hooks.Stop[0].hooks[0].command = 'node old/yokoten.ts hook --stop --agent muse';
   sandbox.write('.muse/hooks.json', JSON.stringify(written));
@@ -195,7 +195,7 @@ test('muse user hooks (#557): install writes the doctor and the guard in its set
   const explainUser = (await sandbox.call(['explain', 'muse-user-hook'])).stdout;
   assert.match(explainUser, /session-start doctor and command guard/);
   assert.match(explainUser, /compares the SessionStart and PreToolUse hooks in its settings\.json/);
-  assert.match((await sandbox.call(['install'])).stdout, /^same the Muse Code command guard in ~\/\.config\/muse\/settings\.json$/m);
+  assert.match((await sandbox.call(['install'])).stdout, /^kept the Muse Code command guard in ~\/\.config\/muse\/settings\.json$/m);
   // The positive control: another runtime path is out of date, for both hooks.
   const env = { HOME: sandbox.home };
   assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { doctor: 'updated', guard: 'updated' });
