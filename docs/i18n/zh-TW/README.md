@@ -20,11 +20,17 @@ yokoten 之於 AI 寫的程式，就像 UL 認證之於電器：它不製造電�
 
 ## 它做什麼
 
-yokoten 在你已經在用的 agent 上面，再補三件事。hook、沙箱、設定，都沿用那家 agent 自己的，不會另外換一套。
+yokoten 是加在你已經在用的 agent 上的一道安全網。hook、沙箱、設定，都沿用那家 agent 自己的，不會另外換一套。
 
-1. **每個 agent，同一套規則。** 守衛會在指令和修改真正執行前先看過。強制 push、發布用的 tag、跳過提交檢查、修 bug 的任務裡改測試，還有 agent 要發出去的內容裡的密鑰或個資，都會被擋下。它會告訴 agent 原因，以及該怎麼改。
-2. **規則寫進每家 agent 自己的設定。** `yokoten init` 會幫它支援的每個 agent 寫好 hook，並幫 Claude Code、Codex、Gemini CLI 和 Grok 寫好沙箱設定。就算沒有 agent，提交檢查和 CI 還是會擋下有問題的修改。
-3. **一塊看板，給一支 agent 團隊用。** 不同廠商的 agent 並排工作，各自待在圍起來的工位裡。開一個頁面，全部都看得到。
+同樣的五道保護，對每個人都成立，對每個 agent 也都成立，預設開著，不需要任何設定：
+
+1. **agent 不能弄丟你的工作。** 不准直接 force push，不准硬重置，不准刪 `.git` 或歷史。
+2. **agent 不能洩漏秘密。** 提交、issue 或 pull request 裡不能有密鑰、token、電子郵件地址或家目錄路徑。
+3. **agent 不能替你發布。** 不准打 tag、發 release、發 npm 套件，也不准把倉庫改成公開。
+4. **agent 不能沒讀就執行網路上的程式碼。** 不准把下載內容直接管線給 shell。
+5. **agent 不能拆掉安全網。** 不准關掉檢查或 hook，也不准改 CI 或規則。
+
+`yokoten init` 在五道保護之上加專案規則，永遠不會去掉任何一道。它會幫支援的每個 agent 寫好 hook，並幫 Claude Code、Codex、Gemini CLI 和 Grok 寫好沙箱設定。就算沒有 agent，提交檢查和 CI 還是會擋下有問題的修改。為什麼人人預設這一套，見[記錄 0034](https://github.com/yokoten-labs/yokoten/blob/main/docs/records/0034-one-safeguard-for-everyone.md)。
 
 ## 安裝
 
@@ -45,7 +51,7 @@ agent 嘗試強制 push。yokoten 把它擋下，說明原因，並給出改法�
 
 <img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/demo.svg" width="680" alt="終端機畫面。agent 執行 git push --force origin main，yokoten 的 hook 把它擋下，說明發生了什麼、為什麼危險、該怎麼改：改用 --force-with-lease。接著 yokoten doctor 顯示目前在第 1 關（共 5 關），下一步是加上測試。">
 
-## 讓一組 agent 一起工作
+## 讓一組 agent 一起工作（預覽）
 
 yokoten 就是由這樣的團隊做出來的。lead 負責規劃和審查，各家廠商的工程師各自領一個 issue。
 
@@ -53,7 +59,7 @@ yokoten 就是由這樣的團隊做出來的。lead 負責規劃和審查，各�
 - **由 bot 開 PR。** 每個 PR 都會標出風險（tier A、B 或 C）。風險高的要等你核准。檢查通過了，才能合併。
 - **一塊看板。** `yokoten board` 在你的電腦上開一個頁面。你可以看見每個 agent 在做什麼、每個 PR 走到「開發、檢查、你（只有 tier A）、合併」的哪一步，以及有什麼在等你。手機上看得到。有四種語言。頁面不會從網路上載入任何東西。
 
-看板和工位已經在 `main` 上。下一次發布，會一起進到 npm。
+看板和工位是預覽：已經在 `main` 上，還沒進 npm，也不在第一屏。團隊指令在 v0.1.2 到來；v0.1.x 只有 CLI。
 
 ## 支援範圍
 

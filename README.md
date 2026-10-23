@@ -21,18 +21,28 @@ doesn't build the product, it holds every maker to the same safety rules.
 
 ## What it does
 
-yokoten adds three things on top of the agents you already use. It uses each agent's own
+yokoten is one safeguard on top of the agents you already use. It uses each agent's own
 hooks, sandbox and settings, and doesn't replace them.
 
-1. **One set of rules for every agent.** A guard checks each command and edit before it
-   runs. It stops a force push, a release tag, a skipped commit check, a test edited in a
-   fix task, and a secret or private detail in what an agent posts. It tells the agent why
-   and what to do instead.
-2. **The rules, in each agent's own language.** `yokoten init` writes the hooks for each
-   agent it supports, and the sandbox settings for Claude Code, Codex, Gemini CLI and Grok.
-   The commit check and CI stop a bad change even when no agent is involved.
-3. **A board for a team of agents.** Agents from different vendors work side by side,
-   each in its own fenced desk, and you see all of them on one page.
+The same five protections hold for every person and every agent, on by default, with no
+setup:
+
+1. **The agent cannot lose your work.** No plain force push, no hard reset, no deleting
+   `.git` or the history.
+2. **The agent cannot leak a secret.** No key, token, email address or home path in a
+   commit, an issue or a pull request.
+3. **The agent cannot publish for you.** No tag, release, package publish, or making a
+   repo public.
+4. **The agent cannot run code from the internet unread.** No download piped into a
+   shell.
+5. **The agent cannot take the safeguard apart.** No turning off a check or a hook, and
+   no editing CI or the rules.
+
+`yokoten init` adds project rules on top; it never removes one of the five. It writes the
+hooks for each agent it supports, and the sandbox settings for Claude Code, Codex, Gemini
+CLI and Grok. The commit check and CI stop a bad change even when no agent is involved.
+[Record 0034](https://github.com/yokoten-labs/yokoten/blob/main/docs/records/0034-one-safeguard-for-everyone.md)
+says why this is the default for everyone.
 
 ## Install
 
@@ -61,7 +71,7 @@ An agent tries a force push. yokoten stops it, says why, and gives the fix. Then
 
 <img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/demo.svg" width="680" alt="A terminal. An agent runs git push --force origin main. The yokoten hook blocks it and says what happened, why, and the fix: use --force-with-lease. Then yokoten doctor shows stage 1 of 5 and names the next step: add tests.">
 
-## Run a team of agents
+## Run a team of agents (preview)
 
 yokoten is built by such a team: a lead agent plans and reviews, and engineers from
 different vendors each take one issue.
@@ -75,7 +85,8 @@ different vendors each take one issue.
   is doing, each pull request as Built, Checked, You (tier A only), Merged, and what needs you. It works
   on a phone, in four languages, and loads nothing from the internet.
 
-The board and the desk are on `main` and come to npm with the next release.
+The board and the desk are a preview: on `main`, not yet on npm, and not part of the
+first screen. The team commands arrive in v0.1.2; v0.1.x is CLI only.
 
 ## Works with
 
@@ -124,7 +135,7 @@ Today's work is in the [issues](https://github.com/yokoten-labs/yokoten/issues) 
 
 ## Learn more
 
-- **[The guide](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
+- **[The guide](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**: the five protections, install, every command, and what it can't do.
 - **[Decisions](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**: why it's built this way.
 - **[Changelog](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**, **[Contributing](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**, **[Security](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**, **[Server setup](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**.
 
