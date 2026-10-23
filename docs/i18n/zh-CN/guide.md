@@ -1417,6 +1417,15 @@ Codex 用 DeepSeek 模型时，也显示为 DeepSeek。
 看板能读 Claude、Grok、Muse 和 Codex 的日志。DeepSeek 走 Codex 的日志。
 找不到日志时，中间照旧显示它写的 `doing` 步骤。
 选中负责人时，中间改成最近 24 小时的时间线。
+
+底栏数空闲的座位。
+每家 vendor 显示在忙的 agent 数和空闲座位数。
+在主目录的 `.git/yokoten-seats.json` 里，用 JSON 写每家 vendor 的座位数。
+例如 `{"claude": 2, "grok": 4}` 是 Claude 两个座位、Grok 四个。
+也可以写运行时名，比如 `claude-code`。
+没有 agent 在忙的 vendor，座位全算空闲。
+没有这个文件时，底栏改数空闲的 agent。
+
 铃铛上的数字在 0 时是灰色，大于 0 时是橙色。点一下，列表在铃铛下面打开。
 每一行写清是什么、哪个 PR 或 issue、过了多久，并有一个「在这里处理」链接。
 按 Esc、点外面，或再点铃铛，列表就关上。同一个 PR 或 issue 只占一行。
