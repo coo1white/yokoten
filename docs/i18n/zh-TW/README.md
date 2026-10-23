@@ -61,6 +61,8 @@ yokoten 就是由這樣的團隊做出來的。lead 負責規劃和審查，各�
 
 看板和工位已經在 `main` 上。下一次發布，會一起進到 npm。
 
+yokoten 在 PR 之前工作，也和 [PR 審查機器人](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) 一起工作。
+
 ## 支援範圍
 
 **Agent。** 守衛可以在這些環境執行：Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness 和 Grok CLI。Gemini CLI 有列出來，但還沒有從頭到尾確認過。[agent 表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)寫著每一種是怎麼測的。

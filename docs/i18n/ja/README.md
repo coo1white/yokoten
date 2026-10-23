@@ -47,6 +47,8 @@ npx yokoten doctor      # 今いる関所と、次の一手
 
 Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
 
+`npx skills add yokoten-labs/yokoten` は、スキルだけをコピーします。`npx yokoten install` も実行してください。でないと、コマンドの番人も、セッションの doctor も入りません。
+
 ## 見えるもの
 
 エージェントが force push を試すと、yokoten が止めます。理由と直し方も示します。そのあと `doctor` が、次の一手を一つ挙げます。
@@ -62,6 +64,8 @@ yokoten 自身も、このようなチームで作っています。リードの
 - **一つのボード。** `yokoten board` は、あなたのコンピューターでページを出します。各エージェントが何をしているか、各プルリクエストが「作成」「チェック」「あなた（ティア A のみ）」「マージ」のどこにいるか、あなたの対応が必要なことが分かります。スマートフォンでも使え、四つの言語で表示します。インターネットからは何も読み込みません。
 
 ボードとデスクは `main` にあります。次のリリースで npm に入ります。
+
+yokoten はプルリクエストの前に動き、[PR レビューボット](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) と並んで働きます。
 
 ## 対応しているもの
 
@@ -98,7 +102,7 @@ yokoten 自身も、このようなチームで作っています。リードの
 
 ## もっと知る
 
-- **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
+- **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
 - **[決定記録](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：なぜこう作ったのか。
 - **[変更履歴](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[コントリビュート](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[セキュリティ](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[サーバーの設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 
