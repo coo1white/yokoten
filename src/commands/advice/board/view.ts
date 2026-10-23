@@ -13,6 +13,10 @@ import { buildNeeds } from './feed/needs.ts';
 import { makeBoardMask, makeFeedMask } from './feed/route.ts';
 import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/read/desk.ts';
 import { findAgentLog, lastAssistantLine, type LogCache } from './feed/read/logs.ts';
+import { type VendorLook, vendorOf } from './vendors.ts';
+
+export { vendorOf };
+export type { VendorLook };
 
 /** Characters that fit on the lead row. The side column is 312px and the line is 12px. */
 export const LEAD_ROW_CHARS = 40;
@@ -69,37 +73,6 @@ export function taskTitle(task: string): string {
   return rest || task.trim();
 }
 
-/** A vendor's shown name and colour. */
-export interface VendorLook {
-  name: string;
-  color: string;
-}
-
-/** Filed names that share one shown name (#693). The hooks file each agent by its --agent name. */
-const VENDOR_KEY: Record<string, string> = {
-  anthropic: 'claude',
-  claude: 'claude',
-  'claude-code': 'claude',
-  xai: 'grok',
-  grok: 'grok',
-  muse: 'muse',
-  deepseek: 'deepseek',
-  'deepseek-harness': 'deepseek',
-  'codex-deepseek': 'deepseek',
-  'codex on deepseek': 'deepseek',
-};
-
-const VENDOR_LOOKS: Record<string, VendorLook> = {
-  claude: { name: 'Claude', color: '#d97757' },
-  codex: { name: 'Codex', color: '#10a37f' },
-  gemini: { name: 'Gemini', color: '#4285f4' },
-  antigravity: { name: 'Antigravity', color: '#4285f4' },
-  grok: { name: 'Grok', color: '#9ca3af' },
-  muse: { name: 'Muse', color: '#0866ff' },
-  deepseek: { name: 'DeepSeek', color: '#4d6bfe' },
-};
-const OTHER_VENDOR_COLOR = '#8b8b8b';
-
 /** Adjectives for a friendly name. The same list the old viewer used, so a name can stay. */
 const NICKNAME_ADJECTIVES = ['Swift', 'Calm', 'Bright', 'Brave', 'Keen', 'Steady', 'Clever', 'Gentle', 'Bold', 'Quiet', 'Eager', 'Patient', 'Lucky', 'Sunny', 'Witty', 'Nimble'];
 /** Pioneers for a friendly name, paired with one adjective. A clash in one run takes the next. */
@@ -134,19 +107,6 @@ function realFolder(folder: string): string {
   } catch {
     return folder;
   }
-}
-
-/**
- * How a vendor shows (#693). Claude, Grok, Muse and DeepSeek each have one name.
- * Codex on a DeepSeek model shows as DeepSeek. Claude on that model stays Claude.
- * Any other vendor keeps its filed name, in grey.
- */
-export function vendorOf(vendor: string, model = ''): VendorLook {
-  const filed = vendor.trim().toLowerCase();
-  let key = VENDOR_KEY[filed] ?? filed;
-  if (key === 'codex' && model.toLowerCase().includes('deepseek')) key = 'deepseek';
-  const known = VENDOR_LOOKS[key];
-  return known ?? { name: vendor.trim() || 'Unknown', color: OTHER_VENDOR_COLOR };
 }
 
 /** One agent as the page shows it. `key` tells agents apart: its worktree, with `~` for home. */

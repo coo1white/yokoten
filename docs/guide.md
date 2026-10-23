@@ -1803,14 +1803,17 @@ The page has two columns. Needs you is a bell in the header, next to Live.
 
 - **Left:** the agents by role. Click one to see it in the middle. On a phone the
   lead column hides, and this column stays. The list counts live or waiting agents.
-  A finished or stale desk joins the cleared list. **Clear** hides one until it writes
-  again. Its log and branch stay. Each vendor has one name on the page:
+  A finished or stale desk joins the archived list. Show opens it, and a click still
+  shows its session and log. **Clear** hides one until it writes again. Its log and
+  branch stay. Each vendor has one name on the page:
   Claude, Grok, Muse or DeepSeek. Codex on a DeepSeek model shows as DeepSeek.
 
 The footer shows one line per vendor.
 With no seats set, that line counts the agents on the board.
 `team.seats` in yokoten.json sets the seats: a vendor, a role, then a count.
 The footer then shows how many are working, of those seats.
+A filed vendor name maps to its vendor, so `deepseek-harness` seats show as DeepSeek.
+A table of zeros is no seats.
 A desk with no write for 15 minutes does not add to the count.
 - **Middle:** the picked agent's own session, live, like a chat. The agent's own
   words are the main text. Each tool is one short line under them. A long run of

@@ -142,15 +142,17 @@ export function renderSide(state: PageState, data: PageData): [HTMLElement, HTML
     list.append(foldHead(state, group, members.map((agent) => agent.dot)));
     if (!state.ui.fold[group]) list.append(...members.map((agent) => agentRow(state, agent)));
   }
-  // A finished or stale desk joins the cleared list. It comes back when it is live again.
+  // A finished or stale desk joins the archived list. It comes back when it is live again.
   const archived = others.filter((agent) => !isOnBoard(agent, cleared));
   if (archived.length) {
     const kept = new Set(cleared);
-    list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'clearedCount', { n: archived.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
+    list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'archivedCount', { n: archived.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
     if (state.ui.showCleared) {
-      list.append(...archived.map((agent) => el('div', { class: 'row done-row still' },
-        el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}` }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
-        el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name), kept.has(clearedId(agent)) ? el('button', { class: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack')) : null))));
+      list.append(...archived.map((agent) => el('div', { class: 'item' },
+        el('button', { class: 'row done-row still', 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
+          el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}` }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
+          el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name))),
+        kept.has(clearedId(agent)) ? el('button', { class: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack')) : null)));
     }
   }
   if (!others.length) list.append(el('p', { class: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));

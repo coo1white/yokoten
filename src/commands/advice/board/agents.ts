@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { type Env, loadConfig } from '../../../rules/config.ts';
 import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
+import { vendorKeyOf } from './vendors.ts';
 
 /** The repo's main folder. Every worktree shares it, and the lead's log path is kept there. */
 export function boardHome(root: string): string {
@@ -186,20 +187,24 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
 
 /**
  * One total per vendor, or null when no vendor has a seat. Each role's count is added (#779).
+ * A filed vendor name maps to the same key the agents use, and a table of zeros is no seats.
  */
 export function seatTotals(seats: Record<string, Record<string, number>>): Record<string, number> | null {
   const totals: Record<string, number> = {};
   for (const [vendor, roles] of Object.entries(seats)) {
+    const key = vendorKeyOf(vendor);
+    if (!key || SEAT_SKIP.has(key)) continue;
     let total = 0;
     for (const count of Object.values(roles)) total += count;
-    totals[vendor] = (totals[vendor] ?? 0) + total;
+    totals[key] = (totals[key] ?? 0) + total;
   }
-  return Object.keys(totals).length > 0 ? totals : null;
+  return Object.values(totals).some((count) => count > 0) ? totals : null;
 }
 
 /**
  * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.
- * A vendor name is kept in lower case. A count that is not a whole number, or is negative, is skipped.
+ * A vendor name maps to the same key the agents use, and a table of zeros is no seats.
+ * A count that is not a whole number, or is negative, is skipped.
  */
 export function parseBoardSeats(text: string): Record<string, number> | null {
   let value: unknown;
@@ -211,12 +216,12 @@ export function parseBoardSeats(text: string): Record<string, number> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const seats: Record<string, number> = {};
   for (const [name, count] of Object.entries(value)) {
-    const key = name.trim().toLowerCase();
+    const key = vendorKeyOf(name);
     if (!key || SEAT_SKIP.has(key)) continue;
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) continue;
-    seats[key] = count;
+    seats[key] = (seats[key] ?? 0) + count;
   }
-  return seats;
+  return Object.values(seats).some((count) => count > 0) ? seats : null;
 }
 
 /**

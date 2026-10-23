@@ -161,7 +161,7 @@ test('board script: the saved UI comes back; blocked storage keeps the defaults'
   const store = new Map<string, string>();
   Object.assign(globalThis, { localStorage: { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => store.set(key, value) } });
   const ui = loadUi(false, ['ja']);
-  assert.deepEqual({ ...ui.fold }, { 'group.finished': true }, 'finished agents start folded');
+  assert.deepEqual({ ...ui.fold }, {}, 'no group starts folded on a desktop');
   assert.equal(ui.lang, 'ja', 'the browser language');
   ui.fold['group.engineer'] = true;
   ui.cleared.push('~/a@t');
@@ -338,15 +338,18 @@ test('board script: a finished or stale desk joins the cleared list, and comes b
   assert.match(text(), /Ask one/);
   assert.doesNotMatch(text(), /Done one/);
   assert.doesNotMatch(text(), /Stale one/);
-  assert.match(text(), /2 cleared agents/);
+  assert.match(text(), /2 archived agents/);
   state.ui.showCleared = true;
   assert.match(text(), /Done one/);
   assert.match(text(), /Stale one/);
+  const list = renderSide(state, data)[1] as unknown as FakeNode;
+  assert.ok(list.all().some((node) => node.getAttribute('data-pick') === '~/d'), 'a finished desk can still be opened');
+  assert.ok(list.all().some((node) => node.getAttribute('data-pick') === '~/s'), 'a stale desk can still be opened');
   done.dot = 'working';
   done.isLive = true;
   done.updated = 'u2';
   assert.match(text(), /Done one/, 'it is live again, so it is back on the list');
-  assert.match(text(), /1 cleared agent/);
+  assert.match(text(), /1 archived agent/);
 });
 
 // #688: before the first GitHub read, the lists say "reading GitHub" in the page's
@@ -441,7 +444,7 @@ test('board script: a working chip breathes, and the bar counts free seats', () 
   const markOf = (key: string) => list.all().find((node) => node.getAttribute('data-pick') === key)?.all().find((node) => (node.getAttribute('class') ?? '').includes('vm'));
   assert.ok(markOf('~/a')?.getAttribute('class')?.split(' ').includes('live'), 'a working chip breathes');
   assert.equal(markOf('~/b'), undefined, 'a stale desk leaves the list');
-  assert.match(list.textContent, /2 cleared agents/);
+  assert.match(list.textContent, /2 archived agents/);
   state.ui.current = '~/a';
   const head = (renderCenter(state, data) as unknown as FakeNode).all().find((node) => (node.getAttribute('class') ?? '').includes('vm'));
   assert.ok(head?.getAttribute('class')?.split(' ').includes('live'), 'the session header breathes too');
@@ -484,7 +487,7 @@ test('board script: the footer counts seats, not every desk it has seen (#779)',
   assert.match(bar, /DeepSeek · 1 of 12/);
   assert.match(bar, /Claude · 0 of 1/);
   const list = renderSide(state, data)[1] as unknown as FakeNode;
-  assert.match(list.textContent, /30 cleared agents/);
+  assert.match(list.textContent, /30 archived agents/);
   assert.equal(list.textContent.includes('old-0'), false, 'an old desk is not listed');
   assert.match(list.textContent, /g1/);
   assert.match(list.textContent, /d1/);
