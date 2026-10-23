@@ -125,31 +125,31 @@ const commandInFix = (f: Finding): string => {
  * and its safe road; a case with no words of its own gets one plain sentence and the
  * explanation command. The refusal never bends: only its wording follows the case.
  */
-function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
+function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
   const zh = context.lang === 'zh-CN';
   const worker = context.worker === true;
   const leadReport = (zhText: string, enText: string, run: string): RefusalWays => ({ tell: zh ? zhText : enText, run });
 
-  switch (f.id) {
+  switch (finding.id) {
     case 'release': {
-      const tag = stoppedTag(f.what);
+      const tag = stoppedTag(finding.what);
       if (worker) {
         return {
           tell: zh ? '只有我的 lead 能决定什么时候发布；请把这件事报告给 lead。' : 'Only my lead decides when to release; report this to your lead.',
           run: `yokoten msg send lead "${zh ? '请检查这个发布请求' : 'please check this release request'}"`,
         };
       }
-      if (/public repo|making the repo public/i.test(f.what)) {
+      if (/public repo|making the repo public/i.test(finding.what)) {
         return { tell: zh ? '这个仓库我自己来公开。' : 'I will make this repo public myself.', run: 'gh repo edit --visibility public' };
       }
-      if (/publish(es)? a package|npm|pnpm|yarn/i.test(f.what)) {
+      if (/publish(es)? a package|npm|pnpm|yarn/i.test(finding.what)) {
         return { tell: zh ? '这个软件包我自己来发布。' : 'I will publish this package myself.', run: 'npm publish' };
       }
-      const push = /^(git push .+?) (?:pushes|publishes)\b/.exec(f.what)?.[1];
+      const push = /^(git push .+?) (?:pushes|publishes)\b/.exec(finding.what)?.[1];
       if (push !== undefined) return { tell: zh ? '这些 tag 我自己来推。' : 'I will push these tags myself.', run: push };
       if (tag !== undefined) return { tell: zh ? '这个版本我自己来发布。' : 'I will publish this release myself.', run: `git tag ${tag}` };
-      if (/gh release/i.test(f.what)) return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: 'gh release create <tag>' };
-      return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: commandInFix(f) };
+      if (/gh release/i.test(finding.what)) return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: 'gh release create <tag>' };
+      return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: commandInFix(finding) };
     }
     case 'force-push':
       return worker
@@ -178,7 +178,7 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
         run: 'git branch -a',
       };
     case 'pipe-to-shell': {
-      const url = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(f.what)?.[0];
+      const url = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(finding.what)?.[0];
       return {
         tell: zh ? '先把文件下载下来给我看，再运行。' : 'Download the file and show it to me before anything runs it.',
         run: url === undefined ? 'curl -fsSL <url> -o download.sh' : `curl -fsSL ${url} -o download.sh`,
@@ -200,14 +200,14 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
         run: 'gh workflow list',
       };
     case 'test-file': {
-      const path = stoppedPath(f.what) ?? '<test file>';
+      const path = stoppedPath(finding.what) ?? '<test file>';
       return {
         tell: zh ? '不要改测试；改代码直到测试通过。' : 'Do not change the test; fix the code until the test passes.',
         run: `git diff -- ${path}`,
       };
     }
     case 'lead-only': {
-      const path = stoppedPath(f.what) ?? '<file>';
+      const path = stoppedPath(finding.what) ?? '<file>';
       if (worker) {
         return {
           tell: zh ? `这是 lead 的文件；请把它报告给 lead。` : 'This file belongs to my lead; report it to your lead.',
@@ -237,7 +237,7 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
         run: `yokoten msg send lead "${zh ? '请检查我的 worktree 标记' : 'please check my worktree mark'}"`,
       };
     case 'secret': {
-      const file = f.file ?? '<file>';
+      const file = finding.file ?? '<file>';
       return {
         tell: zh ? '把密钥移到 git 忽略的文件里，然后换掉这个密钥。' : 'Move the key to a file git ignores, then rotate it.',
         run: `git check-ignore -v ${file}`,
@@ -248,7 +248,7 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
     case 'private-mark':
       return {
         tell: zh ? '提交前把它换成占位内容。' : 'Replace it with a placeholder before you commit.',
-        run: f.file === undefined ? `yokoten explain ${f.id}` : `git diff --cached -- ${f.file}`,
+        run: finding.file === undefined ? `yokoten explain ${finding.id}` : `git diff --cached -- ${finding.file}`,
       };
     case 'gh-token':
       return {
@@ -267,7 +267,7 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
       };
     case 'unreadable-command':
       return {
-        tell: zh ? '把它拆成几条更小的命令。' : 'Split this into smaller commands, one per call.',
+        tell: zh ? '把它拆成几条更小的命令。' : 'Split it into simpler commands, one per call.',
         run: 'yokoten explain unreadable-command',
       };
     case 'run-remove':
@@ -278,7 +278,7 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
     case 'private-output':
       return {
         tell: zh ? '把输出交给 yokoten redact 再给我看。' : 'Show me the output through yokoten redact.',
-        run: commandInFix(f),
+        run: commandInFix(finding),
       };
     case 'home-folder':
       return {
@@ -288,7 +288,7 @@ function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
     default:
       return {
         tell: zh ? '我没有让你这样做；请先停下来，用简单的话解释给我听。' : 'I did not ask for that; stop and explain it to me in plain words.',
-        run: `yokoten explain ${f.id}`,
+        run: `yokoten explain ${finding.id}`,
       };
   }
 }
@@ -313,21 +313,21 @@ function refusalWhy(f: Finding, context: RefusalContext): string {
  * Claude Code, Codex, Grok and OpenCode. A secret in a field reads `<hidden>`, never the
  * secret.
  */
-export function formatRefusal(f: Finding, context: RefusalContext = {}): string {
+export function formatRefusal(finding: Finding, context: RefusalContext = {}): string {
   const lang = context.lang ?? 'en';
   const labels = REFUSAL_LABELS[lang];
   const plain = (text: string) => noFullStop(makeSecretHider()(text).replaceAll(SECRET, '<hidden>'));
-  const docs = shortDocs(f.docs);
-  const ways = refusalWays(f, context);
-  const baseWhy = refusalWhy(f, context);
+  const docs = shortDocs(finding.docs);
+  const ways = refusalWays(finding, context);
+  const baseWhy = refusalWhy(finding, context);
   const why = context.workerNote === undefined ? baseWhy : `${baseWhy}; ${context.workerNote}`;
   const [open, close] = labels.quote;
   return [
-    `${labels.stopped}${plain(`${place(f)}${f.what}`)}${labels.stop}`,
+    `${labels.stopped}${plain(`${place(finding)}${finding.what}`)}${labels.stop}`,
     `${labels.why}${plain(why)}${labels.stop}`,
     `${context.worker === true ? labels.tellLead : labels.tell}${open}${plain(ways.tell)}${labels.stop}${close}`,
     `${labels.run}${plain(ways.run)}`,
-    `(rule ${f.id}${docs === undefined ? '' : ` \u00b7 more: ${docs}`})`,
+    `(rule ${finding.id}${docs === undefined ? '' : ` \u00b7 more: ${docs}`})`,
   ].join('\n');
 }
 

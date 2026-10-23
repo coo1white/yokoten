@@ -208,7 +208,7 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', asy
   const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
   let result = await sandbox.call(['hook'], { input, extra: late });
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten stopped this: the guard took longer than 1 ms to read this command\.\nWhy: [^\n]+\nTell the AI: "Split this into smaller commands, one per call\."\nOr run it yourself: yokoten explain unreadable-command/);
+  assert.match(result.stderr, /^yokoten stopped this: the guard took longer than 1 ms to read this command\.\nWhy: [^\n]+\nTell the AI: "Split it into simpler commands, one per call\."\nOr run it yourself: yokoten explain unreadable-command/);
   result = await sandbox.call(['hook', '--json'], { input, extra: late });
   assert.equal(result.status, 2);
   const out = JSON.parse(result.stdout);
