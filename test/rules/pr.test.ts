@@ -17,12 +17,17 @@ import {
 import {
   changedLines,
   type ApprovalRead,
+  type MergeApprovalRead,
   checkApprovalFreshness,
+  checkMergeApproval,
   checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
   hasMadeWith,
+  parseLeadApproval,
   parseMadeWith,
+  vendorFamily,
+  writerVendors,
   checkPullRequest,
   checkPullRequestBody,
   checkPullRequestTitle,
@@ -580,4 +585,42 @@ test('approve: only an Approve on the head merges a tier A pull request (#612)',
   const none = checkApprovalFreshness(read({ approved: null }));
   assert.equal(none?.id, 'pr-approve');
   assert.equal(none?.what, 'no owner Approve on this pull request');
+});
+
+// #699: an area lead approves in its area, but never its own vendor's work, and never
+// a hard-line file or a looser change. The review names the lead, its vendor and model;
+// GitHub records the commit the review was given on.
+test('approve: another vendor\'s area lead may approve; its own vendor and stale commits may not (#699)', () => {
+  const head = 'b'.repeat(40);
+  const lead = { lead: 'Grok', vendor: 'xAI', model: 'Grok 4.7', commit: head, after: 0, sameDiff: true };
+  const read = (over: Partial<MergeApprovalRead> = {}): MergeApprovalRead => ({ tier: 'A', head, approved: null, after: 0, sameDiff: true, lead, writers: ['anthropic'], ...over });
+  assert.equal(checkMergeApproval(read()), null, 'another vendor\'s lead may approve the head');
+  assert.equal(checkMergeApproval(read({ tier: 'B' })), null, 'tier B is not gated here');
+  const own = checkMergeApproval(read({ writers: ['xai'] }));
+  assert.equal(own?.id, 'pr-approve');
+  assert.equal(own?.what, 'the area lead is from xAI, the same vendor as the writer; another vendor\'s lead must approve');
+  const stale = checkMergeApproval(read({ lead: { ...lead, commit: 'a'.repeat(40), after: 1, sameDiff: false } }));
+  assert.equal(stale?.id, 'pr-approve');
+  assert.equal(stale?.what, "the area lead's approval is on aaaaaaa; 1 commit with changes came after it; ask the area lead to approve again");
+  const moved = checkMergeApproval(read({ lead: { ...lead, commit: 'a'.repeat(40), after: 0, sameDiff: false } }));
+  assert.equal(moved?.what, "the area lead's approval is on aaaaaaa; the pull request's own diff is not the same as at the approval; ask the area lead to approve again");
+  const hard = checkMergeApproval(read({ ownerOnly: true, ownerWhy: 'a hard-line file (AGENTS.md)' }));
+  assert.equal(hard?.what, 'no owner Approve on this pull request', 'a hard-line file still asks the owner');
+  const loose = checkMergeApproval(read({ ownerOnly: true, ownerWhy: 'a looser change (test/rules/pr.test.ts)' }));
+  assert.equal(loose?.what, 'no owner Approve on this pull request', 'a looser change still asks the owner');
+  const unknown = checkMergeApproval(read({ writers: [] }));
+  assert.equal(unknown?.what, "the Made-with line names no writer, so the area lead's vendor can't be checked");
+  const owner = checkMergeApproval(read({ approved: head }));
+  assert.equal(owner, null, 'a fresh owner Approve still passes');
+});
+
+// #699: the review line and the writer vendors that the cross-vendor rule reads.
+test('approve: the lead approval line names the lead, its vendor and model (#699)', () => {
+  assert.deepEqual(parseLeadApproval('Looks good.\n\nApproved by area lead Grok (xAI, Grok 4.7)\n'), { lead: 'Grok', vendor: 'xAI', model: 'Grok 4.7' });
+  assert.deepEqual(parseLeadApproval('🤖 Approved by area lead Muse (Meta, Muse Spark 1.3)'), { lead: 'Muse', vendor: 'Meta', model: 'Muse Spark 1.3' });
+  assert.equal(parseLeadApproval('Approved by area lead Grok (xAI)'), null, 'no model');
+  assert.equal(parseLeadApproval('Approved by area lead Grok (xAI, Grok 4.7)\nmore text'), null, 'not the last line');
+  assert.deepEqual(writerVendors('tier: A\nMade with worker Claude Code (Opus 5.5)\n'), ['anthropic']);
+  assert.deepEqual(writerVendors('tier: A\nMade with lead Grok (Grok 4.7)\n'), ['xai']);
+  assert.equal(vendorFamily({ vendor: 'DeepSeek', model: 'DeepSeek V4.1 Flash' }), 'deepseek');
 });

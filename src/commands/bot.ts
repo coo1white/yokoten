@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github/index.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { finding, type Finding } from '../rules/message.ts';
-import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkIssueLabels, checkMergeApproval, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
@@ -607,7 +607,7 @@ function approvalRefusal(gh: Gh, root: string, env: Env, number: number, repo: s
   const state = readApprovalState(gh, root, env, number, repo);
   if ('unsure' in state) return { kind: 'unchecked', text: `could not check the owner's Approve (${state.unsure})` };
   if (state.tier !== 'A') return null;
-  const problem = checkApprovalFreshness(state);
+  const problem = checkMergeApproval(state);
   return problem ? { kind: 'needsApprove', text: problem.what } : null;
 }
 

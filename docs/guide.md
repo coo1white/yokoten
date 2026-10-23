@@ -1578,8 +1578,9 @@ Rules 1 and 5 need judgement, so the reviewer checks them.
 
 The setup treats agents like staff on a line, each with a clear role and limited rights:
 
-- **The owner** (you) decides what gets built and when it ships. Only you approve pull
-  requests, create release tags, and change repo settings.
+- **The owner** (you) decides what gets built and when it ships. Only you approve a hard
+  line, create release tags, and change repo settings. An area lead may approve its area
+  (record 0026).
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
 - **Workers** are sessions the lead starts for one task each, in their own worktree
@@ -1610,7 +1611,7 @@ is to undo (record 0004):
 |------|----------------|-------------|
 | C | Standard: docs, wording, styles | The lead |
 | B | Normal: other code, with tests | The lead |
-| A | Hard to undo: secrets, data, install, releases, owned files | The owner |
+| A | Hard to undo: secrets, data, install, releases, owned files | The owner, or an area lead of another vendor; a hard line stays with the owner |
 
 `.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
 records. It does not list every file. In a new project, `init` writes one for the
@@ -1636,6 +1637,43 @@ refuses: the Approve is on <old commit>; <n> commits with changes came after it;
 the owner to approve again. `gh pr status` through the bot shows the same check for
 tier A pull requests. Keep GitHub's dismiss-stale-approvals setting on too, but
 yokoten never depends on a host setting a project may not have.
+
+### Area leads approve in their area
+
+Record [0026](records/0026-the-owner-is-the-board.md) moves the lock for paths that are
+not a hard line from your code-owner review to yokoten's merge check. An area lead
+approves with a GitHub review. The last line of the review body names the lead, its
+vendor and its model:
+
+```text
+Approved by area lead Grok (xAI, Grok 4.7)
+```
+
+GitHub records the commit the review was given on. A later commit needs a new review.
+The check refuses a lead of the same vendor that wrote the change, read from the
+`Made with` line. A file that `.github/CODEOWNERS` owns, and a looser change, still needs
+your approval. Until the diff tier check (#697) lands, a change to a test that already
+exists counts as looser; a new test does not.
+
+Nothing here changes your repository settings. When you are ready, follow these steps.
+
+1. **Shrink `.github/CODEOWNERS` to the hard lines.** Keep the rules (`AGENTS.md`,
+   `docs/records/`, `src/rules/`), the CI workflows, `.github/CODEOWNERS` itself, the
+   release path and the package metadata. Remove code that area leads may approve, such
+   as `src/host/` and `src/commands/`. A path you remove becomes lead-approvable.
+2. **Keep one required approval.** A lead's review is a real GitHub review, so keep
+   "Required approvals" at 1. Do not let GitHub Actions approve a pull request.
+3. **Keep the CI check required.** The branch ruleset should still require the CI check
+   that runs `yokoten check --pr`. The bot's merge check is the second lock: it reads the
+   lead approval before `gh pr merge`.
+4. **Turn off "Require review from Code Owners" when the hard lines are safe.** After
+   step 1 the setting names only hard lines, so leaving it on still asks you only for
+   those. Turning it off lets the bot's check decide the rest.
+
+`yokoten doctor` still expects code-owner review today. Expect that one step to note the
+change until it learns the new lock. When a merge is refused, the message names the
+reason and the next step: another vendor's lead, a new review on the head, or the owner
+for a hard line or a looser change.
 
 A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
 needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
