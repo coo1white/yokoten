@@ -265,11 +265,11 @@ function fileChangedAt(file: string): number | null {
  * True when the agent says it is working and its status file or its own log changed
  * within 15 minutes. A stale "working" holds no seat. The log is read only when the file is stale.
  */
-function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], env: Env, cache: LogCache, now: number): boolean {
+function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], env: Env, cache: LogCache, now: number, logPath = ''): boolean {
   if (state !== 'working') return false;
   const statusAt = fileChangedAt(join(tree, BOARD_AGENT_FILE));
   if (statusAt !== null && now - statusAt < LIVE_WINDOW_MS) return true;
-  const log = findAgentLog(tree, vendor, env, cache);
+  const log = findAgentLog(tree, vendor, env, cache, logPath);
   return log !== null && now - log.mtime < LIVE_WINDOW_MS;
 }
 
@@ -277,8 +277,8 @@ function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], e
  * The lead row's one line (#700): the first line of what the lead last said, masked as
  * the stream masks it, then cut to the row. No log, or no mask: the status file's line.
  */
-function leadLine(tree: string, vendor: string, env: Env, root: string, cache: LogCache, fallback: string): string {
-  const log = findAgentLog(tree, vendor, env, cache);
+function leadLine(tree: string, vendor: string, env: Env, root: string, cache: LogCache, fallback: string, logPath = ''): string {
+  const log = findAgentLog(tree, vendor, env, cache, logPath);
   if (!log) return fallback;
   const text = lastAssistantLine(log.file, log.source, tree);
   if (!text) return fallback;
@@ -307,7 +307,7 @@ function workStarted(agent: BoardAgent, tree: string): string {
 function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string, mask: (text: string) => string): AgentView {
   const { agent, tree } = found;
   const look = vendorOf(agent.vendor, agent.model);
-  const filed = agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing) : agent.doing;
+  const filed = agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing, agent.log) : agent.doing;
   return {
     key: hideHome(tree.path, env),
     name: mask(agent.name),
@@ -327,7 +327,7 @@ function agentView(found: FoundAgent, env: Env, now: number, nickname: string, i
     updated: agent.updated,
     started: workStarted(agent, tree.path),
     branch: tree.branch,
-    isLive: isAgentLive(tree.path, agent.vendor, agent.state, env, cache, now),
+    isLive: isAgentLive(tree.path, agent.vendor, agent.state, env, cache, now, agent.log),
   };
 }
 
