@@ -51,7 +51,7 @@ export function renderUsage(state: PageState, data: PageData): HTMLElement {
   const usage = data.usage;
   const box = el('div', { class: 'usage' });
   const cells = usage?.cells ?? [];
-  box.append(foldHead(state, 'usage', cells.length ? cells.map((cell) => (cell.isPartial ? 'waiting' : 'done')) : []));
+  box.append(foldHead(state, 'usage', []));
   if (state.ui.fold.usage) return box;
   if (!cells.length) {
     box.append(el('p', { class: 'quiet' }, say(state, 'usageEmpty')));

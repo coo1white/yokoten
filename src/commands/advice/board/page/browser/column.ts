@@ -96,11 +96,11 @@ export function refChip(agent: AgentView): HTMLElement | null {
   return el('span', { class: 'ref' }, icon(agent.ref.kind === 'pr' ? 'pr' : 'issue', true), `${agent.ref.kind === 'pr' ? 'PR' : 'Issue'} #${agent.ref.number}`);
 }
 
-/** A fold header: a button with the chevron, name, count and, when folded, what it hides; then an optional action beside it. */
+/** A fold header: a button with the chevron, name, count and, when folded, what it hides; then an optional action beside it. A fold with no dots shows no count. */
 export function foldHead(state: PageState, key: string, dots: string[], extra: HTMLElement | null = null): HTMLElement {
   const isOpen = !state.ui.fold[key];
   return el('div', { class: 'sh' },
-    el('button', { class: `f${isOpen ? ' open' : ''}`, 'data-fold': key, 'aria-expanded': String(isOpen) }, icon('chev', true), say(state, key), el('span', { class: 'n' }, String(dots.length)), isOpen ? null : el('span', { class: 'sum' }, summaryOf(state, dots))),
+    el('button', { class: `f${isOpen ? ' open' : ''}`, 'data-fold': key, 'aria-expanded': String(isOpen) }, icon('chev', true), say(state, key), dots.length ? el('span', { class: 'n' }, String(dots.length)) : null, isOpen ? null : el('span', { class: 'sum' }, summaryOf(state, dots))),
     extra);
 }
 
