@@ -275,7 +275,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The server, with every setting off, and with nothing readable.
   const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
-  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, tagBypass: { admin: false, bot: false }, release: { reviewer: false, tagRule: false, branchRule: false }, security, forgotten: ['old'] };
   // Work only on this machine (#365): one case of each, as facts, so no git runs here.
   found.push(...unsavedNotes(UNSAVED_CONTROL, { home: undefined, now: 1 }));
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
