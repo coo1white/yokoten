@@ -31,6 +31,7 @@ import {
   checkEdit,
   checkWorkerMarkEdit,
   commandWords,
+  findHeavyJob,
   hardenRead,
   hookFile,
   isGranted,
@@ -4147,4 +4148,13 @@ test('token: an alias for the token and turning a workflow off are refused for e
   refusedAllAs(["gh alias set tk 'auth token'", "gh alias set --shell e 'env'", 'gh alias import aliases.yml', "yokoten bot -- gh alias set e 'env'"], 'alias');
   refusedAllAs(['gh workflow disable ci.yml', 'gh workflow disable 123 -R o/r', 'yokoten bot -- gh workflow disable ci.yml'], 'workflow-disable');
   allowedAll(['gh alias list', 'gh workflow list', 'gh workflow view ci.yml', 'gh workflow enable ci.yml', 'gh workflow run ci.yml']);
+});
+
+test('guard: a build, a test suite, a package install or a container build is a heavy job (#401)', () => {
+  for (const command of ['npm test', 'npm ci', 'npm install', 'npm run build', 'nice npm run -s typecheck', 'pnpm test', 'yarn run test', 'bun install', 'node --test test/a.test.ts', 'make', 'cargo build', 'go test ./...', 'docker build .', 'docker compose build', 'tsc -p .', 'pytest -q']) {
+    assert.ok(findHeavyJob(command), `should be heavy: ${command}`);
+  }
+  for (const command of ['git status', 'echo npm test', 'cat build.log', 'npm --version', 'docker ps', 'go version', 'cargo --version', 'npm run dev', 'npm run format', 'node app.js']) {
+    assert.equal(findHeavyJob(command), null, `should be light: ${command}`);
+  }
 });
