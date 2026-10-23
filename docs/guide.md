@@ -312,7 +312,7 @@ proof.
 | DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check: the lead runs a worker's done-when check |
 | Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
-| OpenCode | `.opencode/plugins/yokoten.ts`: OpenCode 2 permission `evaluate`, and OpenCode 1 `tool.execute.before` | OpenCode 2 sets `effect` to deny; OpenCode 1 throws the reason | not run end to end | No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read |
+| OpenCode | `.opencode/plugins/yokoten.ts`: OpenCode 2 permission `evaluate`, and OpenCode 1 `tool.execute.before` | OpenCode 2 sets `effect` to deny; OpenCode 1 throws the reason | yes, 2026-10-23: OpenCode 2.1.4, `opencode-go/deepseek-v4.1-flash`, the plugin as `init` writes it | No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read. A subagent call was not part of that run |
 | Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
 
 `install` writes the user hooks: the guide at the start of each session, and the command
@@ -355,7 +355,7 @@ Each agent runs a project hook only after you trust it:
 - **Gemini CLI** runs project hooks only in a trusted folder. Start Gemini at the repo
   root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else.
   It warns once before it runs a new or changed hook.
-- **OpenCode** loads the plugin in `.opencode/plugins/` when it starts. OpenCode 2 denies in the permission hook. OpenCode 1 still blocks on a throw. This path was not run end to end.
+- **OpenCode** loads the plugin in `.opencode/plugins/` when it starts. OpenCode 2 denies in the permission hook. OpenCode 1 still blocks on a throw. The lead ran this end to end on 2026-10-23, in a scratch repo with OpenCode 2.1.4 and `opencode-go/deepseek-v4.1-flash`; a subagent call was not part of that run.
 
 `init` prints the one step that trusts the folder for each agent that has one. `doctor` then reads
 each agent's own trust store, read-only, and notes a folder it does not trust yet:
@@ -907,6 +907,7 @@ It puts three safe defaults in `.github/` too:
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `train <pr>... [--wait <seconds>]` | Merges an approved, green queue in the order given, as the bot, and stops at the first pull request that needs a person. It records every base before the first merge, so a pull request stacked on a squash-merged branch merges from the base it truly shares with that branch. A conflict made only of import lines takes the union; a real conflict, a failing test, a failing `check` or a missing approval stops the train. Each merged tree is tested before the push, and CI must pass on the pushed merge; `--wait` sets how long to wait (default 1800 seconds). Only the lead runs it |
 | `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
@@ -1659,6 +1660,38 @@ The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It mus
 the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
+
+### Review bots you will see on pull requests
+
+A review bot reads a pull request after you open it. It posts comments on the pull
+request page. You may see a walkthrough of the change, a risk level, a list of
+pre-merge checks, and a suggested fix. Some bots can push that fix.
+
+Two kinds exist:
+
+- **Commercial.** The bot is closed source. The company runs it, and your code goes to
+  the company's servers. Many are free for public repos and paid for private ones.
+- **Open source.** You run the bot yourself, with your own model API key. You pay the
+  model vendor for the tokens it uses, and the code stays on your machine.
+
+Prices, licences and data handling change. This guide names no bot as a recommendation.
+Read the bot's own page before you turn it on. A bot's comment usually links to it.
+
+yokoten works before the pull request, on your machine:
+
+- the guard stops a risky command, a secret or a private detail;
+- the `inspect` skill reviews the change in your agent session, at no extra cost;
+- the checks and the merge rules stop a merge or release you did not approve.
+
+A review bot works after the pull request. The two fit together. The bot sees the
+pull request; yokoten sees the session that wrote it.
+
+You do not need a review bot to start. yokoten's own review is enough. Add a bot when
+your team wants a second reader on the pull request page. `doctor` never asks you to
+add one: it names yokoten's own next step.
+
+yokoten's findings on the pull request page come from its own checks only. It does not
+repeat another bot's findings or review the code a second time (#91).
 
 ### The desk
 
