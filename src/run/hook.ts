@@ -763,26 +763,28 @@ export function judge(
       if (reason) return reason;
     }
   }
+  // The repos this edit may be in: a worker's rules answer first, then the safeguard.
+  if (ruled.length) {
+    const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
+    for (const p of action.paths) {
+      const file = real(resolve(action.cwd ?? root ?? cwd, p));
+      let best: { rel: string; config: Config } | null = null;
+      for (const repo of reals) {
+        const rel = relative(repo.real, file);
+        // A file outside the repo is not this repo's business.
+        if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
+        if (!best || rel.length < best.rel.length) best = { rel, config: repo.config };
+      }
+      if (!best) continue;
+      const reason = checkEdit(best.rel.split(sep).join('/'), { config: best.config, env });
+      if (reason) return reason;
+    }
+  }
   // The safeguard holds in a repo that never ran `yokoten init` (record 0034): CI and the
   // hooks are the owner's. It reads the file's own repo, so the user-level hook sees an
   // edit in a worktree outside the session's folder too (#815).
   for (const p of action.paths) {
     const reason = checkSafeguardEdit(resolve(action.cwd ?? root ?? cwd, p));
-    if (reason) return reason;
-  }
-  if (!ruled.length) return null;
-  const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
-  for (const p of action.paths) {
-    const file = real(resolve(action.cwd ?? root ?? cwd, p));
-    let best: { rel: string; config: Config } | null = null;
-    for (const repo of reals) {
-      const rel = relative(repo.real, file);
-      // A file outside the repo is not this repo's business.
-      if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
-      if (!best || rel.length < best.rel.length) best = { rel, config: repo.config };
-    }
-    if (!best) continue;
-    const reason = checkEdit(best.rel.split(sep).join('/'), { config: best.config, env });
     if (reason) return reason;
   }
   return null;
