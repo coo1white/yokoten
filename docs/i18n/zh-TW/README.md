@@ -28,7 +28,40 @@ yokoten 在你已經在用的 agent 上面，再補三件事。hook、沙箱、�
 
 ## 安裝
 
-只需要 [Node](https://nodejs.org/) 22.23.4 以上（Node 24 要 24.22.1 以上，Node 26 要 26.12.1 以上）。其他不用裝。
+不用複製一份，也不用改 PATH。用 Homebrew 或 Scoop 的話，Node 會一起裝好。
+
+**macOS 和 Linux**，用 [Homebrew](https://brew.sh)：
+
+```sh
+brew install yokoten-labs/tap/yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**Windows**，用 [Scoop](https://scoop.sh)：
+
+```powershell
+scoop bucket add yokoten https://github.com/yokoten-labs/scoop-bucket
+scoop install yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**任何系統**，用 npm，需要 [Node](https://nodejs.org/) 22.23.4 以上（Node 24 要 24.22.1 以上，Node 26 要 26.12.1 以上）：
+
+```sh
+npm install -g yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**完全不想裝**，用 npx：
 
 ```sh
 npx yokoten install      # 每台電腦一次
@@ -36,6 +69,8 @@ cd your-project
 npx yokoten init         # 每個專案一次
 npx yokoten doctor       # 你在第幾關，下一步做什麼
 ```
+
+`yokoten install` 幫這台電腦加上 skills、agents 和鉤子。前面用哪種方式裝命令都一樣。
 
 用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
 
