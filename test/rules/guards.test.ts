@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
+import { makeGitFolder, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -32,6 +32,7 @@ import {
   checkWorkerMarkEdit,
   commandWords,
   hardenRead,
+  gitLinkAbove,
   hookFile,
   isGranted,
   isLeadOnly,
@@ -2628,7 +2629,7 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
   assert.equal(workerMarkAt(join(tree, 'src')), null);
   assert.deepEqual(withWorkerMark({}, [join(tree, 'src')]), {});
   const main = join(base, 'main');
-  mkdirSync(join(main, '.git'), { recursive: true });
+  makeGitFolder(main);
   assert.equal(workerMarkAt(main), null);
   assert.equal(workerRole({}, [main, base]), null);
   // Positive control: the mark.
@@ -2671,11 +2672,34 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
   }
 });
 
+// #746: a `.git` folder git would not use is not a checkout, and the walk goes on past it: an
+// empty `/tmp/.git` must not make every folder in /tmp a checkout.
+test('git link: a .git folder needs HEAD and an objects folder (#746)', () => {
+  const base = makeTempDir('yokoten-empty-git-');
+  makeGitFolder(base);
+  const empty = join(base, 'empty');
+  mkdirSync(join(empty, '.git'), { recursive: true });
+  mkdirSync(join(empty, 'work'));
+  assert.deepEqual(gitLinkAbove(join(empty, 'work')), { kind: 'folder', top: base, gitDir: join(base, '.git') }, 'an empty .git is passed over');
+  assert.equal(workerMarkAt(join(empty, 'work')), null, 'and it makes no worker');
+  const headOnly = join(base, 'head-only');
+  mkdirSync(join(headOnly, '.git'), { recursive: true });
+  mkdirSync(join(headOnly, 'work'));
+  writeFileSync(join(headOnly, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.deepEqual(gitLinkAbove(join(headOnly, 'work')), { kind: 'folder', top: base, gitDir: join(base, '.git') }, 'HEAD without objects is not a checkout');
+  const objectsOnly = join(base, 'objects-only');
+  mkdirSync(join(objectsOnly, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(objectsOnly, 'work'));
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: base, gitDir: join(base, '.git') }, 'objects without HEAD is not a checkout');
+  writeFileSync(join(objectsOnly, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: objectsOnly, gitDir: join(objectsOnly, '.git') }, 'HEAD and objects is a checkout');
+});
+
 // #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
 // #672: a desk is a plain clone, so its mark sits in its own `.git` folder.
 test('worker mark: a plain clone with the mark in its .git is a worker; without it, the lead (#672)', () => {
   const clone = makeTempDir('yokoten-clone-');
-  mkdirSync(join(clone, '.git'));
+  makeGitFolder(clone);
   mkdirSync(join(clone, 'src'));
   // Negative control: an unmarked clone is the lead's.
   assert.equal(workerMarkAt(join(clone, 'src')), null);
@@ -2702,7 +2726,7 @@ test('worker mark: a plain clone with the mark in its .git is a worker; without 
 test('worker mark: a worker may not remove or replace the folder that holds the git folder (#672)', () => {
   const base = makeTempDir('yokoten-desk-');
   const desk = join(base, 'desk');
-  mkdirSync(join(desk, '.git'), { recursive: true });
+  makeGitFolder(desk);
   mkdirSync(join(desk, 'src'));
   writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
   const worker = { YOKOTEN_ROLE: 'worker', HOME: join(base, 'home') };
@@ -2737,7 +2761,7 @@ test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
   const base = makeTempDir('yokoten-edit-');
   const store = join(base, 'store'); // a worktree's git folder, not named .git
   const tree = join(base, 'wt');
-  mkdirSync(join(base, 'repo', '.git'), { recursive: true });
+  makeGitFolder(join(base, 'repo'));
   mkdirSync(store);
   mkdirSync(join(tree, 'src'), { recursive: true });
   writeFileSync(join(tree, '.git'), `gitdir: ${store}\n`);

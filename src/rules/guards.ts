@@ -265,9 +265,9 @@ const DOT_GIT_LIMIT = 4096;
 
 /**
  * What the `.git` at or above `folder` says, with no git process: `folder`, a main checkout's
- * git folder; `file`, the git folder a linked worktree's or a submodule's `.git` names (it may
- * be gone); `broken`, a `.git` that is no folder and no small readable file with a gitdir
- * line; null outside a checkout.
+ * git folder (it holds `HEAD` and an `objects` folder, as git needs); `file`, the git folder a
+ * linked worktree's or a submodule's `.git` names (it may be gone); `broken`, a `.git` that is
+ * no folder and no small readable file with a gitdir line; null outside a checkout.
  */
 export type GitLink = { kind: 'folder' | 'file'; top: string; gitDir: string } | { kind: 'broken'; top: string } | null;
 
@@ -282,12 +282,31 @@ export function gitLinkAbove(folder: string): GitLink {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return { kind: 'broken', top: dir };
     }
     if (stats) {
-      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) return { kind: 'folder', top: dir, gitDir: dotGit };
-      const text = readSmallFile(dotGit);
-      const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
-      return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) {
+        const isGit = gitFolderState(dotGit);
+        if (isGit === 'yes') return { kind: 'folder', top: dir, gitDir: dotGit };
+        if (isGit === 'unknown') return { kind: 'broken', top: dir };
+        // An empty or partial `.git` is not a checkout: walk on past it (#746).
+      } else {
+        const text = readSmallFile(dotGit);
+        const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
+        return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      }
     }
     if (dirname(dir) === dir) return null;
+  }
+}
+
+/**
+ * Whether a `.git` folder is one git would use: it holds a `HEAD` file and an `objects` folder.
+ * `unknown` when the guard can't read them, so the caller fails closed. No git process runs.
+ */
+function gitFolderState(gitDir: string): 'yes' | 'no' | 'unknown' {
+  try {
+    if (!statSync(join(gitDir, 'HEAD')).isFile()) return 'no';
+    return statSync(join(gitDir, 'objects')).isDirectory() ? 'yes' : 'no';
+  } catch (error) {
+    return ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '') ? 'no' : 'unknown';
   }
 }
 

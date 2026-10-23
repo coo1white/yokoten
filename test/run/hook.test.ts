@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   CLI,
+  makeGitFolder,
   makeTempDir,
   makeSandbox,
   runChild,
@@ -384,6 +385,18 @@ test('refused marker: the same worker stays recent for 5 minutes (#614)', () => 
   assert.equal(existsSync(path), false);
   assert.equal(refusedMarkerPath(join(sandbox.home, 'outside'), key), null);
   assert.doesNotThrow(() => noteRefused(join(sandbox.home, 'outside'), key));
+});
+
+// #746: an empty `.git` above a work folder is not the checkout, so no marker lands in it.
+test('refused marker: an empty .git above a work folder is not the checkout (#746)', () => {
+  const base = makeTempDir('yokoten-empty-git-');
+  makeGitFolder(base);
+  const outer = join(base, 'outer');
+  mkdirSync(join(outer, '.git'), { recursive: true });
+  mkdirSync(join(outer, 'work'), { recursive: true });
+  writeFileSync(join(base, '.git', 'yokoten-done-when'), 'node --test\n');
+  assert.equal(refusedMarkerPath(join(outer, 'work'), 'k'), join(base, '.git', 'yokoten-stop-refused', 'k'));
+  assert.equal(readDoneWhen({}, join(outer, 'work')), 'node --test');
 });
 
 test('done-when: Windows tree kill uses taskkill /F /T while the shell can still be alive (#614)', () => {
