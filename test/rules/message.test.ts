@@ -35,6 +35,8 @@ import {
   finding,
   type Finding,
   formatFinding,
+  measureWork,
+  noteWork,
   notRepoFinding,
   type Rule,
   RULES,
@@ -342,4 +344,31 @@ test('docs: no message names a docs/<file>.md path without a link (#524)', () =>
     }
   }
   assert.deepEqual(bare, []);
+});
+
+test('work count: measureWork starts at zero and a throw turns it off (#754)', () => {
+  noteWork(5);
+  assert.equal(measureWork(() => noteWork(2)), 2);
+  assert.equal(
+    measureWork(() => {
+      noteWork(1);
+      noteWork(3);
+    }),
+    4,
+  );
+  assert.throws(() =>
+    measureWork(() => {
+      noteWork(9);
+      throw new Error('stop');
+    }),
+  );
+  assert.equal(measureWork(() => noteWork(1)), 1, 'a throw left counting on');
+  let inner = 0;
+  const outer = measureWork(() => {
+    noteWork(2);
+    inner = measureWork(() => noteWork(7));
+    noteWork(3);
+  });
+  assert.equal(inner, 7);
+  assert.equal(outer, 5, 'an inner measure is not added to the outer count');
 });

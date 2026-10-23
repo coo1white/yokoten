@@ -191,6 +191,8 @@ test('formatRewrite: allow, with the whole tool input, only the command changed 
 test('session start: the id and the source, and stdin only in a hook (#405)', () => {
   assert.deepEqual(readSessionStart({ session_id: 'a1-b2_c3', source: 'compact', hook_event_name: 'SessionStart' }), { sessionId: 'a1-b2_c3', source: 'compact' });
   assert.deepEqual(readSessionStart({ session_id: 'a1' }), { sessionId: 'a1', source: '' });
+  assert.deepEqual(readSessionStart({ session_id: 'a1', transcript_path: '/tmp/lead.jsonl' }), { sessionId: 'a1', source: '', transcriptPath: '/tmp/lead.jsonl' });
+  assert.deepEqual(readSessionStart({ session_id: 'a1', transcript_path: '' }), { sessionId: 'a1', source: '' });
   for (const input of [null, [], 'x', {}, { session_id: '' }, { session_id: '../a' }, { session_id: 7 }]) assert.equal(readSessionStart(input), null, JSON.stringify(input));
   assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, false), true);
   assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, true), false, 'a terminal is never read');

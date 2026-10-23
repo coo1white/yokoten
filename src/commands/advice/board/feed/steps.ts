@@ -2,7 +2,7 @@
 // runs: each read compares an agent with the last one, and a change becomes a step.
 // Nothing is written to disk; a restarted board starts each feed from what the agent says now.
 
-import type { AgentView } from './view.ts';
+import type { AgentView } from '../view.ts';
 
 /** The most steps the board keeps for one agent. */
 export const FEED_LIMIT = 50;

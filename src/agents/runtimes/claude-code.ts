@@ -59,14 +59,17 @@ export function formatRewrite(input: unknown, command: string, reason: string): 
 
 /**
  * A SessionStart event, or null when the input is not one or has no usable session id
- * (#405). `source` is startup, resume, clear or compact. The id names a file, so only
- * letters, digits, `-` and `_` pass.
+ * (#405). `source` is startup, resume, clear or compact; `model`, when there, is the session's model. The id names a file, so only
+ * letters, digits, `-` and `_` pass. `transcriptPath`, when there, is the session log.
  */
-export function readSessionStart(input: unknown): { sessionId: string; source: string } | null {
+export function readSessionStart(input: unknown): { sessionId: string; source: string; model?: string; transcriptPath?: string } | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const event = input as { session_id?: unknown; source?: unknown };
+  const event = input as { session_id?: unknown; source?: unknown; model?: unknown; transcript_path?: unknown };
   if (typeof event.session_id !== 'string' || !/^[\w-]{1,128}$/.test(event.session_id)) return null;
-  return { sessionId: event.session_id, source: typeof event.source === 'string' ? event.source : '' };
+  // The model names the session on the board only (#685): a plain short name, or nothing.
+  const model = typeof event.model === 'string' && /^[\w.:\[\]-]{1,64}$/.test(event.model) ? event.model : '';
+  const transcriptPath = typeof event.transcript_path === 'string' ? event.transcript_path : '';
+  return { sessionId: event.session_id, source: typeof event.source === 'string' ? event.source : '', ...(model ? { model } : {}), ...(transcriptPath ? { transcriptPath } : {}) };
 }
 
 /**
