@@ -1057,6 +1057,7 @@ flowchart LR
   and `updated` to the time in UTC. A pass sets `checks` to `passing`.
   Other fields stay. The lead reads that file. The board will show `checks` later,
   under issue #603. The allowed stop's stderr reaches nobody.
+  A status file yokoten cannot read is left unchanged, and the stop check says why.
 - When the try count cannot be saved, one refusal says the next stop is let through.
   The same worker is let through when it was refused in the last 5 minutes.
   This holds even when the runtime never sets `stop_hook_active`. A worker is never trapped.
