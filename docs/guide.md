@@ -1811,10 +1811,13 @@ Its HTTPS proxy reaches the board on this computer.
 2. Run `yokoten board --share machine.tailnet-name.ts.net`.
 
 Use the port the board prints.
+If the board starts on another port, because that one was taken, point the proxy at it.
 The printed phone link is `https://machine.tailnet-name.ts.net/?token=...`.
-Only devices on your private network can open it.
+The board still listens on `127.0.0.1` only.
+The proxy decides who can open the link, by the private network's access rules.
+A public name, or a funnel on that name, lets anyone with the link in.
+The proxy may relay through the network's own servers when the direct path fails.
 The link token, the host check and the origin check still hold.
-No cloud relay is used, and no data leaves your devices.
 
 Your computer still runs the board.
 The proxy calls it on `127.0.0.1`, so no phone reaches the port directly.

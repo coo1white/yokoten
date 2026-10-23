@@ -494,7 +494,7 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
       } else {
         print(invocation, [
           `yokoten board: the team is live at ${shareUrl}`,
-          `Only the devices on the private network that answers to ${share} can open that address, over its HTTPS proxy. The browser needs the link once; the host check and the token hold as they do here.`,
+          `${share} reaches this board over its HTTPS proxy; who can open that address is the proxy's call, not the board's. The browser needs the link once; the host check and the token hold as they do here.`,
           `This board still listens on 127.0.0.1 only, so no phone reaches this computer directly. Here: ${url}`,
           `${isOpening ? 'It opens in your browser now. ' : ''}The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C; without --share the board is this computer only.`,
         ]);
