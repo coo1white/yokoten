@@ -341,7 +341,9 @@ Each agent runs a project hook only after you trust it:
   word otherwise. In `muse exec`, `--trust-workspace` trusts the folder for that run.
   It also reads the project's skills in `.agents/skills` only then. Outside a desk, Muse
   Code can read ~/.claude/CLAUDE.md and send that file to Muse's model. Run Muse in a desk
-  to keep your home folder hidden. `doctor` says so when that file is there.
+  to keep your home folder hidden. `doctor` says so when that file is there. When a desk
+  can still see the file, `doctor` says the home folder is visible and the desk needs
+  attention.
 - **Grok CLI** runs `.grok/hooks/` only in a trusted folder, and skips it without a word
   otherwise. Type `/hooks-trust` in a session there, or start it once with `grok --trust`.
   yokoten never trusts a folder for you. Grok also runs the hooks in `.claude/settings.json`,

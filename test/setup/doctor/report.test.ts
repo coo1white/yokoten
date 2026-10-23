@@ -709,6 +709,67 @@ test('doctor: notes when Muse, outside a desk, can send ~/.claude/CLAUDE.md to i
   assert.deepEqual(noteOf(noHooksSession), [], 'no Muse hooks in a session');
 });
 
+// #681: the same visible file, once the session names a desk. The note must not say
+// "outside a desk", and must not tell the session to do what it is already doing.
+// A home folder this process cannot see gives no note: the file is still on disk.
+test('doctor: a desk that can see ~/.claude/CLAUDE.md hears that the home folder is visible (#681)', () => {
+  const sandbox = makeSandbox();
+  const body = 'not-sent-to-muse';
+  const rules = join(sandbox.home, '.claude', 'CLAUDE.md');
+  const claudeDir = dirname(rules);
+  const hooks = join(sandbox.repo, '.muse', 'hooks.json');
+  mkdirSync(claudeDir, { recursive: true });
+  writeFileSync(rules, `${body}\n`);
+  mkdirSync(dirname(hooks), { recursive: true });
+  writeFileSync(hooks, '{}\n');
+  const desk = join(sandbox.home, 'desk');
+  const team = join(sandbox.home, 'team');
+  const base = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const inDesk = { ...base, YOKOTEN_DESK: desk, YOKOTEN_TEAM: team };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const noteOf = (env: Record<string, string>) => privacyNotes(env, sandbox.repo).filter((note) => note.finding.id === 'muse-claude-rules');
+  const outside = noteOf(base);
+  assert.equal(outside[0]?.finding.what, "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model");
+  assert.match(outside[0]?.finding.fix ?? '', /run Muse in a desk/);
+  const what = "the home folder is visible in this desk, so Muse can send ~/.claude/CLAUDE.md to Muse's model";
+  const fix = 'the desk needs attention: hide the home folder (`yokoten desk muse`)';
+  const inside = noteOf(inDesk);
+  assert.deepEqual(inside.map((note) => [note.finding.what, note.finding.why, note.finding.fix]), [[what, 'the file was written for one vendor', fix]]);
+  assert.doesNotMatch(`${inside[0]?.finding.what} ${inside[0]?.finding.fix}`, /outside a desk/);
+  assert.doesNotMatch(inside[0]?.finding.fix ?? '', /run Muse in a desk/);
+  // YOKOTEN_DESK alone is enough. The session already says it is in a desk.
+  assert.equal(noteOf({ ...base, YOKOTEN_DESK: desk })[0]?.finding.what, what);
+  assert.equal(noteOf({ ...base, YOKOTEN_TEAM: team })[0]?.finding.what, what);
+  const report = doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, gh: noGh });
+  const session = doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, session: true, gh: noGh });
+  assert.ok(report.lines.includes(`  note    muse-claude-rules: ${what}; ${fix}`), report.lines.join('\n'));
+  assert.ok(!report.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.deepEqual(report.report.notes?.filter((note) => note.id === 'muse-claude-rules').map((note) => [note.what, note.fix]), [[what, fix]]);
+  const sessionLine = session.lines.find((text) => text.includes('~/.claude/CLAUDE.md'));
+  assert.ok(sessionLine?.startsWith(`yokoten: ${what}.`), sessionLine);
+  assert.match(sessionLine ?? '', /desk needs attention/);
+  assert.doesNotMatch(sessionLine ?? '', /outside a desk/);
+  assert.ok(!session.report.findings.some((note) => note.id === 'muse-claude-rules'));
+  assert.equal(report.ok, doctor(sandbox.repo, { env: base, config: DEFAULTS, gh: noGh }).ok, 'a desk note never fails doctor');
+  assert.equal(session.ok, doctor(sandbox.repo, { env: base, config: DEFAULTS, session: true, gh: noGh }).ok);
+  const noteLines = [...report.lines, ...session.lines].filter((text) => text.includes('muse-claude-rules') || text.includes('~/.claude/CLAUDE.md'));
+  const shown = JSON.stringify({ lines: noteLines, notes: [...(report.report.notes ?? []), ...(session.report.notes ?? [])].filter((note) => note.id === 'muse-claude-rules') });
+  assert.ok(noteLines.length >= 2, 'full doctor and the session each say it');
+  assert.ok(!shown.includes(body), 'the rules file is never read');
+  assert.ok(!shown.includes(sandbox.home), 'the note names no home path');
+  assert.ok(!shown.includes(desk) && !shown.includes(team), 'the note names no desk path');
+  // Mode 0 stands in for a fence that hides the home folder. The file stays on disk.
+  chmodSync(claudeDir, 0);
+  try {
+    assert.equal(noteOf(inDesk).length, 0, 'a home folder this process cannot see gives no note');
+    assert.equal(doctor(sandbox.repo, { env: inDesk, config: DEFAULTS, session: true, gh: noGh }).lines.some((text) => text.includes('~/.claude/CLAUDE.md')), false);
+  } finally {
+    chmodSync(claudeDir, 0o700);
+  }
+});
+
 // #392: lessons from other projects wait in ~/.config/yokoten/upstream. Only yokoten's own
 // repo, found by its package name, hears about them; another repo hears nothing.
 test('doctor: in the yokoten repo, the session and doctor count the notes from other projects; elsewhere nothing', async () => {
