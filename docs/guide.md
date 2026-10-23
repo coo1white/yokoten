@@ -1050,8 +1050,13 @@ flowchart LR
   The environment variable wins when both are set. When the brief has none, the
   changed-file check is the project's check.
 - The command uses the platform shell. That is `sh` on Linux and macOS, and `cmd.exe`
-  on Windows. It may run for two minutes. On a timeout, yokoten stops the command and
-  every program it started. On Windows it stops that tree while the shell is still running.
+  on Windows. It may run for two minutes. When it ends, or the time runs out, yokoten
+  stops the command and the programs it started.
+- On Windows, `cmd.exe` runs in a job. Closing the job stops those programs after
+  `cmd.exe` has exited. This uses Windows PowerShell. If PowerShell cannot start the
+  job, those programs can keep running.
+- A program that starts its own session is not stopped. `setsid` starts one. A new
+  process group in the same session is stopped.
 - A failing check sends the worker back, with the output in short and what to fix.
   The worker gets three tries. On the third, the hook says the next stop is let through.
   The worker's final message to the lead must start with `NOT DONE: checks failing`.

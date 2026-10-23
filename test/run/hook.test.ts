@@ -28,16 +28,19 @@ import {
   isWorkerType,
   judge,
   noteRefused,
+  pidsFromSessionTable,
   readDoneWhen,
   readStatusResult,
   readStatusText,
   readStopFields,
   refusedMarkerPath,
   runDoneWhen,
+  sessionFromStat,
   shortenOutput,
   STATUS_TEXT_LIMIT,
   startGuard,
   wasRefusedRecently,
+  windowsJobArgs,
   windowsTreeKillArgs,
   writeAgentChecks,
 } from '../../src/run/hook.ts';
@@ -390,6 +393,33 @@ test('done-when: Windows tree kill uses taskkill /F /T while the shell can still
   assert.deepEqual(windowsTreeKillArgs(4242), ['/F', '/T', '/PID', '4242']);
 });
 
+// The job host is what holds the tree after cmd.exe exits. The script is checked here;
+// Windows runs the behaviour test below (#735).
+test('done-when: Windows starts cmd.exe in a job that closes with the shell (#735)', () => {
+  const args = windowsJobArgs();
+  const encoded = args.at(-1) ?? '';
+  const script = Buffer.from(encoded, 'base64').toString('utf16le');
+  assert.equal(args.includes('-EncodedCommand'), true);
+  assert.match(script, /TerminateJobObject/);
+  assert.match(script, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000/);
+  assert.match(script, /CREATE_SUSPENDED = 4/);
+  assert.match(script, /YOKOTEN_DONE_COMMAND/);
+  assert.match(script, /Remove-Item Env:\\YOKOTEN_DONE_COMMAND/);
+  assert.match(script, /\/d \/s \/c/);
+});
+
+test('sessionFromStat: the session is the field after the command name (#735)', () => {
+  assert.equal(sessionFromStat('12 (bash) S 1 12 34 0'), 34);
+  assert.equal(sessionFromStat('5 (a ) b) S 1 5 9 0'), 9, 'the command name may contain parentheses');
+  assert.equal(sessionFromStat('nope'), null);
+  assert.equal(sessionFromStat('1 (x) S 0 1 0 0'), null, 'session 0 is not a session to kill');
+  assert.deepEqual(pidsFromSessionTable('  4  9\n10 9\n11 3\nbad\n', 9), [4, 10]);
+  if (existsSync('/proc/self/stat')) {
+    const listed = runChild('ps', ['-o', 'sess=', '-p', String(process.pid)]);
+    assert.equal(sessionFromStat(readFileSync('/proc/self/stat', 'utf8')), Number(String(listed.stdout).trim()));
+  }
+});
+
 // The timer must see a live shell. spawnSync's timeout would have killed it first (#614).
 test('done-when: a timeout kills the tree while the shell is still running (#614)', { skip: process.platform === 'win32' && 'the stand-in kill uses a POSIX process group' }, async () => {
   const sandbox = makeSandbox();
@@ -453,6 +483,33 @@ test('done-when: a passing check stops a background writer (#641)', { skip: proc
   assert.equal(/ran too long/.test(result.output), false);
   assert.equal(existsSync(started), true, 'the writer started');
   await delay(800);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
+// set -m puts the writer in its own process group, still in the shell's session (#735).
+test('done-when: a passing check stops a new process group in the same session (#735)', { skip: (process.platform === 'win32' || runChild('bash', ['-c', 'echo ok']).status !== 0) && 'bash is missing', timeout: 8000 }, async () => {
+  const sandbox = makeSandbox();
+  const started = join(sandbox.repo, 'group-started');
+  const late = join(sandbox.repo, 'group-late');
+  const inner = `set -m; (trap "" HUP; touch ${JSON.stringify(started)}; sleep 1; touch ${JSON.stringify(late)}) & while [ ! -f ${JSON.stringify(started)} ]; do :; done; exit 0`;
+  const command = `bash -c '${inner.replaceAll("'", `'\\''`)}'`;
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 5000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  assert.equal(existsSync(started), true, 'the writer started');
+  await delay(1500);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
+// start /b leaves cmd.exe, so taskkill /T on that pid finds nothing. The job must stop the writer (#735).
+test('done-when: a passing check stops a background writer on Windows (#735)', { skip: process.platform !== 'win32' && 'Windows holds the tree in a job', timeout: 30000 }, async () => {
+  const sandbox = makeSandbox();
+  const late = join(sandbox.repo, 'late.txt');
+  const command = 'start "" /b cmd /c "ping -n 2 127.0.0.1 >nul & echo late>late.txt" & exit /b 0';
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 20000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  await delay(2500);
   assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
 });
 
