@@ -18,6 +18,12 @@ export function boardHome(root: string): string {
 export const BOARD_READ_TIMEOUT_MS = 15000;
 /** An agent's status file, at its worktree's root. One file per worktree. */
 export const BOARD_AGENT_FILE = '.yokoten-agent.json';
+/** The most changed files the agent panel shows. */
+export const BOARD_OUTPUT_LIMIT = 20;
+/** The most background tasks the panel shows. */
+export const BOARD_BACKGROUND_LIMIT = 8;
+/** How long the changed files stand before git is asked again. */
+export const BOARD_OUTPUT_CACHE_MS = 10000;
 /** Seats per vendor, in the common git folder. The owner writes it by hand (#698). */
 export const BOARD_SEATS_FILE = 'yokoten-seats.json';
 /** Keys a seats file must not set. A bad file is ignored, not trusted. */
@@ -25,6 +31,13 @@ const SEAT_SKIP = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** The role text a status file wrote. The page groups it by the work the word names. */
 export type BoardRole = string;
+
+/** One background task an agent reported: what it started, and since when. */
+export interface BoardBackground {
+  text: string;
+  /** The time it started, as filed, or '' when the file does not say. */
+  since: string;
+}
 
 /** One agent on the board, from its status file. The guide shows the open format. */
 export interface BoardAgent {
@@ -45,12 +58,53 @@ export interface BoardAgent {
   state: '' | 'working' | 'waiting' | 'done';
   /** The project's checks at its last stop, written by the stop hook (#614). */
   checks: '' | 'passing' | 'failing';
+  /** Tokens used in its context, or null when its status file does not say (#644). */
+  contextUsed: number | null;
+  /** Tokens its context can hold, or null when its status file does not say (#644). */
+  contextLimit: number | null;
+  /** What it started in the background, at most BOARD_BACKGROUND_LIMIT (#644). */
+  background: BoardBackground[];
 }
 
 /** Plain text of a status field, or '' when it is missing or not text. */
 function fieldText(fields: Record<string, unknown>, name: string): string {
   const value: unknown = fields[name];
   return typeof value === 'string' ? value : '';
+}
+
+/** A count of tokens from a status field, or null when it is missing or not a count. */
+function fieldCount(fields: Record<string, unknown>, name: string): number | null {
+  const value: unknown = fields[name];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Plain text, one line, cut to 240 characters. */
+function oneLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 240) : '';
+}
+
+/** One background task from the file, or null when it names nothing to show. */
+function parseBackground(value: unknown): BoardBackground | null {
+  if (typeof value === 'string') {
+    const text = oneLine(value);
+    return text ? { text, since: '' } : null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const fields = value as Record<string, unknown>;
+  const text = oneLine(fields.text) || oneLine(fields.name) || oneLine(fields.doing) || oneLine(fields.task);
+  if (!text) return null;
+  const since = fieldText(fields, 'since') || fieldText(fields, 'started');
+  return { text, since };
+}
+
+/** The `background` list, keeping only what names a task, then at most BOARD_BACKGROUND_LIMIT. */
+function fieldBackground(fields: Record<string, unknown>): BoardBackground[] {
+  const value: unknown = fields.background;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const itemTask = parseBackground(item);
+    return itemTask ? [itemTask] : [];
+  }).slice(0, BOARD_BACKGROUND_LIMIT);
 }
 
 /** A field's text when it is one of `allowed`, else ''. */
@@ -82,6 +136,9 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     role: fieldText(fields, 'role').trim(),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),
+    contextUsed: fieldCount(fields, 'context_used'),
+    contextLimit: fieldCount(fields, 'context_limit'),
+    background: fieldBackground(fields),
   };
 }
 
@@ -183,6 +240,29 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
     })
     .filter((worktree) => worktree.path !== '');
 }
+
+/**
+ * The files a worktree changed against `base`, at most BOARD_OUTPUT_LIMIT (#644).
+ * One git call. The answer stands for BOARD_OUTPUT_CACHE_MS, because the page reads
+ * every 15 seconds. A git failure is no files, not a broken board.
+ */
+export function readBoardOutputs(tree: string, base: string, env: Env, now: number = Date.now()): string[] {
+  const key = `${tree}\0${base}`;
+  const held = outputsCache.get(key);
+  if (held && now - held.at < BOARD_OUTPUT_CACHE_MS) return held.files;
+  let files: string[] = [];
+  try {
+    const text = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, '--'], { cwd: tree, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS, maxBuffer: 1 << 24 });
+    files = text.split('\0').filter((file) => file !== '').slice(0, BOARD_OUTPUT_LIMIT);
+  } catch {
+    // No git, no base or no worktree: the panel says it has no files to show.
+  }
+  outputsCache.set(key, { at: now, files });
+  return files;
+}
+
+/** The changed files the board has read, by worktree and base. */
+const outputsCache = new Map<string, { at: number; files: string[] }>();
 
 /**
  * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.

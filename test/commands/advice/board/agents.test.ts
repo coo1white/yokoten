@@ -6,9 +6,9 @@ import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
-import { ageText, readBoardAgents, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
+import { ageText, BOARD_OUTPUT_LIMIT, parseBoardAgent, readBoardAgents, readBoardOutputs, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
 
-const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '' };
+const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '', contextUsed: null, contextLimit: null, background: [] };
 
 // #601, #603: one status file per worktree, at its root, read in worktree order. A
 // missing, broken or odd file never breaks the board. A missing name is the worktree's
@@ -21,8 +21,9 @@ test('board agents: every worktree root as an agent; the odd ones are skipped or
   const listed = makeTempDir('yokoten-board-');
   const odd = makeTempDir('yokoten-board-');
   const blocked = makeTempDir('yokoten-board-');
-  const full = { name: 'b-worker', vendor: 'codex', model: 'gpt-x', effort: 'high', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z', started: '', role: 'engineer', state: 'waiting', checks: 'failing' };
-  writeFileSync(join(first, '.yokoten-agent.json'), JSON.stringify(full));
+  const full = { name: 'b-worker', vendor: 'codex', model: 'gpt-x', effort: 'high', task: 't', worktree: 'w', doing: 'd', updated: '2026-10-22T10:00:00Z', started: '', role: 'engineer', state: 'waiting', checks: 'failing', contextUsed: 12, contextLimit: 100, background: [{ text: 'npm test', since: '2026-10-22T09:00:00Z' }] };
+  const { contextUsed, contextLimit, ...filed } = full;
+  writeFileSync(join(first, '.yokoten-agent.json'), JSON.stringify({ ...filed, context_used: contextUsed, context_limit: contextLimit }));
   writeFileSync(join(second, '.yokoten-agent.json'), JSON.stringify({ task: 'only a task', role: 'lead' }));
   writeFileSync(join(broken, '.yokoten-agent.json'), '{oops');
   writeFileSync(join(listed, '.yokoten-agent.json'), '[]');
@@ -74,3 +75,25 @@ test('board worktrees: the repo lists its own; outside a repo git cannot list th
   ]);
   assert.equal(readBoardWorktrees(sandbox.home, sandbox.env), 'git could not list the worktrees: run it again');
 });
+
+// #644: the panel's context and background come from optional status fields. A missing
+// or odd value is unknown, never a guess. A string in the background is still a task.
+test('board agents: context and background are read when filed, and left empty when odd', () => {
+  const filed = parseBoardAgent(JSON.stringify({ context_used: 50, context_limit: 200, background: [{ name: 'npm test', since: '2026-10-22T10:00:00Z' }, 'git status'] }), '/w');
+  assert.deepEqual(filed && [filed.contextUsed, filed.contextLimit, filed.background], [50, 200, [{ text: 'npm test', since: '2026-10-22T10:00:00Z' }, { text: 'git status', since: '' }]]);
+  const odd = parseBoardAgent(JSON.stringify({ context_used: '50', context_limit: -1, background: 'npm test' }), '/w');
+  assert.deepEqual(odd && [odd.contextUsed, odd.contextLimit, odd.background], [null, null, []]);
+});
+
+// #644: the panel reads changed files with one git call, and keeps at most 20.
+test('board outputs: changed files are capped at 20 and a bad base is no files', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  for (let index = 0; index < BOARD_OUTPUT_LIMIT + 5; index += 1) writeFileSync(join(sandbox.repo, `out-${index}.txt`), 'x');
+  assert.equal(sandbox.git('add', '-A').status, 0);
+  const files = readBoardOutputs(sandbox.repo, 'HEAD', sandbox.env);
+  assert.equal(files.length, BOARD_OUTPUT_LIMIT);
+  assert.ok(files.every((file) => /^out-\d+\.txt$/.test(file)), files.join(','));
+  assert.deepEqual(readBoardOutputs(sandbox.repo, 'no-such-base', sandbox.env), []);
+});
+

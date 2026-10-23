@@ -7,6 +7,7 @@ import { BOARD_AGENT_FILE } from '../agents.ts';
 import { COLUMN_FUNCTIONS } from './browser/column.ts';
 import { DESK_FUNCTIONS } from './browser/desk.ts';
 import { PAGE_FUNCTIONS } from './browser/script.ts';
+import { PANEL_FUNCTIONS } from './browser/panel.ts';
 import { STREAM_FUNCTIONS } from './browser/stream.ts';
 import { LANG_NAMES, WORDS } from './words.ts';
 
@@ -119,6 +120,28 @@ h2.sh{line-height:inherit}
 .model{font-family:var(--mono);font-size:11px;height:22px;padding:0 7px;border:1px solid var(--border);border-radius:6px;display:inline-flex;align-items:center;gap:5px;color:var(--mut-fg);white-space:nowrap}
 .model b{color:var(--fg);font-weight:500}
 .ch .ref{margin-left:0;height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px}
+.panel{border-bottom:1px solid var(--border);background:var(--side)}
+.panel-head{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;padding:6px 20px;color:var(--mut-fg);font-size:12px;text-align:left}
+.panel-head:hover{background:var(--accent);color:var(--fg)}
+.panel-head .chev{display:inline-flex;transition:transform .15s}
+.panel-head.open .chev{transform:rotate(90deg)}
+.panel-head b{color:var(--fg);font-weight:600;white-space:nowrap}
+.panel-head .sum{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel-head .n{margin-left:auto;min-width:18px;height:16px;padding:0 5px;border-radius:999px;background:var(--muted);display:inline-grid;place-items:center;font-size:10px}
+.panel-head .warn{display:inline-flex;align-items:center;gap:4px;color:var(--wait);white-space:nowrap}
+.panel-body{display:grid;gap:12px;padding:2px 20px 14px}
+.panel-sec h3{margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut-fg)}
+.panel-sec p{margin:2px 0;font-size:12px}
+.panel-sec p.warn{display:flex;align-items:center;gap:5px;color:var(--wait)}
+.panel-sec .quiet{color:var(--mut-fg)}
+.env{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;margin:0;font-size:12px}
+.env dt{color:var(--mut-fg)}
+.env dd{margin:0;overflow-wrap:anywhere}
+.ctrack{height:5px;border-radius:999px;background:var(--track);overflow:hidden;margin:5px 0}
+.cfill{height:100%;border-radius:999px;background:var(--ok)}
+.cfill.warn{background:var(--wait)}
+.out-list{margin:0;padding-left:18px;font-size:12px;overflow-wrap:anywhere}
+.out-list code{font-family:var(--mono);font-size:11px}
 .hbtn{height:26px;padding:0 9px;border-radius:7px;border:1px solid var(--border);font-size:12px;color:var(--mut-fg);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 .hbtn:hover{background:var(--accent);color:var(--fg)}
 .feed{flex:1;overflow:auto;padding:12px 20px 24px}
@@ -232,6 +255,7 @@ h2.sh{line-height:inherit}
 .lead-desk .ans{min-height:40px;padding:0 12px}
 #center{min-height:0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
 .ch{padding:12px 14px}.feed{padding:10px 8px 16px}.ro{margin:0 12px 12px}
+.panel-head{padding:8px 14px}.panel-body{padding:2px 14px 12px}
 .bar{height:auto;flex-wrap:wrap;padding:6px 12px;white-space:normal}
 .row,.grp{min-height:40px}
 .fld input,.fld select{min-height:40px}
@@ -301,7 +325,7 @@ export function boardScript(): string {
   const settings = { refreshMs: BOARD_REFRESH_SECONDS * 1000, agentFile: BOARD_AGENT_FILE, words: WORDS, langNames: LANG_NAMES, data: null, ui: null, live: 'loading', isMenuOpen: false, toast: null, toastTimer: 0, readAt: 0 };
   return [
     '"use strict";',
-    ...[...PAGE_FUNCTIONS, ...COLUMN_FUNCTIONS, ...STREAM_FUNCTIONS, ...DESK_FUNCTIONS].map(String),
+    ...[...PAGE_FUNCTIONS, ...COLUMN_FUNCTIONS, ...PANEL_FUNCTIONS, ...STREAM_FUNCTIONS, ...DESK_FUNCTIONS].map(String),
     `const state = ${JSON.stringify(settings).replace(/</g, '\\u003c')};`,
     'startPage(state);',
   ].join('\n');

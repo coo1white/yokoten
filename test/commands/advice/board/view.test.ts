@@ -16,7 +16,7 @@ import { type AgentView, collectBoard, collectBoardWith, dotOf, issueNumbersOf, 
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
-const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '' };
+const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '', contextUsed: null, contextLimit: null, background: [] };
 const PULL: BoardPull = { number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'pass', tier: 'B', review: 'none', isApprovedOnHead: false, mergedAt: '' };
 
 // #603: the dot says what the owner needs to know. The agent's own word wins, then its
@@ -217,6 +217,21 @@ test('board data: agents, needs, pulls and worktrees; gh runs only with a GitHub
   assert.equal(outside.repo, '~');
   assert.deepEqual(outside.agents, []);
   assert.equal(outside.worktrees, 'git could not list the worktrees: run it again');
+});
+
+// #644: the panel's fields reach the page with the same masks as the rest of the board.
+// A home path shows as `~`, and the token counts and background tasks are the filed ones.
+test('board view: the panel masks the worktree and reads the new status fields', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', context_used: 50, context_limit: 200, background: [{ text: 'npm run build', since: '2026-10-22T09:00:00Z' }] }));
+  const home = dirname(sandbox.repo);
+  const board = collectBoard(sandbox.repo, { ...sandbox.env, HOME: home }, () => '[]', NOW);
+  const [agent] = board.agents;
+  assert.equal(agent.key, '~/repo');
+  assert.equal(agent.worktree, '~/repo');
+  assert.ok(!agent.worktree?.includes(home), 'the home folder never reaches the page');
+  assert.deepEqual([agent.contextUsed, agent.contextLimit], [50, 200]);
+  assert.deepEqual(agent.background, [{ text: 'npm run build', since: '2026-10-22T09:00:00Z' }]);
 });
 
 /** A shell call in each runtime's own shape, for its hook (#685). */
