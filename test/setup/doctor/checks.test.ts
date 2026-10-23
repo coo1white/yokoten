@@ -65,8 +65,8 @@ test('doctor: the plugin and install both on is a note that says to uninstall (#
   const file = join(sandbox.home, '.claude', 'settings.json');
   writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), enabledPlugins: { 'yokoten@yokoten': true } }));
   const out = (await sandbox.call(['doctor'])).stdout;
-  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; remove them with `yokoten uninstall`/m);
-  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /^yokoten: the yokoten plugin is on, and `yokoten install` put these here too: .*Remove them with `yokoten uninstall`/m);
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; remove the home copy with `yokoten uninstall`/m);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /^yokoten: the yokoten plugin is on, and `yokoten install` put these here too: .*Remove the home copy with `yokoten uninstall`/m);
   // An older runtime from install, with the plugin on: remove it, never install again.
   writeFileSync(join(sandbox.home, '.local/share/yokoten/VERSION'), '0.0.1\n');
   assert.match((await sandbox.call(['doctor'])).stdout, /MISSING runtime: the installed runtime is 0\.0\.1, this yokoten is \S+; remove it with `yokoten uninstall`; the plugin brings its own/);
@@ -76,6 +76,55 @@ test('doctor: the plugin and install both on is a note that says to uninstall (#
   assert.doesNotMatch(after, /plugin-and-install/);
   assert.match(after, /ok {6}runtime/);
   assert.match(after, /ok {6}session-doctor/);
+});
+
+test('doctor: a skills-only copy alone is a note that names the duplicate (#540)', async () => {
+  const sandbox = makeSandbox();
+  const settings = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  const skill = readFileSync(join(ROOT, 'kit/user/skills/inspect/SKILL.md'), 'utf8');
+  const copy = join(sandbox.home, '.agents/skills/inspect/SKILL.md');
+  mkdirSync(dirname(copy), { recursive: true });
+  writeFileSync(copy, skill);
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and a skills-only copy is here too: the skills in ~\/\.agents\/skills; remove the home copy with `yokoten uninstall`; the plugin brings its own/m);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /a skills-only copy is here too/);
+});
+
+test('doctor: a home install and a project copy each get their own fix (#540)', async () => {
+  const sandbox = makeSandbox();
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  const file = join(sandbox.home, '.claude', 'settings.json');
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), enabledPlugins: { 'yokoten@yokoten': true } }));
+  sandbox.write('.agents/skills/dispatch/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/dispatch/SKILL.md'), 'utf8'));
+  sandbox.write('.claude/skills/rca/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8'));
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; `npx skills add` put a copy in this project too: `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; remove the home copy with `yokoten uninstall` and delete `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; the plugin brings its own/m);
+  assert.doesNotMatch(out, /delete `\.agents\/skills`(?!\/)|delete `\.claude\/skills`(?!\/)/, 'the fix never names a whole skills folder');
+});
+
+test('doctor: a runtime-only home with a project copy says only which folder to delete (#540)', async () => {
+  const sandbox = makeSandbox();
+  const settings = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  mkdirSync(join(sandbox.home, '.local/share/yokoten'), { recursive: true });
+  sandbox.write('.agents/skills/rca/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8'));
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: ~\/\.local\/share\/yokoten; `npx skills add` put a copy in this project too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
+  assert.doesNotMatch(out, /plugin-and-install: .*remove the home copy/, 'the runtime is not a skill copy, so nothing at home is called one');
+});
+
+test('doctor: a project skills-only copy is named, and the fix deletes it (#540)', async () => {
+  const sandbox = makeSandbox();
+  const settings = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  const skill = readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8');
+  sandbox.write('.agents/skills/rca/SKILL.md', skill);
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `npx skills add` put a copy in this project too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
 });
 
 // #211: Codex's and Gemini CLI's user hooks, only once the CLI's folder exists; a note
