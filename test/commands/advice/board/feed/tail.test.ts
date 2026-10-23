@@ -3,10 +3,10 @@
 
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { makeTempDir } from '../../../../repo/helpers.ts';
 import type { StreamSource } from '../../../../../src/commands/advice/board/feed/items.ts';
 import { KEEP_ITEMS, makeStreamStore, READ_BYTES, readStream, SEND_ITEMS, START_BYTES } from '../../../../../src/commands/advice/board/feed/tail.ts';
 
@@ -61,7 +61,7 @@ function grokLog(): string {
 
 /** A log file in a new temp folder. */
 function writeLog(text: string, name = 'session.jsonl'): string {
-  const file = join(mkdtempSync(join(tmpdir(), 'yokoten-stream-')), name);
+  const file = join(makeTempDir('yokoten-stream-'), name);
   writeFileSync(file, text);
   return file;
 }
@@ -73,9 +73,9 @@ function storeFor(source: StreamSource, file: string, mask = (text: string) => t
 
 const SESSION = [
   { kind: 'say', text: 'Reading the issue first.', time: AT },
-  { kind: 'tool', text: 'Read the issue', full: 'gh issue view 694', call: 'c1', time: AT },
+  { kind: 'tool', tool: 'Bash', text: 'Read the issue', full: 'gh issue view 694', call: 'c1', time: AT },
   { kind: 'result', text: 'title: the board streams', call: 'c1', time: AT },
-  { kind: 'tool', text: 'read src/a.ts', call: 'c2', time: AT },
+  { kind: 'tool', tool: 'Read', text: 'read src/a.ts', call: 'c2', time: AT },
   { kind: 'result', text: '1 export {}', call: 'c2', time: AT },
   { kind: 'say', text: 'Done.', time: AT },
 ];

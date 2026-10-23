@@ -9,8 +9,8 @@
 // - Muse Code: `<state>/sessions/<year>/<month>/<day>/<id>/session.jsonl`, whose metadata names
 //   its `workspace_root`.
 // - Grok: `<state>/sessions/<the worktree's path, URL-encoded>/<id>/chat_history.jsonl`.
-// - Codex: not read yet. No Codex session log on this machine showed its format; a reader
-//   for it goes in LOG_FINDERS and LINE_READERS (items.ts).
+// - Codex: `<state>/sessions/<year>/<month>/<day>/rollout-*.jsonl`, whose session_meta
+//   names `cwd`. The path is a guess (#698). DeepSeek runs on the Codex CLI, so it uses this.
 
 import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -209,23 +209,76 @@ export function findGrokLog(tree: string, env: Env): FoundLog | null {
   return newest(found);
 }
 
+/** The worktree a Codex rollout names, from `session_meta`, or ''. The line shape is a guess. */
+function codexRoot(head: string): string {
+  for (const line of head.split('\n')) {
+    if (!line.includes('session_meta')) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof record !== 'object' || record === null) continue;
+    const row = record as { type?: unknown; payload?: { cwd?: unknown } };
+    if (row.type === 'session_meta' && typeof row.payload?.cwd === 'string') return row.payload.cwd;
+  }
+  return '';
+}
+
+/**
+ * The newest Codex rollout of a worktree. Logs live in `$CODEX_HOME/sessions`, or
+ * `~/.codex/sessions`, and in a desk's own `<worktree>.state/codex`. A rollout counts
+ * when its `cwd` is the worktree.
+ */
+export function findCodexLog(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog | null {
+  const home = homeOf(env);
+  if (!home) return null;
+  const roots = [stateDir(env.CODEX_HOME, ['.codex'], home), join(`${tree}.state`, 'codex')];
+  const found: FoundLog[] = [];
+  for (const root of roots) {
+    const sessions = join(root, 'sessions');
+    const days = list(sessions)
+      .filter((year) => /^\d{4}$/.test(year))
+      .flatMap((year) => list(join(sessions, year)).flatMap((month) => list(join(sessions, year, month)).map((day) => join(sessions, year, month, day))))
+      .sort()
+      .slice(-DAY_LIMIT);
+    for (const day of days) {
+      for (const name of list(day)) {
+        if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) continue;
+        const file = join(day, name);
+        const mtime = fileTime(file);
+        if (mtime === null || now - mtime > RECENT_MS) continue;
+        if (!cache.has(file)) {
+          const cwd = codexRoot(readHead(file));
+          if (!cwd) continue;
+          cache.set(file, cwd);
+        }
+        if (cache.get(file) === tree) found.push({ source: 'codex', file, mtime });
+      }
+    }
+  }
+  return newest(found);
+}
+
 /** The finders by runtime, as a status file's vendor names it. */
 const LOG_FINDERS: Record<string, (tree: string, env: Env, cache: LogCache) => FoundLog | null> = {
   claude: findClaudeLog,
   'claude-code': findClaudeLog,
   muse: findMuseLog,
   grok: findGrokLog,
+  codex: findCodexLog,
 };
 
 /**
  * The session log of the agent in `tree`, or null when there is none. A known vendor's
  * runtime is asked; any other vendor, or none, gets the newest log any runtime has there.
- * Codex has no finder yet, so a Codex agent shows its `doing` steps.
+ * DeepSeek runs on the Codex CLI, so it reads a Codex rollout and no other log.
  */
 export function findAgentLog(tree: string, vendor: string, env: Env, cache: LogCache): FoundLog | null {
   const key = vendor.trim().toLowerCase();
-  if (key === 'codex' || key === 'deepseek') return null;
+  if (key === 'deepseek' || key === 'deepseek-harness') return findCodexLog(tree, env, cache);
   const finder = Object.hasOwn(LOG_FINDERS, key) ? LOG_FINDERS[key] : null;
   if (finder) return finder(tree, env, cache);
-  return newest([findClaudeLog(tree, env, cache), findMuseLog(tree, env, cache), findGrokLog(tree, env)].filter((log): log is FoundLog => log !== null));
+  return newest([findClaudeLog(tree, env, cache), findMuseLog(tree, env, cache), findGrokLog(tree, env), findCodexLog(tree, env, cache)].filter((log): log is FoundLog => log !== null));
 }

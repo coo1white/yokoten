@@ -6,14 +6,18 @@
 // whole session again. Every word goes in as text: nothing here parses HTML.
 
 import type { StreamAnswer } from '../feed/tail.ts';
-import type { StreamItem } from '../feed/items.ts';
+import type { StreamItem } from '../feed/shape.ts';
 import type { AgentView } from '../view.ts';
 import { el, icon, type PageState, render, say } from './script.ts';
 
-/** The run of tool calls at the bottom: its box, its head, its list, and how many calls it holds. */
+/** How many tool steps stay open before the rest fold (#698). */
+const SHOW_STEPS = 3;
+
+/** A run of tool steps: where the next one goes, and the fold once it passes SHOW_STEPS. */
 export interface StepRun {
-  box: HTMLElement;
-  head: HTMLElement;
+  /** The fold's summary, once the run is longer than SHOW_STEPS. */
+  summary: HTMLElement | null;
+  /** The chat, then the fold. */
   list: HTMLElement;
   count: number;
 }
@@ -42,27 +46,44 @@ export function streamTime(state: PageState, time: string): string {
   return Number.isNaN(then) ? '' : new Date(then).toLocaleTimeString(state.ui.lang, { hour: 'numeric', minute: '2-digit' });
 }
 
-/** What a run of calls says when folded: the one call, or how many and the last. */
-export function stepsLabel(state: PageState, count: number, last: string): string {
-  return count === 1 ? last : say(state, 'streamSteps', { n: count, last });
+/** The first two lines of a result, and whether the rest stays closed. */
+function clipText(text: string): { shown: string; isLong: boolean } {
+  const lines = text.split('\n');
+  if (lines.length <= 2) return { shown: text, isLong: false };
+  return { shown: `${lines[0]}\n${lines[1]}…`, isLong: true };
 }
 
-/** One call: a line that opens to the whole call, and later its output. */
-function callNode(item: StreamItem): HTMLElement {
-  return el('details', { class: 'call' }, el('summary', {}, item.text), el('pre', { class: 'full' }, item.full ?? item.text));
+/** A step's result: the mark, two lines, and the rest behind a click. Nothing long starts open. */
+function outputNode(text: string): HTMLElement {
+  const clip = clipText(text);
+  const mark = el('span', { class: 'mk' }, '⎿ ');
+  if (!clip.isLong) return el('div', { class: 'step-out' }, mark, el('span', {}, clip.shown));
+  return el('details', { class: 'step-out' }, el('summary', {}, mark, el('span', {}, clip.shown)), el('pre', { class: 'full' }, text));
 }
 
-/** One message, thought or guard stop as its own block. Paragraphs keep their line breaks as text. */
+/** One tool step: a dot, the common tool name, then the short note or the command. */
+function stepNode(item: StreamItem): HTMLElement {
+  const note = item.isCommand ? el('code', {}, item.text) : el('span', {}, item.text);
+  return el('div', { class: item.isFailed ? 'step bad' : 'step' }, el('span', { class: 'sd' }), el('b', {}, item.tool ?? 'Other'), ' ', note);
+}
+
+/** Mark a step failed once its result says so. The dot turns red. */
+function markFailed(node: HTMLElement): void {
+  const names = (node.getAttribute('class') ?? '').split(' ').filter((name) => name);
+  if (!names.includes('bad')) node.setAttribute('class', [...names, 'bad'].join(' '));
+}
+
+/** One message, thought or guard stop as its own block. A time shows once, on the message. */
 function streamBlock(state: PageState, item: StreamItem): HTMLElement {
-  const time = streamTime(state, item.time);
   if (item.kind === 'think') return el('div', { class: 'think' }, item.text);
   if (item.kind === 'stop') return el('div', { class: 'gstop' }, el('div', { class: 'ah' }, icon('shield', true), el('b', {}, say(state, 'streamStop'))), el('pre', { class: 'full' }, item.text));
+  const time = streamTime(state, item.time);
   return el('div', { class: 'msg' }, time ? el('div', { class: 'tm' }, time) : null, ...item.text.split(/\n{2,}/).map((part) => el('p', {}, part)));
 }
 
 /**
- * Add items at the bottom of the stream. Tool calls in a row fold into one run, "Ran N
- * steps · last"; each opens to the whole call. An output goes under its call.
+ * Add items at the bottom. The agent's words are paragraphs. Each tool is one line.
+ * After SHOW_STEPS lines, the rest fold. A result sits under its step, two lines at most.
  */
 export function addStream(state: PageState, stream: StreamView, items: StreamItem[]): void {
   const node = stream.node;
@@ -70,7 +91,9 @@ export function addStream(state: PageState, stream: StreamView, items: StreamIte
   for (const item of items) {
     if (item.kind === 'result') {
       const call = item.call ? stream.calls[item.call] : undefined;
-      if (call && item.text.trim()) call.append(el('div', { class: 'out-h' }, say(state, 'streamOutput')), el('pre', { class: 'full out' }, item.text));
+      if (!call) continue;
+      if (item.isFailed) markFailed(call);
+      if (item.text.trim()) call.append(outputNode(item.text));
       continue;
     }
     if (item.kind !== 'tool') {
@@ -78,18 +101,19 @@ export function addStream(state: PageState, stream: StreamView, items: StreamIte
       node.append(streamBlock(state, item));
       continue;
     }
-    if (!stream.run) {
-      const head = el('span', {});
-      const list = el('div', { class: 'calls' });
-      const box = el('details', { class: 'steps' }, el('summary', {}, icon('term', true), head), list);
-      stream.run = { box, head, list, count: 0 };
-      node.append(box);
+    if (!stream.run) stream.run = { summary: null, list: node, count: 0 };
+    if (stream.run.count === SHOW_STEPS) {
+      const summary = el('summary', {});
+      const more = el('details', { class: 'step-more' }, summary);
+      stream.run.summary = summary;
+      stream.run.list = more;
+      node.append(more);
     }
-    const call = callNode(item);
-    if (item.call) stream.calls[item.call] = call;
-    stream.run.list.append(call);
+    const step = stepNode(item);
+    if (item.call) stream.calls[item.call] = step;
+    stream.run.list.append(step);
     stream.run.count += 1;
-    stream.run.head.replaceChildren(stepsLabel(state, stream.run.count, item.text));
+    if (stream.run.summary) stream.run.summary.replaceChildren(say(state, 'moreSteps', { n: stream.run.count - SHOW_STEPS }));
   }
 }
 
@@ -111,7 +135,7 @@ export function loadStream(state: PageState): void {
   if (!stream || !stream.agent || stream.isAsking) return;
   clearTimeout(stream.timer);
   stream.isAsking = true;
-  const ask = `feed?t=${encodeURIComponent(state.token)}&agent=${encodeURIComponent(stream.agent)}&after=${encodeURIComponent(stream.next)}`;
+  const ask = `feed?agent=${encodeURIComponent(stream.agent)}&after=${encodeURIComponent(stream.next)}`;
   const again = (ms: number) => {
     stream.isAsking = false;
     if (state.stream === stream) stream.timer = window.setTimeout(() => loadStream(state), ms);
@@ -143,4 +167,4 @@ export function followStream(state: PageState, key: string): void {
 }
 
 /** The stream's functions, in the order page.ts writes them. */
-export const STREAM_FUNCTIONS = [emptyStream, streamTime, stepsLabel, callNode, streamBlock, addStream, renderStream, newStreamNode, loadStream, followStream];
+export const STREAM_FUNCTIONS = [emptyStream, streamTime, clipText, outputNode, stepNode, markFailed, streamBlock, addStream, renderStream, newStreamNode, loadStream, followStream];

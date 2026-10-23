@@ -12,10 +12,13 @@ import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
 export const BOARD_READ_TIMEOUT_MS = 15000;
 /** An agent's status file, at its worktree's root. One file per worktree. */
 export const BOARD_AGENT_FILE = '.yokoten-agent.json';
+/** Seats per vendor, in the common git folder. The owner writes it by hand (#698). */
+export const BOARD_SEATS_FILE = 'yokoten-seats.json';
+/** Keys a seats file must not set. A bad file is ignored, not trusted. */
+const SEAT_SKIP = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** What an agent does in its team: plans, builds, reviews, verifies, or helps. */
-export type BoardRole = '' | 'lead' | 'engineer' | 'reviewer' | 'verifier' | 'helper';
-const ROLES: readonly BoardRole[] = ['lead', 'engineer', 'reviewer', 'verifier', 'helper'];
+/** The role text a status file wrote. The page groups it by the work the word names. */
+export type BoardRole = string;
 
 /** One agent on the board, from its status file. The guide shows the open format. */
 export interface BoardAgent {
@@ -67,7 +70,7 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     worktree: fieldText(fields, 'worktree'),
     doing: fieldText(fields, 'doing'),
     updated: fieldText(fields, 'updated'),
-    role: pickWord(fields, 'role', ROLES),
+    role: fieldText(fields, 'role').trim(),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),
   };
@@ -170,4 +173,37 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
       return { path: value('worktree'), branch: value('branch').replace(/^refs\/heads\//, '') };
     })
     .filter((worktree) => worktree.path !== '');
+}
+
+/**
+ * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.
+ * A vendor name is kept in lower case. A count that is not a whole number, or is negative, is skipped.
+ */
+export function parseBoardSeats(text: string): Record<string, number> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const seats: Record<string, number> = {};
+  for (const [name, count] of Object.entries(value)) {
+    const key = name.trim().toLowerCase();
+    if (!key || SEAT_SKIP.has(key)) continue;
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) continue;
+    seats[key] = count;
+  }
+  return seats;
+}
+
+/** The seats file in the common git folder, or null when it is missing or bad. */
+export function readBoardSeats(root: string): Record<string, number> | null {
+  const common = commonGitDir(root);
+  if (!common) return null;
+  try {
+    return parseBoardSeats(readFileSync(join(common, BOARD_SEATS_FILE), 'utf8'));
+  } catch {
+    return null;
+  }
 }

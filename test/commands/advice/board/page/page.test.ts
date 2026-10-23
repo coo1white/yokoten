@@ -3,7 +3,7 @@
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { boardPage, boardScript } from '../../../../../src/commands/advice/board/page/page.ts';
+import { boardManifest, boardPage, boardScript } from '../../../../../src/commands/advice/board/page/page.ts';
 
 /** Text that would end or hide the inline script early. */
 function findScriptBreaks(source: string): string[] {
@@ -21,10 +21,19 @@ test('board page: one page with its regions, the nonce on its only script, nothi
   assert.match(page, /^<!DOCTYPE html>/);
   assert.match(page, /<title>yokoten board<\/title>/);
   assert.match(page, /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">/, 'a phone sizes it');
-  for (const id of ['pinned', 'agents', 'center', 'right', 'bar', 'toast', 'live', 'theme', 'repo']) assert.ok(page.includes(`id="${id}"`), `region ${id}`);
+  for (const id of ['pinned', 'agents', 'center', 'bar', 'toast', 'live', 'theme', 'repo', 'needs', 'needs-count', 'needs-menu']) assert.ok(page.includes(`id="${id}"`), `region ${id}`);
+  assert.equal(page.includes('id="right"'), false, 'the right column is gone');
+  assert.ok((page.match(/grid-template-columns:[^;}]+/g) ?? []).every((rule) => !rule.includes('360px')), 'the stream takes the old right width');
+  assert.match(page, /\.needs-panel\{[^}]*overflow:auto/, 'a long list scrolls');
+  assert.ok(page.includes('.badge.pulse{animation:none}'), 'reduced motion stops the pulse');
+  assert.match(page, /#pinned\{display:none\}/, 'a phone hides the left column');
   assert.equal(page.split('<script').length - 1, 1, 'one script');
   assert.ok(page.includes('<script nonce="bm9uY2U=">'), 'the script carries the nonce');
-  assert.ok(!/<link\b|\bsrc="|@import|url\(/i.test(page), 'nothing loads from outside, so the board works offline');
+  assert.deepEqual(page.match(/<link\b[^>]*>/g), ['<link rel="manifest" href="/manifest.webmanifest">'], 'the only link is the install manifest');
+  assert.ok(page.includes('<meta name="theme-color" content="#b4532a" media="(prefers-color-scheme: light)">'), 'light uses the brand colour');
+  assert.ok(page.includes('<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">'), 'dark uses the page background');
+  assert.equal(page.includes('serviceWorker'), false, 'install needs no service worker');
+  assert.ok(!/\bsrc="|@import|url\(/i.test(page), 'nothing loads from outside, so the board works offline');
   const addresses = page.match(/https?:\/\/[^\s"'`)]+/g) ?? [];
   assert.deepEqual([...new Set(addresses)], ['http://www.w3.org/2000/svg'], 'the only address is the SVG namespace');
   assert.ok(page.includes('@media (max-width:700px)') && page.includes('@media (max-width:1100px)'), 'a phone and a tablet layout');
@@ -39,20 +48,43 @@ test('board page: the script parses, uses no HTML or code sink, and starts the p
   assert.match(script, /"refreshMs":15000/, 'refreshes every 15 seconds');
   assert.match(script, /"agentFile":"\.yokoten-agent\.json"/);
   assert.match(script, /startPage\(state\);$/);
-  assert.ok(script.includes("new URLSearchParams(location.search).get('t')"), 'the token comes from the link');
+  assert.equal(script.includes('location.search'), false, 'the page does not read the token from the address');
 });
 
-// #603: the page's controls post to the board's change endpoints with the link's
-// token, and to nothing that approves or merges.
-test('board page: the controls post to /agents/* with the token', () => {
+// #603: the page's controls post to the board's change endpoints. The cookie goes
+// with the request. Nothing here approves or merges.
+test('board page: the controls post to /agents/* and leave the token out', () => {
   const script = boardScript();
   for (const path of ['agents/start', 'agents/stop', 'agents/limits']) assert.ok(script.includes(`'${path}'`), `posts to ${path}`);
-  assert.ok(script.includes('?t=') && script.includes('encodeURIComponent(state.token)'), 'the token rides in the query');
+  assert.equal(script.includes('?t=') || script.includes('state.token') || script.includes('"token"'), false, 'the token stays out of the page');
   assert.ok(script.includes("method: 'POST'") && script.includes('application/x-www-form-urlencoded'), 'posts the fields as a form');
   for (const missing of ['agents/approve', 'agents/merge']) assert.ok(!script.includes(missing), `no ${missing} endpoint`);
-  for (const name of ['renderWaiting', 'renderStart', 'renderLimits', 'renderRuns', 'renderOutput', 'postForm']) {
+  for (const name of ['renderStart', 'renderLimits', 'renderRuns', 'renderOutput', 'postForm']) {
     assert.ok(script.includes(`function ${name}`), `${name} runs in the page`);
   }
+});
+
+// #693: Chrome and Edge read this manifest and offer Install. The icon is inline.
+test('board page: the manifest installs the board as its own window', () => {
+  const raw = boardManifest();
+  const manifest = JSON.parse(raw) as { name: string; display: string; start_url: string; scope: string; background_color: string; theme_color: string; icons: { src: string; sizes: string; type: string; purpose: string }[] };
+  assert.equal(manifest.name, 'yokoten board');
+  assert.equal(manifest.display, 'standalone');
+  assert.equal(manifest.start_url, '/');
+  assert.equal(manifest.scope, '/');
+  assert.equal(manifest.background_color, '#ffffff', 'the page background');
+  assert.equal(manifest.theme_color, '#b4532a', 'the page brand colour');
+  assert.deepEqual(manifest.icons.map((icon) => icon.sizes), ['any', '512x512']);
+  for (const icon of manifest.icons) {
+    assert.equal(icon.type, 'image/svg+xml');
+    assert.equal(icon.purpose, 'any');
+    assert.match(icon.src, /^data:image\/svg\+xml,/);
+    const svg = decodeURIComponent(icon.src.slice('data:image/svg+xml,'.length));
+    assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    assert.equal(svg.includes('<script'), false, 'the icon is a picture');
+  }
+  assert.equal(raw.includes('token'), false, 'the manifest holds no token');
+  assert.equal(raw.includes('serviceWorker'), false, 'no service worker');
 });
 
 // A positive control: the sink check catches each sink.

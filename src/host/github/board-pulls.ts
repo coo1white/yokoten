@@ -1,6 +1,6 @@
 // The pull requests for `yokoten board` (#601), read through `gh pr list`, so it uses
 // the owner's own sign-in and holds no token. The open ones, then the last few merged,
-// newest first. Read only.
+// then the last few closed. Read only. Closed rows let Needs you drop a finished item.
 
 import { readLabelTier } from '../../rules/pr.ts';
 import { terminalText } from '../../run/learn.ts';
@@ -10,6 +10,8 @@ import { asText, type Gh, type GhLater, isObject, labelNames } from './planning.
 const BOARD_PULL_LIMIT = 30;
 /** The most merged pull requests the board reads, for "Merged today". */
 const BOARD_MERGED_LIMIT = 10;
+/** The most closed pull requests the board reads, so a closed one can leave Needs you. */
+const BOARD_CLOSED_LIMIT = 10;
 
 /** One pull request on the board: its number, title, branch, and each stage. */
 export interface BoardPull {
@@ -25,6 +27,8 @@ export interface BoardPull {
   tier: '' | 'A' | 'B' | 'C';
   /** The review: approved, changes asked, waiting for the owner, or none asked. */
   review: 'approved' | 'changes' | 'waiting' | 'none';
+  /** True when an Approve is on the head commit. An Approve on an older commit stays false. */
+  isApprovedOnHead: boolean;
   /** When it merged, as gh gives it, or '' when it has not. */
   mergedAt: string;
 }
@@ -86,10 +90,34 @@ function pullTier(labels: string[]): BoardPull['tier'] {
   return tier === 'A' || tier === 'B' || tier === 'C' ? tier : '';
 }
 
+/** The review word from gh's reviewDecision. */
+function reviewOf(decision: string): BoardPull['review'] {
+  if (decision === 'APPROVED') return 'approved';
+  if (decision === 'CHANGES_REQUESTED') return 'changes';
+  if (decision === 'REVIEW_REQUIRED') return 'waiting';
+  return 'none';
+}
+
+/**
+ * True when an Approve sits on the head commit. GitHub can still say APPROVED after
+ * new commits. Without a matching commit, the Approve does not count.
+ */
+function approvedOnHead(row: Record<string, unknown>, review: BoardPull['review']): boolean {
+  if (review !== 'approved') return false;
+  const head = asText(row.headRefOid);
+  if (!head) return false;
+  const reviews = Array.isArray(row.latestReviews) ? row.latestReviews : [];
+  return reviews.some((item) => {
+    if (!isObject(item) || asText(item.state) !== 'APPROVED') return false;
+    const commit = item.commit;
+    return isObject(commit) && asText(commit.oid) === head;
+  });
+}
+
 /** One row of `gh pr list --json` as a board pull, or null when it has no number. */
 function parseBoardPull(row: unknown): BoardPull | null {
   if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number <= 0) return null;
-  const review = asText(row.reviewDecision);
+  const review = reviewOf(asText(row.reviewDecision));
   return {
     number: row.number,
     title: asText(row.title),
@@ -99,19 +127,23 @@ function parseBoardPull(row: unknown): BoardPull | null {
     checks: rollupState(row.statusCheckRollup),
     tier: pullTier(labelNames(row.labels)),
     mergedAt: asText(row.mergedAt),
-    review: review === 'APPROVED' ? 'approved' : review === 'CHANGES_REQUESTED' ? 'changes' : review === 'REVIEW_REQUIRED' ? 'waiting' : 'none',
+    review,
+    isApprovedOnHead: approvedOnHead(row, review),
   };
 }
 
 /**
- * The two gh queries of the board (#688): the open pull requests with their checks, and
- * the last few merged ones without. Merged checks never show, and the checks are the
- * slow part of gh's answer.
+ * The gh queries of the board (#688): the open pull requests with their checks, then the
+ * last few merged and the last few closed, without checks. Checks are the slow part.
+ * The head commit and the latest reviews say whether an Approve is still current.
  */
 function boardPullQueries(repo: string): string[][] {
+  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,isDraft,statusCheckRollup,labels,url,mergedAt';
+  const quietJson = 'number,title,headRefName,state,url,mergedAt';
   return [
-    ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt'],
-    ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', String(BOARD_MERGED_LIMIT), '--json', 'number,title,headRefName,state,url,mergedAt'],
+    ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_PULL_LIMIT), '--json', openJson],
+    ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', String(BOARD_MERGED_LIMIT), '--json', quietJson],
+    ['pr', 'list', '--repo', repo, '--state', 'closed', '--limit', String(BOARD_CLOSED_LIMIT), '--json', quietJson],
   ];
 }
 
@@ -123,11 +155,11 @@ function boardPullsFailed(err: unknown): string {
 }
 
 /**
- * The pull requests from gh's two answers: open and draft ones from the first, merged
- * ones from the second, each number once. Or why the answers are no list.
+ * The pull requests from gh's answers: open and draft from the first, merged from the
+ * second, closed from the third, each number once. Or why the answers are no list.
  */
 function boardPullsOf(answers: string[]): BoardPull[] | string {
-  const wanted: BoardPull['stage'][][] = [['open', 'draft'], ['merged']];
+  const wanted: BoardPull['stage'][][] = [['open', 'draft'], ['merged'], ['closed']];
   const found: BoardPull[] = [];
   for (const [at, text] of answers.entries()) {
     let rows: unknown;

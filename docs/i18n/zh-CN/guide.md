@@ -1347,15 +1347,36 @@ git diff main refs/desks/42
 
 ### 团队看板
 
-`yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
-启动后它会自己在浏览器里打开页面，并打印链接（加 `--no-open` 就只打印）。链接里带有一个随机口令，只有能看到这台终端输出的人才能打开页面。
+`yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面。
+页面地址是 `http://<repo>.localhost:<port>/`。
+`<repo>` 是文件夹名，改成主机名能用的样子。
+这个仓库的端口保持不变。端口被占用时，看板会试后面的端口。
+启动后它会自己在浏览器里打开页面，并打印链接（加 `--no-open` 就只打印）。
+第一次打开用链接里的 `?token=`。
+这一次会设置 HttpOnly、Secure、SameSite=Strict 的 cookie，然后打开没有口令的地址。
+之后的访问用这个 cookie。只有能看到终端的人能打开页面。错误的主机名会被拒绝。
 
-页面分三栏。左栏按 issue 列出 agent，点一个，中间就显示它。
-中间像聊天一样，实时显示选中的 agent 自己的会话：它说了什么、跑了哪些工具。
-连着的几次工具调用折成一行「跑了 3 步 · 最后一步」，点开能看到完整的调用和输出。
-新内容加在最下面。看板能读 Claude Code、Muse Code 和 Grok 的日志。
-别的 agent，或者找不到日志的，中间照旧显示它写的 `doing` 步骤。
-右栏列出 PR 和它们的检查。
+Chrome 和 Edge 可以把看板安装成自己的窗口。
+在浏览器菜单里选「安装」。
+装好之后，看板打开时不再带着浏览器的标签页。
+
+页面有两栏。顶栏的铃铛是「等你处理」，就在 Live 旁边。
+左栏按角色列出 agent。点一个，中间就显示它。手机宽度下左栏会藏起来。
+每家 vendor 只用一个名字：Claude、Grok、Muse、DeepSeek。
+Codex 用 DeepSeek 模型时，也显示为 DeepSeek。
+中间像聊天一样，实时显示选中的 agent 自己的会话。它说的话是正文。每个工具是下面的一行短字。
+连续的工具超过三步就折起来，点开才看其余的。时间只在每条消息上出现一次。
+每种日志都先变成同一种内容：agent 的话、一个工具步骤、步骤的结果、失败的步骤。
+工具名共用一套：Bash、Read、Edit、Write、Search、Web、Agent、Other。
+新加一家厂商，只写一个读取器，别的都不用改。
+看板能读 Claude、Grok、Muse 和 Codex 的日志。DeepSeek 走 Codex 的日志。
+找不到日志时，中间照旧显示它写的 `doing` 步骤。
+铃铛上的数字在 0 时是灰色，大于 0 时是橙色。点一下，列表在铃铛下面打开。
+每一行写清是什么、哪个 PR 或 issue、过了多久，并有一个「在这里处理」链接。
+按 Esc、点外面，或再点铃铛，列表就关上。同一个 PR 或 issue 只占一行。
+页面开着的时候，这一行也会去掉：PR 已在最新提交上 Approve，或这个 PR、issue 已合并或已关闭。
+超过一天的一行会写明。来了新的一行，数字会闪一下。评审还没结束的 PR 不进这个列表。
+右栏已经去掉，会话因此更宽。PR 仍在 `yokoten board --text` 和 `/data` 里。
 页面每 15 秒刷新一次，按 Ctrl-C 停掉。
 agent 一打开页面就能看到。PR 和 issue 由 gh 在后台读，同一时间只读一次。
 第一次读完之前，这两个列表显示「正在读取 GitHub…」。
@@ -1363,7 +1384,7 @@ agent 一打开页面就能看到。PR 和 issue 由 gh 在后台读，同一时
 
 `yokoten board --text` 在终端里用纯文本打印 agent、PR 和 worktree。
 
-顶部「等你处理」列出需要 owner 的事：绿灯还没 Approve 的 tier A PR、
+`yokoten board --text` 在有事等你时打印「等你处理」：绿灯且最新提交还没 Approve 的 tier A PR、
 被 guard 拦住的命令、agent 的提问。每一行写清种类、agent、它的分工、
 等了多久、一句话原因，以及去哪里处理。这个列表是只读的：
 agent 发的任何请求都清不掉它。没事可做时会说没事。
@@ -1382,9 +1403,9 @@ worktree 和里面的提交。自己退出来的进程算停掉：名额放出�
 限制（limits）说同时能跑几个 agent（默认三个），以及一个 model 能跑几个。
 超了就用一句话说明原因，拒绝启动。
 
-有人等的时候，`yokoten board --text` 也打印「等你处理」，以及看板启动的任务。
+`yokoten board --text` 也打印看板启动的任务。
 
-安全：链接里有随机口令，改动还要带页面的 Origin。看板只停自己启动的进程。
+安全：第一次访问会设置一个 HttpOnly Secure cookie，改动还要带页面的 Origin。看板只停自己启动的进程。
 每次启动和停止都记到仓库根目录的 `.yokoten-board.log`。每个 agent 都过 guard，
 push 和合并只走 bot。没有 Approve 也没有 Merge 按钮：那些留在 host 那边，归 owner。
 

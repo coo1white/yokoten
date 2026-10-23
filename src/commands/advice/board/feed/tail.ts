@@ -121,6 +121,9 @@ function takeLine(tail: LogTail, line: string, mask: (text: string) => string): 
   const items = LINE_READERS[tail.source](record, tail.tree);
   for (const item of items) {
     const kept: StreamItem = { kind: item.kind, text: mask(item.text), time: item.time };
+    if (item.tool) kept.tool = item.tool;
+    if (item.isCommand) kept.isCommand = true;
+    if (item.isFailed) kept.isFailed = true;
     if (item.full !== undefined) kept.full = mask(item.full);
     if (item.call) {
       if (!tail.calls.has(item.call)) tail.calls.set(item.call, `c${tail.calls.size + 1}`);

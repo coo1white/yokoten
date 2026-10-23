@@ -11,18 +11,34 @@ import { claudeFolder } from '../../../../../src/commands/advice/board/feed/logs
 import { startBoardServer } from '../../../../../src/commands/advice/board/server.ts';
 import type { Gh } from '../../../../../src/host/github/index.ts';
 
-/** One GET to the board, with the Host it names. node:http reads no proxy setting. */
-function get(target: string, host?: string): Promise<{ status: number; kind: string; text: string }> {
+/** `*.localhost` is loopback in a browser. This machine's DNS does not resolve it, so tests dial 127.0.0.1 and send the Host header. */
+function dialHost(hostname: string): string {
+  return hostname === 'localhost' || hostname.endsWith('.localhost') ? '127.0.0.1' : hostname;
+}
+
+/** One request to the board. node:http reads no proxy setting. */
+function get(target: string, headers: Record<string, string> = {}): Promise<{ status: number; kind: string; headers: Record<string, string | string[] | undefined>; text: string }> {
   const url = new URL(target);
   return new Promise((done, failed) => {
-    const asked = request({ host: url.hostname, port: url.port, path: `${url.pathname}${url.search}`, headers: { host: host ?? url.host } }, (res) => {
+    const asked = request({ host: dialHost(url.hostname), port: url.port, path: `${url.pathname}${url.search}`, headers: { ...headers, host: headers.host ?? url.host } }, (res) => {
       const parts: Buffer[] = [];
       res.on('data', (chunk: Buffer) => parts.push(chunk));
-      res.on('end', () => done({ status: res.statusCode ?? 0, kind: String(res.headers['content-type'] ?? ''), text: Buffer.concat(parts).toString('utf8') }));
+      res.on('end', () => done({ status: res.statusCode ?? 0, kind: String(res.headers['content-type'] ?? ''), headers: res.headers, text: Buffer.concat(parts).toString('utf8') }));
     });
     asked.on('error', failed);
     asked.end();
   });
+}
+
+/** The cookie from the first visit. The link's token sets it and redirects. */
+async function boardCookie(url: string): Promise<string> {
+  const first = await get(url);
+  assert.equal(first.status, 303, first.text);
+  const raw = first.headers['set-cookie'];
+  const line = (Array.isArray(raw) ? raw[0] : raw) ?? '';
+  const match = /^yokoten-board=([0-9a-f]{32}); HttpOnly; Secure; SameSite=Strict; Path=\/$/.exec(line);
+  assert.ok(match, 'the first visit sets an HttpOnly Secure SameSite=Strict cookie');
+  return `yokoten-board=${match?.[1] ?? ''}`;
 }
 
 // Built from pieces, so this file passes the privacy and secrets checks (AGENTS.md).
@@ -50,9 +66,11 @@ test('board feed route: a home path, an email, a token and a private mark never 
   const { server, url } = await startBoardServer(sandbox.repo, env, gh);
   try {
     const base = url.split('?')[0];
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const feedUrl = (agent: string, after = '') => `${base}feed?t=${token}&agent=${encodeURIComponent(agent)}&after=${encodeURIComponent(after)}`;
-    const answer = await get(feedUrl('~/repo'));
+    const token = new URL(url).searchParams.get('token') ?? '';
+    const cookie = await boardCookie(url);
+    const feedUrl = (agent: string, after = '') => `${base}feed?agent=${encodeURIComponent(agent)}&after=${encodeURIComponent(after)}`;
+    const answer = await get(feedUrl('~/repo'), { cookie });
+    assert.equal(answer.text.includes(token), false, 'the feed does not echo the token');
     assert.equal(answer.status, 200, answer.text);
     assert.equal(answer.kind, 'application/json; charset=utf-8', 'text in JSON, never HTML');
     for (const secret of [home, EMAIL, TOKEN, MARK, MARK.toUpperCase()]) assert.ok(!answer.text.includes(secret), `${secret === home ? 'the home folder' : 'a private value'} never leaves`);
@@ -63,12 +81,12 @@ test('board feed route: a home path, an email, a token and a private mark never 
     assert.equal(body.items[1].full, 'cat ~/repo/notes # <email> <secret>');
     assert.equal(body.items[2].text, '~/.ssh <mark> <script>alert(1)</script>', 'the page puts it in as text');
     // The cursor brings only what came after it.
-    const again = JSON.parse((await get(feedUrl('~/repo', body.next))).text) as { items: unknown[]; reset: boolean };
+    const again = JSON.parse((await get(feedUrl('~/repo', body.next), { cookie })).text) as { items: unknown[]; reset: boolean };
     assert.deepEqual([again.items, again.reset], [[], false]);
-    // The same token and Host as /data.
-    assert.equal((await get(`${base}feed?t=wrong&agent=~/repo`)).status, 403);
-    assert.equal((await get(feedUrl('~/repo'), `evil.example:${new URL(url).port}`)).status, 403);
-    assert.equal((await get(feedUrl('~/nobody'))).status, 404);
+    // The same cookie and Host as /data.
+    assert.equal((await get(`${base}feed?token=wrong&agent=~/repo`)).status, 403);
+    assert.equal((await get(feedUrl('~/repo'), { cookie, host: `evil.example:${new URL(url).port}` })).status, 403);
+    assert.equal((await get(feedUrl('~/nobody'), { cookie })).status, 404);
   } finally {
     server.close();
   }
@@ -82,10 +100,10 @@ test('board feed route: no log falls back to the doing steps', async () => {
   const { server, url } = await startBoardServer(sandbox.repo, env, () => '[]');
   try {
     const base = url.split('?')[0];
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const answer = JSON.parse((await get(`${base}feed?t=${token}&agent=~/repo`)).text) as { source: string; items: unknown[] };
+    const cookie = await boardCookie(url);
+    const answer = JSON.parse((await get(`${base}feed?agent=~/repo`, { cookie })).text) as { source: string; items: unknown[] };
     assert.deepEqual([answer.source, answer.items], ['doing', []]);
-    const data = JSON.parse((await get(`${base}data?t=${token}`)).text) as { feeds: Record<string, { text: string }[]> };
+    const data = JSON.parse((await get(`${base}data`, { cookie })).text) as { feeds: Record<string, { text: string }[]> };
     assert.deepEqual(data.feeds['~/repo'].map((event) => event.text), ['reading the issue'], '/data still has the doing steps');
   } finally {
     server.close();
@@ -105,8 +123,8 @@ test('board feed route: a mask that fails sends no line', async () => {
   };
   const { server, url } = await startBoardServer(sandbox.repo, { ...sandbox.env, HOME: home }, () => '[]', { feedMask });
   try {
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const answer = await get(`${url.split('?')[0]}feed?t=${token}&agent=~/repo`);
+    const cookie = await boardCookie(url);
+    const answer = await get(`${url.split('?')[0]}feed?agent=~/repo`, { cookie });
     assert.equal(answer.status, 500);
     assert.ok(!answer.text.includes('raw words'));
   } finally {

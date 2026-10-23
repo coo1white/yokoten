@@ -11,8 +11,8 @@ import { ageText, readBoardAgents, readBoardWorktrees } from '../../../../src/co
 const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', role: '', state: '', checks: '' };
 
 // #601, #603: one status file per worktree, at its root, read in worktree order. A
-// missing, broken or odd file never breaks the board; a missing name is the worktree's
-// folder name, and a word outside each field's list is blank.
+// missing, broken or odd file never breaks the board. A missing name is the worktree's
+// folder name. A state or checks word outside its list is blank. The role is kept.
 test('board agents: every worktree root as an agent; the odd ones are skipped or blank', () => {
   const first = makeTempDir('yokoten-board-');
   const second = makeTempDir('yokoten-board-');
@@ -41,7 +41,7 @@ test('board agents: every worktree root as an agent; the odd ones are skipped or
   assert.deepEqual(readBoardAgents(trees), [
     { agent: full, tree: trees[0] },
     { agent: { ...BLANK, name: basename(second), task: 'only a task', role: 'lead' }, tree: trees[1] },
-    { agent: { ...BLANK, name: basename(odd) }, tree: trees[6] },
+    { agent: { ...BLANK, name: basename(odd), role: 'boss' }, tree: trees[6] },
   ]);
   assert.deepEqual(readBoardAgents([]), [], 'no worktrees, no agents');
 });

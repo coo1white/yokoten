@@ -2,11 +2,11 @@
 
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { claudeFolder, claudeTask, findAgentLog, findClaudeLog, findGrokLog, findMuseLog, museRoot, namesTree } from '../../../../../src/commands/advice/board/feed/logs.ts';
+import { makeTempDir } from '../../../../repo/helpers.ts';
 
 /** A file with its folders, last changed `age` ms ago. */
 function put(file: string, text: string, age = 0): void {
@@ -30,7 +30,7 @@ test('board stream logs: the names Claude Code and Muse use for a worktree', () 
 
 // #694: a Claude Code agent's own sessions, or a subagent of a lead elsewhere whose task names the worktree.
 test('board stream logs: Claude Code, its own newest session, or a subagent whose task names the worktree', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-logs-'));
+  const home = makeTempDir('yokoten-logs-');
   const tree = join(home, 'dev', 'repo-694');
   const projects = join(home, '.claude', 'projects');
   const env = { HOME: home };
@@ -51,7 +51,7 @@ test('board stream logs: Claude Code, its own newest session, or a subagent whos
 });
 
 test('board stream logs: Muse by its workspace, Grok by its folder, Codex not yet', () => {
-  const home = mkdtempSync(join(tmpdir(), 'yokoten-logs-'));
+  const home = makeTempDir('yokoten-logs-');
   const tree = join(home, 'dev', 'repo-694');
   const env = { HOME: home };
   const sessions = join(home, '.local', 'share', 'muse', 'sessions', '2026', '10', '22');
@@ -65,7 +65,31 @@ test('board stream logs: Muse by its workspace, Grok by its folder, Codex not ye
   assert.equal(findGrokLog(tree, env)?.file, grok);
   assert.equal(findAgentLog(tree, 'grok', env, new Map())?.source, 'grok');
   assert.equal(findAgentLog(tree, 'muse', env, new Map())?.source, 'muse');
-  assert.equal(findAgentLog(tree, 'codex', env, new Map()), null, 'no Codex reader yet: the doing steps show');
+  assert.equal(findAgentLog(tree, 'codex', env, new Map()), null, 'no rollout yet: the doing steps show');
   assert.equal(findAgentLog(tree, '', env, new Map())?.source, 'grok', 'an unnamed vendor gets the newest log of any runtime');
   assert.equal(findAgentLog(tree, 'muse', {}, new Map()), null, 'no home folder, no log');
+});
+
+// #698: Codex rollouts live in sessions/year/month/day. DeepSeek reads that log, not another runtime's.
+test('board stream logs: a Codex rollout by its cwd, for Codex and DeepSeek', () => {
+  const home = makeTempDir('yokoten-logs-');
+  const tree = join(home, 'dev', 'repo');
+  const env = { HOME: home };
+  const day = join(home, '.codex', 'sessions', '2026', '10', '22');
+  const meta = (cwd: string) => `${JSON.stringify({ type: 'session_meta', payload: { cwd } })}\n`;
+  put(join(day, 'rollout-old.jsonl'), meta(tree), 5000);
+  put(join(day, 'notes.txt'), meta(tree), 0);
+  put(join(day, 'rollout-other.jsonl'), meta(join(home, 'dev', 'other')), 0);
+  put(join(day, 'rollout-new.jsonl'), meta(tree), 1000);
+  assert.equal(findAgentLog(tree, 'codex', env, new Map())?.file, join(day, 'rollout-new.jsonl'));
+  const alt = join(home, 'codex-home', 'sessions', '2026', '10', '23');
+  put(join(alt, 'rollout-home.jsonl'), meta(tree), 0);
+  assert.equal(findAgentLog(tree, 'deepseek', { HOME: home, CODEX_HOME: join(home, 'codex-home') }, new Map())?.file, join(alt, 'rollout-home.jsonl'));
+  const desk = join(`${tree}.state`, 'codex', 'sessions', '2026', '10', '23');
+  put(join(desk, 'rollout-desk.jsonl'), meta(tree), 0);
+  assert.equal(findAgentLog(tree, 'deepseek-harness', env, new Map())?.file, join(desk, 'rollout-desk.jsonl'));
+  put(join(home, '.claude', 'projects', claudeFolder(tree), 's.jsonl'), prompt('hi'), 0);
+  const deepseek = findAgentLog(tree, 'deepseek', env, new Map());
+  assert.equal(deepseek?.source, 'codex', 'DeepSeek does not take another runtime\'s log');
+  assert.equal(deepseek?.file, join(desk, 'rollout-desk.jsonl'));
 });

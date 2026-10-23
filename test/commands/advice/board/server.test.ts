@@ -2,14 +2,14 @@
 
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox } from '../../../repo/helpers.ts';
-import { browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
-import { type BoardData, createBoardGitHub } from '../../../../src/commands/advice/board/view.ts';
+import { boardHostName, boardPort, browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
+import { type BoardData, createBoardGitHub, nicknameId, nicknameOf } from '../../../../src/commands/advice/board/view.ts';
 import type { Invocation, Output } from '../../../../src/commands/shared.ts';
 import { type Gh, ghLaterIn } from '../../../../src/host/github/index.ts';
 import type { Env } from '../../../../src/rules/config.ts';
@@ -30,11 +30,12 @@ test('board --text: the entry, an agent that joins and leaves, and the usage err
   assert.equal(started.status, 0, started.stderr);
   assert.match(started.stdout, /^yokoten board: \S+\n0 agents, 0 open pull requests, 1 worktree\.\n\nNeeds you:\n- nothing\.\n\nAgents:\n- none\. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself\.\n\nPull requests:\n- this repo has no GitHub remote, so the board shows no pull requests\n\nWorktrees:\n- \S+ \(main\)\n$/);
   const file = join(sandbox.repo, '.yokoten-agent.json');
+  const who = nicknameOf(nicknameId(realpathSync(sandbox.repo), 'worker-1'), []);
   writeFileSync(file, JSON.stringify({ name: 'worker-1', vendor: 'claude-code', task: 'issue 601', worktree: sandbox.repo, doing: 'writing tests', updated: new Date().toISOString() }));
   const joined = await sandbox.call(['board', '--text']);
   assert.equal(joined.status, 0, joined.stderr);
   assert.match(joined.stdout, /\n1 agent, 0 open pull requests, 1 worktree\.\n/);
-  assert.match(joined.stdout, /- worker-1 \(Claude\): issue 601, in \S+, writing tests, just now\n/);
+  assert.match(joined.stdout, new RegExp(`- ${who} \\(Claude\\): issue 601, in \\S+, writing tests, just now\n`));
   rmSync(file);
   const left = await sandbox.call(['board', '--text']);
   assert.match(left.stdout, /\n0 agents, 0 open pull requests, 1 worktree\.\n/);
@@ -44,7 +45,7 @@ test('board --text: the entry, an agent that joins and leaves, and the usage err
   const hidden = await sandbox.call(['board', '--text'], { extra: { HOME: dirname(sandbox.repo) } });
   assert.equal(hidden.status, 0, hidden.stderr);
   assert.match(hidden.stdout, /^yokoten board: ~\/repo\n/);
-  assert.match(hidden.stdout, /- worker-1: in ~\/repo\n/);
+  assert.match(hidden.stdout, new RegExp(`- ${who}: in ~/repo\n`));
   assert.match(hidden.stdout, /\nWorktrees:\n- ~\/repo \(main\)\n/);
   assert.ok(!hidden.stdout.includes(sandbox.repo), 'no full path under the home folder');
   rmSync(file);
@@ -73,8 +74,36 @@ test('board --text: pull requests with each stage, read-only', async () => {
   assert.match(result.stdout, /\n- #7 team page \[board\]: Ready to merge, tier B\n- #6 old work: merged\n/);
 });
 
+// #693: the address is the folder name on localhost, and the port stays with the repo path.
+test('board address: the host name is safe, and the port stays with the repo', () => {
+  const sandbox = makeSandbox();
+  assert.equal(boardHostName(sandbox.repo), 'repo');
+  assert.equal(boardHostName(join(sandbox.home, 'My Repo')), 'my-repo');
+  assert.equal(boardHostName(join(sandbox.home, 'A_B.C')), 'a-b-c');
+  assert.equal(boardHostName(join(sandbox.home, '---')), 'board');
+  assert.equal(boardHostName(join(sandbox.home, '...')), 'board');
+  assert.equal(boardHostName(join(sandbox.home, '\uFF21b')), 'ab', 'a fullwidth letter becomes the plain letter');
+  assert.equal(boardHostName(join(sandbox.home, 'x'.repeat(80))), 'x'.repeat(63), 'a label stays within 63 letters');
+  assert.equal(boardHostName(join(sandbox.home, `${'a'.repeat(62)}-b`)), 'a'.repeat(62), 'a cut label does not end on a hyphen');
+  const port = boardPort(sandbox.repo);
+  assert.equal(boardPort(sandbox.repo), port, 'the same path asks for the same port');
+  assert.ok(port >= 28416 && port < 28416 + 4000, `the port stays in the high range: ${port}`);
+  const link = join(sandbox.home, 'same-repo');
+  symlinkSync(sandbox.repo, link);
+  assert.equal(boardPort(link), port, 'two paths to one repo share a port');
+  assert.equal(boardHostName(link), 'same-repo', 'the host name is the folder name as given');
+  const missing = join(sandbox.home, 'not-there-yet');
+  assert.equal(boardPort(missing), boardPort(missing), 'a missing folder still has a stable port');
+  assert.ok(boardPort(missing) >= 28416 && boardPort(missing) < 28416 + 4000);
+});
+
 // #601: one status file per worktree, at its root, read in worktree order. A missing,
 // broken or odd file never breaks the board; a missing name is the worktree's folder
+
+/** `*.localhost` is loopback in a browser. This machine's DNS does not resolve it, so tests dial 127.0.0.1 and send the Host header. */
+function boardDial(hostname: string): string {
+  return hostname === 'localhost' || hostname.endsWith('.localhost') ? '127.0.0.1' : hostname;
+}
 
 // #601: one board read over a raw socket, so no proxy setting can send it elsewhere,
 // with any Host header. Each server test starts its own server, which never outlives
@@ -82,8 +111,10 @@ test('board --text: pull requests with each stage, read-only', async () => {
 function boardGet(target: string, headers: Record<string, string> = {}): Promise<{ status: number; kind: string; headers: Record<string, string>; text: string }> {
   const url = new URL(target);
   return new Promise((done, failed) => {
-    const socket = connect(Number(url.port), url.hostname, () => {
-      socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${headers.host ?? url.host}\r\nConnection: close\r\n\r\n`);
+    const socket = connect(Number(url.port), boardDial(url.hostname), () => {
+      const rows = [`GET ${url.pathname}${url.search} HTTP/1.1`, `Host: ${headers.host ?? url.host}`, 'Connection: close'];
+      for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() !== 'host') rows.push(`${key}: ${value}`);
+      socket.write(`${rows.join('\r\n')}\r\n\r\n`);
     });
     const parts: Buffer[] = [];
     socket.on('data', (chunk) => parts.push(chunk));
@@ -102,10 +133,28 @@ function boardGet(target: string, headers: Record<string, string> = {}): Promise
   });
 }
 
-// #601: the server listens on 127.0.0.1 only. The right Host and token see the page
+/** The cookie from the first visit. The link's token sets it and redirects; the body stays behind the cookie. */
+async function boardCookie(url: string): Promise<string> {
+  const first = await boardGet(url);
+  assert.equal(first.status, 303, first.text);
+  const match = /^yokoten-board=([0-9a-f]{32}); HttpOnly; Secure; SameSite=Strict; Path=\/$/.exec(first.headers['set-cookie'] ?? '');
+  assert.ok(match, 'the first visit sets an HttpOnly Secure SameSite=Strict cookie');
+  assert.equal((first.headers['set-cookie'] ?? '').toLowerCase().includes('domain='), false, 'the cookie stays on this host');
+  assert.equal(first.headers.location?.includes('token'), false, 'the redirect drops the token');
+  assert.equal(first.text.includes(match?.[1] ?? 'missing'), false, 'the redirect body has no token');
+  return `yokoten-board=${match?.[1] ?? ''}`;
+}
+
+/** One read after the redirect, with the cookie and no token in the address. */
+async function boardRead(url: string, path: string, headers: Record<string, string> = {}): Promise<{ status: number; kind: string; headers: Record<string, string>; text: string }> {
+  const cookie = headers.cookie ?? await boardCookie(url);
+  return boardGet(`${url.split('?')[0]}${path}`, { ...headers, cookie });
+}
+
+// #601: the server listens on 127.0.0.1 only. The right Host and cookie see the page
 // at /, the same data as JSON at /data, and nothing else. Nothing is stored, and no
 // referrer leaves the page.
-test('board server: the right Host and token see the page and the data', async () => {
+test('board server: the right Host and cookie see the page and the data', async () => {
   const sandbox = makeSandbox();
   writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse', worktree: join(sandbox.home, 'w') }));
   const gh: Gh = () => '[]';
@@ -114,21 +163,26 @@ test('board server: the right Host and token see the page and the data', async (
     const address = server.address();
     assert.ok(typeof address === 'object' && address !== null);
     assert.equal(address.address, '127.0.0.1', 'this machine only');
-    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/\?t=[0-9a-f]{32}$/, 'the link holds a random token');
-    const base = url.split('?')[0];
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const dataUrl = `${base}data?t=${token}`;
-    const page = await boardGet(url);
+    assert.match(url, /^http:\/\/repo\.localhost:\d+\/\?token=[0-9a-f]{32}$/, 'the link is the repo name on localhost, with the token once');
+    const token = new URL(url).searchParams.get('token') ?? '';
+    const cookie = await boardCookie(url);
+    const page = await boardRead(url, '', { cookie });
     assert.equal(page.status, 200);
+    assert.equal(page.text.includes(token), false, 'the page does not hold the token');
     assert.equal(page.kind, 'text/html; charset=utf-8');
     // Only the page's own script runs: its nonce is in the policy, and each load gets a new one.
     const nonce = /<script nonce="([^"]+)">/.exec(page.text)?.[1] ?? '';
     assert.ok(nonce.length >= 20, 'the script carries a nonce');
     assert.match(page.headers['content-security-policy'] ?? '', new RegExp(`^default-src 'none'; script-src 'nonce-${nonce.replace(/[+/=]/g, (c) => `\\${c}`)}';`));
+    assert.match(page.headers['content-security-policy'] ?? '', /manifest-src 'self'/);
     assert.match(page.headers['content-security-policy'] ?? '', /frame-ancestors 'none'/);
-    assert.notEqual(/<script nonce="([^"]+)">/.exec((await boardGet(url)).text)?.[1], nonce, 'a new nonce on each load');
+    const manifest = JSON.parse((await boardRead(url, 'manifest.webmanifest', { cookie })).text) as { name: string; display: string };
+    assert.equal(manifest.name, 'yokoten board');
+    assert.equal(manifest.display, 'standalone');
+    assert.equal((await boardGet(`${url.split('?')[0]}manifest.webmanifest`)).status, 403, 'the manifest needs the cookie');
+    assert.notEqual(/<script nonce="([^"]+)">/.exec((await boardRead(url, '', { cookie })).text)?.[1], nonce, 'a new nonce on each load');
     assert.equal(page.headers['x-content-type-options'], 'nosniff');
-    const data = await boardGet(dataUrl);
+    const data = await boardRead(url, 'data', { cookie });
     assert.equal(data.status, 200);
     assert.equal(data.kind, 'application/json; charset=utf-8');
     const shown = JSON.parse(data.text) as BoardData & { feeds: Record<string, { kind: string; text: string }[]> };
@@ -141,16 +195,17 @@ test('board server: the right Host and token see the page and the data', async (
     assert.deepEqual(shown.feeds, {}, 'nothing done yet, so no steps');
     // An agent that says what it does gets a step in its feed on the next read.
     writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse', doing: 'writing tests' }));
-    const later = JSON.parse((await boardGet(dataUrl)).text) as { feeds: Record<string, { kind: string; text: string }[]> };
+    const later = JSON.parse((await boardRead(url, 'data', { cookie })).text) as { feeds: Record<string, { kind: string; text: string }[]> };
     assert.deepEqual(Object.values(later.feeds).map((feed) => feed.map((event) => [event.kind, event.text])), [[['step', 'writing tests']]]);
     assert.match(shown.updated, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     for (const answer of [page, data]) {
       assert.equal(answer.headers['cache-control'], 'no-store', 'nothing is stored');
       assert.equal(answer.headers['referrer-policy'], 'no-referrer', 'no referrer leaves the page');
     }
-    // localhost names the same server, so its Host is welcome too.
-    assert.equal((await boardGet(url, { host: `localhost:${address.port}` })).status, 200);
-    assert.equal((await boardGet(`${base}missing?t=${token}`)).status, 404);
+    // localhost and 127.0.0.1 name the same server, so those Host headers are welcome too.
+    assert.equal((await boardRead(url, '', { cookie, host: `localhost:${address.port}` })).status, 200);
+    assert.equal((await boardRead(url, '', { cookie, host: `127.0.0.1:${address.port}` })).status, 200);
+    assert.equal((await boardRead(url, 'missing', { cookie })).status, 404);
     assert.doesNotThrow(() => server.emit('error', new Error('EADDRINUSE')), 'a server error is handled, never an uncaught throw');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
@@ -164,9 +219,7 @@ test('board server: /data serves the waiting list, issues, runs and limits', asy
   const gh: Gh = () => '[]';
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
   try {
-    const base = url.split('?')[0];
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const data = JSON.parse((await boardGet(`${base}data?t=${token}`)).text) as Record<string, unknown>;
+    const data = JSON.parse((await boardRead(url, 'data')).text) as Record<string, unknown>;
     for (const key of ['waiting', 'issues', 'runs', 'limits']) assert.ok(key in data, `the page reads ${key} from /data`);
     assert.deepEqual(data.limits, { maxAgents: 3, byModel: {} });
   } finally {
@@ -182,45 +235,80 @@ test('board server: a wrong Host gets a 403', async () => {
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
   try {
     const port = (server.address() as { port: number }).port;
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const base = url.split('?')[0];
-    for (const host of [`evil.example:${port}`, `127.0.0.1:${port}.evil.example`, '127.0.0.1', `127.0.0.1:${port + 1}`]) {
+    const cookie = await boardCookie(url);
+    for (const host of [`evil.example:${port}`, `127.0.0.1:${port}.evil.example`, '127.0.0.1', `127.0.0.1:${port + 1}`, `other.localhost:${port}`]) {
       assert.equal((await boardGet(url, { host })).status, 403, `wrong Host on /: ${host}`);
-      assert.equal((await boardGet(`${base}data?t=${token}`, { host })).status, 403, `wrong Host on /data: ${host}`);
+      assert.equal((await boardRead(url, 'data', { cookie, host })).status, 403, `wrong Host on /data: ${host}`);
     }
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
 });
 
-// #601: / and /data refuse a missing token with a 403.
-test('board server: a missing token gets a 403', async () => {
+// #693: / and /data refuse a missing cookie with a 403. The query token is not a second key.
+test('board server: a missing cookie gets a 403', async () => {
   const sandbox = makeSandbox();
   const gh: Gh = () => '[]';
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
   try {
     const base = url.split('?')[0];
-    assert.equal((await boardGet(`${base}`)).status, 403, '/ without a token');
-    assert.equal((await boardGet(`${base}data`)).status, 403, '/data without a token');
-    assert.equal((await boardGet(`${base}?x=1`)).status, 403, 'another query, no token');
+    assert.equal((await boardGet(base)).status, 403, '/ without a cookie');
+    assert.equal((await boardGet(`${base}data`)).status, 403, '/data without a cookie');
+    assert.equal((await boardGet(`${base}feed`)).status, 403, '/feed without a cookie');
+    assert.equal((await boardGet(`${base}manifest.webmanifest`)).status, 403, 'the manifest without a cookie');
+    assert.equal((await boardGet(`${base}?x=1`)).status, 403, 'another query, no cookie');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
 });
 
-// #601: / and /data refuse a wrong token with a 403, whatever its length.
-test('board server: a wrong token gets a 403', async () => {
+// #693: a wrong cookie is refused, and a wrong token sets no cookie.
+test('board server: a wrong cookie or token gets a 403', async () => {
   const sandbox = makeSandbox();
   const gh: Gh = () => '[]';
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
   try {
     const base = url.split('?')[0];
-    const token = new URL(url).searchParams.get('t') ?? '';
+    const token = new URL(url).searchParams.get('token') ?? '';
     const flipped = `${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}`;
-    assert.equal((await boardGet(`${base}?t=wrong`)).status, 403, 'a short token on /');
-    assert.equal((await boardGet(`${base}data?t=wrong`)).status, 403, 'a short token on /data');
-    assert.equal((await boardGet(`${base}?t=${flipped}`)).status, 403, 'a token of the right length, one digit off, on /');
-    assert.equal((await boardGet(`${base}data?t=${flipped}`)).status, 403, 'a token of the right length, one digit off, on /data');
+    const wrongLink = await boardGet(`${base}?token=wrong`);
+    assert.equal(wrongLink.status, 403, 'a short token on /');
+    assert.equal(wrongLink.headers['set-cookie'], undefined, 'a wrong token sets no cookie');
+    assert.equal((await boardGet(`${base}data?token=wrong`)).status, 403, 'a short token on /data');
+    assert.equal((await boardGet(`${base}?token=${flipped}`)).status, 403, 'a token of the right length, one digit off');
+    assert.equal((await boardGet(base, { cookie: 'yokoten-board=wrong' })).status, 403, 'a short cookie');
+    assert.equal((await boardGet(`${base}data`, { cookie: `yokoten-board=${flipped}` })).status, 403, 'a cookie of the right length, one digit off');
+    assert.equal((await boardGet(`${base}feed`, { cookie: `yokoten-board=${flipped}` })).status, 403, 'a wrong cookie on /feed');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #693: the first visit leaves the token behind. Later pages and the log never show it.
+test('board server: the first visit redirects, and the token stays out of the page and the log', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const token = new URL(url).searchParams.get('token') ?? '';
+    const base = url.split('?')[0];
+    const first = await boardGet(`${base}?token=${token}&x=1`);
+    assert.equal(first.status, 303);
+    assert.equal(first.headers.location, '/?x=1', 'other query words stay, the token does not');
+    assert.equal(first.text.includes(token), false, 'the redirect body has no token');
+    const cookie = `yokoten-board=${token}`;
+    const page = await boardGet(`${base}?x=1`, { cookie });
+    assert.equal(page.status, 200);
+    assert.equal(page.text.includes(token), false, 'the page has no token');
+    assert.equal(page.headers['set-cookie'], undefined, 'a later visit sets no cookie');
+    const data = await boardGet(`${base}data`, { cookie });
+    assert.equal(data.text.includes(token), false, '/data has no token');
+    const manifestHop = await boardGet(`${base}manifest.webmanifest?token=${token}`);
+    assert.equal(manifestHop.status, 303);
+    assert.equal(manifestHop.headers.location, '/manifest.webmanifest', 'the manifest path is kept, the token is not');
+    assert.equal(manifestHop.text.includes(token), false, 'the redirect body has no token');
+    const sneak = await boardGet(`${base.replace(/\/$/, '')}/..%2F..%2Fetc?token=${token}`);
+    assert.equal(sneak.status === 303 ? sneak.headers.location : '/', '/', 'a strange path returns to the page');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
@@ -233,7 +321,7 @@ function boardSend(target: string, options: { method?: string; headers?: Record<
   const method = options.method ?? 'GET';
   const body = options.body ?? '';
   return new Promise((done, failed) => {
-    const socket = connect(Number(url.port), url.hostname, () => {
+    const socket = connect(Number(url.port), boardDial(url.hostname), () => {
       const rows = [`${method} ${url.pathname}${url.search} HTTP/1.1`, `Host: ${options.headers?.host ?? url.host}`, 'Connection: close'];
       for (const [key, value] of Object.entries(options.headers ?? {})) {
         if (key.toLowerCase() !== 'host') rows.push(`${key}: ${value}`);
@@ -277,12 +365,12 @@ function boardOrigin(url: string): string {
   return `${link.protocol}//${link.host}`;
 }
 
-/** One change against the board with the token and the page's Origin, as the page sends it. */
-function boardPost(url: string, path: string, body: string): Promise<{ status: number; kind: string; text: string }> {
-  const token = new URL(url).searchParams.get('t') ?? '';
-  return boardSend(`${url.split('?')[0]}${path}?t=${token}`, {
+/** One change against the board with the cookie and the page's Origin, as the page sends it. */
+async function boardPost(url: string, path: string, body: string): Promise<{ status: number; kind: string; text: string }> {
+  const cookie = await boardCookie(url);
+  return boardSend(`${url.split('?')[0]}${path}`, {
     method: 'POST',
-    headers: { Origin: boardOrigin(url), 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { Origin: boardOrigin(url), 'content-type': 'application/x-www-form-urlencoded', cookie },
     body,
   });
 }
@@ -308,8 +396,8 @@ test('board server: start an agent, see its output, stop it', async () => {
     assert.equal(agents.started[0].env.YOKOTEN_ROLE, 'worker', 'a worker, like the dispatch skill');
     assert.equal(agents.started[0].env.YOKOTEN_MODEL, 'model-a');
     agents.started[0].events.line('doing the task');
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const data = JSON.parse((await boardSend(`${url.split('?')[0]}data?t=${token}`)).text) as { runs: { name: string; status: string; output: string[]; worktree: string }[] };
+    const token = new URL(url).searchParams.get('token') ?? '';
+    const data = JSON.parse((await boardRead(url, 'data')).text) as { runs: { name: string; status: string; output: string[]; worktree: string }[] };
     assert.equal(data.runs.length, 1);
     assert.equal(data.runs[0].output.join('\n'), 'doing the task', 'the latest output shows');
     const stopped = await boardPost(url, 'agents/stop', 'name=issue-12-claude-code');
@@ -319,6 +407,7 @@ test('board server: start an agent, see its output, stop it', async () => {
     const log = readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8');
     assert.match(log, /start issue-12-claude-code pid 1000 issue #12 claude-code model-a/, 'the log holds the start');
     assert.match(log, /stop issue-12-claude-code pid 1000 issue #12/, 'the log holds the stop');
+    assert.equal(log.includes(token), false, 'the log never holds the token');
     assert.equal((await boardPost(url, 'agents/stop', 'name=issue-12-claude-code')).status, 409, 'stopping twice is refused');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
@@ -361,15 +450,16 @@ test('board server: the waiting list shows what needs the owner', async () => {
     join(sandbox.repo, '.yokoten-agent.json'),
     JSON.stringify({ name: 'w', vendor: 'muse', task: 'issue 601', worktree: tree, doing: 'blocked', updated: '2026-10-22T10:00:00Z', role: 'engineer', blocked: 'the guard stopped a force push: say which branch', question: 'one scope or the repo?', link: 'https://example.com/pull/7' }),
   );
-  const pull = (number: number, branch: string, state: string, review: string, checks: unknown[], labels: unknown[]) => ({
-    number, title: `work ${number}`, headRefName: branch, url: `https://example.com/pull/${number}`, state, reviewDecision: review, isDraft: false, statusCheckRollup: checks, labels,
+  const pull = (number: number, branch: string, state: string, review: string, checks: unknown[], labels: unknown[], head = '') => ({
+    number, title: `work ${number}`, headRefName: branch, headRefOid: head, url: `https://example.com/pull/${number}`, state, reviewDecision: review, isDraft: false, statusCheckRollup: checks, labels,
+    latestReviews: head ? [{ state: 'APPROVED', commit: { oid: head } }] : [],
   });
   const pass = [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }];
   const gh: Gh = (args) => {
     if (args[0] === 'issue') return '[]';
     return JSON.stringify([
       pull(7, 'main', 'OPEN', 'REVIEW_REQUIRED', pass, [{ name: 'tier A' }]),
-      pull(8, 'main', 'OPEN', 'APPROVED', pass, [{ name: 'tier A' }]),
+      pull(8, 'main', 'OPEN', 'APPROVED', pass, [{ name: 'tier A' }], 'head-8'),
       pull(9, 'main', 'OPEN', 'REVIEW_REQUIRED', pass, [{ name: 'tier B' }]),
       pull(10, 'main', 'MERGED', 'APPROVED', pass, [{ name: 'tier A' }]),
       pull(11, 'other', 'OPEN', '', pass, [{ name: 'tier A' }]),
@@ -379,8 +469,7 @@ test('board server: the waiting list shows what needs the owner', async () => {
   const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
   try {
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const data = JSON.parse((await boardSend(`${url.split('?')[0]}data?t=${token}`)).text) as { waiting: { kind: string; agent: string; role: string; wait: string; why: string; link: string }[] };
+    const data = JSON.parse((await boardRead(url, 'data')).text) as { waiting: { kind: string; agent: string; role: string; wait: string; why: string; link: string }[] };
     const kinds = data.waiting.map((row) => [row.kind, row.agent]);
     assert.ok(kinds.some(([kind, agent]) => kind === 'approve' && agent === 'w'), `tier A with green checks and no Approve shows, with its agent: ${JSON.stringify(kinds)}`);
     assert.ok(kinds.some(([kind, agent]) => kind === 'guard' && agent === 'w'), 'the guard stop shows');
@@ -417,15 +506,15 @@ test('board server: no agent action clears a waiting item', async () => {
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls });
   try {
     const base = url.split('?')[0];
-    const token = new URL(url).searchParams.get('t') ?? '';
-    const waiting = async () => (JSON.parse((await boardSend(`${base}data?t=${token}`)).text) as { waiting: { kind: string; agent: string }[] }).waiting;
+    const cookie = await boardCookie(url);
+    const waiting = async () => (JSON.parse((await boardSend(`${base}data`, { headers: { cookie } })).text) as { waiting: { kind: string; agent: string }[] }).waiting;
     assert.equal((await waiting()).length, 3, 'an Approve, a guard stop, and a question');
     writeFileSync(file, JSON.stringify({ name: 'w', task: 'issue 601', worktree: tree, updated: '2026-10-22T10:30:00Z', role: 'engineer' }));
     assert.equal((await waiting()).length, 3, 'an agent that stops naming its hold-up still shows');
     assert.equal((await boardPost(url, 'agents/stop', 'name=w')).status, 404, 'no run of that name');
     assert.equal((await waiting()).length, 3, 'a refused stop changes nothing');
-    assert.equal((await boardSend(`${base}waiting/clear?t=${token}`, { method: 'POST', headers: { Origin: boardOrigin(url) }, body: '' })).status, 404, 'no clear endpoint');
-    assert.equal((await boardSend(`${base}data?t=${token}`, { method: 'POST', headers: { Origin: boardOrigin(url) }, body: '' })).status, 404, 'no change down the read path');
+    assert.equal((await boardSend(`${base}waiting/clear`, { method: 'POST', headers: { Origin: boardOrigin(url), cookie }, body: '' })).status, 404, 'no clear endpoint');
+    assert.equal((await boardSend(`${base}data`, { method: 'POST', headers: { Origin: boardOrigin(url), cookie }, body: '' })).status, 404, 'no change down the read path');
     assert.equal((await waiting()).length, 3, 'the list is read only');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
@@ -443,11 +532,15 @@ test('board server: a change without the token or the Origin is refused', async 
   try {
     const base = url.split('?')[0];
     const origin = boardOrigin(url);
+    const token = new URL(url).searchParams.get('token') ?? '';
+    const cookie = await boardCookie(url);
     const body = 'issue=12&vendor=claude-code&model=model-a';
-    assert.equal((await boardSend(`${base}agents/start?t=wrong`, { method: 'POST', headers: { Origin: origin }, body })).status, 403, 'a wrong token');
-    assert.equal((await boardSend(`${base}agents/start?t=${new URL(url).searchParams.get('t')}`, { method: 'POST', body })).status, 403, 'a missing Origin');
-    assert.equal((await boardSend(`${base}agents/start?t=${new URL(url).searchParams.get('t')}`, { method: 'POST', headers: { Origin: 'http://127.0.0.1:9' }, body })).status, 403, 'a wrong Origin');
-    assert.equal((await boardSend(`${base}agents/start?t=${new URL(url).searchParams.get('t')}`, { method: 'POST', headers: { Origin: 'https://example.com' }, body })).status, 403, 'an outside Origin');
+    assert.equal((await boardSend(`${base}agents/start?token=wrong`, { method: 'POST', headers: { Origin: origin, cookie }, body })).status, 403, 'a wrong token');
+    assert.equal((await boardSend(`${base}agents/start?token=${token}`, { method: 'POST', headers: { Origin: origin }, body })).status, 403, 'a query token does not authorize a change');
+    assert.equal((await boardSend(`${base}agents/start`, { method: 'POST', headers: { cookie }, body })).status, 403, 'a missing Origin');
+    assert.equal((await boardSend(`${base}agents/start`, { method: 'POST', headers: { cookie, Origin: 'http://127.0.0.1:9' }, body })).status, 403, 'a wrong Origin');
+    assert.equal((await boardSend(`${base}agents/start`, { method: 'POST', headers: { cookie, Origin: 'https://example.com' }, body })).status, 403, 'an outside Origin');
+    assert.equal((await boardSend(`${base}agents/start`, { method: 'POST', headers: { cookie: 'yokoten-board=wrong', Origin: origin }, body })).status, 403, 'a wrong cookie');
     assert.equal(agents.started.length, 0, 'nothing started');
     assert.equal((await boardPost(url, 'agents/start', 'issue=x&vendor=claude-code&model=model-a')).status, 400, 'a bad issue is refused');
     assert.match((await boardPost(url, 'agents/start', 'issue=x&vendor=claude-code&model=model-a')).text, /number/);
@@ -554,9 +647,10 @@ test('board server: /data answers at once while gh sleeps', async () => {
   const { server, url } = await startBoardServer(sandbox.repo, env, ghLaterIn(sandbox.repo, env, 20000), { github });
   try {
     assert.ok(github.reading, 'the first read starts with the board');
-    const token = new URL(url).searchParams.get('t') ?? '';
+    const cookie = await boardCookie(url);
+    const base = url.split('?')[0];
     const asked = performance.now();
-    const answer = await boardGet(`${url.split('?')[0]}data?t=${token}`);
+    const answer = await boardGet(`${base}data`, { cookie });
     const took = performance.now() - asked;
     assert.equal(answer.status, 200);
     assert.ok(took < 200, `/data took ${took.toFixed(0)} ms while gh sleeps`);
@@ -566,7 +660,7 @@ test('board server: /data answers at once while gh sleeps', async () => {
     assert.equal(shown.issues, 'reading GitHub…');
     assert.deepEqual(shown.github, { isReading: true, readAt: '', failed: '' });
     const page = performance.now();
-    assert.equal((await boardGet(url)).status, 200);
+    assert.equal((await boardGet(base, { cookie })).status, 200);
     assert.ok(performance.now() - page < 200, 'the page answers at once too');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
@@ -596,12 +690,13 @@ test('board server: the lists appear after the read, and a failed read keeps the
   const github = createBoardGitHub();
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { github });
   try {
-    const dataUrl = `${url.split('?')[0]}data?t=${new URL(url).searchParams.get('t') ?? ''}`;
-    const read = async () => JSON.parse((await boardGet(dataUrl)).text) as GitHubShown;
+    const cookie = await boardCookie(url);
+    const dataUrl = `${url.split('?')[0]}data`;
+    const read = async () => JSON.parse((await boardGet(dataUrl, { cookie })).text) as GitHubShown;
     const before = await read();
     assert.equal(before.pulls, 'reading GitHub…');
     assert.equal((await read()).github.isReading, true);
-    assert.equal(calls, 3, 'one read in flight, however many /data asks: two pull queries and one issue query');
+    assert.equal(calls, 4, 'one read in flight, however many /data asks: three pull queries and one issue query');
     release();
     await github.reading;
     const after = await read();
@@ -629,7 +724,7 @@ test('board server: the lists appear after the read, and a failed read keeps the
 // #685: `yokoten board` opens the page itself, so a beginner never copies the token.
 // The link is one word to the opener, never through a shell.
 test('board: the browser opener for each system', () => {
-  const url = 'http://127.0.0.1:9/?t=abc';
+  const url = 'http://repo.localhost:9/?token=abc';
   assert.deepEqual(browserCommand(url, 'darwin', {}), ['open', url]);
   assert.deepEqual(browserCommand(url, 'linux', {}), ['xdg-open', url]);
   assert.deepEqual(browserCommand(url, 'linux', { WSL_DISTRO_NAME: 'Ubuntu' }), ['explorer.exe', url], 'WSL opens the Windows browser');

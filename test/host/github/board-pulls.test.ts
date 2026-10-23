@@ -6,9 +6,9 @@ import { test } from 'node:test';
 import { type Gh } from '../../../src/host/github/planning.ts';
 import { readBoardPulls, readBoardPullsLater } from '../../../src/host/github/board-pulls.ts';
 
-// #601, #688: the board's pull requests, from two `gh pr list`: the open ones with their
-// checks, and the last few merged without. A fake gh stands in for GitHub and answers
-// every row to both, so each query keeps only its own stages, and closed rows never show.
+// #601, #688, #693: the board's pull requests, from three `gh pr list`: the open ones
+// with their checks, then the last few merged and the last few closed, without checks.
+// A fake gh answers every row to each, so each query keeps only its own stages.
 test('readBoardPulls: each row as its stages; a row with no number is skipped', () => {
   const calls: string[][] = [];
   const rows = [
@@ -23,14 +23,32 @@ test('readBoardPulls: each row as its stages; a row with no number is skipped', 
     return JSON.stringify(rows);
   };
   assert.deepEqual(readBoardPulls(gh, 'octo/demo'), [
-    { number: 1, title: 'team page', branch: 'board', url: 'https://example.com/pull/1', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting', mergedAt: '' },
-    { number: 3, title: 'draft work', branch: 'draft', url: '', stage: 'draft', checks: 'none', tier: '', review: 'none', mergedAt: '' },
-    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved', mergedAt: '2026-10-22T09:00:00Z' },
+    { number: 1, title: 'team page', branch: 'board', url: 'https://example.com/pull/1', stage: 'open', checks: 'pass', tier: 'B', review: 'waiting', isApprovedOnHead: false, mergedAt: '' },
+    { number: 3, title: 'draft work', branch: 'draft', url: '', stage: 'draft', checks: 'none', tier: '', review: 'none', isApprovedOnHead: false, mergedAt: '' },
+    { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved', isApprovedOnHead: false, mergedAt: '2026-10-22T09:00:00Z' },
+    { number: 4, title: 'closed stays', branch: 'old', url: '', stage: 'closed', checks: 'fail', tier: '', review: 'changes', isApprovedOnHead: false, mergedAt: '' },
   ]);
+  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,isDraft,statusCheckRollup,labels,url,mergedAt';
+  const quietJson = 'number,title,headRefName,state,url,mergedAt';
   assert.deepEqual(calls, [
-    ['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '30', '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt'],
-    ['pr', 'list', '--repo', 'octo/demo', '--state', 'merged', '--limit', '10', '--json', 'number,title,headRefName,state,url,mergedAt'],
-  ], 'no --state all, and no checks for merged ones');
+    ['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '30', '--json', openJson],
+    ['pr', 'list', '--repo', 'octo/demo', '--state', 'merged', '--limit', '10', '--json', quietJson],
+    ['pr', 'list', '--repo', 'octo/demo', '--state', 'closed', '--limit', '10', '--json', quietJson],
+  ], 'no --state all, and no checks for merged or closed ones');
+});
+
+// #693: GitHub can still say APPROVED after new commits. Only an Approve whose commit
+// is the head commit counts. A closed pull request is kept so Needs you can drop it.
+test('readBoardPulls: an Approve counts only on the head commit', () => {
+  const head = 'a'.repeat(40);
+  const older = 'b'.repeat(40);
+  const base = { number: 1, title: 't', headRefName: 'b', url: '', state: 'OPEN', isDraft: false, statusCheckRollup: [], labels: [{ name: 'tier A' }], reviewDecision: 'APPROVED' };
+  const approved = (commit: string) => () => JSON.stringify([{ ...base, headRefOid: head, latestReviews: [{ state: 'APPROVED', commit: { oid: commit } }] }]);
+  const flag = (gh: Gh) => (readBoardPulls(gh, 'o/r') as { isApprovedOnHead: boolean }[])[0].isApprovedOnHead;
+  assert.equal(flag(approved(head)), true, 'the Approve is on the head commit');
+  assert.equal(flag(approved(older)), false, 'the Approve is on an older commit');
+  assert.equal(flag(() => JSON.stringify([{ ...base, latestReviews: [{ state: 'APPROVED', commit: { oid: head } }] }])), false, 'no head commit to match');
+  assert.equal(flag(() => JSON.stringify([{ ...base, headRefOid: head }])), false, 'no review to match');
 });
 
 // #688: the same read without blocking. Both queries run at once and get the signal; a
@@ -44,7 +62,7 @@ test('readBoardPullsLater: the same rows, without blocking; a failure is a reaso
     return Promise.resolve(JSON.stringify(args.includes('merged') ? [] : [row]));
   };
   assert.deepEqual((await readBoardPullsLater(later, 'o/r', stop.signal) as { number: number }[]).map((pull) => pull.number), [5]);
-  assert.deepEqual(signals, [stop.signal, stop.signal], 'each query can be stopped');
+  assert.deepEqual(signals, [stop.signal, stop.signal, stop.signal], 'each query can be stopped');
   const refused = () => Promise.reject(Object.assign(new Error('Command failed'), { stderr: 'HTTP 401: Bad credentials' }));
   assert.equal(await readBoardPullsLater(refused, 'o/r'), 'gh can\'t list the pull requests (HTTP 401: Bad credentials): run `gh auth login`, and check the repo');
   const missing: Gh = () => {

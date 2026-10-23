@@ -1,25 +1,10 @@
-// What an agent's session log says, as the board streams it (#694): one list of plain items,
-// the same for every runtime. Each runtime writes its own log; the readers here turn one
-// line of it into items. Nothing here masks: tail.ts masks every item before it leaves the
-// server. Nothing here is HTML: the page puts every word in as text.
+// What an agent's session log says, as the board streams it (#694, #698). Each runtime writes
+// its own log. Each reader maps one line onto the standard in shape.ts. Nothing here masks:
+// tail.ts masks every item before it leaves the server. Nothing here is HTML.
 
-/**
- * One thing the agent did. `say` is what it wrote, `think` its reasoning summary, `tool` one
- * tool call (`text` in a few words, `full` the whole call), `result` a call's output (`call`
- * names the call), and `stop` a call the guard refused.
- */
-export interface StreamItem {
-  kind: 'say' | 'think' | 'tool' | 'result' | 'stop';
-  text: string;
-  full?: string;
-  /** For `tool` and `result`: the call, as the runtime names it. tail.ts numbers it before it leaves. */
-  call?: string;
-  /** When, as an ISO time, or '' when the log does not say. */
-  time: string;
-}
+import { commonTool, type StreamItem, type StreamSource } from './shape.ts';
 
-/** The runtimes whose log the board reads. */
-export type StreamSource = 'claude' | 'muse' | 'grok';
+export { commonTool, type StreamItem, type StreamSource };
 
 /** The most of a call's whole text, and of an output, that the board keeps. */
 export const FULL_LIMIT = 4000;
@@ -70,16 +55,20 @@ function argsOf(value: unknown): Record<string, unknown> {
   }
 }
 
-/** A tool call as an item. */
+/** A tool call as an item. The common name is what the page shows; `full` keeps the runtime's name. */
 function toolItem(name: string, args: Record<string, unknown>, call: string, tree: string, time: string): StreamItem {
-  return { kind: 'tool', text: describeCall(name, args, tree), full: fullCall(name, args), call, time };
+  const item: StreamItem = { kind: 'tool', tool: commonTool(name), text: describeCall(name, args, tree), full: fullCall(name, args), call, time };
+  if (!textOf(args.description).trim() && textOf(args.command).trim()) item.isCommand = true;
+  return item;
 }
 
 /** A tool's output as an item: a guard's refusal stands out, any other output rides under its call. */
 function resultItem(text: string, call: string, isError: boolean, time: string): StreamItem {
   const isGuard = /\byokoten\b/i.test(text) && (isError || /blocked by hook/i.test(text)) && /block|refus|stop|not allowed/i.test(text);
   if (isGuard) return { kind: 'stop', text: cut(text.trim(), RESULT_LIMIT), call, time };
-  return { kind: 'result', text: cut(text, RESULT_LIMIT), call, time };
+  const item: StreamItem = { kind: 'result', text: cut(text, RESULT_LIMIT), call, time };
+  if (isError) item.isFailed = true;
+  return item;
 }
 
 /** Said text as an item, or nothing when it is empty. */
@@ -175,9 +164,63 @@ export function grokItems(record: unknown, tree: string): StreamItem[] {
   return [];
 }
 
-/** The reader for each runtime's log lines. Codex: none yet, as no Codex session log on hand shows its format. */
+/** Codex arguments as the shared describer reads them: a command string, or the patch's file. */
+function codexArgs(name: string, raw: Record<string, unknown>): Record<string, unknown> {
+  const args: Record<string, unknown> = { ...raw };
+  const listed = Array.isArray(raw.command) ? raw.command.filter((part): part is string => typeof part === 'string').join(' ') : '';
+  const command = textOf(raw.command) || textOf(raw.cmd) || listed;
+  const isPatch = /patch/i.test(name);
+  if (command && !isPatch) args.command = command;
+  const body = textOf(raw.patch) || (isPatch ? command : '');
+  const header = /\*\*\* (?:Add|Update|Delete) File: ([^\n]+)/.exec(body);
+  if (header) args.file_path = header[1].trim();
+  if (isPatch) delete args.command;
+  return args;
+}
+
+/** A Codex tool output: a string, or the text a result object carries. */
+function codexOutput(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (!isObject(value)) return '';
+  return textOf(value.content) || textOf(value.stdout) || textOf(value.text) || textOf(value.output);
+}
+
+/**
+ * One line of a Codex rollout (`sessions/<year>/<month>/<day>/rollout-*.jsonl`). The line
+ * shape is a guess (#698): a `response_item` holds a message, a reasoning summary, a
+ * function call or its output. `event_msg` repeats the message, so it is left out.
+ */
+export function codexItems(record: unknown, tree: string): StreamItem[] {
+  if (!isObject(record) || record.type === 'event_msg' || record.type === 'session_meta') return [];
+  const time = textOf(record.timestamp);
+  const payload = record.type === 'response_item' && isObject(record.payload) ? record.payload : record;
+  const kind = textOf(payload.type);
+  if (kind === 'message' && payload.role === 'assistant') {
+    const parts = Array.isArray(payload.content) ? payload.content : [];
+    const text = parts.map((part) => (isObject(part) && part.type === 'output_text' ? textOf(part.text) : '')).filter(Boolean).join('\n');
+    return saidItem('say', text, time);
+  }
+  if (kind === 'reasoning') {
+    const summary = Array.isArray(payload.summary) ? payload.summary.map((part) => (isObject(part) ? textOf(part.text) : textOf(part))).join('\n') : textOf(payload.summary);
+    return saidItem('think', summary, time);
+  }
+  if (kind === 'function_call') {
+    const name = textOf(payload.name);
+    return [toolItem(name, codexArgs(name, argsOf(payload.arguments)), textOf(payload.call_id), tree, time)];
+  }
+  if (kind === 'function_call_output') {
+    const output = isObject(payload.output) ? payload.output : {};
+    const code = typeof payload.exit_code === 'number' ? payload.exit_code : typeof output.exit_code === 'number' ? output.exit_code : 0;
+    const isError = payload.is_error === true || output.is_error === true || code !== 0;
+    return [resultItem(codexOutput(payload.output), textOf(payload.call_id), isError, time)];
+  }
+  return [];
+}
+
+/** The reader for each runtime's log lines. A new runtime is one reader here, and nothing else. */
 export const LINE_READERS: Record<StreamSource, (record: unknown, tree: string) => StreamItem[]> = {
   claude: claudeItems,
   muse: museItems,
   grok: grokItems,
+  codex: codexItems,
 };

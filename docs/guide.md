@@ -1698,22 +1698,52 @@ desk, read-only. Use it only for an agent you trust with the words.
 ### The team board
 
 `yokoten board` shows the team at a glance. It serves a page on this machine only.
+The page is at `http://<repo>.localhost:<port>/`.
+`<repo>` is the folder name, made safe for a hostname.
+The port stays the same for this repo.
+When that port is taken, the board tries the next ones.
 It opens the page in your browser and prints the link (`--no-open` only prints it).
-The link holds a random token, so only someone who reads this terminal can open the page.
+The first visit uses `?token=` in that link.
+That visit sets an HttpOnly Secure cookie, then opens the page without the token.
+The cookie is SameSite=Strict.
+Later visits use the cookie.
+Only someone who can read the terminal can open the page.
+A wrong host is refused.
 
-The page has three columns:
+Chrome and Edge can install the board as its own window.
+Use Install in the browser menu.
+The board then opens without the browser tabs.
 
-- **Left:** what needs you first (a tier A pull request ready for your Approve, or an
-  agent waiting for an answer). It never folds. Below it, the agents by role. Click
-  one to see it in the middle. Finished agents fold away; **Clear** hides one until it
-  writes again. Its log and branch stay.
-- **Middle:** the picked agent's own session, live, like a chat. You see what it
-  says and the tools it runs. Tool calls in a row fold into "Ran 3 steps · the last
-  one". Click a step to see the whole call and its output. New lines come in at the
-  bottom. The board reads Claude Code, Muse Code and Grok logs. For any other agent,
-  or when no log is found, you see the agent's `doing` steps instead.
-- **Right:** the pull requests, each as four steps: Built, Checked, You (tier A only),
-  Merged. Today's merged ones are listed below.
+The page has two columns. Needs you is a bell in the header, next to Live.
+
+- **Left:** the agents by role. Click one to see it in the middle. On a phone this
+  column hides. Finished agents fold away. **Clear** hides one until it writes
+  again. Its log and branch stay. Each vendor has one name on the page:
+  Claude, Grok, Muse or DeepSeek. Codex on a DeepSeek model shows as DeepSeek.
+- **Middle:** the picked agent's own session, live, like a chat. The agent's own
+  words are the main text. Each tool is one short line under them. A long run of
+  tools folds after three. A click opens the rest. A time shows once, on the message.
+  Each reader maps its log to the same kinds: the agent's words, a tool step, the step's result, and a failed step.
+  Tool names share one set: Bash, Read, Edit, Write, Search, Web, Agent and Other.
+  A new vendor needs one reader, and nothing else.
+  The board reads Claude, Grok, Muse and Codex logs. DeepSeek runs on Codex.
+  With no log, you see the agent's `doing` steps.
+
+The bell's badge is grey at zero and orange when something needs you.
+A click opens the list under the bell.
+Each row says what it is, which pull request or issue, and how old.
+It has one Act here link.
+Escape, a click outside, or the bell closes the list.
+A row leaves while the page stays open.
+It leaves once that pull request is approved on its latest commit.
+It also leaves when the pull request or issue is merged or closed.
+A row older than a day says so.
+A new row pulses the badge once.
+A pull request stays off the list while its review is still open.
+
+The right column is gone, so the session is wider.
+Pull requests still show in `yokoten board --text` and in `/data`.
+Start and stop stay on those paths too.
 
 The top bar has the language (English, 简体中文, 繁體中文 or 日本語; it starts in your
 browser's language), a link to the repo on GitHub, and light or dark. What agents write
@@ -1728,11 +1758,11 @@ It only shows; to talk to an agent, use its own terminal for now.
 
 `yokoten board --text` prints the same in plain text.
 
-At the top, Waiting for you lists what needs the owner: tier A pull requests with
-green checks and no Approve, commands the guard stopped, and questions agents ask.
-Each row shows the kind, the agent, its role, how long it waited, one line on why,
-and a link to act. The list is read only: no request an agent can make clears an
-item. An empty list says so.
+`yokoten board --text` prints Waiting for you when something waits. It lists tier A
+pull requests with green checks and no Approve on the latest commit, commands the
+guard stopped, and questions agents ask. Each row shows the kind, the agent, its
+role, how long it waited, one line on why, and a link to act. The list is read only.
+No request an agent can make clears an item. An empty list says so.
 
 The owner starts an agent through the board: send an open issue, a vendor, and a
 model to `/agents/start`. The board makes `.worktrees/<issue>`, marks it as a worker's
@@ -1749,10 +1779,9 @@ that exits by itself counts as stopped: its slot frees and a later Stop says so.
 The limits say how many agents run at once (three at first), and how many of one
 model. Over the limit, the board refuses a start with a plain reason.
 
-`yokoten board --text` also prints Waiting for you whenever something waits, and the
-runs the board started.
+`yokoten board --text` also prints the runs the board started.
 
-Safety: the link holds a random token, and a change needs the page's Origin too.
+Safety: the first visit sets an HttpOnly Secure cookie, and a change needs the page's Origin too.
 The board stops only processes it started. Every start and stop goes to
 `.yokoten-board.log` at the repo root. The guard checks each agent, and pushes and
 merges still go only through the bot. There are no Approve or Merge buttons: those
