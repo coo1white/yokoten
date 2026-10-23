@@ -2,7 +2,7 @@
 // boards. Everything here reads or changes GitHub through `gh`, so yokoten uses the
 // owner's own sign-in and holds no token.
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
@@ -30,6 +30,28 @@ export const ghIn =
   (cwd: string, env: Env, timeout?: number): Gh =>
   (args) =>
     execFileSync('gh', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+
+/**
+ * gh that may answer later, so a server keeps answering while GitHub is slow (#688). A
+ * Gh that answers at once fits too. `signal` stops a call nobody waits for any more.
+ */
+export type GhLater = (args: string[], signal?: AbortSignal) => string | Promise<string>;
+
+/**
+ * Runs the real gh in `cwd`, with `env`, without blocking. With `timeout` (ms), a call
+ * that takes longer is stopped. A failed call rejects with gh's code and stderr, as
+ * ghIn throws them.
+ */
+export const ghLaterIn =
+  (cwd: string, env: Env, timeout?: number): GhLater =>
+  (args, signal) =>
+    new Promise((done, failed) => {
+      const child = execFile('gh', args, { cwd, env, encoding: 'utf8', timeout, signal, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) failed(Object.assign(err, { stderr }));
+        else done(stdout);
+      });
+      child.stdin?.end();
+    });
 
 /** Why a part could not be read, and what to do. */
 export interface Unread {
