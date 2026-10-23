@@ -1,4 +1,4 @@
-# 0036 What each plan allows for shared work: a survey of vendor terms
+# 0038 What each plan allows for shared work: a survey of vendor terms
 
 Status: proposed; facts to check before layer 3 is offered
 Date: 2026-10-23 (UTC)
