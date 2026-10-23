@@ -247,6 +247,30 @@ function patchName(root: string, from: string, to: string, env: Env): string | n
 }
 
 /**
+ * The login whose latest Approve names pull request `number`, or '' when gh can't read
+ * its reviews or none is approved (#756). A newer Approve wins; a tie keeps the later row.
+ */
+export function readApproverLogin(gh: Gh, number: number): string {
+  let rows = '';
+  try {
+    rows = gh(['pr', 'view', String(number), '--json', 'reviews', '--jq', '.reviews[] | select(.state == "APPROVED") | [.author.login, .submittedAt] | @tsv']);
+  } catch {
+    return '';
+  }
+  let approver = '';
+  let newest = '';
+  for (const row of rows.split('\n')) {
+    const [login, at] = row.split('\t');
+    if (!login || !at) continue;
+    if (at >= newest) {
+      newest = at;
+      approver = login;
+    }
+  }
+  return approver;
+}
+
+/**
  * What the Approve check knows about pull request `number` in `repo` ("owner/name"):
  * its tier, its head, and what came after the latest Approve by a code owner of its
  * changed files. `unsure` when gh or git can't answer, with the reason; the caller

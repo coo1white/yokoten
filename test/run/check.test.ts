@@ -1437,3 +1437,35 @@ test('check --staged: a staged node_modules is one line with the untrack command
   assert.match(result.stderr, /To take this folder out of the commit, run `git rm -r --cached node_modules\/`\. It stays on disk/);
   assert.doesNotMatch(result.stderr, /f29\.js/);
 });
+
+// #756: `check --pr` reads the Made-with line against the desk status files of the
+// branch, so a line that names another vendor or model is a finding.
+test('check --pr: the Made-with line is checked against the branch desks (#756)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const body = (line: string) => `tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n${line}\n`;
+  const event = (text: string) => {
+    const file = join(sandbox.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: text, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return file;
+  };
+  const status = (model: string) => writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'worker', vendor: 'deepseek-harness', model, role: 'engineer' }));
+  status('deepseek-v4.1-flash');
+  let result = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event(body('Made with worker DeepSeek (deepseek-v4.1-flash)')) } });
+  assert.equal(result.status, 0, result.stderr);
+  status('deepseek-v4.2-flash');
+  result = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event(body('Made with worker DeepSeek (deepseek-v4.1-flash)')) } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /a desk on this branch ran deepseek-harness \(deepseek-v4\.2-flash\), but the Made-with line does not name it/);
+  // The same line under another vendor is a finding too.
+  result = await sandbox.call(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event(body('Made with worker Claude Code (deepseek-v4.2-flash)')) } });
+  assert.equal(result.status, 1);
+  assert.ok(JSON.parse(result.stdout).findings.some((finding: { id: string }) => finding.id === 'pr-provenance'));
+});

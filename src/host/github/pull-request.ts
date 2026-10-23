@@ -101,7 +101,7 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '', headRef: isObject(pr.head) ? asText(pr.head.ref) : '' }, base, head, env);
 }
 
 export const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
@@ -129,7 +129,7 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
   let pr: unknown;
   try {
-    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid,headRefName']));
   } catch (err) {
     // gh says this when the repo has no such pull request: a wrong number, not a network problem.
     if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
@@ -145,7 +145,7 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fetch);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author), headRef: asText(pr.headRefName) }, base, head, env);
 }
 
 /**

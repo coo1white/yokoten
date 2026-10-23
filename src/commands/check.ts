@@ -14,12 +14,13 @@ import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, rena
 import { dirname } from 'node:path';
 
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
-import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
+import { ghIn, readApproverLogin, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
-import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, parseMadeWith, parseProvenance, provenanceFindings, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
+import { readBranchDesks } from '../run/hook.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
@@ -157,6 +158,9 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
         if (!json) print(invocation, [`${name}: note: ${formatFinding(large)}`]);
       }
       problems = checkPullRequest(pr, config);
+      // Provenance (#756): the line names each desk that worked on the branch, and a
+      // reviewer comes from another vendor. Only status files here can say what ran.
+      problems.push(...provenanceFindings(parseMadeWith(pr.body)?.roles ?? null, readBranchDesks(root, env, pr.headRef ?? '')));
       // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
       for (const file of pr.files.filter(isChangeFile)) {
         const text = readAtHead(file);
@@ -182,6 +186,87 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
     }
   }
   return problems;
+}
+
+/** One commit's message, as `git log` gives it: the id and the whole body (#756). */
+interface CommitMessage {
+  commit: string;
+  message: string;
+}
+
+/** The commits `ref` names, oldest first, with their messages. A range names its own commits. */
+function readCommitMessages(root: string, env: Invocation['env'], ref: string): CommitMessage[] {
+  // A range names its own commits. Any other ref is one commit, not all of its history.
+  const range = ref.includes('..');
+  const text = readGit(root, ['log', ...(range ? [] : ['-1']), '--no-color', '--format=%H%x00%B%x00%x00', '--end-of-options', ref, '--'], { env }).toString('utf8');
+  return text
+    .split('\0\0')
+    .filter((chunk) => chunk.trim() !== '')
+    .map((chunk) => {
+      const clean = chunk.replace(/^\n+/, '');
+      const split = clean.indexOf('\0');
+      return split === -1 ? { commit: clean.trim(), message: '' } : { commit: clean.slice(0, split).trim(), message: clean.slice(split + 1) };
+    })
+    .filter((commit) => commit.commit !== '');
+}
+
+/** The agents a provenance line names, as `vendor (model)`, or `none`. */
+const agentsText = (agents: { vendor: string; model: string }[]): string => (agents.length ? agents.map((agent) => `${agent.vendor} (${agent.model})`).join(', ') : 'none');
+
+/**
+ * `yokoten provenance <ref>` (#756): for a commit or a range, the writer, reviewers,
+ * approver, tier and issue that the squashed message and the host's reviews record.
+ * The approver is the latest Approve on the pull request the subject names; gh that
+ * can't answer leaves it unknown, never an error.
+ */
+export async function runProvenance(invocation: Invocation): Promise<number> {
+  const options = parse('provenance', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const ref = options.positional[0];
+  if (!ref) return usage(invocation, 'give a commit or a range, such as `HEAD` or `main~3..main`');
+  const root = requireRoot(invocation, invocation.cwd);
+  if (!root) return 1;
+  const json = options.flags.has('--json');
+  let records: ReturnType<typeof parseProvenance>[];
+  try {
+    records = readCommitMessages(root, invocation.env, ref).map(({ commit, message }) => parseProvenance(commit, message));
+  } catch (err) {
+    if (!(err instanceof GitReadError)) throw err;
+    const problem = gitReadFinding(err);
+    if (json) printJson(invocation, { command: 'provenance', ok: false, findings: [problem] });
+    else print(invocation, [`yokoten provenance: ${formatFinding(problem)}`], invocation.stderr);
+    return 1;
+  }
+  if (!records.length) {
+    if (json) printJson(invocation, []);
+    else print(invocation, [`yokoten provenance: no commit in ${ref}`]);
+    return 0;
+  }
+  const gh = ghIn(root, invocation.env, GH_TIMEOUT_MS);
+  const approvers = new Map<string, string>();
+  const approverOf = (subject: string): string => {
+    const number = /\(#(\d+)\)\s*$/.exec(subject)?.[1];
+    if (!number) return '';
+    if (!approvers.has(number)) approvers.set(number, readApproverLogin(gh, Number(number)));
+    return approvers.get(number) ?? '';
+  };
+  const rows = records.map((record) => ({ ...record, approver: approverOf(record.subject) }));
+  if (json) {
+    printJson(invocation, rows.map((row) => ({ commit: row.commit, subject: row.subject, writers: row.writers, reviewers: row.reviewers, approver: row.approver || null, tier: row.tier, issues: row.issues })));
+    return 0;
+  }
+  const lines: string[] = [];
+  for (const row of rows) {
+    if (lines.length) lines.push('');
+    lines.push(`${row.commit.slice(0, 7)} ${row.subject}`);
+    lines.push(`  writer: ${agentsText(row.writers)}`);
+    lines.push(`  reviewers: ${agentsText(row.reviewers)}`);
+    lines.push(`  approver: ${row.approver || 'unknown'}`);
+    lines.push(`  tier: ${row.tier ?? 'none'}`);
+    lines.push(`  issue: ${row.issues.length ? row.issues.map((issue) => `#${issue}`).join(', ') : 'none'}`);
+  }
+  print(invocation, lines);
+  return 0;
 }
 
 /** Past this many characters with no line end, the text goes out at its last space or tab, so memory stays small. */
