@@ -51,6 +51,9 @@ then `/plugin install yokoten@yokoten`. Use the plugin or `npx`, not both. For C
 [use it as a GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action).
 The commit check asks for UTC commit times, so add `export TZ=UTC` to your shell profile once.
 
+`npx skills add yokoten-labs/yokoten` copies the skills only: run `npx yokoten install`
+too, or you get no command guard and no session doctor.
+
 ## What you see
 
 An agent tries a force push. yokoten stops it, says why, and gives the fix. Then
