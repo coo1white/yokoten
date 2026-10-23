@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { Env } from '../../rules/config.ts';
 import { type Finding, finding } from '../../rules/message.ts';
 import { type GuardCase, type HelperShape, type TestShape, isHardLinePath, isWatchedTest, parseTests, refusalIds, splitCase } from './cases.ts';
@@ -33,14 +34,12 @@ export interface RuleChange {
 const REPLAY_MS = 20_000;
 const MAX_REASONS = 20;
 
-// The guard path is inside the script. `node -e script file` does not put `file` in process.argv.
-function replayScript(file: string): string {
-  return `
+// Fixed text (#329). The guard path is the next argument. The cases arrive on stdin.
+const REPLAY_SCRIPT = `
 import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 let guard;
 try {
-  guard = await import(pathToFileURL(${JSON.stringify(file)}).href);
+  guard = await import(process.argv[1]);
 } catch {
   process.stdout.write('{"error":"import"}');
   process.exit(0);
@@ -62,7 +61,6 @@ for (const item of cases) {
 }
 process.stdout.write(JSON.stringify(out));
 `;
-}
 
 function textAt(root: string, ref: string, path: string, env: Env): string | null {
   const { stdout, status } = runGit(root, ['show', `${ref}:${path}`], { env, okCodes: [0, 128] });
@@ -304,7 +302,7 @@ function replay(root: string, ref: string, cases: GuardCase[], env: Env): boolea
     const file = snapshot(root, ref, dir, env);
     if (!file) return 'missing';
     writeFileSync(join(dir, 'gitconfig'), '');
-    const result = spawnSync('node', ['--input-type=module', '-e', replayScript(file)], {
+    const result = spawnSync('node', ['--input-type=module', '-e', REPLAY_SCRIPT, pathToFileURL(file).href], {
       cwd: dir,
       input: JSON.stringify(cases.map((item) => ({ command: item.command, env: item.env }))),
       encoding: 'utf8',
