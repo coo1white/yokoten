@@ -83,6 +83,67 @@ test('learn: previews a check draft from an incident, writes it with --write, an
   assert.match(result.stderr, /name an incident issue/);
 });
 
+// #757: a reviewed lesson travels as one small file, and an import waits for review in lessons/.
+test('learn: --export writes one small file, and --import adds it as a draft for review', async () => {
+  const sandbox = makeSandbox();
+  const lesson = [
+    '// A lesson from incident #12: a .env file is in the repo',
+    '// https://example.com/issues/12',
+    "import { existsSync } from 'node:fs';",
+    "import { join } from 'node:path';",
+    "export const lesson = { id: 'incident-12', what: 'a .env file is in the repo', why: 'it can hold a secret', fix: 'remove it' };",
+    "export function findProblems(root: string) { return existsSync(join(root, '.env')) ? [lesson] : []; }",
+    '',
+  ].join('\n');
+  const lessonTest = [
+    "import assert from 'node:assert/strict';",
+    "import { test } from 'node:test';",
+    "import { findProblems } from './lesson.ts';",
+    "test('catches the known-bad case', () => { assert.deepEqual(findProblems('/nowhere'), []); });",
+    '',
+  ].join('\n');
+  sandbox.write('lessons/incident-12/lesson.ts', lesson);
+  sandbox.write('lessons/incident-12/lesson.test.ts', lessonTest);
+  // Without --out the file itself goes to stdout, so it can be piped or reviewed.
+  let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['learn', '--export', '12']);
+  assert.equal(result.status, 0, result.stderr);
+  const pack = JSON.parse(result.stdout);
+  assert.deepEqual(pack.files.map((file: { path: string }) => file.path), ['lesson.ts', 'lesson.test.ts']);
+  const file = join(sandbox.home, 'incident-12.lesson.json');
+  result = sandbox.run(['learn', '--export', '12', '--out', file]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten learn --export: incident-12 is in .*incident-12\.lesson\.json\./);
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), pack);
+  // Import shows the files first, and writes nothing; --write adds them to lessons/ only.
+  rmSync(join(sandbox.repo, 'lessons'), { recursive: true, force: true });
+  result = sandbox.run(['learn', '--import', file]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten learn --import: a lesson incident-12 from https:\/\/example\.com\/issues\/12, with 2 file\(s\): lesson\.ts and lesson\.test\.ts\. No TODO\(reviewer\) is left\./);
+  assert.match(result.stdout, /\n--- lessons\/incident-12\/lesson\.ts\n/);
+  assert.match(result.stdout, /Nothing was written\. `yokoten learn --import .* --write` adds these files for review\.\n$/);
+  assert.ok(!existsSync(join(sandbox.repo, 'lessons')), 'an import preview writes nothing');
+  result = await sandbox.call(['learn', '--import', file, '--write']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Wrote:\n- lessons\/incident-12\/lesson\.ts\n- lessons\/incident-12\/lesson\.test\.ts\nReview it and run its test/);
+  assert.equal(readFileSync(join(sandbox.repo, 'lessons/incident-12/lesson.ts'), 'utf8'), lesson);
+  // Options that belong to another step are refused, not ignored.
+  result = sandbox.run(['learn', '--export', '12', '--import', file]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--export and --import do different things/);
+  result = sandbox.run(['learn', '--export', '12', '--ship', '12']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--ship does not go with --export/);
+  result = sandbox.run(['learn', '--export', '12', '--write']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--export writes only with --out/);
+  result = sandbox.run(['learn', '--out', file]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--out goes with --export/);
+  result = sandbox.run(['learn', '--import', join(sandbox.home, 'missing.json')]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /could not be read/);
+});
+
 // #147, the whole loop: an incident becomes a lesson in a copy of yokoten, a person writes the
 // check, the lesson ships in the kit, and doctor in another project shows it as a note. A
 // fake gh gives the issue; nothing reaches the network.

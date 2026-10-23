@@ -31,12 +31,14 @@ import { checkLayout } from '../../src/rules/layout.ts';
 import {
   countNotes,
   draftLesson,
+  exportLesson,
   findLessonFolders,
   findLessonGroup,
   formatDraft,
   formatLessonRow,
   formatLessonTable,
   type Incident,
+  importLesson,
   KIT_LESSONS_DIR,
   LESSONS_TABLE,
   listNotes,
@@ -52,6 +54,7 @@ import {
   upstreamDir,
   waitingLine,
   writeDraft,
+  writeLessonFiles,
   writeNote,
 } from '../../src/run/learn.ts';
 import {
@@ -429,6 +432,59 @@ test('lessons: --ship refuses a draft with a TODO or a failing test, and moves n
   assert.deepEqual(readLessonTable(readFileSync(join(root, 'kit/lessons/README.md'), 'utf8')).map((row) => row.id), ['incident-12']);
   writeDraft(root, draftLesson(incidentOf('')));
   assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /kit\/lessons\/1\/incident-12 is already there/);
+});
+
+// #757: a reviewed lesson travels as one small file. Export refuses a TODO or a private
+// detail; import checks the shape, and writes only the two files a lesson is.
+test('learn: a lesson exports and imports as one small file; a TODO, a secret or another path is refused', () => {
+  const root = makeTempDir('yokoten-export-');
+  const draftDir = join(root, 'lessons/incident-12');
+  mkdirSync(draftDir, { recursive: true });
+  writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON);
+  writeFileSync(join(draftDir, 'lesson.test.ts'), ENV_LESSON_TEST);
+  const exported = exportLesson(root, '12', process.env);
+  if (!('pack' in exported)) assert.fail(JSON.stringify(exported.problems));
+  assert.deepEqual(JSON.parse(exported.text), {
+    version: 1,
+    id: 'incident-12',
+    incident: 'https://example.com/issues/12',
+    files: [
+      { path: 'lesson.ts', text: ENV_LESSON },
+      { path: 'lesson.test.ts', text: ENV_LESSON_TEST },
+    ],
+  });
+  // Another project: the same two files appear under lessons/, and a second import keeps a review.
+  const other = makeTempDir('yokoten-import-');
+  const imported = importLesson(exported.text, process.env);
+  if (!('files' in imported)) assert.fail(JSON.stringify(imported.problems));
+  assert.deepEqual(writeLessonFiles(other, imported.files), { written: ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts'], kept: [] });
+  assert.equal(readFileSync(join(other, 'lessons/incident-12/lesson.ts'), 'utf8'), ENV_LESSON);
+  assert.deepEqual(writeLessonFiles(other, imported.files).kept, ['lessons/incident-12/lesson.ts', 'lessons/incident-12/lesson.test.ts']);
+
+  // Positive control: a TODO left refuses the export.
+  writeFileSync(join(draftDir, 'lesson.test.ts'), `${ENV_LESSON_TEST}// TODO(reviewer): write the good case\n`);
+  assert.match(String((exportLesson(root, '12', process.env) as { problems: string[] }).problems), /lesson\.test\.ts still has 1 TODO\(reviewer\)/);
+  // A secret refuses it, by kind and never by value.
+  const secret = ['sk-proj', 'A1b2C3d4E5f6G7h8'.repeat(3)].join('-');
+  writeFileSync(join(draftDir, 'lesson.test.ts'), `${ENV_LESSON_TEST}// ${secret}\n`);
+  const refused = exportLesson(root, '12', process.env) as { problems: string[] };
+  assert.ok(refused.problems.some((problem) => /a secret/.test(problem)), JSON.stringify(refused.problems));
+  assert.ok(!refused.problems.join('\n').includes(secret), 'the secret itself is never printed');
+  // A lesson with no incident URL cannot travel: a reader could not find its story.
+  writeFileSync(join(draftDir, 'lesson.test.ts'), ENV_LESSON_TEST);
+  writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON.replace('// https://example.com/issues/12\n', ''));
+  assert.match(String((exportLesson(root, '12', process.env) as { problems: string[] }).problems), /does not name its incident/);
+
+  // Import refuses what it cannot trust: an unknown version, a third file, a path out, a TODO.
+  const good = JSON.parse(exported.text) as { version: number; files: { path: string; text: string }[] };
+  const problemsOf = (value: unknown) => String((importLesson(JSON.stringify(value), process.env) as { problems: string[] }).problems);
+  assert.match(problemsOf({ ...good, version: 2 }), /this yokoten reads version 1/);
+  assert.match(String((importLesson('not json', process.env) as { problems: string[] }).problems), /the file is not JSON/);
+  assert.match(problemsOf({ ...good, files: [...good.files, { path: '../evil.ts', text: '' }] }), /is not a lesson file: only lesson\.ts and lesson\.test\.ts travel/);
+  assert.match(problemsOf({ ...good, files: good.files.filter((file) => file.path !== 'lesson.test.ts') }), /has no lesson\.test\.ts/);
+  assert.match(problemsOf({ ...good, files: good.files.map((file) => (file.path === 'lesson.test.ts' ? { ...file, text: `${file.text}// TODO(reviewer)\n` } : file)) }), /still has 1 TODO/);
+  // A private detail is refused on the way in too, before it reaches lessons/.
+  assert.match(problemsOf({ ...good, files: good.files.map((file) => (file.path === 'lesson.ts' ? { ...file, text: `${file.text}// ${secret}\n` } : file)) }), /a secret/);
 });
 
 test('lessons: doctor runs each lesson as a note; a broken lesson is a note for itself alone; not now skips one', () => {
