@@ -52,7 +52,8 @@ test('layers: no module imports from a layer above its own', () => {
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
 // and invoke.ts, which runs a command in-process (#475).
 // agent-count.test.ts checks the manifesto count against the guide (#487).
-const TEST_TOP = ['repo/agent-count.test.ts', 'repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
+// standard.test.ts checks the open standard against the shapes in the code (#755).
+const TEST_TOP = ['repo/agent-count.test.ts', 'repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/standard.test.ts'];
 // Kit prose has no src module. This test reads the skill files (#531).
 const PROSE_TESTS = ['setup/kit-habits.test.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.

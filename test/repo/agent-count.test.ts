@@ -16,7 +16,7 @@ type ManifestoPage = {
 
 const PAGES: ManifestoPage[] = [
   {
-    file: 'docs/manifesto.md',
+    file: 'docs/assets/manifesto.md',
     has: ['eight agents', 'not verified end to end'],
     lacks: 'seven agents',
   },
