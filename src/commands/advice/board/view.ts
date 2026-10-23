@@ -8,12 +8,11 @@ import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
-import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees } from './agents.ts';
+import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees, type VendorLook, vendorOf } from './agents.ts';
 import { buildNeeds } from './feed/needs.ts';
 import { makeBoardMask, makeFeedMask } from './feed/route.ts';
 import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/read/desk.ts';
 import { findAgentLog, lastAssistantLine, type LogCache } from './feed/read/logs.ts';
-import { type VendorLook, vendorOf } from './vendors.ts';
 
 export { vendorOf };
 export type { VendorLook };
