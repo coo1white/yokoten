@@ -102,7 +102,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | 关 | 步骤 |
 |---|---|
 | **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
-| **2 · 先开 issue，再走 PR** | `ci`（CI 跑 `check`，或者用了 yokoten 的 Action）、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
+| **2 · 先开 issue，再走 PR** | `remote`（仓库已经在托管平台上，而且这个仓库有分支推上去了）、`ci`（CI 跑 `check`，或者用了 yokoten 的 Action）、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`；用 Action 的话，要在 PR 上跑，而且没设 `pr-check: false`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills`、`review`（合并到默认分支前要有一个人批准） |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
@@ -118,7 +118,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 它们不会卡住关卡。自建服务器的名字从不打印，doctor 一律叫它 "this host"。接下来会做 Gitea 适配（issue #505）。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
-`owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
+`owner`、`incident`、`good first issue`、`hotfix`、`security`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
 `init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
 
 第 4 关的 `review` 也这样读服务器。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
@@ -1352,7 +1352,9 @@ git diff main refs/desks/42
 - **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。规则从「全部不许」开始，只放开工位
   要用的读、写、Mach 服务和代理端口，挡住 `open`、`osascript`、Launch Services 和 Apple 事件。
   还没在 Mac 上跑过：请在 Mac 上跑一次 `node --test test/agents/desk/start.test.ts`，检查这套规矩。
-- **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
+- **原生 Windows**：实验性功能，还没做好（#669）。它需要受限令牌（restricted token）辅助程序、
+  工位上的 ACL 和防火墙规则，并且 #637 的契约测试要在真实的 Windows 11 上通过，才能启动 worker。
+  在那之前，请在 WSL2 里用 yokoten，Linux 工位在那里可用。原生 Windows 上只有守卫在把关。
 
 ### agent 之间发消息
 
@@ -1415,6 +1417,15 @@ Codex 用 DeepSeek 模型时，也显示为 DeepSeek。
 看板能读 Claude、Grok、Muse 和 Codex 的日志。DeepSeek 走 Codex 的日志。
 找不到日志时，中间照旧显示它写的 `doing` 步骤。
 选中负责人时，中间改成最近 24 小时的时间线。
+
+底栏数空闲的座位。
+每家 vendor 显示在忙的 agent 数和空闲座位数。
+在主目录的 `.git/yokoten-seats.json` 里，用 JSON 写每家 vendor 的座位数。
+例如 `{"claude": 2, "grok": 4}` 是 Claude 两个座位、Grok 四个。
+也可以写运行时名，比如 `claude-code`。
+没有 agent 在忙的 vendor，座位全算空闲。
+没有这个文件时，底栏改数空闲的 agent。
+
 铃铛上的数字在 0 时是灰色，大于 0 时是橙色。点一下，列表在铃铛下面打开。
 每一行写清是什么、哪个 PR 或 issue、过了多久，并有一个「在这里处理」链接。
 按 Esc、点外面，或再点铃铛，列表就关上。同一个 PR 或 issue 只占一行。

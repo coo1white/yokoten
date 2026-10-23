@@ -36,6 +36,7 @@ import {
   prTier,
   readCommandBody,
   readCommandIssueLabels,
+  readCommandLabels,
   readCommandMilestone,
   readLinkedIssues,
   type PullRequest,
@@ -142,9 +143,11 @@ test('pull request: one type label and one tier label that matches the body (#22
   assert.match(wrong[0], /^labels: `tier A` does not match the body's `tier: B`\. .*Change the label to `tier B`, or the first line of the body to `tier: A`/);
   assert.match(labelProblems(['feat', 'tier A', 'tier B'])[0], /^labels: 2 tier labels\. .*Keep one tier label: `tier B`/);
   // Both right, in each form and with each name a project may use for the type.
-  for (const labels of [['feat', 'tier B'], ['bug', 'tier: B'], ['fix', 'Tier B'], ['enhancement', 'tier:B'], ['docs', 'owner', 'tier B']]) {
+  for (const labels of [['feat', 'tier B'], ['bug', 'tier: B'], ['fix', 'Tier B'], ['enhancement', 'tier:B'], ['security', 'tier B'], ['docs', 'owner', 'tier B']]) {
     assert.deepEqual(labelProblems(labels), [], labels.join(', '));
   }
+  // The bot never picks `security` for a fix: it says more than the type, like `hotfix` (#738).
+  assert.deepEqual(readCommandLabels(['gh', 'pr', 'create', '-t', 'fix: a'], 'tier: B\n')!.missing[0], ['bug', 'fix']);
   // No tier line in the body: pr-tier says so, and the labels do not say it again.
   const noTier = checkPullRequest({ ...goodPr(), body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map((p) => p.id);
   assert.deepEqual(noTier, ['pr-tier']);
@@ -430,6 +433,8 @@ test('issue labels: one type and one tier, only the kinds the repo has (#544)', 
   // A name the repo uses for the kind counts: an alias, `tier:` with a colon, any case.
   assert.deepEqual(checkIssueLabels(['enhancement', 'tier: B'], repo), []);
   assert.deepEqual(checkIssueLabels(['incident', 'Tier C'], repo), []);
+  // `security` is a type label, like `bug`: a hole in the guard is a fix (#738).
+  assert.deepEqual(checkIssueLabels(['security', 'tier B'], [...repo, 'security']), []);
   // A repo without a kind gets no line for it, even when the issue lacks it too.
   assert.deepEqual(checkIssueLabels(['bug'], ['bug', 'feat']), [], 'the repo has no tier labels');
   assert.deepEqual(checkIssueLabels(['tier A'], ['tier A', 'tier B']), [], 'the repo has no type labels');
