@@ -55,7 +55,7 @@ import {
   POSITIVE_CONTROL,
   scanText,
 } from '../../src/rules/privacy.ts';
-import { SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { SECRET_CONTROL } from '../../src/rules/privacy/secrets.ts';
 import { parseChange } from '../../src/run/changelog.ts';
 import {
   check,

@@ -32,8 +32,8 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import * as opencode from '../agents/runtimes/small/opencode.ts';
-import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
-import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
+import { type Added, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
+import { copyRuntime, describeWrite, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github/index.ts';
 import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, writtenMarksOnly, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
@@ -252,7 +252,7 @@ export function setUpLauncher(env: Env, runtime: string, home: string, { ask, pl
     return isOnPath(env, runtime, platform) ? lines : [...lines, aliasLine(runtime)];
   }
   if (platform !== 'win32') chmodSync(file, 0o755);
-  const lines = [`${written} the launcher ${file}`];
+  const lines = [describeWrite(written, `the launcher ${file}`)];
   if (isDirOnPath(env, dir, platform)) return lines;
   if (platform === 'win32') return [...lines, `${dir} is not on your PATH. Add it to the Path for your account (search Windows for "environment variables for your account"), then open a new terminal`];
   const profile = shellProfile(env, home);
@@ -270,7 +270,7 @@ export function setUpLauncher(env: Env, runtime: string, home: string, { ask, pl
 /** Take back the launcher and the marked profile lines: one report line for each thing removed or kept. */
 function removeLauncher(home: string, platform: NodeJS.Platform): string[] {
   const file = launcherFile(home, platform);
-  const lines = [`${removeManaged(file)} the launcher ${file}`];
+  const lines = [describeWrite(removeManaged(file), `the launcher ${file}`)];
   for (const name of PROFILES) {
     const profile = join(home, name);
     if (!hasProfileLine(profile)) continue;
@@ -311,25 +311,25 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   for (const name of readdirSync(skills)) {
     const content = readFileSync(join(skills, name, 'SKILL.md'), 'utf8');
     const [claudeFile, sharedFile] = skillFiles(env, name);
-    report.push(`${writeManaged(claudeFile, content)} skill ${name} in ${skillsDir(claudeFile)}`);
-    report.push(`${writeSharedSkill(sharedFile, claudeFile, content, platform ?? process.platform)} skill ${name} in ${skillsDir(sharedFile)}`);
+    report.push(describeWrite(writeManaged(claudeFile, content), `skill ${name} in ${skillsDir(claudeFile)}`));
+    report.push(describeWrite(writeSharedSkill(sharedFile, claudeFile, content, platform ?? process.platform), `skill ${name} in ${skillsDir(sharedFile)}`));
   }
   const agents = join(KIT, 'user', 'agents');
   for (const file of readdirSync(agents)) {
     const result = writeManaged(agentFile(env, file), readFileSync(join(agents, file), 'utf8'));
-    report.push(`${result} agent ${file.replace(/\.md$/, '')}`);
+    report.push(describeWrite(result, `agent ${file.replace(/\.md$/, '')}`));
   }
 
   const claudeHooks = agentHooks('Claude Code', '~/.claude/settings.json', () => {
     const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
-    return [`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`];
+    return [describeWrite(hooks.doctor, 'the SessionStart doctor'), describeWrite(hooks.guard, 'the user-level command guard')];
   });
   ok &&= claudeHooks.ok;
   report.push(...claudeHooks.lines);
   // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
   // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
-  const otherHooks = (name: string, file: string, hooks: { doctor: string; guard: string }) => [`${hooks.doctor} the ${name} SessionStart doctor in ${file}`, `${hooks.guard} the ${name} command guard in ${file}`];
+  const otherHooks = (name: string, file: string, hooks: { doctor: Added; guard: Added }) => [describeWrite(hooks.doctor, `the ${name} SessionStart doctor in ${file}`), describeWrite(hooks.guard, `the ${name} command guard in ${file}`)];
   if (codex.hasUserDir(env)) {
     const codexHooks = agentHooks('Codex CLI', '~/.codex/hooks.json', () => otherHooks('Codex', '~/.codex/hooks.json', codex.addUserHooks(env, USER_CLI, USER_MISSING)));
     ok &&= codexHooks.ok;
@@ -344,7 +344,7 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   // the user, never to the agent (#407).
   if (grok.hasUserDir(env)) {
     const file = grok.userHooksFile(env);
-    const grokHooks = agentHooks('Grok CLI', file, () => [`${grok.addUserHooks(env, USER_CLI, USER_MISSING).guard} the Grok CLI command guard in ${file}`]);
+    const grokHooks = agentHooks('Grok CLI', file, () => [describeWrite(grok.addUserHooks(env, USER_CLI, USER_MISSING).guard, `the Grok CLI command guard in ${file}`)]);
     ok &&= grokHooks.ok;
     report.push(...grokHooks.lines);
   } else report.push('skipped Grok CLI: ~/.grok not found (run `yokoten install` again after installing Grok CLI)');
@@ -358,7 +358,7 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   // OpenCode gets the command guard only, and only when its config folder is already there.
   if (opencode.hasUserDir(env)) {
     const file = opencode.userPluginFile(env);
-    const openCodeHooks = agentHooks('OpenCode', file, () => [`${opencode.addUserPlugin(env, USER_CLI, USER_MISSING)} the OpenCode command guard in ${file}`]);
+    const openCodeHooks = agentHooks('OpenCode', file, () => [describeWrite(opencode.addUserPlugin(env, USER_CLI, USER_MISSING), `the OpenCode command guard in ${file}`)]);
     ok &&= openCodeHooks.ok;
     report.push(...openCodeHooks.lines);
   } else report.push(`skipped OpenCode: ${opencode.userPluginFile(env).replace(/\/plugins\/yokoten\.ts$/, '')} not found (run \`yokoten install\` again after installing OpenCode)`);
@@ -454,20 +454,20 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const report: string[] = [];
   for (const name of kitSkills()) {
     const [claudeFile, sharedFile] = skillFiles(env, name);
-    report.push(`${removeManaged(claudeFile, { folder: true })} skill ${name} in ${skillsDir(claudeFile)}`);
-    report.push(`${removeSharedSkill(sharedFile)} skill ${name} in ${skillsDir(sharedFile)}`);
+    report.push(describeWrite(removeManaged(claudeFile, { folder: true }), `skill ${name} in ${skillsDir(claudeFile)}`));
+    report.push(describeWrite(removeSharedSkill(sharedFile), `skill ${name} in ${skillsDir(sharedFile)}`));
   }
-  for (const file of kitAgents()) report.push(`${removeManaged(agentFile(env, file))} agent ${file.replace(/\.md$/, '')}`);
+  for (const file of kitAgents()) report.push(describeWrite(removeManaged(agentFile(env, file)), `agent ${file.replace(/\.md$/, '')}`));
 
   const settings = join(userDir(env), 'settings.json');
   const hooks = removeUserHooks(env);
-  if (hooks) report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
+  if (hooks) report.push(describeWrite(hooks.doctor, 'the SessionStart doctor'), describeWrite(hooks.guard, 'the user-level command guard'));
   else report.push(`kept ${settings}: it is not JSON, so the two hooks are still in it; take them out by hand`);
 
   report.push(...trySafely('the launcher', () => removeLauncher(homeIn(env), platform)));
   const hadRuntime = existsSync(target.runtime);
   rmSync(target.runtime, { recursive: true, force: true });
-  report.push(`${hadRuntime ? 'removed' : 'not there'} ${target.runtime}`);
+  report.push(describeWrite(hadRuntime ? 'removed' : 'not there', `the runtime ${target.runtime}`));
   if (existsSync(target.config)) report.push(`kept ${target.config} (your keys and private marks)`);
   return { ok: true, lines: report };
 }
