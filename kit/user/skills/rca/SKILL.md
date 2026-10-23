@@ -9,6 +9,8 @@ description: Find the root cause of a process failure and turn the fix into a ch
 A mistake that happened once will happen again unless something stops it. A note
 ("be careful with X") stops nothing. A check does.
 
+The second time the same problem shows up, fix its cause before you take the next case.
+
 ## 1. Contain
 
 Stop the damage first: revert, close, take the token back. Say what was done.
