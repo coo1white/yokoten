@@ -25,7 +25,7 @@ import { Readable } from 'node:stream';
 import { botConfig } from '../../host/github/index.ts';
 import type { Env } from '../../rules/config.ts';
 import { workerRole } from '../../rules/guards.ts';
-import { runGit } from '../../run/check.ts';
+import { runGit } from '../../run/check/inspect.ts';
 import { runBot } from './bot.ts';
 import { type Invocation, type Output, parse, print, requireRoot, usage } from '../shared.ts';
 
