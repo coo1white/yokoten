@@ -82,10 +82,22 @@ const removeParent = () => {
 after(removeParent);
 process.on('exit', removeParent);
 
+/**
+ * The one parent of this test file's temp folders. `/tmp` can sit inside a checkout: a desk
+ * keeps its temp folder in the repo (#685). A `.git` marker stops a checkout walk there, so
+ * a test's folder above its repo is still outside any repo.
+ */
+function tempParentDir(): string {
+  if (!tempParent) {
+    tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
+    stopCheckoutWalk(tempParent);
+  }
+  return tempParent;
+}
+
 /** A new empty folder in the system temp folder, removed when the test that made it ends. */
 export function makeTempDir(prefix = 'yokoten-'): string {
-  if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
-  const path = mkdtempSync(join(tempParent, prefix));
+  const path = mkdtempSync(join(tempParentDir(), prefix));
   testFolders.at(-1)?.push(path);
   return path;
 }
@@ -100,8 +112,7 @@ export function stopCheckoutWalk(folder: string): void {
 
 /** A new empty folder that outlives the test that made it, removed when the file ends: for a template (#475). */
 function makeFileTempDir(prefix = 'yokoten-template-'): string {
-  if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
-  return mkdtempSync(join(tempParent, prefix));
+  return mkdtempSync(join(tempParentDir(), prefix));
 }
 
 // ---- Child processes (#436): a loaded machine runs them slowly, never wrongly. ----
