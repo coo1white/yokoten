@@ -2821,11 +2821,123 @@ test('guard: removing .git is refused (#560)', () => {
     'echo dist | xargs rm -rf',
     "printf '%s\\0' dist | xargs -d '\\0' rm -rf",
   ]) allowed(command);
-  refusedAs('find .git -delete', 'hooks-path');
+  // #744 names this loss more exactly: the start is `.git` and `-delete` removes the history.
+  // `find .githooks -delete` stays hooks-path; that folder holds the commit check, not the history.
+  refusedAs('find .git -delete', 'remove-git');
   assert.equal(checkCommand('find . -name .git -delete', { cwd: process.cwd(), env: { YOKOTEN_ROLE: 'worker' } })?.id, 'worker-mark');
   assert.match(checkCommand('rm -rf .git', { cwd: process.cwd(), env: {} })?.fix ?? '', /clone the repo again/);
   assert.match(checkCommand('find . -name .git -delete', { cwd: process.cwd(), env: {} })?.fix ?? '', /clone the repo again/);
   assert.match(checkCommand("printf '%s\\0' .git | xargs -0 rm -rf", { cwd: process.cwd(), env: {} })?.fix ?? '', /clone the repo again/);
+});
+
+// #744: `find . -delete` walks into `.git`. Refuse a deleting find unless a prune, an
+// exclusion, or the start folder keeps this repo's history out of the walk.
+test('guard: a find that deletes is refused unless .git is kept out (#744)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  for (const command of [
+    'find . -delete',
+    'find . -exec rm -rf {} +',
+    'find . -exec rm -rf {} \\;',
+    'find -delete',
+    'find . -name .git -delete',
+    "find . -name '*' -delete",
+    'find . -name x -o -delete',
+    "find . -path '*/.git' -delete",
+    "find . -path '*/.git/*' -delete",
+    'find . -not -name .git -delete',
+    "find . -not -path '*/.git' -delete",
+    "find . -regex '.*' -delete",
+    "find . -iregex '.*\\.git' -delete",
+    'find . -type f -delete',
+    'find . -name HEAD -delete',
+    "find . -exec sh -c 'rm -rf {}' \\;",
+    'find . -execdir rm -rf {} \\;',
+    'find . -exec nice rm -rf {} +',
+    'find . -exec bash -c \'rm -rf "$1"\' _ {} \\;',
+    'find . -name .git -exec rm {} +',
+    'find . -depth -name .git -prune -o -delete',
+    'find . -maxdepth 1 -exec rm -rf {} +',
+    "find . -not -path '*/.git/*' -exec rm -rf {} +",
+    'find .git -delete',
+    'find .. -delete',
+    "find . -name '*.log' -exec rm -rf .git \\;",
+    "find . -exec sh -c '$cmd' \\;",
+    'cd src && find . -delete',
+    'find / -delete',
+    // A path that never writes `.git` can still name the history (#744 review).
+    "find . -path '*/objects/??/*' -delete",
+    "find . -name '*.idx' -delete",
+    "find . -path '*/refs/heads/master' -delete",
+    "find . -path '*/refs/heads/develop' -delete",
+    "find . -name '*.rev' -delete",
+    "find . -path '*/objects/info/alternates' -delete",
+    "find . -path '*/refs/tags/*' -delete",
+    "find . -path '*/[0-9a-f][0-9a-f]/*' -delete",
+    "find . -name '*.{idx,rev}' -delete",
+    "find . -name '*.log' -o -name '*.idx' -delete",
+    "find . -depth -path ./.git -prune -o -path '*/refs/heads/develop' -delete",
+    "find . -path '*/.git/objects/info/alternates' -delete",
+  ]) refusedAs(command, 'remove-git');
+  for (const command of [
+    "find . -path ./.git -prune -o -name '*.tmp' -delete",
+    "find . -name .git -prune -o -name '*.tmp' -delete",
+    "find . -path '*/.git' -prune -o -name '*.tmp' -delete",
+    "find . -not -path '*/.git/*' -delete",
+    "find . -not \\( -path '*/.git' -o -path '*/.git/*' \\) -delete",
+    'find . -name "*.log" -delete',
+    "find . -name '*.log' -delete",
+    "find . -name '*.log' -exec rm {} +",
+    'find dist -delete',
+    "find src -name '*.tmp' -delete",
+    'find . -type d -name node_modules -exec rm -rf {} +',
+    'find . -name .git',
+    'find . -name .git -exec command -v rm {} +',
+    "find . -exec sh -c 'echo ok' \\;",
+    'find . -exec echo {} \\;',
+    'find . -maxdepth 0 -delete',
+    'find . -maxdepth 1 -delete',
+    "find . -depth -path ./.git -prune -o -name '*.tmp' -delete",
+    "find . -name 'yokoten-w*' -delete",
+    'cd ./src && find . -delete',
+    "find src ../other -name '*.tmp' -delete",
+    // The same shapes are safe when the walk cannot enter `.git`, or the characters
+    // name an ordinary file (`.log`, `.ts`) rather than git storage.
+    "find . -path ./.git -prune -o -name '*.idx' -delete",
+    "find . -path ./.git -prune -o -path '*/refs/heads/develop' -delete",
+    "find . -path ./.git -prune -o -path '*/refs/*' -delete",
+    "find . -name 'index.ts' -delete",
+    "find . -name 'package.json' -delete",
+    "find . -name 'note?.tmp' -delete",
+    "find . -name 'test*.log' -delete",
+    "find . -path '*/config/*' -delete",
+    "find . -maxdepth 1 -path '*/refs/heads/develop' -delete",
+    "find dist -name '*.idx' -delete",
+    "find . -name '*.idx' -o -name '*.log' -delete",
+  ]) allowed(command);
+  // The worker hears the mark rule first when the walk can still reach the mark.
+  assert.equal(checkCommand('find . -delete', { cwd: process.cwd(), env: worker })?.id, 'worker-mark');
+  assert.equal(checkCommand('find . -exec rm -rf {} +', { cwd: process.cwd(), env: worker })?.id, 'worker-mark');
+  // The mark rule does not read a path that never writes `.git`. remove-git still refuses it.
+  assert.equal(checkCommand("find . -path '*/objects/??/*' -delete", { cwd: process.cwd(), env: worker })?.id, 'remove-git');
+  assert.equal(checkCommand("find . -name '*.idx' -delete", { cwd: process.cwd(), env: worker })?.id, 'remove-git');
+  // A prune or an exclusion that keeps .git out is allowed for the worker too.
+  allowed("find . -path ./.git -prune -o -name '*.tmp' -delete", worker);
+  allowed("find . -path ./.git -prune -o -name '*.idx' -delete", worker);
+  allowed("find . -name .git -prune -o -name '*.tmp' -delete", worker);
+  allowed("find . -not -path '*/.git/*' -delete", worker);
+  allowed("find . -not \\( -path '*/.git' -o -path '*/.git/*' \\) -delete", worker);
+  // The mark itself stays refused for the worker. The lead may delete that name.
+  assert.equal(checkCommand("find . -name 'yokoten-w*' -delete", { cwd: process.cwd(), env: worker })?.id, 'worker-mark');
+  allowed('find dist -delete', worker);
+  allowed("find src -name '*.tmp' -delete", worker);
+  // A shell the guard can read, and that does not run rm, keeps its own rule.
+  assert.equal(checkCommand('find . -exec sh -c "npm publish" \\;', { cwd: process.cwd(), env: {} })?.id, 'release');
+  // .githooks is the commit check, not the history.
+  assert.equal(checkCommand('find .githooks -delete', { cwd: process.cwd(), env: {} })?.id, 'hooks-path');
+  // Outside a checkout there is no repo history on the walk.
+  const outside = makeTempDir('yokoten-find-');
+  assert.equal(checkCommand('find . -delete', { cwd: outside, env: {} }), null);
+  assert.equal(checkCommand('find . -delete', { cwd: outside, env: worker }), null);
 });
 
 // A repo whose default branch is `main`, with no origin to name it.
