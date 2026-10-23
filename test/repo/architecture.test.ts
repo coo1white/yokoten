@@ -739,6 +739,142 @@ test('docs: every install command in docs/facts.json is in the guides and README
   }
 });
 
+// npm shows the README from the package. A relative image or link breaks there (#713).
+// http(s) URLs and #anchors still open. The scan names the file and the line.
+type ReadmeTarget = { line: number; target: string };
+
+/** The URL in a Markdown destination, without a title or angle brackets. */
+function readLinkTarget(raw: string): string {
+  const target = raw.trim();
+  if (target.startsWith('<')) {
+    const end = target.indexOf('>');
+    return (end >= 0 ? target.slice(1, end) : target.slice(1)).trim();
+  }
+  const title = target.search(/\s+["']/);
+  return (title >= 0 ? target.slice(0, title) : target).trim();
+}
+
+/** One inline link at `open` (`[`), plus links nested in its text, such as a badge. */
+function parseMarkdownLink(line: string, open: number): { target: string; end: number; inner: string[] } | null {
+  const inner: string[] = [];
+  let index = open + 1;
+  while (index < line.length) {
+    const character = line[index];
+    if (character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character === '[') {
+      const nested = parseMarkdownLink(line, index);
+      if (!nested) {
+        index += 1;
+        continue;
+      }
+      inner.push(nested.target, ...nested.inner);
+      index = nested.end + 1;
+      continue;
+    }
+    if (character === ']' && line[index + 1] === '(') {
+      const start = index + 2;
+      let depth = 1;
+      let cursor = start;
+      while (cursor < line.length && depth > 0) {
+        const next = line[cursor];
+        if (next === '\\') {
+          cursor += 2;
+          continue;
+        }
+        if (next === '(') depth += 1;
+        else if (next === ')') depth -= 1;
+        if (depth > 0) cursor += 1;
+      }
+      if (depth !== 0) return null;
+      return { target: readLinkTarget(line.slice(start, cursor)), end: cursor, inner };
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/** Targets of `src`, `srcset`, `href`, Markdown images, links and reference definitions on one line. */
+function collectReadmeTargets(line: string, lineNumber: number, found: ReadmeTarget[]): void {
+  const definition = /^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?/.exec(line);
+  if (definition) found.push({ line: lineNumber, target: definition[1] });
+  for (const match of line.matchAll(/\b(srcset|src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    const parts = match[1].toLowerCase() === 'srcset' ? value.split(',') : [value];
+    for (const part of parts) {
+      const target = part.trim().split(/\s+/)[0];
+      if (target) found.push({ line: lineNumber, target });
+    }
+  }
+  let index = 0;
+  while (index < line.length) {
+    const open = line.indexOf('[', index);
+    if (open < 0) return;
+    if (open > 0 && line[open - 1] === '\\') {
+      index = open + 1;
+      continue;
+    }
+    const parsed = parseMarkdownLink(line, open);
+    if (!parsed) {
+      index = open + 1;
+      continue;
+    }
+    for (const target of [...parsed.inner, parsed.target]) found.push({ line: lineNumber, target });
+    index = parsed.end + 1;
+  }
+}
+
+/** Every image and link target in a README, in source order. */
+function findReadmeTargets(text: string): ReadmeTarget[] {
+  const found: ReadmeTarget[] = [];
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index++) collectReadmeTargets(lines[index].replace(/\r$/, ''), index + 1, found);
+  return found;
+}
+
+/** True when npm can still open `target`: an http(s) URL, or a #anchor. */
+const isAllowedReadmeTarget = (target: string): boolean => target.startsWith('#') || /^https?:\/\//i.test(target);
+
+test('docs: README images and links use full URLs, so the npm page can show them (#713)', () => {
+  const sample = [
+    '<img src="docs/a.svg" alt="x">',
+    "<source srcset='docs/b.svg 1x, https://example.com/c.svg'>",
+    '![pic](docs/d.svg "a title")',
+    '[site](https://example.com/page)',
+    '[here](#local)',
+    '[rel](docs/guide.md)',
+    '[![badge](https://example.com/b.svg)](LICENSE)',
+    '[angled](<https://example.com/a>)',
+    '<a href="docs/e.md">e</a>',
+    '[ref]: docs/f.md',
+  ].join('\n');
+  assert.deepEqual(findReadmeTargets(sample).map((item) => `${item.line} ${item.target}`), [
+    '1 docs/a.svg',
+    '2 docs/b.svg',
+    '2 https://example.com/c.svg',
+    '3 docs/d.svg',
+    '4 https://example.com/page',
+    '5 #local',
+    '6 docs/guide.md',
+    '7 https://example.com/b.svg',
+    '7 LICENSE',
+    '8 https://example.com/a',
+    '9 docs/e.md',
+    '10 docs/f.md',
+  ]);
+
+  const files = ['README.md', 'docs/i18n/zh-CN/README.md', 'docs/i18n/zh-TW/README.md', 'docs/i18n/ja/README.md'];
+  const found: string[] = [];
+  for (const file of files) {
+    for (const item of findReadmeTargets(readFileSync(join(ROOT, file), 'utf8'))) {
+      if (!isAllowedReadmeTarget(item.target)) found.push(`${file}:${item.line}: ${item.target}`);
+    }
+  }
+  assert.deepEqual(found, [], found.join('\n'));
+});
+
 // The guide's Commands table is typed by hand; COMMANDS in src/run/cli.ts is what the
 // parser and --help read (#219). Each command needs a row, and each option must show in
 // one of its rows or in the paragraph right after the table. A command with no row, like
