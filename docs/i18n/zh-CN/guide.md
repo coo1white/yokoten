@@ -304,7 +304,10 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
   命令本身，命令一改，就得重新批准。
 - **Muse Code**：工作区要先设成信任，才会跑 `.muse/hooks.json`；没信任就一声不吭地跳过。
   用 `muse exec` 时，加 `--trust-workspace` 就是这一次信任当前文件夹。项目里
-  `.agents/skills` 下的技能，也要信任以后才读。
+  `.agents/skills` 下的技能，也要信任以后才读。在工位外面，Muse Code 会读
+  `~/.claude/CLAUDE.md`，并把这个文件发给 Muse 的模型。把 Muse 放进工位里跑，你的主目录
+  就会藏起来。那个文件在的时候，`doctor` 会告诉你。工位里仍能看见这个文件时，`doctor`
+  会说主目录还看得见，这个工位需要处理。
 - **Grok CLI**：文件夹要先设成信任，才跑 `.grok/hooks/`；没信任就一声不吭地跳过。在这里的会话里
   输入 `/hooks-trust`，或者用 `grok --trust` 启动一次。yokoten 从不替你信任文件夹。信任以后，
   Grok 也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍。这是有意的：
@@ -463,7 +466,7 @@ Windows 上请用 Git Bash。
 
 | 插件带来的 | 来自 |
 |---|---|
-| 技能：`/yokoten:dispatch`、`/yokoten:inspect`、`/yokoten:rca`、`/yokoten:record`、`/yokoten:release`、`/yokoten:yokoten` | `kit/user/skills/` |
+| 技能：`/yokoten:dispatch`、`/yokoten:inspect`、`/yokoten:merge`、`/yokoten:rca`、`/yokoten:record`、`/yokoten:release`、`/yokoten:yokoten` | `kit/user/skills/` |
 | agent：`yokoten:worker`、`yokoten:reviewer`、`yokoten:verifier` | `kit/user/agents/` |
 | `/yokoten:init`、`/yokoten:doctor` 和 `/yokoten:update`：直接用插件里的 yokoten 跑这几个命令 | `kit/plugin/skills/` |
 | 会话开头跑 `doctor` 的 hook 和命令守卫，跟 `install` 加的两个一样 | `.claude-plugin/plugin.json` |
@@ -1238,9 +1241,10 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
   也会经 CODEOWNERS 交给你审；发版要在受保护的 `release` 环境里等你批准。规则集要求你审查，
   所以它开的 PR，你不点头就合不进去。
 
-这套方法靠六个技能来做：`dispatch`（给 worker 派活）、`inspect`（分三轮审查某一个具体提交）、
-`rca`（找根因、加检查、再推广到其他项目）、`record`（把决定写下来）、`release`（定下一个
-版本号、准备更新日志，tag 由主人来打）、`yokoten`（采用这套做法）。三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
+这套方法靠七个技能来做。`dispatch` 给 worker 派活。`inspect` 分三轮审查某一个具体提交。
+`rca` 找根因，加检查，再推广到其他项目。`record` 把决定写下来。`release` 定下一个版本号，并准备更新日志。
+tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停下。`yokoten` 采用这套做法。
+三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
 
 ### 谁来审什么
 

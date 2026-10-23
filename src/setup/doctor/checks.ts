@@ -3,11 +3,12 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
+import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as copilot from '../../agents/copilot.ts';
 import * as dsh from '../../agents/runtimes/deepseek-harness.ts';
@@ -223,9 +224,31 @@ function usesOtherAgent(env: Env, root: string | null): boolean {
   return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || grok.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same';
 }
 
+/** True when this session's environment says it is inside a desk. The desk sets both names. */
+function hasDeskEnv(env: Env): boolean {
+  return Boolean(env.YOKOTEN_DESK || env.YOKOTEN_TEAM);
+}
+
 /**
- * What keeps the owner out of command output, as notes (#390): the git mailmap, and the
- * kinds of mark yokoten can't find on its own. Never a failure: both are a guess or a choice.
+ * The note when Muse is set up here and Claude Code's user rules file is visible
+ * (#681). The file is named, never read. A desk that hides the home folder gives no
+ * note, because this process cannot see the file. A desk that can still see the file
+ * is told the home folder is visible. Outside a desk, the note says to run Muse there.
+ */
+export function museClaudeRules(env: Env, root: string | null): Practice | null {
+  if (!root || !homeOf(env)) return null;
+  // Existence only. The file's text can name a person, so doctor never reads it.
+  // A fence that hides the home folder makes this false. Nothing is read either way.
+  if (!existsSync(join(root, '.muse', 'hooks.json')) || !existsSync(join(userDir(env), 'CLAUDE.md'))) return null;
+  // No write probe of the team folder. A visible file is the fence failing open.
+  if (hasDeskEnv(env)) return practice('muse-claude-rules', 'muse-claude-rules', false, "the home folder is visible in this desk, so Muse can send ~/.claude/CLAUDE.md to Muse's model", 'the desk needs attention: hide the home folder (`yokoten desk muse`)');
+  return practice('muse-claude-rules', 'muse-claude-rules', false, "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model", 'run Muse in a desk (`yokoten desk muse`) so the home folder stays hidden');
+}
+
+/**
+ * Notes that do not fail doctor (#390, #681): the git mailmap, the kinds of mark yokoten
+ * can't find on its own, and Muse sending Claude Code's user rules to its model. Each is
+ * a guess or a choice.
  */
 export function privacyNotes(env: Env, root: string | null, output: Config['privacy']['output'] = 'run'): Practice[] {
   const notes: Practice[] = [];
@@ -242,6 +265,8 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   // An offer, only when the file has marks: with none, the private-marks check says what to do (#522).
   const missing = marks.length ? missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined })) : [];
   if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, offerMarkKinds(missing), OFFER_MARKS_FIX));
+  const claudeRules = museClaudeRules(env, root);
+  if (claudeRules) notes.push(claudeRules);
   return notes;
 }
 

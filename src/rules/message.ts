@@ -90,7 +90,7 @@ export const RULES = {
   'remove-git': {
     rule: 'no removing the .git folder',
     why: 'the .git folder holds the repo history, so removing it throws away every commit',
-    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git; delete only the files you mean, or clone the repo again to start over',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git, and a `find` that deletes when nothing keeps it out of .git (no test, or only tests that can match it, or a name or path whose characters name git storage such as objects, refs or a pack index and match no sample); a prune of .git, `-not -path \'*/.git/*\'`, or a start folder that cannot hold .git still passes; delete only the files you mean, or clone the repo again to start over',
   },
   'delete-default-branch': {
     rule: 'no deleting the default branch',
@@ -534,6 +534,12 @@ export const RULES = {
     why: 'an agent reads git log and git show, and an author line names you',
     check: '`doctor` reads the global git setting mailmap.file; `install` points it at ~/.config/yokoten/mailmap unless you set your own',
     docs: guide('privacy'),
+  },
+  'muse-claude-rules': {
+    rule: "Muse Code does not send ~/.claude/CLAUDE.md to Muse's model",
+    why: 'the file was written for one vendor',
+    check: 'when .muse/hooks.json and ~/.claude/CLAUDE.md are both there, full `doctor` and a session note it. Outside a desk, the note says to run Muse in a desk. When YOKOTEN_DESK or YOKOTEN_TEAM is set and the file is still visible, the note says the home folder is visible and the desk needs attention. No note when the file is hidden. A note, never a failure (#681)',
+    docs: guide('works-with'),
   },
   'server-settings': {
     rule: 'doctor reads the settings the owner sets on the server, and never changes them',
