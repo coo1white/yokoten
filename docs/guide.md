@@ -569,6 +569,10 @@ are two ways to install: the Claude Code plugin, or the `install` command, from 
 from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
 on Windows, use Git Bash.
 
+Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copies the
+skills only. A skill is advice to the agent; the guard is what stops a command. So skills
+alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
