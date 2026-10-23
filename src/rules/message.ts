@@ -452,6 +452,18 @@ export const RULES = {
     check: "when ~/.grok is a folder, `doctor` compares the PreToolUse hook in ~/.grok/hooks/yokoten.json with what `yokoten install` writes (command, matcher, timeout, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
+  'opencode-hook': {
+    rule: "the project that uses OpenCode has yokoten's plugin",
+    why: "without the plugin, OpenCode's commands and edits in this project are not checked",
+    check: "`doctor` looks for `.opencode/` or `opencode.json`. It then reads `.opencode/plugins/yokoten.ts` and compares it with what `init` writes. A missing or old plugin is a note, not a missing step. A project with no OpenCode file is quiet",
+    docs: guide('works-with'),
+  },
+  'opencode-user-hook': {
+    rule: "OpenCode runs yokoten's command guard in every repo",
+    why: 'without it, a tag push, force push or skipped check by OpenCode in a repo without yokoten is not stopped',
+    check: "when ~/.config/opencode is a folder, `doctor` compares the plugin in its plugins folder with what `install` writes. A missing or old plugin is a note, not a missing step. `$XDG_CONFIG_HOME/opencode` counts when that variable is set",
+    docs: guide('works-with'),
+  },
   'core-rules': {
     rule: 'the core rules in AGENTS.md are the ones in the kit of the yokoten you run',
     why: 'a lesson added to the core rules reaches a project only when its AGENTS.md gets the new text',
