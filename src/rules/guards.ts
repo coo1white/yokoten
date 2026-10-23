@@ -1715,20 +1715,25 @@ function findActionRemoves(args: string[]): boolean {
 /** `rm` and friends on a path that can be `.git`, and a find that deletes one (#560, #573). For a worker the mark rule answers first. */
 function checkRemoveGit(words: string[]): Finding | null {
   let from = 0;
+  let findTailRead = false;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
     if (at === -1) continue;
     from = at + 1;
     const name = programName(program);
-    const args = withoutShellRedirects(words, at + 1);
     if (REMOVE_PROGRAMS.has(name)) {
+      const args = withoutShellRedirects(words, at + 1);
       const target = plainArgs(args).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
       if (target !== undefined) {
         return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
       }
     }
-    if (name === 'find' && findDeletesDotGit(args)) {
-      return finding('remove-git', '`find` can delete the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+    // A find's words hold every find it runs (`find . -exec find . …`). One read covers that tail.
+    if (name === 'find' && !findTailRead) {
+      findTailRead = true;
+      if (findDeletesDotGit(withoutShellRedirects(words, at + 1))) {
+        return finding('remove-git', '`find` can delete the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+      }
     }
   }
   return null;
@@ -2070,6 +2075,8 @@ function settingsIn(words: string[]): Setting[] {
   }
   for (const at of programs) {
     const name = programName(words[at]);
+    // The tail is long inside `find -exec find`. Copy it only for a program that reads names.
+    if (!NAME_READERS.has(name) && name !== 'let' && name !== 'printf' && name !== 'getopts') continue;
     const args = words.slice(at + 1);
     if (NAME_READERS.has(name)) args.forEach((arg) => settings.push({ name: arg.replace(/^-[A-Za-z]*a/, ''), program: null }));
     if (name === 'let') args.filter(isAssignment).forEach((arg) => settings.push({ name: nameOf(arg), program: null }));
@@ -2153,17 +2160,34 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
   const known = new Map<string, string | null>();
   const isWorker = env.YOKOTEN_ROLE === 'worker';
   const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known), { keepsRestores: isWorker }).map((target) => target.path);
+  const findStarts = (args: string[]) => findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? [];
   let at = 0;
+  // Set when the outer find's tail has a write. Nested finds then add their own start folders.
+  let findTailWrites = false;
+  let findTailRead = false;
   for (const program of findPrograms(words)) {
     const index = words.indexOf(program, at);
     if (index === -1) continue;
     at = index + 1;
     const name = programName(program);
-    const args = withoutShellRedirects(words, index + 1);
-    if (name !== 'mkdir' && MARK_WRITERS.has(name)) targets.push(...plainArgs(args));
-    if (Object.hasOwn(SETUP_WRITERS, name)) targets.push(...SETUP_WRITERS[name](args));
+    const isMarkWriter = name !== 'mkdir' && MARK_WRITERS.has(name);
+    const isSetupWriter = Object.hasOwn(SETUP_WRITERS, name);
+    if (isMarkWriter || isSetupWriter) {
+      const args = withoutShellRedirects(words, index + 1);
+      if (isMarkWriter) targets.push(...plainArgs(args));
+      if (isSetupWriter) targets.push(...SETUP_WRITERS[name](args));
+    }
     // A find that writes changes files under where it starts: `find .githooks -exec rm {} +`.
-    if (name === 'find') targets.push(...(findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? []));
+    // Its tail holds every nested find. Read that tail once, unless it writes.
+    if (name !== 'find') continue;
+    if (!findTailRead) {
+      findTailRead = true;
+      const starts = findStarts(withoutShellRedirects(words, index + 1));
+      findTailWrites = starts.length > 0;
+      targets.push(...starts);
+      continue;
+    }
+    if (findTailWrites) targets.push(...findStarts(withoutShellRedirects(words, index + 1)));
   }
   if (targets.length === 0) return null;
   // The repo the command starts in, and its git folders: a placed path outside them all is
@@ -2265,23 +2289,23 @@ function clearedHomeName(words: string[], names: Set<string>): string | null {
     }
     return { cleared, program: null };
   };
-  const guarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || words.findLastIndex(isYokotenWord) >= at;
-  let from = 0;
-  const seenEnv = new Set<number>();
-  for (const program of findPrograms(words)) {
-    const at = words.indexOf(program, from);
-    if (at === -1) continue;
-    from = at + 1;
-    if (programName(program) === 'unset') {
-      const cleared = fromUnset(words.slice(at + 1));
+  const lastYokoten = words.findLastIndex(isYokotenWord);
+  const guarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
+  // One pass over the programs, then one pass over the words before the last of them.
+  // Reading every earlier word once per program made `find -exec find` take quadratic time.
+  let lastProgram = -1;
+  for (const place of findProgramPlaces(words)) {
+    if (place.index === -1) continue;
+    if (place.index > lastProgram) lastProgram = place.index;
+    if (programName(place.word) === 'unset') {
+      const cleared = fromUnset(words.slice(place.index + 1));
       if (cleared !== null) return cleared;
     }
-    for (let cursor = 0; cursor < at; cursor++) {
-      if (programName(words[cursor]) !== 'env' || seenEnv.has(cursor)) continue;
-      seenEnv.add(cursor);
-      const read = readEnv(cursor + 1);
-      if (read.cleared !== null && read.program !== null && guarded(read.program)) return read.cleared;
-    }
+  }
+  for (let cursor = 0; cursor < lastProgram; cursor++) {
+    if (programName(words[cursor]) !== 'env') continue;
+    const read = readEnv(cursor + 1);
+    if (read.cleared !== null && read.program !== null && guarded(read.program)) return read.cleared;
   }
   return null;
 }
