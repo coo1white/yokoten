@@ -156,6 +156,8 @@ async function boardRead(url: string, path: string, headers: Record<string, stri
 // referrer leaves the page.
 test('board server: the right Host and cookie see the page and the data', async () => {
   const sandbox = makeSandbox();
+  // The git name "Test" is a word in `yokoten-test-…`, so /data would mask every path.
+  assert.equal(sandbox.git('config', 'user.name', 'Plover').status, 0);
   writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'muse', worktree: join(sandbox.home, 'w') }));
   const gh: Gh = () => '[]';
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
