@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StreamItem } from '../../../../../../src/commands/advice/board/feed/items.ts';
-import { makeStreamStore, readStream } from '../../../../../../src/commands/advice/board/feed/tail.ts';
+import { makeStreamStore, readStream } from '../../../../../../src/commands/advice/board/feed/watch/tail.ts';
 import { boardPage, boardScript } from '../../../../../../src/commands/advice/board/page/page.ts';
 import { loadUi, type PageData, type PageState, renderCenter } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
 import { addStream, emptyStream, newStreamNode, renderStream } from '../../../../../../src/commands/advice/board/page/browser/stream.ts';

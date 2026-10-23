@@ -4,7 +4,7 @@
 // Tests call the plain ones. Every word from a status file goes in as text.
 
 import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../../controls.ts';
-import type { FeedEvent } from '../../feed/steps.ts';
+import type { FeedEvent } from '../../feed/watch/steps.ts';
 import type { AgentView, BoardData } from '../../view.ts';
 import { ageOfNeed, fillNeeds, foldHead, idOfNeed, noteNewNeeds, refChip, renderNeedItem, renderSide, vendorChip } from './column.ts';
 import { renderTimeline } from './desk.ts';

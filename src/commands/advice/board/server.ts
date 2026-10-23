@@ -23,7 +23,7 @@ import { type Invocation, parse, print, requireRoot, usage } from '../../shared.
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
 import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssues, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
 import { feedAnswer, makeBoardMask, makeFeedStreams } from './feed/route.ts';
-import { feedsJson, makeFeedStore, recordFeed } from './feed/steps.ts';
+import { feedsJson, makeFeedStore, recordFeed } from './feed/watch/steps.ts';
 import { boardManifest, boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
 import { renderBoardText } from './page/text.ts';
 import { BOARD_NO_REMOTE_ISSUES, BOARD_NO_REMOTE_PULLS, type BoardGitHub, collectBoard, collectBoardWith, createBoardGitHub, issueNumbersOf, refreshBoardGitHub } from './view.ts';

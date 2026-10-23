@@ -1,14 +1,14 @@
-// Tests for src/commands/advice/board/feed/items.ts and tail.ts: each runtime's log becomes
-// one list of items, and each read takes only the new lines.
+// Tests for src/commands/advice/board/feed/items.ts and watch/tail.ts: each runtime's log
+// becomes one list of items, and each read takes only the new lines.
 
-import '../../../../repo/home.ts';
+import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTempDir } from '../../../../repo/helpers.ts';
-import type { StreamSource } from '../../../../../src/commands/advice/board/feed/items.ts';
-import { KEEP_ITEMS, makeStreamStore, READ_BYTES, readStream, SEND_ITEMS, START_BYTES } from '../../../../../src/commands/advice/board/feed/tail.ts';
+import { makeTempDir } from '../../../../../repo/helpers.ts';
+import type { StreamSource } from '../../../../../../src/commands/advice/board/feed/items.ts';
+import { KEEP_ITEMS, makeStreamStore, READ_BYTES, readStream, SEND_ITEMS, START_BYTES } from '../../../../../../src/commands/advice/board/feed/watch/tail.ts';
 
 const TREE = '/work/repo';
 const AT = '2026-10-22T10:00:00.000Z';

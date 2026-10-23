@@ -4,9 +4,9 @@
 // is masked before it is kept, so nothing unmasked ever leaves the server.
 
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
-import { type Env } from '../../../../rules/config.ts';
-import { findAgentLog, type FoundLog, type LogCache } from './read/logs.ts';
-import { LINE_READERS, type StreamItem, type StreamSource } from './items.ts';
+import { type Env } from '../../../../../rules/config.ts';
+import { findAgentLog, type FoundLog, type LogCache } from '../read/logs.ts';
+import { LINE_READERS, type StreamItem, type StreamSource } from '../items.ts';
 
 /** The most of a log one read takes. */
 export const READ_BYTES = 256 * 1024;

@@ -177,8 +177,8 @@ Who reads. The board page, and `/data` through `feedsJson`.
 How yokoten checks it. `recordFeed` compares the last view with the new one.
 Version 1. The event has no version field.
 
-Code: [src/commands/advice/board/feed/steps.ts](../src/commands/advice/board/feed/steps.ts) and [src/commands/advice/board/page/browser/script.ts](../src/commands/advice/board/page/browser/script.ts).
-Tests: [test/commands/advice/board/feed/steps.test.ts](../test/commands/advice/board/feed/steps.test.ts) and [test/commands/advice/board/page/browser/script.test.ts](../test/commands/advice/board/page/browser/script.test.ts).
+Code: [src/commands/advice/board/feed/watch/steps.ts](../src/commands/advice/board/feed/watch/steps.ts) and [src/commands/advice/board/page/browser/script.ts](../src/commands/advice/board/page/browser/script.ts).
+Tests: [test/commands/advice/board/feed/watch/steps.test.ts](../test/commands/advice/board/feed/watch/steps.test.ts) and [test/commands/advice/board/page/browser/script.test.ts](../test/commands/advice/board/page/browser/script.test.ts).
 
 ## A tool call
 

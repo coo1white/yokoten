@@ -8,7 +8,7 @@ import { type Env } from '../../../../rules/config.ts';
 import { hideHome, loadMarks, makeRedactor } from '../../../../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../../../../setup/install.ts';
 import { readBoardAgents, readBoardWorktrees } from '../agents.ts';
-import { makeStreamStore, readStream, type StreamAnswer, type StreamStore } from './tail.ts';
+import { makeStreamStore, readStream, type StreamAnswer, type StreamStore } from './watch/tail.ts';
 
 /** How long the masks stand before the marks are read again, so a new mark counts soon. */
 const MASK_AGAIN_MS = 60000;

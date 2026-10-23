@@ -4,7 +4,7 @@
 import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { FeedEvent } from '../../../../../../src/commands/advice/board/feed/steps.ts';
+import type { FeedEvent } from '../../../../../../src/commands/advice/board/feed/watch/steps.ts';
 import { ageOf, clearedId, githubNote, groupFeed, loadUi, localDay, onClick, onMenuKey, type PageData, type PageState, pickLang, render, renderBar, renderCenter, renderLimits, renderNeedItem, renderOutput, renderRight, renderRuns, renderSide, renderStart, roleGroup, saveUi, say, summaryOf } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
 import type { BoardWaiting } from '../../../../../../src/commands/advice/board/controls.ts';
 import { LANG_NAMES, WORDS } from '../../../../../../src/commands/advice/board/page/words.ts';
