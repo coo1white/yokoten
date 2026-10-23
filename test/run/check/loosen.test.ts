@@ -134,6 +134,41 @@ test('a narrowed pattern in the guard is looser when a base case then passes (#6
   assertLooser(box.judge(), /`git push --force` is refused on the base and allowed on the head/);
 });
 
+test('a narrowed pattern in a file the guard imports is looser (#697)', () => {
+  const guard = `import { FORCE_REF } from './force-pattern.ts';
+export function checkCommand(command: string, _options: { env: Record<string, string>; cwd: string | null }): { id: string } | null {
+  if (FORCE_REF.test(command)) return { id: 'force-push' };
+  return null;
+}
+`;
+  const spec = `import { test } from 'node:test';
+const blocked = (command: string) => command;
+test('plus main is refused', () => {
+  blocked('git push origin +main');
+});
+`;
+  const box = setup({ 'src/rules/guards.ts': guard, 'src/rules/force-pattern.ts': 'export const FORCE_REF = /\\+/;\n', [SPEC]: spec });
+  box.write({ 'src/rules/force-pattern.ts': 'export const FORCE_REF = /\\+main/;\n' });
+  assertLooser(box.judge(), /a file the guard imports changed/);
+  const comment = setup({ 'src/rules/guards.ts': guard, 'src/rules/force-pattern.ts': 'export const FORCE_REF = /\\+/;\n', [SPEC]: spec });
+  comment.write({ 'src/rules/force-pattern.ts': '// wider on purpose\nexport const FORCE_REF = /\\+/;\n' });
+  const noted = comment.judge();
+  assert.equal(noted.verdict, 'stricter-or-neutral', texts(noted, 'looser').join('; '));
+  assert.equal(texts(noted, 'looser').length, 0);
+});
+
+test('a guard import outside src/rules is replayed from the head copy (#697)', () => {
+  const guard = `import { FORCE_REF } from '../run/force-pattern.ts';
+export function checkCommand(command: string, _options: { env: Record<string, string>; cwd: string | null }): { id: string } | null {
+  if (FORCE_REF.test(command)) return { id: 'force-push' };
+  return null;
+}
+`;
+  const box = setup({ 'src/rules/guards.ts': guard, 'src/run/force-pattern.ts': 'export const FORCE_REF = /push --force/;\n' });
+  box.write({ 'src/run/force-pattern.ts': 'export const FORCE_REF = /push --force-with-lease/;\n' });
+  assertLooser(box.judge(), /`git push --force` is refused on the base and allowed on the head/);
+});
+
 test('deleting one case from a table is looser (#697)', () => {
   const table = `import { test } from 'node:test';
 const blocked = (command: string) => command;
@@ -180,6 +215,53 @@ test('moving a watched test to another watched file is not looser (#697)', () =>
   assert.equal(change.verdict, 'stricter-or-neutral', texts(change, 'looser').join('; '));
   assert.equal(texts(change, 'looser').length, 0);
   assert.equal(texts(change, 'hard-line').length, 0);
+});
+
+test('a test that moves to another file with a changed helper is looser (#697)', () => {
+  const baseSpec = `import { test } from 'node:test';
+const blocked = (command: string) => command;
+test('force push is refused', () => {
+  blocked('git push --force');
+});
+`;
+  const kept = `import { test } from 'node:test';
+const blocked = (command: string) => command;
+test('another refusal still runs', () => {
+  blocked('git push --force-with-lease');
+});
+`;
+  const moved = `import { test } from 'node:test';
+const blocked = (_command: string) => undefined;
+test('force push is refused', () => {
+  blocked('git push --force');
+});
+`;
+  const box = setup({ [SPEC]: baseSpec });
+  box.write({ [SPEC]: kept, 'test/rules/push.test.ts': moved });
+  assertLooser(box.judge(), /moved to another file with a changed helper/);
+});
+
+test('a refusal the reader cannot reach is looser (#697)', () => {
+  const forms = [
+    "if (false) blocked('git push --force');",
+    "false && blocked('git push --force');",
+    "true || blocked('git push --force');",
+    "const hide = () => { blocked('git push --force'); };",
+    "function hide() { blocked('git push --force'); }",
+    "return;\n  blocked('git push --force');",
+  ];
+  for (const form of forms) {
+    const box = setup();
+    box.write({ [SPEC]: TEST.replace("blocked('git push --force');", form) });
+    assertLooser(box.judge(), /no longer refuses `git push --force`/);
+  }
+});
+
+test('renaming a test under test/run/check is looser (#697)', () => {
+  const file = 'test/run/check/sample.test.ts';
+  const box = setup({ [file]: TEST });
+  box.write({ [file]: TEST.replace('force push is refused', 'force push stays refused') });
+  assertLooser(box.judge(), /test "force push is refused" was removed/);
 });
 
 test('a changed helper is looser (#697)', () => {

@@ -648,7 +648,7 @@ export const RULES = {
   'rules-looser': {
     rule: 'a change that makes the rules looser, or that moves a hard line, waits for the owner (record 0026)',
     why: 'an area lead may approve a stricter change; a looser one waits for the owner',
-    check: '`check --pr` compares the base with the head: a removed or skipped guard test, a refusal that becomes an allow, a removed refusal id, or a command the base refuses and the head allows, fails the check. A workflow, CODEOWNERS, the release environment, or record 0026 fails too',
+    check: '`check --pr` compares the base with the head: a removed or skipped guard test, a refusal that becomes an allow, a removed refusal id, a command the base refuses and the head allows, or a changed file the guard imports, fails the check. A test that moves with a changed helper, or a refusal the reader cannot reach, fails too. A workflow, CODEOWNERS, the release environment, or record 0026 fails too',
     docs: guide('who-reviews-what'),
   },
 } satisfies Record<string, Rule>;

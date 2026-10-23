@@ -1267,6 +1267,10 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 删掉一条守卫测试，检查就不通过。把一次拒绝改成允许，也不通过。删掉一个拒绝编号，也不通过。守卫开始允许目标分支会拒绝的命令，也不通过。
 
+守卫读入的文件一改，检查就不通过。测试挪到别的文件且辅助函数变了，也不通过。读不到的拒绝也不通过。
+
+`test/rules/`、`test/run/check/`，以及 `test/run/` 和 `test/commands/` 下的 hook 测试，都在监视之列。
+
 工作流文件是一条底线。CODEOWNERS、release 环境、记录 0026 也是。只有主人能改底线。
 
 新加的测试或新加的拒绝是收紧，只作提醒。只改文档，则不变。

@@ -11,7 +11,9 @@ test('watched tests and hard lines are the paths the check names (#697)', () => 
   assert.equal(isWatchedTest('test/rules/guards.test.ts'), true);
   assert.equal(isWatchedTest('test/run/hook.test.ts'), true);
   assert.equal(isWatchedTest('test/commands/hook-extra.test.ts'), true);
-  assert.equal(isWatchedTest('test/run/check/loosen.test.ts'), false);
+  assert.equal(isWatchedTest('test/run/check/loosen.test.ts'), true);
+  assert.equal(isWatchedTest('test/run/check/cases.test.ts'), true);
+  assert.equal(isWatchedTest('test/run/checkout.test.ts'), false);
   assert.equal(isWatchedTest('src/rules/guards.ts'), false);
   assert.equal(isHardLinePath('.github/workflows/ci.yml'), true);
   assert.equal(isHardLinePath('.github/CODEOWNERS'), true);
@@ -77,6 +79,35 @@ test('a refusal id is a key of RULES (#697)', () => {
   assert.equal(ids.get('force-push'), 2);
   assert.equal(ids.get('other'), 3);
   assert.equal(ids.has('rule'), false);
+});
+
+test('a refusal the reader cannot reach is opaque (#697)', () => {
+  const forms = [
+    "if (false) blocked('git push --force');",
+    "if (false) { blocked('git push --force'); } else blocked('git push --force');",
+    "false && blocked('git push --force');",
+    "true || blocked('git push --force');",
+    "cond ? blocked('git push --force') : blocked('git push --delete');",
+    "const hide = () => { blocked('git push --force'); };",
+    "function hide() { blocked('git push --force'); }",
+    "return; blocked('git push --force');",
+  ];
+  for (const form of forms) {
+    const { tests } = parseTests(FILE, `test('force', () => { ${form} });\n`);
+    assert.equal(tests[0]?.opaque, true, form);
+    assert.equal(tests[0]?.refuses.length, 0, form);
+  }
+  const reached = [
+    "blocked('git push --force'); return;",
+    "return blocked('git push --force');",
+    "const hide = () => { blocked('git push --force'); }; hide();",
+    "blocked('git push --force') && later;",
+    "if (false) blocked('git push --delete'); blocked('git push --force');",
+  ];
+  for (const form of reached) {
+    const { tests } = parseTests(FILE, `test('force', () => { ${form} });\n`);
+    assert.equal(tests[0]?.refuses[0]?.split('\0')[0], 'git push --force', form);
+  }
 });
 
 test('a wrapper the reader cannot see makes the test opaque (#697)', () => {

@@ -12,7 +12,98 @@ const FLAG_NAMES = new Set(['refused', 'isRefused', 'blocked', 'isBlocked']);
 /** A test file whose removal or weakening can make the rules looser. */
 export function isWatchedTest(path: string): boolean {
   if (!/\.(?:[cm]?ts|[cm]?js)$/.test(path)) return false;
-  return path.startsWith('test/rules/') || /^test\/(?:run|commands)\/hook/.test(path);
+  // `test/run/check/` holds this checker's own positive controls (#697).
+  return path.startsWith('test/rules/') || path.startsWith('test/run/check/') || /^test\/(?:run|commands)\/hook/.test(path);
+}
+
+/** Relative import specifiers in one module. Packages and `node:` imports are left out. */
+export function readLocalImports(source: string): string[] {
+  const specs: string[] = [];
+  let depth = 0;
+  for (let index = 0; index < source.length; ) {
+    index = gap(source, index);
+    if (index >= source.length) break;
+    if (quoteOf(source[index])) {
+      const read = scanQuote(source, index);
+      index = read ? read.end : index + 1;
+      continue;
+    }
+    if (depth === 0 && (namedAt(source, index, 'import') || namedAt(source, index, 'export'))) {
+      const end = clauseEnd(source, index);
+      const clause = source.slice(index, end);
+      const from = /\bfrom\s*(['"])(\.[^'"]+)\1/.exec(clause);
+      const side = /^import\s*(['"])(\.[^'"]+)\1/.exec(clause.trim());
+      const spec = from?.[2] ?? side?.[2];
+      if (spec) specs.push(spec);
+      index = end;
+      continue;
+    }
+    const char = source[index];
+    if (char === '{' || char === '(' || char === '[') depth++;
+    else if (char === '}' || char === ')' || char === ']') depth = Math.max(0, depth - 1);
+    index++;
+  }
+  return specs;
+}
+
+function clauseEnd(source: string, at: number): number {
+  let depth = 0;
+  for (let index = at; index < source.length; index++) {
+    if (quoteOf(source[index])) {
+      const read = scanQuote(source, index);
+      if (!read) return source.length;
+      index = read.end - 1;
+      continue;
+    }
+    const pair = source.slice(index, index + 2);
+    if (pair === '//' || pair === '/*') {
+      const next = gap(source, index);
+      if (next === index) return source.length;
+      index = next - 1;
+      continue;
+    }
+    const char = source[index];
+    if (char === '{' || char === '(' || char === '[') depth++;
+    else if ((char === '}' || char === ')' || char === ']') && depth > 0) depth--;
+    else if (char === ';' && depth === 0) return index + 1;
+  }
+  return source.length;
+}
+
+/** True when two sources differ only by comments or whitespace. Strings are kept. */
+export function logicMatches(left: string, right: string): boolean {
+  return readLogic(left) === readLogic(right);
+}
+
+function readLogic(source: string): string {
+  let out = '';
+  for (let index = 0; index < source.length; ) {
+    const pair = source.slice(index, index + 2);
+    if (pair === '//') {
+      const next = source.indexOf('\n', index);
+      index = next < 0 ? source.length : next + 1;
+      continue;
+    }
+    if (pair === '/*') {
+      const next = source.indexOf('*/', index + 2);
+      index = next < 0 ? source.length : next + 2;
+      continue;
+    }
+    if (quoteOf(source[index])) {
+      const read = scanQuote(source, index);
+      if (!read) {
+        out += source[index];
+        index++;
+        continue;
+      }
+      out += source.slice(index, read.end);
+      index = read.end;
+      continue;
+    }
+    out += source[index];
+    index++;
+  }
+  return out.replace(/\s+/g, ' ').trim();
 }
 
 /** A file only the owner may change: CI, code owners, record 0026. */
@@ -141,7 +232,7 @@ function pushCommand(bag: { refuses: string[]; allows: string[] }, kind: 'refuse
   return true;
 }
 
-function loopOf(source: string, at: number, bindings: Map<string, Value>): { name: string; value: Value; body: string; end: number } | null {
+function loopOf(source: string, at: number, bindings: Map<string, Value>): { name: string; value: Value; body: string; from: number; end: number } | null {
   if (!namedAt(source, at, 'for')) return null;
   const open = gap(source, at + 3);
   if (source[open] !== '(') return null;
@@ -160,11 +251,11 @@ function loopOf(source: string, at: number, bindings: Map<string, Value>): { nam
   if (source[bodyAt] === '{') {
     const end = matchClose(source, bodyAt);
     if (end < 0) return null;
-    return { name: name.text, value: value.value, body: source.slice(bodyAt + 1, end), end: end + 1 };
+    return { name: name.text, value: value.value, body: source.slice(bodyAt + 1, end), from: bodyAt + 1, end: end + 1 };
   }
   const end = skipExpr(source, bodyAt);
   const stop = source[end] === ';' ? end + 1 : end;
-  return { name: name.text, value: value.value, body: source.slice(bodyAt, stop), end: stop };
+  return { name: name.text, value: value.value, body: source.slice(bodyAt, stop), from: bodyAt, end: stop };
 }
 
 function usesName(body: string, callee: string, name: string): boolean {
@@ -201,7 +292,401 @@ function addLoop(bag: Bag, loop: { name: string; value: Value; body: string }, b
   if (allows && !pushCommand(bag, 'allow', loop.value, env)) bag.opaque = true;
 }
 
+interface FnSpan {
+  name: string;
+  from: number;
+  to: number;
+}
+
+function fillHide(hide: Uint8Array, from: number, to: number): void {
+  const end = Math.min(hide.length, to);
+  for (let index = Math.max(0, from); index < end; index++) hide[index] = 1;
+}
+
+function endOfExpression(body: string, at: number, limit: number): number {
+  const end = skipExpr(body, at);
+  return end > limit ? limit : end;
+}
+
+interface ArrowSpan {
+  from: number;
+  to: number;
+  end: number;
+}
+
+function readArrow(body: string, arrow: number, limit: number): ArrowSpan | null {
+  const start = gap(body, arrow + 2);
+  if (start >= limit) return null;
+  if (body[start] === '{') {
+    const end = matchClose(body, start);
+    if (end < 0) return null;
+    return { from: start + 1, to: end, end: end + 1 };
+  }
+  const end = endOfExpression(body, start, limit);
+  return { from: start, to: end, end };
+}
+
+/** A function value at `at`, or null when the text is not a function. */
+function readFunction(body: string, at: number, limit: number): ArrowSpan | null {
+  let index = gap(body, at);
+  if (index >= limit) return null;
+  if (body.startsWith('async ', index) || body.startsWith('async\n', index)) {
+    const next = gap(body, index + 5);
+    if (namedAt(body, next, 'function') || body[next] === '(' || isIdentStart(body[next])) index = next;
+  }
+  if (namedAt(body, index, 'function')) {
+    let cursor = gap(body, index + 'function'.length);
+    if (isIdentStart(body[cursor])) cursor = readIdent(body, cursor).end;
+    cursor = gap(body, cursor);
+    if (body[cursor] !== '(') return null;
+    const close = matchClose(body, cursor);
+    if (close < 0) return null;
+    const brace = gap(body, close + 1);
+    if (body[brace] !== '{') return null;
+    const end = matchClose(body, brace);
+    if (end < 0) return null;
+    return { from: brace + 1, to: end, end: end + 1 };
+  }
+  if (body[index] === '(') {
+    const close = matchClose(body, index);
+    if (close < 0 || close > limit) return null;
+    const arrow = gap(body, close + 1);
+    if (!body.startsWith('=>', arrow)) return null;
+    return readArrow(body, arrow, limit);
+  }
+  if (isIdentStart(body[index])) {
+    const name = readIdent(body, index);
+    const arrow = gap(body, name.end);
+    if (!body.startsWith('=>', arrow) || arrow >= limit) return null;
+    return readArrow(body, arrow, limit);
+  }
+  return null;
+}
+
+function functionName(body: string, at: number): string {
+  let index = gap(body, at);
+  if (body.startsWith('async ', index) || body.startsWith('async\n', index)) index = gap(body, index + 5);
+  if (!namedAt(body, index, 'function')) return '';
+  const cursor = gap(body, index + 'function'.length);
+  return isIdentStart(body[cursor]) ? readIdent(body, cursor).text : '';
+}
+
+function findColon(body: string, at: number, limit: number): number {
+  let depth = 0;
+  let nested = 0;
+  for (let index = at; index < limit; index++) {
+    const pair = body.slice(index, index + 2);
+    if (pair === '//' || pair === '/*' || body[index] === ' ' || body[index] === '\t' || body[index] === '\n' || body[index] === '\r') {
+      const next = gap(body, index);
+      if (next === index) return -1;
+      index = next - 1;
+      continue;
+    }
+    if (quoteOf(body[index])) {
+      const read = scanQuote(body, index);
+      if (!read) return -1;
+      index = read.end - 1;
+      continue;
+    }
+    const char = body[index];
+    if (char === '(' || char === '[' || char === '{') depth++;
+    else if (char === ')' || char === ']' || char === '}') {
+      if (depth === 0) return -1;
+      depth--;
+    } else if (depth === 0 && char === '?' && body[index + 1] !== '.' && body[index + 1] !== '?') nested++;
+    else if (depth === 0 && char === ':' && body[index + 1] !== ':') {
+      if (nested === 0) return index;
+      nested--;
+    }
+  }
+  return -1;
+}
+
+function skipStatement(body: string, at: number, limit: number): number {
+  const start = gap(body, at);
+  if (start >= limit) return start;
+  if (body[start] === '{') {
+    const end = matchClose(body, start);
+    return end < 0 ? limit : Math.min(limit, end + 1);
+  }
+  if (namedAt(body, start, 'if')) return skipIf(body, start, limit);
+  const end = endOfExpression(body, start, limit);
+  const stop = body[end] === ';' ? end + 1 : end;
+  return Math.min(limit, stop);
+}
+
+function skipIf(body: string, at: number, limit: number): number {
+  const open = gap(body, at + 2);
+  if (body[open] !== '(') return Math.min(limit, at + 2);
+  const close = matchClose(body, open);
+  if (close < 0) return limit;
+  let cursor = skipStatement(body, close + 1, limit);
+  const elseAt = gap(body, cursor);
+  if (namedAt(body, elseAt, 'else')) cursor = skipStatement(body, gap(body, elseAt + 4), limit);
+  return cursor;
+}
+
+function markAtom(body: string, at: number, limit: number, hide: Uint8Array, called: Set<string>, sure: boolean): number {
+  const index = gap(body, at);
+  if (index >= limit) return index;
+  if (quoteOf(body[index])) {
+    const read = scanQuote(body, index);
+    return read ? read.end : index + 1;
+  }
+  if (body[index] === '(') {
+    const close = matchClose(body, index);
+    if (close < 0 || close > limit) return index + 1;
+    const arrow = gap(body, close + 1);
+    if (body.startsWith('=>', arrow)) {
+      const span = readArrow(body, arrow, limit);
+      if (!span) return index + 1;
+      // A callback is not a direct call. A refusal inside it may not run.
+      fillHide(hide, span.from, span.to);
+      return span.end;
+    }
+    markExpression(body, index + 1, close, hide, called, sure);
+    return close + 1;
+  }
+  if (body[index] === '[' || body[index] === '{') {
+    const close = matchClose(body, index);
+    if (close < 0) return index + 1;
+    if (body[index] === '[') markExpression(body, index + 1, close, hide, called, sure);
+    return close + 1;
+  }
+  if (isIdentStart(body[index])) {
+    const name = readIdent(body, index);
+    const after = gap(body, name.end);
+    if (body.startsWith('=>', after)) {
+      const span = readArrow(body, after, limit);
+      if (!span) return name.end;
+      fillHide(hide, span.from, span.to);
+      return span.end;
+    }
+    const optional = body.startsWith('?.', after);
+    const callAt = optional ? gap(body, after + 2) : after;
+    if (body[callAt] === '(') {
+      const close = matchClose(body, callAt);
+      if (close < 0) return name.end;
+      if (sure && !optional) {
+        called.add(name.text);
+        markExpression(body, callAt + 1, close, hide, called, true);
+      } else fillHide(hide, callAt + 1, close);
+      return close + 1;
+    }
+    return name.end;
+  }
+  return index + 1;
+}
+
+function markExpression(body: string, at: number, limit: number, hide: Uint8Array, called: Set<string>, sure: boolean): number {
+  let index = gap(body, at);
+  while (index < limit) {
+    index = gap(body, index);
+    if (index >= limit) break;
+    const char = body[index];
+    if (char === ')' || char === ']' || char === '}' || char === ';' || char === ',' || char === ':') return index;
+    if (body.startsWith('&&', index) || body.startsWith('||', index)) {
+      const right = gap(body, index + 2);
+      const end = endOfExpression(body, right, limit);
+      // The right side of && or || may not run.
+      fillHide(hide, right, end);
+      index = end;
+      continue;
+    }
+    if (char === '?' && body[index + 1] !== '.' && body[index + 1] !== '?') {
+      const thenAt = gap(body, index + 1);
+      const colon = findColon(body, thenAt, limit);
+      const thenEnd = colon < 0 ? limit : colon;
+      fillHide(hide, thenAt, thenEnd);
+      if (colon < 0) return limit;
+      const elseAt = gap(body, colon + 1);
+      const elseEnd = endOfExpression(body, elseAt, limit);
+      fillHide(hide, elseAt, elseEnd);
+      index = elseEnd;
+      continue;
+    }
+    if (char === '?') {
+      index += 2;
+      continue;
+    }
+    const next = markAtom(body, index, limit, hide, called, sure);
+    if (next <= index) return index + 1;
+    index = next;
+  }
+  return index;
+}
+
+function hideBranch(body: string, at: number, limit: number, hide: Uint8Array): number {
+  const start = gap(body, at);
+  const end = skipStatement(body, start, limit);
+  fillHide(hide, start, end);
+  return end;
+}
+
+function markBlock(body: string, from: number, limit: number, hide: Uint8Array, functions: FnSpan[], called: Set<string>): void {
+  let index = from;
+  while (index < limit) {
+    const start = index;
+    index = gap(body, index);
+    if (index >= limit) break;
+    if (quoteOf(body[index])) {
+      const read = scanQuote(body, index);
+      index = read ? read.end : index + 1;
+      continue;
+    }
+    if (namedAt(body, index, 'return') || namedAt(body, index, 'throw')) {
+      const word = namedAt(body, index, 'return') ? 6 : 5;
+      const exprAt = gap(body, index + word);
+      if (exprAt < limit && body[exprAt] !== ';') {
+        const end = markExpression(body, exprAt, limit, hide, called, true);
+        fillHide(hide, end, limit);
+      } else fillHide(hide, exprAt, limit);
+      return;
+    }
+    if (namedAt(body, index, 'if')) {
+      const open = gap(body, index + 2);
+      const close = body[open] === '(' ? matchClose(body, open) : -1;
+      if (close >= 0) markExpression(body, open + 1, close, hide, called, true);
+      let cursor = close < 0 ? index + 2 : hideBranch(body, close + 1, limit, hide);
+      const elseAt = gap(body, cursor);
+      if (namedAt(body, elseAt, 'else')) cursor = hideBranch(body, elseAt + 4, limit, hide);
+      index = cursor;
+      continue;
+    }
+    if (namedAt(body, index, 'while') || namedAt(body, index, 'switch') || namedAt(body, index, 'for')) {
+      const loop = namedAt(body, index, 'for') ? loopOf(body, index, new Map()) : null;
+      if (loop && loop.end <= limit) {
+        markBlock(body, loop.from, loop.from + loop.body.length, hide, functions, called);
+        index = loop.end;
+        continue;
+      }
+      const open = gap(body, index + (namedAt(body, index, 'for') ? 3 : namedAt(body, index, 'while') ? 5 : 6));
+      const close = body[open] === '(' ? matchClose(body, open) : -1;
+      if (close >= 0 && namedAt(body, index, 'while')) markExpression(body, open + 1, close, hide, called, true);
+      index = close < 0 ? index + 1 : hideBranch(body, close + 1, limit, hide);
+      continue;
+    }
+    if (namedAt(body, index, 'do')) {
+      index = hideBranch(body, index + 2, limit, hide);
+      const whileAt = gap(body, index);
+      if (namedAt(body, whileAt, 'while')) {
+        const open = gap(body, whileAt + 5);
+        const close = body[open] === '(' ? matchClose(body, open) : -1;
+        index = close < 0 ? whileAt + 5 : close + 1;
+      }
+      continue;
+    }
+    if (namedAt(body, index, 'try')) {
+      const brace = gap(body, index + 3);
+      if (body[brace] !== '{') {
+        index = brace + 1;
+        continue;
+      }
+      const close = matchClose(body, brace);
+      if (close < 0) return;
+      markBlock(body, brace + 1, close, hide, functions, called);
+      index = close + 1;
+      const catchAt = gap(body, index);
+      if (namedAt(body, catchAt, 'catch')) {
+        let cursor = gap(body, catchAt + 5);
+        if (body[cursor] === '(') {
+          const end = matchClose(body, cursor);
+          cursor = end < 0 ? cursor + 1 : end + 1;
+        }
+        index = hideBranch(body, cursor, limit, hide);
+      }
+      const finallyAt = gap(body, index);
+      if (namedAt(body, finallyAt, 'finally')) {
+        const finalBrace = gap(body, finallyAt + 7);
+        if (body[finalBrace] === '{') {
+          const end = matchClose(body, finalBrace);
+          if (end >= 0) {
+            markBlock(body, finalBrace + 1, end, hide, functions, called);
+            index = end + 1;
+          }
+        }
+      }
+      continue;
+    }
+    if (body[index] === '{') {
+      const close = matchClose(body, index);
+      if (close < 0) return;
+      markBlock(body, index + 1, close, hide, functions, called);
+      index = close + 1;
+      continue;
+    }
+    const fnAt = body.startsWith('async ', index) || body.startsWith('async\n', index) ? index : namedAt(body, index, 'function') ? index : -1;
+    if (fnAt >= 0 && (namedAt(body, index, 'function') || namedAt(body, gap(body, index + 5), 'function'))) {
+      const span = readFunction(body, index, limit);
+      if (span) {
+        const name = functionName(body, index);
+        if (name) functions.push({ name, from: span.from, to: span.to });
+        else fillHide(hide, span.from, span.to);
+        index = span.end;
+        continue;
+      }
+    }
+    if ((body.startsWith('const ', index) || body.startsWith('let ', index)) && isIdentStart(body[gap(body, index + 5)])) {
+      const name = readIdent(body, gap(body, index + (body.startsWith('const ', index) ? 6 : 4)));
+      const eq = gap(body, name.end);
+      if (body[eq] === '=') {
+        const valueAt = gap(body, eq + 1);
+        const span = readFunction(body, valueAt, limit);
+        if (span) {
+          functions.push({ name: name.text, from: span.from, to: span.to });
+          index = body[span.end] === ';' ? span.end + 1 : span.end;
+          continue;
+        }
+        const end = markExpression(body, valueAt, limit, hide, called, true);
+        index = body[end] === ';' ? end + 1 : end;
+        continue;
+      }
+    }
+    const end = markExpression(body, index, limit, hide, called, true);
+    index = body[end] === ';' ? end + 1 : end;
+    if (index <= start) index = start + 1;
+  }
+}
+
+/** Blank a refusal the test may skip, so the reader does not count it as sure. */
+function hideUnreadable(body: string): string {
+  const hide = new Uint8Array(body.length);
+  const functions: FnSpan[] = [];
+  const called = new Set<string>();
+  markBlock(body, 0, body.length, hide, functions, called);
+  const kept = new Set<string>();
+  let pending = true;
+  while (pending) {
+    pending = false;
+    for (const name of [...called]) {
+      for (const span of functions) {
+        if (span.name !== name) continue;
+        const key = `${span.from}:${span.to}`;
+        if (kept.has(key)) continue;
+        kept.add(key);
+        pending = true;
+        markBlock(body, span.from, span.to, hide, functions, called);
+      }
+    }
+  }
+  for (const span of functions) if (!kept.has(`${span.from}:${span.to}`)) fillHide(hide, span.from, span.to);
+  let out = '';
+  for (let index = 0; index < body.length; index++) out += hide[index] ? (body[index] === '\n' ? '\n' : ' ') : body[index];
+  return out;
+}
+
 function collect(body: string, bindings: Map<string, Value>): Bag {
+  // Blank refusals that may not run, then read what is left. A blanked call is still
+  // in the original text, so the test stays opaque: the reader could not count it.
+  const bag = collectVisible(hideUnreadable(body), bindings);
+  if (/\b(?:const|let)\s+(?:blocked|allowed|shouldBlock|shouldPass|refusedAs|isBlockedByList)\s*=/.test(body)) bag.opaque = true;
+  const plain = body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  const calls = plain.match(/\b(?:checkCommand|blocked|allowed|refusedAs|shouldBlock|shouldPass)\s*\(/g);
+  if ((calls?.length ?? 0) > bag.refuses.length + bag.allows.length) bag.opaque = true;
+  return bag;
+}
+
+function collectVisible(body: string, bindings: Map<string, Value>): Bag {
   const bag: Bag = { refuses: [], allows: [], flags: [], opaque: false };
   if (/\b(?:const|let)\s+(?:blocked|allowed|shouldBlock|shouldPass|refusedAs|isBlockedByList)\s*=/.test(body)) bag.opaque = true;
   const local = new Map(bindings);

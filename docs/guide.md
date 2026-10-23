@@ -1623,6 +1623,10 @@ check.
 
 A removed guard test fails the check. A refusal that becomes an allow fails it too. So does a removed refusal id. So does a command the base refuses and the head allows.
 
+A changed file the guard imports fails the check. So does a test that moves to another file with a changed helper. So does a refusal the reader cannot reach.
+
+Watched tests are `test/rules/`, `test/run/check/`, and the hook tests under `test/run/` and `test/commands/`.
+
 A workflow file is a hard line. So is CODEOWNERS, the release environment, and record 0026. Only the owner may change a hard line.
 
 A new test or a new refusal is stricter. That is a note. A docs-only change is neutral.

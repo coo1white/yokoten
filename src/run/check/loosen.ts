@@ -2,8 +2,9 @@
 // decide this. `check --pr` compares the base ref with the head ref and says which.
 // A looser change, or a move of a hard line, fails the check. The owner is the one
 // who may let it through. The replay runs the base's refused commands on the head's
-// guard: a command the base refuses and the head allows is looser, whatever the tests
-// on the head now say.
+// guard, including every file the guard imports: a command the base refuses and the
+// head allows is looser, whatever the tests on the head now say. A changed import the
+// replay cannot prove is stricter is looser too.
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -12,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Env } from '../../rules/config.ts';
 import { type Finding, finding } from '../../rules/message.ts';
-import { type GuardCase, type HelperShape, type TestShape, isHardLinePath, isWatchedTest, parseTests, refusalIds, splitCase } from './cases.ts';
+import { type GuardCase, type HelperShape, type TestShape, isHardLinePath, isWatchedTest, logicMatches, parseTests, readLocalImports, refusalIds, splitCase } from './cases.ts';
 import { readGit, runGit } from './inspect.ts';
 
 export type RuleVerdict = 'looser' | 'hard-line' | 'stricter-or-neutral';
@@ -141,14 +142,39 @@ function quoteName(name: string): string {
   return `"${name.replace(/"/g, "'")}"`;
 }
 
-function byName(tests: TestShape[]): Map<string, TestShape[]> {
+const HELPER_NAMES = ['blocked', 'allowed', 'shouldBlock', 'shouldPass', 'refusedAs', 'isBlockedByList'];
+
+function groupTests(tests: TestShape[]): Map<string, TestShape[]> {
   const grouped = new Map<string, TestShape[]>();
   for (const item of tests) {
-    const list = grouped.get(item.name) ?? [];
+    const key = `${item.file}\0${item.name}`;
+    const list = grouped.get(key) ?? [];
     list.push(item);
-    grouped.set(item.name, list);
+    grouped.set(key, list);
   }
   return grouped;
+}
+
+function helpersDiffer(was: TestShape, now: TestShape, baseHelpers: Map<string, HelperShape>, headHelpers: Map<string, HelperShape>): boolean {
+  const body = `${was.body}\n${now.body}`;
+  for (const name of HELPER_NAMES) {
+    if (!new RegExp(`\\b${name}\\s*\\(`).test(body)) continue;
+    const left = baseHelpers.get(`${was.file}\0${name}`)?.text;
+    const right = headHelpers.get(`${now.file}\0${name}`)?.text;
+    if (left !== right) return true;
+  }
+  return false;
+}
+
+function findMove(name: string, was: TestShape, head: Map<string, TestShape[]>, base: Map<string, TestShape[]>, used: Set<string>, baseHelpers: Map<string, HelperShape>, headHelpers: Map<string, HelperShape>): { key: string; list: TestShape[] } | null {
+  const found: { key: string; list: TestShape[] }[] = [];
+  for (const [key, list] of head) {
+    if (used.has(key) || base.has(key)) continue;
+    const item = activeOf(list)[0];
+    if (!item || item.name !== name) continue;
+    found.push({ key, list });
+  }
+  return found.find((item) => !helpersDiffer(was, activeOf(item.list)[0], baseHelpers, headHelpers)) ?? found[0] ?? null;
 }
 
 function activeOf(list: TestShape[] | undefined): TestShape[] {
@@ -159,16 +185,31 @@ function union(list: TestShape[], field: 'refuses' | 'allows' | 'flags'): Set<st
   return new Set(list.flatMap((item) => item[field]));
 }
 
-function compareTests(baseTests: TestShape[], headTests: TestShape[]): RuleReason[] {
+function compareTests(baseTests: TestShape[], headTests: TestShape[], baseHelpers: Map<string, HelperShape>, headHelpers: Map<string, HelperShape>): RuleReason[] {
   const reasons: RuleReason[] = [];
-  const base = byName(baseTests);
-  const head = byName(headTests);
-  for (const [name, list] of base) {
+  const base = groupTests(baseTests);
+  const head = groupTests(headTests);
+  const used = new Set<string>();
+  for (const [key, list] of base) {
     const was = activeOf(list);
     if (!was.length) continue;
-    const nowList = head.get(name) ?? [];
-    const now = activeOf(nowList);
     const place = was[0];
+    const name = place.name;
+    let nowList = head.get(key) ?? [];
+    let now = activeOf(nowList);
+    if (!now.length) {
+      const moved = findMove(name, place, head, base, used, baseHelpers, headHelpers);
+      if (moved) {
+        used.add(moved.key);
+        const dest = activeOf(moved.list)[0];
+        if (helpersDiffer(place, dest, baseHelpers, headHelpers)) {
+          reasons.push({ kind: 'looser', file: dest.file, line: dest.line, text: `test ${quoteName(name)} moved to another file with a changed helper` });
+          continue;
+        }
+        nowList = moved.list;
+        now = activeOf(moved.list);
+      }
+    }
     if (!now.length) {
       const skipped = nowList[0];
       reasons.push({
@@ -209,10 +250,10 @@ function compareTests(baseTests: TestShape[], headTests: TestShape[]): RuleReaso
       reasons.push({ kind: 'stricter', file: now[0].file, line: now[0].line, text: `test ${quoteName(name)} now refuses ${showCommand(splitCase(key).command)}` });
     }
   }
-  for (const [name, list] of head) {
-    if (base.has(name) || !activeOf(list).length) continue;
+  for (const [key, list] of head) {
+    if (used.has(key) || base.has(key) || !activeOf(list).length) continue;
     const added = activeOf(list)[0];
-    reasons.push({ kind: 'stricter', file: added.file, line: added.line, text: `test ${quoteName(name)} was added` });
+    reasons.push({ kind: 'stricter', file: added.file, line: added.line, text: `test ${quoteName(added.name)} was added` });
   }
   return reasons;
 }
@@ -276,10 +317,76 @@ function casesOf(tests: TestShape[]): GuardCase[] {
   return cases;
 }
 
-function snapshot(root: string, ref: string, dest: string, env: Env): string | null {
-  const paths = readGit(root, ['ls-tree', '-r', '--name-only', '-z', ref, 'src/rules'], { env }).toString('utf8').split('\0').filter(Boolean);
-  if (!paths.includes('src/rules/guards.ts')) return null;
+const GUARD_ROOTS = ['src/rules/guards.ts', 'src/rules/message.ts'];
+
+function resolveImport(file: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null;
+  const folder = file.slice(0, file.lastIndexOf('/') + 1);
+  const stack: string[] = [];
+  for (const part of `${folder}${spec}`.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (!stack.length) return null;
+      stack.pop();
+      continue;
+    }
+    stack.push(part);
+  }
+  let path = stack.join('/');
+  if (path.endsWith('.js')) path = `${path.slice(0, -3)}.ts`;
+  else if (!path.endsWith('.ts')) path = `${path}.ts`;
+  return path;
+}
+
+/** Files reached by imports from the guard and the refusal list, on one ref. */
+function readClosure(root: string, ref: string, env: Env): Map<string, string> {
+  const files = new Map<string, string>();
+  const seen = new Set<string>();
+  const queue = [...GUARD_ROOTS];
+  while (queue.length) {
+    const path = queue.pop();
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    const text = textAt(root, ref, path, env);
+    if (text === null) continue;
+    files.set(path, text);
+    for (const spec of readLocalImports(text)) {
+      const next = resolveImport(path, spec);
+      if (next) queue.push(next);
+    }
+  }
+  return files;
+}
+
+function compareImports(base: Map<string, string>, head: Map<string, string>): RuleReason[] {
+  const reasons: RuleReason[] = [];
+  const own = new Set(GUARD_ROOTS);
+  for (const path of new Set([...base.keys(), ...head.keys()])) {
+    if (own.has(path)) continue;
+    const left = base.get(path);
+    const right = head.get(path);
+    if (left !== undefined && right !== undefined && logicMatches(left, right)) continue;
+    const removed = right === undefined;
+    const added = left === undefined;
+    reasons.push({
+      kind: 'looser',
+      file: path,
+      line: firstDiffLine(left ?? null, right ?? null),
+      text: removed
+        ? 'a file the guard imports was removed, so a refusal it feeds may no longer hold'
+        : added
+          ? 'a file the guard imports was added, so a refusal it feeds may no longer hold'
+          : 'a file the guard imports changed, so a refusal it feeds may no longer hold',
+    });
+  }
+  return reasons;
+}
+
+function snapshot(root: string, ref: string, dest: string, closure: Map<string, string>, env: Env): string | null {
+  const rules = readGit(root, ['ls-tree', '-r', '--name-only', '-z', ref, 'src/rules'], { env }).toString('utf8').split('\0').filter(Boolean);
+  if (!rules.includes('src/rules/guards.ts') && !closure.has('src/rules/guards.ts')) return null;
   writeFileSync(join(dest, 'package.json'), '{ "type": "module" }\n');
+  const paths = new Set<string>([...rules, ...closure.keys()]);
   for (const path of paths) {
     const bytes = bytesAt(root, ref, path, env);
     if (!bytes) continue;
@@ -295,11 +402,11 @@ function childEnv(env: Env, home: string): Env {
 }
 
 /** True when the guard refuses each case, or why the guard could not be run. */
-function replay(root: string, ref: string, cases: GuardCase[], env: Env): boolean[] | 'missing' | 'failed' {
+function replay(root: string, ref: string, cases: GuardCase[], closure: Map<string, string>, env: Env): boolean[] | 'missing' | 'failed' {
   if (!cases.length) return [];
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-loosen-'));
   try {
-    const file = snapshot(root, ref, dir, env);
+    const file = snapshot(root, ref, dir, closure, env);
     if (!file) return 'missing';
     writeFileSync(join(dir, 'gitconfig'), '');
     const result = spawnSync('node', ['--input-type=module', '-e', REPLAY_SCRIPT, pathToFileURL(file).href], {
@@ -367,8 +474,13 @@ export function ruleChange(root: string, baseRef: string, headRef: string, env: 
   const headFiles = loadSide(root, headRef, headPaths, env);
   const baseTests = testsIn(baseFiles);
   const headTests = testsIn(headFiles);
-  reasons.push(...compareTests(baseTests, headTests));
-  reasons.push(...compareHelpers(helperMap(baseFiles), helperMap(headFiles)));
+  const baseHelpers = helperMap(baseFiles);
+  const headHelpers = helperMap(headFiles);
+  reasons.push(...compareTests(baseTests, headTests, baseHelpers, headHelpers));
+  reasons.push(...compareHelpers(baseHelpers, headHelpers));
+  const baseClosure = readClosure(root, baseRef, env);
+  const headClosure = readClosure(root, headRef, env);
+  reasons.push(...compareImports(baseClosure, headClosure));
   const baseIds = refusalIds(baseFiles.get('src/rules/message.ts') ?? '');
   const headIds = refusalIds(headFiles.get('src/rules/message.ts') ?? '');
   if (baseIds.size && !headFiles.has('src/rules/message.ts') && baseFiles.has('src/rules/message.ts')) {
@@ -379,8 +491,8 @@ export function ruleChange(root: string, baseRef: string, headRef: string, env: 
   }
   const cases = casesOf(baseTests);
   if (cases.length && textAt(root, baseRef, 'src/rules/guards.ts', env) !== null) {
-    const baseReplay = replay(root, baseRef, cases, env);
-    const headReplay = replay(root, headRef, cases, env);
+    const baseReplay = replay(root, baseRef, cases, baseClosure, env);
+    const headReplay = replay(root, headRef, cases, headClosure, env);
     if (baseReplay === 'failed' || headReplay === 'failed') {
       reasons.push({ kind: 'looser', file: 'src/rules/guards.ts', line: 1, text: 'the guard replay did not finish, so the change is treated as looser' });
     } else if (headReplay === 'missing' && baseReplay !== 'missing') {
