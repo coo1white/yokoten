@@ -339,7 +339,11 @@ Each agent runs a project hook only after you trust it:
   `/hooks`. Codex remembers the command, so a changed command must be approved again.
 - **Muse Code** runs `.muse/hooks.json` only in a trusted workspace, and skips it without a
   word otherwise. In `muse exec`, `--trust-workspace` trusts the folder for that run.
-  It also reads the project's skills in `.agents/skills` only then.
+  It also reads the project's skills in `.agents/skills` only then. Outside a desk, Muse
+  Code can read ~/.claude/CLAUDE.md and send that file to Muse's model. Run Muse in a desk
+  to keep your home folder hidden. `doctor` says so when that file is there. When a desk
+  can still see the file, `doctor` says the home folder is visible and the desk needs
+  attention.
 - **Grok CLI** runs `.grok/hooks/` only in a trusted folder, and skips it without a word
   otherwise. Type `/hooks-trust` in a session there, or start it once with `grok --trust`.
   yokoten never trusts a folder for you. Grok also runs the hooks in `.claude/settings.json`,
@@ -580,7 +584,7 @@ can't drift apart:
 
 | The plugin adds | From |
 |---|---|
-| The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
+| The skills: `/yokoten:dispatch`, `/yokoten:inspect`, `/yokoten:merge`, `/yokoten:rca`, `/yokoten:record`, `/yokoten:release`, `/yokoten:yokoten` | `kit/user/skills/` |
 | The agents: `yokoten:worker`, `yokoten:reviewer`, `yokoten:verifier` | `kit/user/agents/` |
 | `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update`, which run yokoten from the plugin | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard: the same two hooks that `install` adds | `.claude-plugin/plugin.json` |
@@ -1057,6 +1061,7 @@ flowchart LR
   and `updated` to the time in UTC. A pass sets `checks` to `passing`.
   Other fields stay. The lead reads that file. The board will show `checks` later,
   under issue #603. The allowed stop's stderr reaches nobody.
+  A status file yokoten cannot read is left unchanged, and the stop check says why.
 - When the try count cannot be saved, one refusal says the next stop is let through.
   The same worker is let through when it was refused in the last 5 minutes.
   This holds even when the runtime never sets `stop_hook_active`. A worker is never trapped.
@@ -1589,11 +1594,12 @@ The setup treats agents like staff on a line, each with a clear role and limited
   waits for you in the protected `release` environment. A ruleset requires your review,
   so nothing it opens merges without you.
 
-Six skills carry the method: `dispatch` (brief a worker), `inspect` (review one exact
-commit in three passes), `rca` (root cause, a check, then spread it), `record` (write
-decisions down), `release` (pick the next version and prepare the changelog; the owner tags),
-and `yokoten` (adopt the practices). Three agents do the work:
-`worker`, `reviewer` (reads only), and `verifier` (runs, never fixes).
+Seven skills carry the method. `dispatch` briefs a worker. `inspect` reviews one exact
+commit in three passes. `rca` finds the cause, adds a check, then spreads it. `record`
+writes decisions down. `release` picks the next version and prepares the changelog. The
+owner tags. `merge` merges through the bot and stops when the new commit is not UTC.
+`yokoten` adopts the practices. Three agents do the work: `worker`, `reviewer` (reads
+only), and `verifier` (runs, never fixes).
 
 ### Who reviews what
 

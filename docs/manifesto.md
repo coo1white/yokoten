@@ -22,9 +22,9 @@ We refuse.
 ## 1. A prompt is a wish. A guard is a law.
 
 Asking an agent to behave is not control. yokoten checks each action before it
-runs. If it breaks the rules, it does not run. The same rules run in seven agents
-today, from Claude Code and Codex to Muse Code and Grok, each one proven by a real
-run. No agent gets a pass.
+runs. If it breaks the rules, it does not run. The same rules run in eight agents
+today. The [guide's agent table](guide.md#works-with) is the one list. Gemini CLI
+is listed, but not verified end to end. No agent gets a pass.
 
 ## 2. No model grades its own homework.
 

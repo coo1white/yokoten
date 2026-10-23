@@ -90,6 +90,14 @@ export function makeTempDir(prefix = 'yokoten-'): string {
   return path;
 }
 
+/**
+ * Stop a checkout walk at `folder` (#712). A `.git` file that is not a gitdir line
+ * is not a checkout, so the walk does not go on into the machine's temp folder.
+ */
+export function stopCheckoutWalk(folder: string): void {
+  writeFileSync(join(folder, '.git'), 'not a checkout\n');
+}
+
 /** A new empty folder that outlives the test that made it, removed when the file ends: for a template (#475). */
 function makeFileTempDir(prefix = 'yokoten-template-'): string {
   if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
@@ -136,7 +144,7 @@ export function runChild(command: string, args: string[], options: Omit<SpawnSyn
 // No automatic maintenance (#442): git runs it after a commit, in the background on newer
 // versions, and a worktree prune there can delete a `git worktree add` still being made.
 // No gh telemetry (#436): see test/repo/home.ts.
-// NODE_OPTIONS carries the real-home preload from home.ts. A sandbox child gets a fresh env,
+// NODE_OPTIONS carries the real-home preload that home.ts builds. A sandbox child gets a fresh env,
 // so without this it would read the real private-marks file when its own file is missing (#739).
 const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
 

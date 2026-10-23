@@ -65,6 +65,12 @@ release (core rule 3). Only an answer that names the version or says "release",
 2. Set the version in the project's version file, such as `package.json`.
 3. Open a pull request titled `chore: release vX.Y.Z`.
 
+## Try the beginner road
+
+Before you ask the owner to release, have a weak model walk the beginner road.
+Use Haiku or Sonnet, at medium effort. The guard is the same for every AI.
+You record that the road was walked. You leave the guard the same for every model.
+
 ## Do not
 
 - Create, push or delete a tag. The choice is the owner's, and the tool guard stops a tag push.

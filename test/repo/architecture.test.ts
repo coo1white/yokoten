@@ -13,7 +13,7 @@ import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } 
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { judgeSuite, readReport, SUITE_BUDGET } from '../../scripts/time/suite.ts';
-import { TEST_HOME } from './home.ts';
+import { clearYokotenEnv, TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
@@ -50,9 +50,12 @@ test('layers: no module imports from a layer above its own', () => {
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
-// invoke.ts, which runs a command in-process (#475), and real-home.ts, the preload a test's
-// child loads so it does not read the real private-marks file (#739).
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/real-home.ts'];
+// invoke.ts, which runs a command in-process (#475), and merge-utc.test.ts, which reads
+// the merge skill and record. agent-count.test.ts checks the manifesto count against the guide (#487).
+// The real-home preload is a data URL in home.ts, not its own file, so this folder stays at 7 (#739).
+const TEST_TOP = ['repo/agent-count.test.ts', 'repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/merge-utc.test.ts'];
+// Kit prose has no src module. This test reads the skill files (#531).
+const PROSE_TESTS = ['setup/kit-habits.test.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -71,7 +74,7 @@ const filesUnder = (folder: string) =>
 function testFileProblems(modules: string[], tests: string[]): string[] {
   const problems: string[] = [];
   for (const path of tests) {
-    if (TEST_TOP.includes(path)) continue;
+    if (TEST_TOP.includes(path) || PROSE_TESTS.includes(path)) continue;
     const module = path.replace(/\.test\.ts$/, '.ts');
     if (module === path || !modules.includes(module)) problems.push(`test/${path} is not the test file of a src module (src/${module})`);
   }
@@ -86,7 +89,7 @@ function testFileProblems(modules: string[], tests: string[]): string[] {
 
 test('test files: each one is the test file of a src module, at the same path (#152)', () => {
   const modules = ['run/check.ts', 'setup/advice/adopt.ts', ...NO_TEST_FILE];
-  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts']), []);
+  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts', 'setup/kit-habits.test.ts']), []);
   assert.deepEqual(testFileProblems(modules, ['run/check.test.ts', 'setup/advice/adopt.test.ts', 'run/gone.test.ts', 'run/check/pr.test.ts', 'run/util.ts', 'top.test.ts']), [
     'test/run/gone.test.ts is not the test file of a src module (src/run/gone.ts)',
     'test/run/check/pr.test.ts is not the test file of a src module (src/run/check/pr.ts)',
@@ -979,8 +982,6 @@ test('assertLinearEach: a pause on every big read does not count, as on a busy r
 // with no HOME; then the CLI falls back to the system's home, the real one. In src, only
 // privacy.ts asks the system for the home folder; the rest reads HOME from the env it is given.
 const HOME_MODULE = 'repo/home.ts';
-// This preload must not import home.ts: that import would replace the child's HOME (#739).
-const HOME_PRELOAD = 'repo/real-home.ts';
 const RUNS_CHILD = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(/;
 
 /** The object literal that starts at `open` (a `{`), braces matched; the rest of the line when it runs on. */
@@ -997,7 +998,7 @@ function literalAt(line: string, open: number): string {
 function homeProblems(files: Record<string, string>): string[] {
   const problems: string[] = [];
   for (const [path, text] of Object.entries(files)) {
-    if (path === HOME_MODULE || path === HOME_PRELOAD) continue;
+    if (path === HOME_MODULE) continue;
     const rel = posix.relative(posix.dirname(path), HOME_MODULE);
     const wanted = `import '${rel.startsWith('.') ? rel : `./${rel}`}';`;
     const lines = text.split('\n');
@@ -1061,6 +1062,23 @@ test('home: a test that reads the home folder gets the empty temp one, not the r
   // A child process with no env of its own inherits it.
   const child = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').homedir())"], { encoding: 'utf8' });
   assert.equal(child.stdout, TEST_HOME);
+});
+
+test('session: the suite clears yokoten variables before a test can read them (#712)', () => {
+  const sample: NodeJS.ProcessEnv = { PATH: '/usr/bin', HOME: '/tmp/home', YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: '/desk', YOKOTEN_TEAM: '/team', YOKOTEN_FIX_TASK: '1' };
+  clearYokotenEnv(sample);
+  assert.deepEqual(sample, { PATH: '/usr/bin', HOME: '/tmp/home' });
+  assert.deepEqual(Object.keys(process.env).filter((name) => name.startsWith('YOKOTEN_')), []);
+  // A child starts with the session's variables set, then loads the same module every test loads first.
+  const childEnv = { ...process.env, YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: '/desk', YOKOTEN_TEAM: '/team' };
+  delete childEnv.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', "import './test/repo/home.ts'; process.stdout.write(Object.keys(process.env).some((name) => name.startsWith('YOKOTEN_')) ? 'seen' : 'clear')"], {
+    cwd: ROOT,
+    env: childEnv,
+    encoding: 'utf8',
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'clear');
 });
 
 // ---- The process, read once (#475) ----
@@ -1305,7 +1323,7 @@ const CHILD_CAP = 4;
 const CHILD_ALLOWANCE: Record<string, { cap: number; reason: string }> = {
   'test/commands/check.test.ts': { cap: 8, reason: 'the entries of two commands, check --pr and redact; redact also runs in a shell pipe and on an 8 MB stream, as its hook runs it' },
   'test/commands/learn.test.ts': { cap: 15, reason: 'the full lesson loop runs two other copies of yokoten (the clone and .yokoten/), and the system-home fallback is in the CLI entry' },
-  'test/repo/architecture.test.ts': { cap: 7, reason: 'it checks child processes themselves: a killed child, the split tool, the test home and the report node --test writes' },
+  'test/repo/architecture.test.ts': { cap: 8, reason: 'it checks child processes themselves: a killed child, the split tool, the test home, the session variables and the report node --test writes' },
   'test/run/cli.test.ts': { cap: 8, reason: 'it tests bin/yokoten.ts itself: the entry, its compile cache and the demo loop' },
   'test/setup/init.test.ts': { cap: 12, reason: 'the entries of init, doctor, update and install, and the copies of yokoten that init writes (.yokoten/) or a clone holds' },
   'test/setup/install.test.ts': { cap: 7, reason: 'it runs the copy that install writes, from its own path, which is other code than this checkout' },
