@@ -221,7 +221,7 @@ export function codexItems(record: unknown, tree: string): StreamItem[] {
  * One line of a plain text log (`log` in the status file): the line itself, as the agent's
  * words, cut when long. No JSON, no tool calls.
  */
-export function plainItems(line: unknown, _tree: string): StreamItem[] {
+export function plainItems(line: unknown, _: string): StreamItem[] {
   return typeof line === 'string' ? saidItem('say', line.replace(/\r$/, ''), '') : [];
 }
 
