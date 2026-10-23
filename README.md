@@ -28,7 +28,7 @@ It is not an AI agent, not a chat tool, and not a team page.
 
 ## What it does
 
-Five protections are on for everyone, with no setup.
+From v0.1.1, five protections are on for everyone, with no setup.
 The agent cannot:
 
 1. **Lose your work.** No force push, no hard reset, and no delete of `.git` or the history.
@@ -56,6 +56,21 @@ Why: a tag publishes a release, and only you decide when to release.
 Tell the AI: "I will publish this release myself."
 Or run it yourself: git tag v1.2.0
 ```
+
+## One engine, many safeguards
+
+yokoten is a library of safeguards with one engine behind it.
+The five protections are the first set of rules, and they are on by default.
+Each rule says three things: where it checks, what it looks for, and what it says when it stops an action.
+
+The same rules hold at each checkpoint:
+
+- between the AI and its coding tool, before a command or an edit runs;
+- at a commit, and in CI, even when no agent is involved;
+- later, between a sandbox and the internet, to see where data goes.
+
+New kinds of safeguard can be added the same way: your project's own rules, and rules other projects share.
+A lesson one project learns can protect every project.
 
 ## Install
 
