@@ -6,7 +6,9 @@ import { test } from 'node:test';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import {
   checkBuildOutput,
+  checkCodeOwners,
   checkLayout,
+  codeOwnersPatternMatches,
   isBuildOutput,
 } from '../../src/rules/layout.ts';
 import { type Finding, formatFinding } from '../../src/rules/message.ts';
@@ -119,4 +121,40 @@ test('build output: many files under one folder make one finding for the folder 
   assert.deepEqual(checkBuildOutput(files('vendor/lib/a.go'), DEFAULTS), []);
   // allowBuild still lets a path through.
   assert.deepEqual(checkBuildOutput(files('node_modules/a.js'), { allowBuild: ['node_modules/**'] }), []);
+});
+
+// ---- CODEOWNERS (#667) ----
+
+const OWNED_FILES = ['.github/CODEOWNERS', 'docs/guide.md', 'src/app.ts', 'src/host/github/index.ts'];
+
+test('codeowners: a line that names a removed file is reported (#667)', () => {
+  const found = checkCodeOwners(OWNED_FILES, '# the owners\nsrc/host/github.ts @lead\n');
+  assert.equal(found.length, 1);
+  assert.equal(found[0]?.id, 'codeowners');
+  assert.equal(found[0]?.file, '.github/CODEOWNERS');
+  assert.equal(found[0]?.line, 2);
+  assert.match(found[0]?.what ?? '', /^src\/host\/github\.ts matches no file: this rule protects nothing; point it at the new path$/);
+  assert.match(found[0]?.fix ?? '', /ask the lead or owner to change it in \.github\/CODEOWNERS/);
+});
+
+test('codeowners: a folder, a glob and a file that exist are not reported (#667)', () => {
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, '/docs/ @lead\nsrc/**/*.ts @lead\n/.github/CODEOWNERS @lead\n* @lead\n'), []);
+});
+
+test('codeowners: an empty file, or none, is quiet (#667)', () => {
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, ''), []);
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, '# nothing is owned yet\n\n'), []);
+});
+
+test('codeowners: a lead-only path init wrote before it exists is a guard, not a stale line (#667)', () => {
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, '/.codex/ @lead\n', '.github/CODEOWNERS', new Set(['/.codex/'])), []);
+  assert.equal(checkCodeOwners(OWNED_FILES, '/.codex/ @lead\n').length, 1);
+});
+
+test('codeowners: a pattern with * matches when any file does (#667)', () => {
+  assert.equal(codeOwnersPatternMatches('src/*/index.ts', 'src/host/index.ts'), true);
+  assert.equal(codeOwnersPatternMatches('src/*/index.ts', 'src/host/github/index.ts'), false);
+  assert.equal(codeOwnersPatternMatches('docs/', 'docs/a/b.md'), true);
+  assert.equal(codeOwnersPatternMatches('*.md', 'deep/a/b.md'), true);
+  assert.equal(codeOwnersPatternMatches('docs/**/a.md', 'docs/a.md'), true);
 });

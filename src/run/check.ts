@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { findUnknownKeys, matcher } from '../rules/config.ts';
 import { checkEdit, withWorkerMark } from '../rules/guards.ts';
-import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
+import { checkBuildOutput, checkCodeOwners, checkLayout, CODEOWNERS_PLACES, codeOwnersPath } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
 import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
@@ -481,7 +481,20 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   }
   // An exempt glob that matches nothing is a note for the tree, not at each commit (#381).
   problems.push(...checkLayout(indexed(), config, staged ? undefined : notes));
+  // A CODEOWNERS line for a path that moved protects nothing (#667), so the new path has no
+  // owner review. The line is lead-only: the fix tells the reader to hand it to the lead.
+  const owners = findCodeOwnersFile(root);
+  if (owners) problems.push(...checkCodeOwners(indexed(), owners.text, owners.file, new Set(config.leadOnly.map(codeOwnersPath))));
   return problems;
+}
+
+/** The first CODEOWNERS file GitHub reads here, with its text, or null when there is none. */
+function findCodeOwnersFile(root: string): { file: string; text: string } | null {
+  for (const file of CODEOWNERS_PLACES) {
+    const path = join(root, file);
+    if (existsSync(path)) return { file, text: readFileSync(path, 'utf8') };
+  }
+  return null;
 }
 
 /**

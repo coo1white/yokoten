@@ -215,6 +215,12 @@ export const RULES = {
     check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" (paths, or globs with `*` and `**`) may grow',
     docs: guide('the-core-rules'),
   },
+  codeowners: {
+    rule: 'every CODEOWNERS line names a path that exists',
+    why: 'a moved or renamed file leaves its line behind, so the new path has no owner review',
+    check: '`yokoten check`, `check --pr` and full `doctor` read the first CODEOWNERS file GitHub reads and report each rule line whose path matches no file in the tree; a pattern with `*` matches when any file does',
+    docs: guide('the-core-rules'),
+  },
   'build-output': {
     rule: 'no build output in a commit',
     why: 'a build makes it again from the source, so a committed copy goes stale',

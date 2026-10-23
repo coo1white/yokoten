@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { CODEOWNERS_PLACES } from '../../rules/layout.ts';
 import { type Finding, finding, formatFinding, formatFindingMarks, place } from '../../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../../rules/pr.ts';
 import { readGit } from '../../run/check.ts';
@@ -171,7 +172,7 @@ function originRepo(root: string, env: Env): string | null {
 // GitHub reads CODEOWNERS from the first of these places, on the pull request's base
 // branch. yokoten reads it from the same commit, so a pull request can't edit the file
 // to lower its own tier. Without a base commit (a local run), it reads the working tree.
-export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+export { CODEOWNERS_PLACES };
 
 /** The CODEOWNERS file at the base commit, or in the working tree when `base` is empty; null when there is none. */
 export function readCodeOwners(root: string, base: string, env: Env): CodeOwners | null {
