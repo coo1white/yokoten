@@ -523,6 +523,9 @@ function hideBranch(body: string, at: number, limit: number, hide: Uint8Array): 
   return end;
 }
 
+/** The object whose exit ends a test: Node's process or Deno. A pattern, not a string, so src names no process module (#475). */
+const EXIT_ROOT = /^(process|Deno)(?![\w$])/;
+
 /** A `process.exit` or `process.abort` call at `at`, or null. The call ends the process. */
 function processCall(body: string, at: number, limit: number): { open: number; end: number } | null {
   let index = gap(body, at);
@@ -534,12 +537,12 @@ function processCall(body: string, at: number, limit: number): { open: number; e
     if (body[dot] !== '.') return null;
     index = gap(body, dot + 1);
   }
-  const root = namedAt(body, index, 'process') ? 'process' : namedAt(body, index, 'Deno') ? 'Deno' : '';
+  const root = EXIT_ROOT.exec(body.slice(index, index + 8))?.[1] ?? '';
   if (!root) return null;
   const dot = gap(body, index + root.length);
   if (body[dot] !== '.') return null;
   const method = readIdent(body, gap(body, dot + 1));
-  const ends = root === 'process' ? method.text === 'exit' || method.text === 'abort' : method.text === 'exit';
+  const ends = root === 'Deno' ? method.text === 'exit' : method.text === 'exit' || method.text === 'abort';
   if (!ends) return null;
   const open = gap(body, method.end);
   if (open >= limit || body[open] !== '(') return null;
