@@ -486,7 +486,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
-      return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
+      // When the call names no other folder, the root above is this folder's: one git call, not two (#821).
+      const sessionRoot = resolve(cwd, action.cwd ?? '.') === resolve(cwd) ? root : rootOf(cwd, env);
+      return teamMessages(cwd, env, sessionRoot).then((messages) => {
         if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
         return 0;
       });
