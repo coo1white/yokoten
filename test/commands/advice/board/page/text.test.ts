@@ -94,3 +94,20 @@ test('board text: the waiting list and the started runs', () => {
   const legacy = renderBoardText(board);
   assert.ok(!legacy.some((line) => line.includes('Waiting for you:')), 'no extra, no new sections');
 });
+
+// #682: the board lists the owner's machines, and never an address or a user name.
+test('board text: machines show reach and load, never a target', () => {
+  const board: BoardData = { repo: '/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '' };
+  const lines = renderBoardText(board, {
+    waiting: [],
+    runs: [],
+    machines: [
+      { name: 'wsl', isReachable: true, load: '0.10 0.20 0.30' },
+      { name: 'mac', isReachable: false, load: '' },
+    ],
+  });
+  assert.ok(lines.some((line) => line.includes('Machines:')), 'the machines section');
+  assert.ok(lines.some((line) => line.includes('wsl: reachable, load 0.10 0.20 0.30')), 'reach and load');
+  assert.ok(lines.some((line) => line.includes('mac: not reachable')), 'an unreachable machine says so');
+  assert.ok(!lines.join('\n').includes('@'), 'no user name or address');
+});

@@ -20,6 +20,7 @@ import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
+import { probeMachines } from '../machine.ts';
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
 import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssues, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
 import { feedAnswer, makeBoardMask, makeFeedStreams } from './feed/route.ts';
@@ -442,7 +443,8 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
     const waiting = collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls.runs, controls.seen);
     // A run's worktree hides the home folder here, exactly as /data serves it.
     const runs = controls.runs.map((run) => ({ ...run, worktree: hideHome(run.worktree, invocation.env) }));
-    print(invocation, renderBoardText(board, waiting.length || runs.length ? { waiting, runs } : undefined));
+    const machines = probeMachines(invocation.env);
+    print(invocation, renderBoardText(board, waiting.length || runs.length || machines.length ? { waiting, runs, machines } : undefined));
     return 0;
   }
   return startBoardServer(root, invocation.env, ghLaterIn(root, invocation.env, BOARD_READ_TIMEOUT_MS), { controls }).then(
