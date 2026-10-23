@@ -5,6 +5,7 @@
 
 import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../../controls.ts';
 import type { FeedEvent } from '../../feed/steps.ts';
+import type { ScheduleSummary } from '../../../schedule.ts';
 import type { AgentView, BoardData } from '../../view.ts';
 import { ageOfNeed, fillNeeds, foldHead, idOfNeed, noteNewNeeds, refChip, renderNeedItem, renderSide, vendorChip } from './column.ts';
 import { renderTimeline } from './desk.ts';
@@ -22,6 +23,8 @@ export type PageData = BoardData & {
   issues: BoardIssue[] | string;
   runs: BoardRun[];
   limits: BoardLimits;
+  /** The dependency order and longest open chain (#709); missing before the first read. */
+  schedule?: ScheduleSummary;
   /** How fresh the GitHub lists are (#688): a read runs now, when they were last read, and why the last read failed. */
   github?: { isReading: boolean; readAt: string; failed: string };
 };

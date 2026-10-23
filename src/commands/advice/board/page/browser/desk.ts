@@ -37,6 +37,8 @@ export interface TimelineRow {
   ended: string;
   isWorking: boolean;
   dependsOn: number[];
+  /** Where the issue sits on the critical path (#709), or -1 when it is not on it. */
+  rank: number;
 }
 
 /** True when `time` falls inside the last 24 hours ending at `now`. */
@@ -45,9 +47,10 @@ function isRecent(time: string | undefined, now: number): boolean {
   return !Number.isNaN(then) && then <= now && now - then <= 24 * 60 * 60 * 1000;
 }
 
-/** The rows in flight: each agent whose bar meets the window, then a recent issue nobody has taken. */
-export function timelineOf(agents: AgentView[], issues: BoardIssue[] | string, now: number): TimelineRow[] {
+/** The rows in flight: each agent whose bar meets the window, then a recent issue nobody has taken. The critical path comes first (#709). */
+export function timelineOf(agents: AgentView[], issues: BoardIssue[] | string, now: number, criticalPath: readonly number[] = []): TimelineRow[] {
   const list = typeof issues === 'string' ? [] : issues;
+  const rankOf = new Map(criticalPath.map((number, at) => [number, at]));
   const rows: TimelineRow[] = [];
   const covered = new Set<number>();
   for (const agent of agents) {
@@ -57,16 +60,17 @@ export function timelineOf(agents: AgentView[], issues: BoardIssue[] | string, n
     const ref = agent.ref;
     const owned = ref?.kind === 'issue' ? list.find((item) => item.number === ref.number) : undefined;
     if (ref?.kind === 'issue') covered.add(ref.number);
-    rows.push({ key: agent.key, title: agent.title || agent.name, color: agent.vendor.color, started, ended, isWorking: agent.dot === 'working', dependsOn: owned?.dependsOn ?? [] });
+    rows.push({ key: agent.key, title: agent.title || agent.name, color: agent.vendor.color, started, ended, isWorking: agent.dot === 'working', dependsOn: owned?.dependsOn ?? [], rank: ref?.kind === 'issue' ? rankOf.get(ref.number) ?? -1 : -1 });
   }
   for (const issue of list) {
     if (covered.has(issue.number)) continue;
     const started = issue.createdAt || issue.updatedAt || '';
     if (!isRecent(issue.createdAt, now) && !isRecent(issue.updatedAt, now)) continue;
     if (!barPlace(started, '', now)) continue;
-    rows.push({ key: `issue-${issue.number}`, title: issue.title || `#${issue.number}`, color: '#8b8b8b', started, ended: '', isWorking: false, dependsOn: issue.dependsOn ?? [] });
+    rows.push({ key: `issue-${issue.number}`, title: issue.title || `#${issue.number}`, color: '#8b8b8b', started, ended: '', isWorking: false, dependsOn: issue.dependsOn ?? [], rank: rankOf.get(issue.number) ?? -1 });
   }
-  return rows;
+  // The critical path first, in the order it can start; the rest keep their order.
+  return rows.sort((left, right) => (left.rank < 0 ? Number.MAX_SAFE_INTEGER : left.rank) - (right.rank < 0 ? Number.MAX_SAFE_INTEGER : right.rank));
 }
 
 /** "after #697, #698", in the page's language, or '' when nothing is waited on. */
@@ -106,7 +110,7 @@ export function renderDesk(state: PageState, data: PageData, lead: AgentView | u
 
 /** The middle, when the lead is picked: one row per piece of work, bars across the last 24 hours. */
 export function renderTimeline(state: PageState, data: PageData, now: number = Date.now()): HTMLElement {
-  const rows = timelineOf(data.agents, data.issues, now);
+  const rows = timelineOf(data.agents, data.issues, now, data.schedule?.criticalPath ?? []);
   const box = el('div', { class: 'gantt' }, el('div', { class: 'scale' }, el('span', {}, say(state, 'scaleAgo')), el('span', {}, say(state, 'timelineTitle')), el('span', {}, say(state, 'scaleNow'))));
   if (!rows.length) {
     box.append(el('p', { class: 'quiet' }, say(state, 'timelineEmpty')));
@@ -122,7 +126,7 @@ export function renderTimeline(state: PageState, data: PageData, now: number = D
     const name = el('div', { class: 'gantt-name' }, el('span', { class: 'ttl' }, row.title));
     const waits = formatWaits(state, row.dependsOn);
     if (waits) name.append(el('span', { class: 'waits' }, waits));
-    box.append(el('div', { class: 'gantt-row' }, name, el('div', { class: 'gantt-track' }, bar)));
+    box.append(el('div', { class: row.rank >= 0 ? 'gantt-row critical' : 'gantt-row' }, name, el('div', { class: 'gantt-track' }, bar)));
   }
   return box;
 }

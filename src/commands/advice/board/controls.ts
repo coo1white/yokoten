@@ -26,6 +26,7 @@ import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
+import type { ScheduleSummary } from '../schedule.ts';
 import { markWorktree } from '../../hook.ts';
 import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
@@ -98,6 +99,10 @@ export interface BoardIssue {
   updatedAt: string;
   /** Issue numbers on a "Depends on" line. The timeline shows them on the row. */
   dependsOn: number[];
+  /** The issue's labels, for the schedule's priority (#709). Missing when a reader has none. */
+  labels?: string[];
+  /** The issue's milestone title, or '' (#709). P1 when it has one. */
+  milestone?: string;
 }
 
 /** One hold-up an agent reports in its status file: a guard stop or a question. */
@@ -476,6 +481,8 @@ export interface BoardSnapshot {
   issues: BoardIssue[] | string;
   runs: BoardRun[];
   limits: BoardLimits;
+  /** The dependency order of the open issues, and the longest chain still open (#709). */
+  schedule: ScheduleSummary;
 }
 
 export {
@@ -484,4 +491,5 @@ export {
   readBoardIssues,
   readBoardIssuesLater,
   readBoardSnapshot,
+  scheduleOf,
 } from './waiting.ts';

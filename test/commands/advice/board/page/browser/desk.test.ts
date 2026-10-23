@@ -126,6 +126,19 @@ test('board desk: timeline bars come from the start and the end', () => {
   assert.match(box.textContent, /24h ago/);
 });
 
+test('board desk: the critical path comes first', () => {
+  const data = makeData({
+    issues: [
+      issue({ number: 10, title: 'Later', dependsOn: [11] }),
+      issue({ number: 11, title: 'First' }),
+    ],
+    schedule: { ready: [11], order: [11, 10], cycles: [], blocked: [], criticalPath: [11, 10] },
+  });
+  const box = drawn(renderTimeline(makeState(data), data, NOW));
+  assert.deepEqual(withClass(box, 'gantt-row').map((row) => row.textContent), ['First', 'Laterafter #11']);
+  assert.equal(withClass(box, 'critical').length, 2, 'both rows on the chain are marked');
+});
+
 test('board desk: a dependency is shown on its row', () => {
   const data = makeData({
     agents: [agent({ key: '~/a', title: 'Timeline', ref: { kind: 'issue', number: 701 }, started: toIso(NOW - 2 * HOUR) })],

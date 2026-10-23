@@ -210,6 +210,7 @@ h2.sh{line-height:inherit}
 .gantt-name{min-width:0}
 .gantt-name .ttl{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gantt-name .waits{display:block;font-size:11px;color:var(--mut-fg)}
+.gantt-row.critical .ttl{font-weight:700}
 .gantt-track{position:relative;height:16px;border-radius:8px;background:var(--track)}
 .gantt-bar{position:absolute;top:3px;height:10px;border-radius:5px;min-width:4px}
 .gantt-bar.live{animation:desk-breathe 2.4s ease-in-out infinite}

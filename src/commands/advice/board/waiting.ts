@@ -8,7 +8,8 @@ import { type Gh, type GhLater } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { ageText, BOARD_AGENT_FILE, parseBoardAgent, type BoardWorktree } from './agents.ts';
-import type { BoardAttention, BoardControls, BoardIssue, BoardRun, BoardSnapshot, BoardWaiting } from './controls.ts';
+import { type BoardAttention, type BoardControls, type BoardIssue, type BoardRun, type BoardSnapshot, type BoardWaiting } from './controls.ts';
+import { EMPTY_SCHEDULE, planSchedule, scheduleIssueOf, type ScheduleSummary, summarizeSchedule } from '../schedule.ts';
 import { dependsOf } from './feed/read/desk.ts';
 import { makeBoardMask } from './feed/route.ts';
 import { type AgentView, type BoardData, BOARD_ISSUE_LIMIT, type PullView } from './view.ts';
@@ -18,7 +19,7 @@ const BOARD_OUTPUT_SHOWN = 30;
 
 /** The gh query for the open issues. */
 function boardIssueQuery(repo: string): string[] {
-  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_ISSUE_LIMIT), '--json', 'number,title,url,body,createdAt,updatedAt'];
+  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_ISSUE_LIMIT), '--json', 'number,title,url,body,createdAt,updatedAt,labels,milestone'];
 }
 
 /** The open issues, gh's order, or why gh cannot read them. */
@@ -58,6 +59,12 @@ function boardIssuesOf(text: string): BoardIssue[] | string {
     const number = fields.number;
     if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return [];
     const body = typeof fields.body === 'string' ? fields.body : '';
+    const labels = Array.isArray(fields.labels)
+      ? fields.labels.flatMap((label) => (typeof label === 'object' && label !== null && typeof (label as Record<string, unknown>).name === 'string' ? [(label as { name: string }).name] : []))
+      : [];
+    const milestone = typeof fields.milestone === 'object' && fields.milestone !== null && typeof (fields.milestone as Record<string, unknown>).title === 'string'
+      ? (fields.milestone as { title: string }).title
+      : '';
     return [{
       number,
       title: typeof fields.title === 'string' ? fields.title : '',
@@ -65,6 +72,8 @@ function boardIssuesOf(text: string): BoardIssue[] | string {
       createdAt: typeof fields.createdAt === 'string' ? fields.createdAt : '',
       updatedAt: typeof fields.updatedAt === 'string' ? fields.updatedAt : '',
       dependsOn: dependsOf(body),
+      labels,
+      milestone,
     }];
   });
 }
@@ -201,6 +210,13 @@ function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls
   }));
 }
 
+/** The schedule of the open issues, or an empty one when they cannot be read or may be cut off. */
+export function scheduleOf(issues: BoardIssue[] | string): ScheduleSummary {
+  // A list at the limit may be cut off, so a missing dependency could look closed (#693).
+  if (typeof issues === 'string' || issues.length >= BOARD_ISSUE_LIMIT) return { ...EMPTY_SCHEDULE };
+  return summarizeSchedule(planSchedule(issues.map(scheduleIssueOf)));
+}
+
 /** The snapshot for /data: the waiting list, the open issues as last read, the runs, and the limits. */
 export function readBoardSnapshot(env: Env, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string, issues: BoardIssue[] | string, root = ''): BoardSnapshot {
   const folder = root || (typeof trees === 'string' ? '' : trees[0]?.path ?? '');
@@ -209,6 +225,7 @@ export function readBoardSnapshot(env: Env, controls: BoardControls, board: Boar
     issues,
     runs: snapshotRuns(controls.runs, env),
     limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },
+    schedule: scheduleOf(issues),
   };
 }
 

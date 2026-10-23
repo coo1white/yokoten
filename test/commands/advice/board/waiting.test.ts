@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir } from '../../../repo/helpers.ts';
 import type { BoardWaiting } from '../../../../src/commands/advice/board/controls.ts';
-import { collectBoardWaiting, readBoardAttention, readBoardIssues, readBoardSnapshot } from '../../../../src/commands/advice/board/waiting.ts';
+import { collectBoardWaiting, readBoardAttention, readBoardIssues, readBoardSnapshot, scheduleOf } from '../../../../src/commands/advice/board/waiting.ts';
 import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import { type AgentView, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { Gh } from '../../../../src/host/github/index.ts';
@@ -16,8 +16,8 @@ const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', 
 
 // #603: the open issues as rows, or why gh cannot read them.
 test('board waiting: the open issues', () => {
-  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603', body: 'Depends on #601.', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z' }, { number: 'x' }, null]);
-  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z', dependsOn: [601] }]);
+  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603', body: 'Depends on #601.', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z', labels: [{ name: 'privacy' }, { name: 'tier A' }, 'odd'], milestone: { title: 'First release' } }, { number: 'x' }, null]);
+  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z', dependsOn: [601], labels: ['privacy', 'tier A'], milestone: 'First release' }]);
   assert.equal(readBoardIssues(() => { throw new Error('no net'); }, 'octo/demo'), 'gh could not list the open issues: run it again');
   assert.equal(readBoardIssues(() => 'oops', 'octo/demo'), 'gh gave no open issue list: run it again');
 });
@@ -83,4 +83,13 @@ test('board waiting: the snapshot hides the latch time and the home folder', () 
   assert.equal(snapshot.runs[0].worktree, '~/repo/.worktrees/1', 'the home folder stays hidden');
   assert.deepEqual(snapshot.issues, [{ number: 9, title: 'open', url: '', createdAt: '', updatedAt: '', dependsOn: [] }]);
   assert.deepEqual(snapshot.limits, { maxAgents: 3, byModel: { 'model-a': 1 } });
+  assert.deepEqual(snapshot.schedule, { ready: [9], order: [9], cycles: [], blocked: [], criticalPath: [9] });
+});
+
+// #709: a list at the board's limit may be cut off, so a missing dependency could look
+// closed. The schedule stays empty rather than starting the wrong issue.
+test('board waiting: a cut-off issue list plans nothing', () => {
+  assert.deepEqual(scheduleOf('reading GitHub…'), { ready: [], order: [], cycles: [], blocked: [], criticalPath: [] });
+  const full = Array.from({ length: 30 }, (_, at) => ({ number: at + 1, title: `${at + 1}`, url: '', createdAt: '', updatedAt: '', dependsOn: at ? [at] : [] }));
+  assert.deepEqual(scheduleOf(full), { ready: [], order: [], cycles: [], blocked: [], criticalPath: [] });
 });
