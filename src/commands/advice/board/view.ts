@@ -8,7 +8,7 @@ import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
-import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees } from './agents.ts';
+import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardBackground, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardOutputs, readBoardSeats, readBoardWorktrees, readDefaultBranch, readMergeBase } from './agents.ts';
 import { buildNeeds } from './feed/needs.ts';
 import { makeBoardMask, makeFeedMask } from './feed/route.ts';
 import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/read/desk.ts';
@@ -173,6 +173,16 @@ export interface AgentView {
   branch: string;
   /** True when it says working and its status file or session log changed within 15 minutes. */
   isLive?: boolean;
+  /** Tokens used in its context, or null when its status file does not say (#644). */
+  contextUsed?: number | null;
+  /** Tokens its context can hold, or null when its status file does not say (#644). */
+  contextLimit?: number | null;
+  /** What it started in the background, or none when the file does not say (#644). */
+  background?: BoardBackground[];
+  /** The files it changed in its worktree, at most 20, masked (#644). */
+  outputs?: string[];
+  /** Its worktree with `~` for home, masked (#644). */
+  worktree?: string;
 }
 
 /** Something only the owner can do: approve a pull request, or answer an agent. */
@@ -301,8 +311,18 @@ function workStarted(agent: BoardAgent, tree: string): string {
   return agent.updated;
 }
 
+/**
+ * The ref a desk's files are counted from (#644, #784): the main checkout's branch, or,
+ * when the desk is on that same branch or on none, the commit where it left the default
+ * branch, so commits on its own branch show too.
+ */
+function outputBase(tree: BoardWorktree, mainBranch: string, defaultBranch: string, env: Env): string {
+  if (tree.branch && tree.branch !== mainBranch) return mainBranch;
+  return readMergeBase(tree.path, defaultBranch, env) || 'HEAD';
+}
+
 /** One found agent as the page shows it. Agent text is masked before it can reach /data. */
-function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string, mask: (text: string) => string): AgentView {
+function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string, mask: (text: string) => string, base: string, defaultBranch: string): AgentView {
   const { agent, tree } = found;
   const look = vendorOf(agent.vendor, agent.model);
   const filed = agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing, agent.log) : agent.doing;
@@ -324,8 +344,13 @@ function agentView(found: FoundAgent, env: Env, now: number, nickname: string, i
     age: ageText(agent.updated, now),
     updated: agent.updated,
     started: workStarted(agent, tree.path),
-    branch: tree.branch,
+    branch: mask(tree.branch),
     isLive: isAgentLive(tree.path, agent.vendor, agent.state, env, cache, now, agent.log),
+    contextUsed: agent.contextUsed,
+    contextLimit: agent.contextLimit,
+    background: agent.background.map((item) => ({ text: mask(item.text), since: mask(item.since) })),
+    outputs: readBoardOutputs(tree.path, outputBase(tree, base, defaultBranch, env), env, now).map(mask),
+    worktree: mask(hideHome(tree.path, env)),
   };
 }
 
@@ -391,6 +416,8 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
   const worktrees = readBoardWorktrees(root, env);
   // git lists the main checkout first. Desks are clones added after that list.
   const mainPath = typeof worktrees === 'string' ? root : worktrees[0]?.path || root;
+  const mainBranch = typeof worktrees === 'string' ? '' : worktrees[0]?.branch || 'main';
+  const defaultBranch = readDefaultBranch(mainPath, env);
   const mainReal = realFolder(mainPath);
   const found = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees);
   const taken: string[] = [];
@@ -399,7 +426,7 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
   const agents = found.map((item) => {
     const nickname = nicknameOf(nicknameId(item.tree.path, item.agent.name), taken);
     taken.push(nickname);
-    return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache, root, mask);
+    return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache, root, mask, mainBranch, defaultBranch);
   });
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {

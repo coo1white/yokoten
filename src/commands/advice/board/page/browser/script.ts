@@ -11,6 +11,7 @@ import { renderTimeline } from './desk.ts';
 import { isCheckoutLead, roleGroup } from '../groups.ts';
 import { githubNote, renderBar, renderLimits, renderOutput, renderRight, renderRuns, renderStart, RIGHT_FUNCTIONS } from '../right.ts';
 import { followStream, renderStream, type StreamView } from './stream.ts';
+import { renderAgentPanel } from './panel.ts';
 
 export { ageOfNeed, fillNeeds, foldHead, idOfNeed, noteNewNeeds, renderNeedItem, renderSide };
 export { githubNote, isCheckoutLead, renderBar, renderLimits, renderOutput, renderRight, renderRuns, renderStart, roleGroup };
@@ -217,13 +218,14 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
   const foot = agent.dot === 'done'
     ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
     : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
+  const panel = renderAgentPanel(state, agent);
   // The lead's middle is the timeline (#701). Another agent's session is unchanged (#694).
-  if (isLead) return el('section', { class: 'center-in' }, head, renderTimeline(state, data), foot);
+  if (isLead) return el('section', { class: 'center-in' }, head, panel, renderTimeline(state, data), foot);
   // The agent's own session when its log is found (#694); else the steps the board saw.
   const stream = renderStream(state, agent);
   if (stream) {
     const ask = agent.dot === 'waiting' ? el('div', { class: 'ask' }, el('div', { class: 'ah' }, icon('shield'), el('h2', {}, say(state, 'waitingFor', { name: agent.name }))), el('p', {}, agent.doing || say(state, 'noReason')), el('p', { class: 'quiet' }, say(state, 'answerThere'))) : null;
-    return el('section', { class: 'center-in' }, head, stream, ask, foot);
+    return el('section', { class: 'center-in' }, head, panel, stream, ask, foot);
   }
   const events = data.feeds[agent.key] ?? [];
   const feed = el('div', { class: 'feed' }, el('div', { class: 'day' }, say(state, 'since')));
@@ -236,7 +238,7 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
   });
   if (!events.length) feed.append(el('p', { class: 'quiet' }, agent.doing || say(state, 'nothingYet')));
   if (agent.dot === 'waiting') feed.append(el('div', { class: 'ask' }, el('div', { class: 'ah' }, icon('shield'), el('h2', {}, say(state, 'waitingFor', { name: agent.name }))), el('p', {}, agent.doing || say(state, 'noReason')), el('p', { class: 'quiet' }, say(state, 'answerThere'))));
-  return el('section', { class: 'center-in' }, head, feed, foot);
+  return el('section', { class: 'center-in' }, head, panel, feed, foot);
 }
 
 /** The top bar's words, the language menu, the GitHub link and the theme icon. */
@@ -332,7 +334,7 @@ export function onClick(state: PageState, event: Event): void {
     state.isNeedsOpen = false;
     closedNeeds = true;
   }
-  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
+  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],[data-panel],#lang,#theme,#needs') ?? null;
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
@@ -371,6 +373,7 @@ export function onClick(state: PageState, event: Event): void {
     ui.cleared.push(...ids);
     showToast(state, 'clearedMany', ids, false);
   } else if (ask('data-fold')) ui.fold[ask('data-fold') as string] = !ui.fold[ask('data-fold') as string];
+  else if (ask('data-panel')) ui.open[`panel:${ask('data-panel') as string}`] = !ui.open[`panel:${ask('data-panel') as string}`];
   else if (ask('data-show-cleared')) ui.showCleared = !ui.showCleared;
   else if (ask('data-restore')) ui.cleared = ui.cleared.filter((id) => id !== ask('data-restore'));
   else if (ask('data-group')) ui.open[ask('data-group') as string] = !ui.open[ask('data-group') as string];

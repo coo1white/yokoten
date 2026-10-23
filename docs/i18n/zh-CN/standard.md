@@ -289,6 +289,9 @@ agent 离开以后，它的列表也丢掉。
 | `log` | agent | 文本。纯文本日志的绝对路径，必须在工位内或运行时的日志文件夹内。看板找不到会话日志时就读它。 |
 | `updated` | agent，还有停止 hook | 文本。hook 写成没有毫秒的 UTC 时间，例如 `2026-10-23T00:00:00Z`。 |
 | `started` | agent | 文本，格式和 `updated` 一样：这份工作开始的时间。没有就用文件创建的时间，再没有就用 `updated`。 |
+| `context_used` | agent | 数字：上下文里已经用掉的 token。看板读成 `contextUsed`。没有就是未知。 |
+| `context_limit` | agent | 数字：上下文能装下的 token。看板读成 `contextLimit`。是零或者没有就是未知。 |
+| `background` | agent | JSON 列表：它启动了什么。每一项有 `text` 和 `since`，面板两个都显示。没有就是没有报告。 |
 | `role` | agent | `lead`、`engineer`、`reviewer`、`verifier` 或 `helper`。别的词，包括 `worker`，都变成空。 |
 | `state` | agent | `working`、`waiting` 或 `done` |
 | `checks` | 停止 hook | `passing` 或 `failing` |

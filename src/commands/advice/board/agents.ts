@@ -18,6 +18,14 @@ export function boardHome(root: string): string {
 export const BOARD_READ_TIMEOUT_MS = 15000;
 /** An agent's status file, at its worktree's root. One file per worktree. */
 export const BOARD_AGENT_FILE = '.yokoten-agent.json';
+/** The most changed files the agent panel shows. */
+export const BOARD_OUTPUT_LIMIT = 20;
+/** The most background tasks the panel shows. */
+export const BOARD_BACKGROUND_LIMIT = 8;
+/** How long the changed files stand before git is asked again. The page reads every 15 seconds, so a poll reuses the last answer, and a poll a little late still finds it (#784). */
+export const BOARD_OUTPUT_CACHE_MS = 20000;
+/** The most answers the cache keeps. Past this the oldest key goes, so a board left open all day keeps a fixed size (#784). */
+export const BOARD_OUTPUT_CACHE_LIMIT = 64;
 /** Seats per vendor, in the common git folder. The owner writes it by hand (#698). */
 export const BOARD_SEATS_FILE = 'yokoten-seats.json';
 /** Keys a seats file must not set. A bad file is ignored, not trusted. */
@@ -25,6 +33,13 @@ const SEAT_SKIP = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** The role text a status file wrote. The page groups it by the work the word names. */
 export type BoardRole = string;
+
+/** One background task an agent reported: what it started, and since when. */
+export interface BoardBackground {
+  text: string;
+  /** The time it started, as filed, or '' when the file does not say. */
+  since: string;
+}
 
 /** One agent on the board, from its status file. The guide shows the open format. */
 export interface BoardAgent {
@@ -47,12 +62,53 @@ export interface BoardAgent {
   state: '' | 'working' | 'waiting' | 'done';
   /** The project's checks at its last stop, written by the stop hook (#614). */
   checks: '' | 'passing' | 'failing';
+  /** Tokens used in its context, or null when its status file does not say (#644). */
+  contextUsed: number | null;
+  /** Tokens its context can hold, or null when its status file does not say (#644). */
+  contextLimit: number | null;
+  /** What it started in the background, at most BOARD_BACKGROUND_LIMIT (#644). */
+  background: BoardBackground[];
 }
 
 /** Plain text of a status field, or '' when it is missing or not text. */
 function fieldText(fields: Record<string, unknown>, name: string): string {
   const value: unknown = fields[name];
   return typeof value === 'string' ? value : '';
+}
+
+/** A count of tokens from a status field, or null when it is missing or not a count. */
+function fieldCount(fields: Record<string, unknown>, name: string): number | null {
+  const value: unknown = fields[name];
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Plain text, one line, cut to 240 characters. */
+function oneLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 240) : '';
+}
+
+/** One background task from the file, or null when it names nothing to show. */
+function parseBackground(value: unknown): BoardBackground | null {
+  if (typeof value === 'string') {
+    const text = oneLine(value);
+    return text ? { text, since: '' } : null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const fields = value as Record<string, unknown>;
+  const text = oneLine(fields.text) || oneLine(fields.name) || oneLine(fields.doing) || oneLine(fields.task);
+  if (!text) return null;
+  const since = fieldText(fields, 'since') || fieldText(fields, 'started');
+  return { text, since };
+}
+
+/** The `background` list, keeping only what names a task, then at most BOARD_BACKGROUND_LIMIT. */
+function fieldBackground(fields: Record<string, unknown>): BoardBackground[] {
+  const value: unknown = fields.background;
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const itemTask = parseBackground(item);
+    return itemTask ? [itemTask] : [];
+  }).slice(0, BOARD_BACKGROUND_LIMIT);
 }
 
 /** A field's text when it is one of `allowed`, else ''. */
@@ -85,6 +141,9 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     log: fieldText(fields, 'log'),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),
+    contextUsed: fieldCount(fields, 'context_used'),
+    contextLimit: fieldCount(fields, 'context_limit'),
+    background: fieldBackground(fields),
   };
 }
 
@@ -185,6 +244,71 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
       return { path: value('worktree'), branch: value('branch').replace(/^refs\/heads\//, '') };
     })
     .filter((worktree) => worktree.path !== '');
+}
+
+/**
+ * The files a worktree changed against `base`, at most BOARD_OUTPUT_LIMIT (#644, #784):
+ * what git tracks and `base` does not have, and the new files it does not track yet.
+ * Two git calls. The answer stands for BOARD_OUTPUT_CACHE_MS, because the page reads
+ * every 15 seconds. A git failure is no files, not a broken board.
+ */
+export function readBoardOutputs(tree: string, base: string, env: Env, now: number = Date.now()): string[] {
+  const key = `${tree}\0${base}`;
+  const held = outputsCache.get(key);
+  if (held && now - held.at < BOARD_OUTPUT_CACHE_MS) return held.files;
+  const files = [
+    ...gitText(['diff', '--name-only', '--no-renames', '-z', '--end-of-options', base, '--'], tree, env).split('\0'),
+    ...gitText(['ls-files', '--others', '--exclude-standard', '-z'], tree, env).split('\0'),
+  ].filter((file) => file !== '').slice(0, BOARD_OUTPUT_LIMIT);
+  outputsCache.delete(key);
+  outputsCache.set(key, { at: now, files });
+  trimBoardOutputs(outputsCache);
+  return files;
+}
+
+/** What the cache keeps for one worktree and base. */
+export interface BoardOutputEntry {
+  at: number;
+  files: string[];
+}
+
+/** Keeps the newest BOARD_OUTPUT_CACHE_LIMIT answers, and the oldest keys go first. */
+export function trimBoardOutputs(entries: Map<string, BoardOutputEntry>): void {
+  while (entries.size > BOARD_OUTPUT_CACHE_LIMIT) {
+    const oldest = entries.keys().next();
+    if (oldest.done) return;
+    entries.delete(oldest.value);
+  }
+}
+
+/** The changed files the board has read, by worktree and base. */
+const outputsCache = new Map<string, BoardOutputEntry>();
+
+/** What git printed, or '' when it could not answer. */
+function gitText(args: string[], tree: string, env: Env): string {
+  try {
+    return execFileSync('git', args, { cwd: tree, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS, maxBuffer: 1 << 24 });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The default branch this worktree was cloned from (#784): `origin/HEAD` when the
+ * remote says, else main, else master. '' when the worktree has none of them.
+ */
+export function readDefaultBranch(tree: string, env: Env): string {
+  const fromRemote = gitText(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], tree, env).trim();
+  if (fromRemote) return fromRemote;
+  for (const name of ['main', 'master']) {
+    if (gitText(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], tree, env).trim()) return name;
+  }
+  return '';
+}
+
+/** The commit where `ref` left the worktree's HEAD, or '' when git could not say. */
+export function readMergeBase(tree: string, ref: string, env: Env): string {
+  return ref ? gitText(['merge-base', '--end-of-options', 'HEAD', ref], tree, env).trim() : '';
 }
 
 /**
