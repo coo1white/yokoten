@@ -1886,12 +1886,26 @@ the line too: `export`, `declare`, `read`, `printf -v`, a `for` loop or `${HOME:
 Before another program the setting passes: `HOME=$(mktemp -d) npm test` keeps a test away
 from your files. Reading `$HOME` is fine.
 
+Unsetting `HOME` or `USERPROFILE` is refused.
+So is `env -u HOME` before git, gh, yokoten or a shell.
+`env -u HOME npm test` still passes.
+
 A worker cannot set `HOME`, `USERPROFILE` or `XDG_CONFIG_HOME` before `git commit`,
 `yokoten check`, or a shell that runs them. `env` and `export` count the same way.
+A worker cannot unset those names before the commit check.
 In a desk, the runner commits for the worker.
 
-The commit check stops when its marks file is missing and the real home has one it cannot
-read. The real home comes from the password database. A missing file there is not an error.
+A worker cannot run a shell script from a file (`bash script`, `sh script`).
+The guard cannot read that file, so it refuses.
+`bash -c` stays allowed, because the script text is in the command.
+An option that may name a file, such as `--rcfile`, is refused too.
+
+When the marks file under `$HOME` is missing, or it holds no marks, the check reads the file in the real home.
+The real home comes from the password database, not from `$HOME`.
+A missing file there is not an error.
+A file it cannot read stops the check.
+A file it can read is used, so a changed `$HOME` does not skip those marks.
+With no `HOME`, the check still reads the marks file in the real home.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but

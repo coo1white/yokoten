@@ -63,10 +63,10 @@ export function useRealHome(read: () => string): () => void {
 }
 
 /**
- * The home folder: $HOME when it is an absolute path. Null when it is not (#392): then there
- * is no place outside the repo, and a relative `.config` would land in the folder the
- * command runs in. Only the CLI's entry falls back to the system's home (withHome), so an
- * env without HOME, as a test passes, never reaches the real home folder (#356).
+ * The home folder: `$HOME` when it is an absolute path. Null when it is not (#392): then
+ * there is no place outside the repo, and a relative `.config` would land in the folder
+ * the command runs in. Only the CLI entry fills HOME from the system (withHome, #356).
+ * The marks reader still reads the real home when `$HOME` is missing (#739).
  */
 export function homeOf(env: Env): string | null {
   return env.HOME && isAbsolute(env.HOME) ? env.HOME : null;
@@ -134,38 +134,67 @@ function isDefaultMarks(env: Env, file: string): boolean {
 }
 
 /**
- * When the default marks file is missing, look at the real home from the password database
- * (#739). A missing file there is empty. Any other read error fails the check: changing
- * `$HOME` must not turn an unreadable marks file into a pass. A file it can read is not
- * loaded. `$HOME` before another program is still how a test keeps its own empty home.
+ * The marks text in the real home, from the password database (#739). Used when `$HOME`
+ * has no marks of its own. A missing file there is empty. A file that cannot be read stops
+ * the check, so a changed `$HOME` cannot hide it. A file that can be read is returned, so
+ * those marks are used. The same folder as `$HOME` is not read again.
  */
-function checkRealMarks(env: Env): void {
+function realMarksText(env: Env): string {
   const home = homeOf(env);
-  if (!home) return;
   const real = realHomeRead()();
-  if (!real || !isAbsolute(real) || resolve(real) === resolve(home)) return;
+  if (!real || !isAbsolute(real)) return '';
+  // No `$HOME` still has a real home. The same folder is not read again.
+  if (home && resolve(real) === resolve(home)) return '';
   try {
-    readFileSync(join(real, '.config', 'yokoten', 'private-marks'));
+    return readFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(REAL_MARKS_UNREADABLE);
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw new Error(REAL_MARKS_UNREADABLE);
   }
+}
+
+/** Whether `text` holds a mark: a line that is not blank and not a comment. */
+function hasMarkLine(text: string): boolean {
+  return text.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    return trimmed !== '' && !trimmed.startsWith('#');
+  });
 }
 
 /** The text of one marks file. A missing file is empty. Any other error throws, so the check fails closed. */
 function readMarksFile(env: Env, file: string): string {
   try {
-    return readFileSync(file, 'utf8');
+    const text = readFileSync(file, 'utf8');
+    // An empty stand-in under a changed `$HOME` is still no marks. Use the real file.
+    if (isDefaultMarks(env, file) && !hasMarkLine(text)) {
+      const real = realMarksText(env);
+      if (hasMarkLine(real)) return real;
+    }
+    return text;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    if (isDefaultMarks(env, file)) checkRealMarks(env);
+    if (isDefaultMarks(env, file)) return realMarksText(env);
     return '';
   }
 }
 
+/**
+ * The text of every marks file, real home included (#739). With no `$HOME`, the real home
+ * is the only default. A header in one file never names a line in the next: each text is
+ * separate.
+ */
+function marksTexts(env: Env): string[] {
+  const texts = marksFiles(env).map((file) => readMarksFile(env, file));
+  if (!homeOf(env)) {
+    const real = realMarksText(env);
+    if (hasMarkLine(real)) texts.unshift(real);
+  }
+  return texts;
+}
+
 /** The text of every private-marks file, one after the other. A missing file is empty; any other error throws, so the check fails closed. */
 function readMarksText(env: Env): string {
-  return marksFiles(env)
-    .map((file) => readMarksFile(env, file))
+  return marksTexts(env)
     .map((text) => (text === '' || text.endsWith('\n') ? text : `${text}\n`))
     .join('');
 }
@@ -535,11 +564,8 @@ export interface Mark {
  */
 export function loadMarkKinds(env: Env): Mark[] {
   const seen = new Set<string>();
-  return marksFiles(env).flatMap((file) => {
-    // Each file on its own, so a header in one never names the kind of a line in the next.
-    const text = readMarksFile(env, file);
-    return markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : []));
-  });
+  // Each file on its own, so a header in one never names the kind of a line in the next.
+  return marksTexts(env).flatMap((text) => markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : [])));
 }
 
 /**

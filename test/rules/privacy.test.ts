@@ -267,6 +267,9 @@ test('private marks file: a missing default file fails closed when the real home
   try {
     assert.throws(() => loadMarks({ HOME: home }), /cannot be read/);
     assert.throws(() => loadMarkKinds({ HOME: home }), /cannot be read/);
+    // No HOME is the same file. A process started without HOME cannot skip it.
+    assert.throws(() => loadMarks({}), /cannot be read/);
+    assert.throws(() => loadMarkKinds({}), /cannot be read/);
     // The setting only adds. It does not hide an unreadable file in the real home.
     assert.throws(() => loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), /cannot be read/);
     assert.throws(() => repoMarkKinds({ HOME: home }, home), /cannot be read/);
@@ -276,16 +279,42 @@ test('private marks file: a missing default file fails closed when the real home
   }
 });
 
-test('private marks file: a missing real-home file stays empty, and a readable one is not loaded (#739)', () => {
+test('private marks file: a missing real-home file stays empty, and a readable one is used (#739)', () => {
   const home = makeTempDir();
   const real = makeTempDir();
   const restore = useRealHome(() => real);
   try {
     assert.deepEqual(loadMarks({ HOME: home }), []);
     assert.deepEqual(loadMarkKinds({ HOME: home }), []);
+    assert.deepEqual(loadMarks({}), []);
+    assert.deepEqual(loadMarkKinds({}), []);
     mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
-    writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'mycity\n');
-    assert.deepEqual(loadMarks({ HOME: home }), [], 'a readable real-home file is not merged');
+    writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'MyCity\n# added by yokoten from this machine: forge login\nOcto-Jdoe\n');
+    // A changed HOME must not skip a marks file the check can read. The role does not matter.
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_ROLE: 'worker' }), ['mycity', 'octo-jdoe']);
+    // No HOME, or an empty one, still has the real home. The role does not matter.
+    assert.deepEqual(loadMarks({}), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: '' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: 'relative' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ YOKOTEN_ROLE: 'worker' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), [
+      { value: 'mycity', kind: null },
+      { value: 'octo-jdoe', kind: 'forge login' },
+    ]);
+    assert.deepEqual(loadMarkKinds({}), [
+      { value: 'mycity', kind: null },
+      { value: 'octo-jdoe', kind: 'forge login' },
+    ]);
+    // The setting only adds. It does not replace the real home's marks.
+    const extra = join(home, 'extra');
+    writeFileSync(extra, 'otherword\n');
+    assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), ['mycity', 'octo-jdoe', 'otherword']);
+    assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: extra }), ['mycity', 'octo-jdoe', 'otherword']);
+    // An empty stand-in file is still no marks of its own, so the real file is used.
+    mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), '\n# none\n');
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity', 'octo-jdoe']);
     // The same folder is the one $HOME already names: there is nothing further to read.
     const same = useRealHome(() => home);
     try {

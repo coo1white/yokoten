@@ -1500,7 +1500,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // The likely folder, read as written: a write there is refused, never let through.
       checkGitSetupWrites(words, { folder: nearCwd, from, env }) ??
       // A changed home folder hides the private marks (#664).
-      checkHomeSetting(words);
+      checkHomeSetting(words, env);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
@@ -2146,17 +2146,109 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
 const HOME_NAMES = new Set(['HOME', 'USERPROFILE']);
 const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
 
-function checkHomeSetting(words: string[]): Finding | null {
+function checkHomeSetting(words: string[], env: Env): Finding | null {
   const name = refusedSetting(words, (setting) => HOME_NAMES.has(setting.toUpperCase()));
-  return name === null ? null : finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  if (name !== null) return finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  // A worker unsets only when the script reaches the commit check: see checkWorkerRealHome.
+  if (env.YOKOTEN_ROLE === 'worker') return null;
+  const cleared = clearedHomeName(words, HOME_NAMES);
+  return cleared === null ? null : finding('home-folder', `this command unsets ${cleared}, which moves where yokoten finds your private marks`, HOME_FIX);
+}
+
+/**
+ * A home name this command clears, or null (#739). `unset NAME` holds for the rest of the
+ * line, like `export`. `env -u NAME` clears it for the one program after `env`, and only
+ * when that program is git, gh, yokoten or a shell. `env -u HOME npm test` stays allowed.
+ */
+function clearedHomeName(words: string[], names: Set<string>): string | null {
+  const isHome = (name: string) => names.has(name.toUpperCase());
+  const fromUnset = (args: string[]): string | null => {
+    for (const arg of args) {
+      if (!arg.startsWith('-') && isHome(arg)) return arg;
+    }
+    return null;
+  };
+  // env's own options, from the word after `env` to the program it runs. A cluster is read
+  // here: findPrograms does not treat `-iu` as `-u`, so `env -iu HOME git` would hide git.
+  const readEnv = (start: number): { cleared: string | null; program: number | null } => {
+    let cleared: string | null = null;
+    let index = start;
+    while (index < words.length) {
+      const word = words[index];
+      if (isAssignment(word)) {
+        index += 1;
+        continue;
+      }
+      if (!word.startsWith('-')) return { cleared, program: index };
+      const inline = /^--unset=(.*)$/.exec(word);
+      if (inline) {
+        if (cleared === null && isHome(inline[1])) cleared = inline[1];
+        index += 1;
+        continue;
+      }
+      if (word === '--unset') {
+        const next = words[index + 1] ?? '';
+        if (cleared === null && isHome(next)) cleared = next;
+        index += next === '' ? 1 : 2;
+        continue;
+      }
+      // `-u NAME`, `-uNAME`, and a cluster whose last flag is `u` (`-iuHOME`, `-iu HOME`).
+      const cluster = /^-([a-zA-Z]*)u(.*)$/.exec(word);
+      if (cluster) {
+        const rest = cluster[2];
+        if (rest === '') {
+          const next = words[index + 1] ?? '';
+          if (cleared === null && isHome(next)) cleared = next;
+          index += next === '' ? 1 : 2;
+        } else {
+          if (cleared === null && isHome(rest)) cleared = rest;
+          index += 1;
+        }
+        continue;
+      }
+      // These take the next word. Skipping it keeps a later `-u HOME` visible.
+      if (word === '-C' || word === '--chdir' || word === '-S' || word === '--split-string') {
+        index += index + 1 < words.length ? 2 : 1;
+        continue;
+      }
+      index += 1;
+    }
+    return { cleared, program: null };
+  };
+  const guarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || words.findLastIndex(isYokotenWord) >= at;
+  let from = 0;
+  const seenEnv = new Set<number>();
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (programName(program) === 'unset') {
+      const cleared = fromUnset(words.slice(at + 1));
+      if (cleared !== null) return cleared;
+    }
+    for (let cursor = 0; cursor < at; cursor++) {
+      if (programName(words[cursor]) !== 'env' || seenEnv.has(cursor)) continue;
+      seenEnv.add(cursor);
+      const read = readEnv(cursor + 1);
+      if (read.cleared !== null && read.program !== null && guarded(read.program)) return read.cleared;
+    }
+  }
+  return null;
 }
 
 // A worker's home before the commit check (#739). HOME and USERPROFILE move the marks file.
 // XDG_CONFIG_HOME is the same door for a worker: the desk already refuses other settings, and
 // this one must say why, before git commit, yokoten check, or a shell that runs them. The
 // lead's XDG_CONFIG_HOME is left alone. The box still refuses every other setting.
+// A shell script file is the same door with the assignment hidden in the file. The guard
+// reads the command, not the file, so a worker's `bash file` or `sh file` is refused.
+// `bash -c` stays, because that text is in the command.
 const REAL_HOME_NAMES = new Set(['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']);
 const REAL_HOME_FIX = 'the commit check needs the real home; in a desk, the runner commits for you (issue #736)';
+// Shell flags that do not name a file and do not take a value. `s` reads stdin, which the
+// reader already has when the text is in the command. Anything else may name a file.
+const SHELL_FLAG = /^-[euxnvfhlips]+$/;
+const SHELL_LONG_FLAGS = new Set(['--posix', '--noprofile', '--norc', '--login', '--noediting', '--restricted', '--help', '--version']);
 
 /** Whether the program at `at` is git commit, yokoten check, or a shell that can run them. */
 function runsCommitCheck(words: string[], at: number): boolean {
@@ -2179,16 +2271,97 @@ function commandReachesCheck(words: string[]): boolean {
   return false;
 }
 
+/** Whether `word` is a shell that can run a script file, in any case (`Bash`, `rbash`, `mksh`). */
+function isScriptShell(word: string): boolean {
+  const name = programName(word).toLowerCase();
+  return isShell(name) || name === 'mksh' || name === 'rbash';
+}
+
+/**
+ * Whether a shell's arguments hide the script (#739). `bash -c text` and `--command` are in
+ * the command, so they are not hidden. A file operand, an input redirect (`< file`, not a
+ * heredoc) and an option the guard does not know (`--rcfile`, `-o`) are hidden: the guard
+ * cannot tell whether that file sets HOME, so it refuses.
+ */
+function shellOperandsHide(args: string[]): boolean {
+  let index = 0;
+  let inline = false;
+  while (index < args.length) {
+    const arg = args[index];
+    if (REDIRECT.test(arg)) {
+      const operator = REDIRECT_OPERATOR.exec(arg)?.[0] ?? '';
+      if (operator.includes('<') && !operator.includes('<<') && !inline) return true;
+      index += redirectLength(args, index) || 1;
+      continue;
+    }
+    if (arg === '--') {
+      if (!inline) return true;
+      index += 1;
+      continue;
+    }
+    if (arg === '-c' || arg === '--command') {
+      const script = args[index + 1] ?? '';
+      if (script === '' || REDIRECT.test(script)) return true;
+      inline = true;
+      index += 2;
+      continue;
+    }
+    if (arg.startsWith('--command=')) {
+      if (arg.length === '--command='.length) return true;
+      inline = true;
+      index += 1;
+      continue;
+    }
+    // `-lc`, `-cecho hi`: `c` ends the flags, or the rest of the word is the script text.
+    const cluster = /^-(?:[euxnvfhlips]*)c(.*)$/s.exec(arg);
+    if (cluster && !arg.startsWith('--')) {
+      const rest = cluster[1];
+      if (rest === '') {
+        const script = args[index + 1] ?? '';
+        if (script === '' || REDIRECT.test(script)) return true;
+        index += 2;
+      } else index += 1;
+      inline = true;
+      continue;
+    }
+    if (SHELL_FLAG.test(arg) || SHELL_LONG_FLAGS.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-') || !inline) return true;
+    index += 1;
+  }
+  return false;
+}
+
+/** Whether `words` runs a shell script the guard cannot read. The lead is not asked. */
+function shellHidesScript(words: string[]): boolean {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (isScriptShell(program) && shellOperandsHide(words.slice(at + 1))) return true;
+  }
+  return false;
+}
+
 /**
  * For a worker: a home setting that would hide the private marks from the commit check, or
  * null. A setting for the rest of the line counts only when this script reaches that check,
- * so `HOME+=x; rm` stays with the worker box (#591).
+ * so `HOME+=x; rm` stays with the worker box (#591). A shell script file counts too: the
+ * guard cannot read it, so it refuses instead of guessing.
  */
 function checkWorkerRealHome(commands: string[][]): Finding | null {
   const reaches = commands.some(commandReachesCheck);
   for (const words of commands) {
     const name = refusedSetting(words, (setting) => REAL_HOME_NAMES.has(setting.toUpperCase()), (at) => runsCommitCheck(words, at), reaches);
     if (name !== null) return finding('home-folder', `this command sets ${name}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+    if (reaches) {
+      const cleared = clearedHomeName(words, REAL_HOME_NAMES);
+      if (cleared !== null) return finding('home-folder', `this command unsets ${cleared}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+    }
+    if (shellHidesScript(words)) return finding('home-folder', 'this command runs a shell script yokoten cannot read, so the commit check might not see your private marks', REAL_HOME_FIX);
   }
   return null;
 }
