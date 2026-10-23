@@ -98,6 +98,13 @@ export function stopCheckoutWalk(folder: string): void {
   writeFileSync(join(folder, '.git'), 'not a checkout\n');
 }
 
+/** A `.git` folder git would use: `HEAD`, an `objects` folder and a `refs` folder, with no git process (#746). */
+export function makeGitFolder(top: string): void {
+  mkdirSync(join(top, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(top, '.git', 'refs'), { recursive: true });
+  writeFileSync(join(top, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+}
+
 /** A new empty folder that outlives the test that made it, removed when the file ends: for a template (#475). */
 function makeFileTempDir(prefix = 'yokoten-template-'): string {
   if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
@@ -127,9 +134,11 @@ export function killedLine(testName: string | undefined, command: string, timeou
  * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
  * A killed child is printed on stderr with the test that ran it.
  */
-export function runChild(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, 'encoding'> = {}): SpawnSyncReturns<string> {
+export function runChild(command: string, args: string[], options: Pick<SpawnSyncOptionsWithStringEncoding, 'cwd' | 'env' | 'input' | 'timeout' | 'maxBuffer' | 'stdio'> = {}): SpawnSyncReturns<string> {
   const timeout = options.timeout ?? CHILD_TIMEOUT_MS;
-  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, timeout, encoding: 'utf8' });
+  // Never a shell, and no option that could ask for one: each field is named, so no test value is read as shell code.
+  const { cwd, env, input, stdio } = options;
+  const result = spawnSync(command, args, { cwd, env, input, stdio, timeout, maxBuffer: options.maxBuffer ?? CHILD_MAX_BUFFER, encoding: 'utf8' });
   const line = killedLine(testNames.at(-1), command, timeout, result);
   if (line) process.stderr.write(line);
   return result;
@@ -424,14 +433,15 @@ export function fakeMachine(free: number, more: Partial<MachineProbe> & { progra
   };
 }
 // The team of #674 (test/agents/desk/team/, test/commands/advice/messages.test.ts).
-/** A lead's checkout and a desk next to it, both with a bare `.git` folder: no git process is needed. */
+/** A lead's checkout and a desk next to it, both with a `.git` folder git would use: no git process is needed. */
 export function makeTeamFixture() {
   // The real path: on macOS the temp folder is a link (/var to /private/var), and whoAmI answers with real paths.
   const projects = realpathSync(makeTempDir('team-'));
   const main = join(projects, 'repo');
   const desk = join(projects, 'desks', 'g1');
   const state = `${desk}.state/grok`;
-  for (const folder of [join(main, '.git'), join(desk, '.git'), state]) mkdirSync(folder, { recursive: true });
+  for (const folder of [main, desk]) makeGitFolder(folder);
+  mkdirSync(state, { recursive: true });
   const team = `${main}.team`;
   return { projects, main, desk, state, team };
 }

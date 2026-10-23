@@ -11,7 +11,7 @@ import { boardPage, boardScript } from '../../../../../../src/commands/advice/bo
 import { loadUi, type PageData, type PageState, renderCenter } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
 import { addStream, emptyStream, newStreamNode, renderStream } from '../../../../../../src/commands/advice/board/page/browser/stream.ts';
 import { makeRedactor } from '../../../../../../src/rules/privacy.ts';
-import { SECRET } from '../../../../../../src/rules/secrets.ts';
+import { SECRET } from '../../../../../../src/rules/privacy/secrets.ts';
 import { makeTempDir } from '../../../../../repo/helpers.ts';
 import { LANG_NAMES, WORDS } from '../../../../../../src/commands/advice/board/page/words.ts';
 import { EMPTY_DESK } from '../../../../../../src/commands/advice/board/feed/read/desk.ts';
