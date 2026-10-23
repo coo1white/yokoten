@@ -1486,7 +1486,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // An alias runs another command under a new name: refused, not parsed (#560).
       // For a worker the worker rule already answers, with its own id.
       checkShellAlias(words, env) ??
-      // Removing the .git folder throws away every commit (#560). For a worker the
+      // Removing the .git folder throws away every commit (#560, #573). For a worker the
       // mark rule above already answers, with its own id.
       checkRemoveGit(words) ??
       checkHooksEnvironment(words) ??
@@ -1666,17 +1666,67 @@ function checkShellAlias(words: string[], env: Env): Finding | null {
 const REMOVE_PROGRAMS = new Set(['rm', 'rmdir', 'unlink', 'shred']);
 const REMOVE_GIT_FIX = 'delete only the files you mean (a tracked file with `git rm <path>`); to start over, clone the repo again';
 
-/** `rm` and friends on a path that can be `.git`. For a worker the mark rule answers first. */
+/**
+ * Whether a find's tests can select a `.git` entry (#573). The name and path tests are
+ * mayReachGitFolder's, including a join (`-o`, `!`) that can turn a test around. A find
+ * that names nothing does not (`find dist -delete`). Every `-regex` counts: the guard
+ * cannot prove one safe.
+ */
+function findNamesDotGit(args: string[]): boolean {
+  if (args.some((arg) => arg === '-regex' || arg === '-iregex')) return true;
+  if (!args.some((arg) => FIND_NAME_TESTS.has(arg) || FIND_PATH_TESTS.has(arg))) return false;
+  return mayReachGitFolder(args);
+}
+
+/** A find that deletes an entry its tests can select as `.git`. `-fprint` only writes a list. */
+function findDeletesDotGit(args: string[]): boolean {
+  return findNamesDotGit(args) && (args.includes('-delete') || findActionRemoves(args));
+}
+
+/** Where a find action's command ends: the next action, `;`, or `{} +`. */
+function actionEnd(args: string[], index: number): number {
+  let end = index;
+  while (end < args.length && !FIND_ACTIONS.has(args[end]) && args[end] !== ';' && !(args[end] === '+' && args[end - 1] === '{}')) end++;
+  return end;
+}
+
+/** Whether these words run `rm`, `rmdir`, `unlink` or `shred`. */
+function commandRemoves(words: string[]): boolean {
+  return findPrograms(words).some((program) => REMOVE_PROGRAMS.has(programName(program)));
+}
+
+/**
+ * Whether a find action runs `rm`, `rmdir`, `unlink` or `shred`. A launcher, an
+ * assignment, `env -S` and a shell string count. `command -v` runs nothing.
+ */
+function findActionRemoves(args: string[]): boolean {
+  for (let index = 0; index < args.length; index++) {
+    if (!FIND_ACTIONS.has(args[index])) continue;
+    const action = args.slice(index + 1, actionEnd(args, index + 1));
+    if (commandRemoves(action)) return true;
+    const at = runnerAt(action);
+    if (at !== -1 && commandWords(runString(action, at)).some(commandRemoves)) return true;
+  }
+  return false;
+}
+
+/** `rm` and friends on a path that can be `.git`, and a find that deletes one (#560, #573). For a worker the mark rule answers first. */
 function checkRemoveGit(words: string[]): Finding | null {
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
     if (at === -1) continue;
     from = at + 1;
-    if (!REMOVE_PROGRAMS.has(programName(program))) continue;
-    const target = plainArgs(withoutShellRedirects(words, at + 1)).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
-    if (target !== undefined) {
-      return finding('remove-git', `\`${programName(program)}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+    const name = programName(program);
+    const args = withoutShellRedirects(words, at + 1);
+    if (REMOVE_PROGRAMS.has(name)) {
+      const target = plainArgs(args).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
+      if (target !== undefined) {
+        return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+      }
+    }
+    if (name === 'find' && findDeletesDotGit(args)) {
+      return finding('remove-git', '`find` can delete the .git folder, which holds the repo history', REMOVE_GIT_FIX);
     }
   }
   return null;
@@ -4031,6 +4081,57 @@ function xargsCommand(words: string[]): string | null {
   return words.slice(index).join(' ');
 }
 
+/** Whether a delimiter word is a null: a real null, or printf's `\0`, `\000` or `\x00`. */
+const isNullDelimiter = (text: string) => text === '\0' || /^\\0{1,3}$/.test(text) || /^\\x00$/i.test(text);
+
+/** Whether xargs splits its input on a null: `-0`, `--null`, `-d '\0'`, or a short cluster that holds `0` (`-r0`). */
+function xargsUsesNull(words: string[]): boolean {
+  let index = words.findIndex((word) => programName(word) === 'xargs');
+  if (index === -1) return false;
+  for (index++; index < words.length && /^--?[^-]/.test(words[index]); ) {
+    const word = words[index];
+    if (word === '--null') return true;
+    if (word === '--delimiter' || word.startsWith('--delimiter=')) {
+      const inline = word.startsWith('--delimiter=');
+      const delim = inline ? word.slice('--delimiter='.length) : (words[index + 1] ?? '');
+      if (isNullDelimiter(delim)) return true;
+      index += inline ? 1 : 2;
+      continue;
+    }
+    if (word.startsWith('--')) {
+      index += LAUNCHERS.xargs.options.includes(word) ? 2 : 1;
+      continue;
+    }
+    let valued = false;
+    for (let letter = 1; letter < word.length; letter++) {
+      if (word[letter] === '0') return true;
+      if (word[letter] === 'd') {
+        const rest = word.slice(letter + 1);
+        if (isNullDelimiter(rest || (words[index + 1] ?? ''))) return true;
+        valued = rest === '';
+        break;
+      }
+      // A valued short option takes the rest of the word (`-s0` is -s 0, not -0).
+      if (LAUNCHERS.xargs.options.includes(`-${word[letter]}`)) {
+        valued = letter === word.length - 1;
+        break;
+      }
+    }
+    index += valued || LAUNCHERS.xargs.options.includes(word) ? 2 : 1;
+  }
+  return false;
+}
+
+// printf leaves a null as `\0`, `\000` or `\x00`. A later shell read swallows the
+// backslash (`\0` becomes `0`), so xargs -0 would not see the word in front of it.
+const PRINTF_NULL = /\\(?:0{1,3}(?![0-7])|x00(?![0-9A-Fa-f]))/gi;
+
+/** The text xargs reads, as words. `xargs -0` also splits on a null (#573). */
+function xargsInput(words: string[], text: string): string {
+  const split = xargsUsesNull(words) ? text.replace(PRINTF_NULL, ' ').replace(/\0/g, ' ') : text;
+  return split.replace(/\s+/g, ' ');
+}
+
 // What a command prints, as the command it pipes into reads it: for printf, its format
 // filled in (see printfText); for any other, its words after the program, as echo prints
 // them, with each \n a line end. Over-reading is fine: `cat x` "prints" x.
@@ -4304,7 +4405,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (reads) for (const body of carried) nested(body);
       // `{ echo push --force; } | xargs git`: xargs hands the bodies to its program as words.
       const handed = reads ? null : xargsCommand(words);
-      if (handed !== null) nested(`${handed} ${carried.join(' ').replace(/\s+/g, ' ')}`);
+      if (handed !== null) nested(`${handed} ${xargsInput(words, carried.join(' '))}`);
       if (reads || handed !== null || !pipe) carried = [];
     }
     if (closed) {
@@ -4350,12 +4451,14 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     // All of them in one group: in a group piped to a shell, every line is read as commands.
     if (substitutions.length > 0 && (at !== -1 || isSource(words))) nested(`{ ${substitutions.join('\n')}\n} | bash`);
     // `echo push | xargs git`: xargs hands what comes in to its program as words.
+    // `xargs -0` also splits on a null, which printf writes as `\0` (#573).
     const handed = piped ? xargsCommand(words) : null;
-    if (piped && handed !== null) nested(`${handed} ${printedText(piped).replace(/\s+/g, ' ')}`);
+    if (piped && handed !== null) nested(`${handed} ${xargsInput(words, printedText(piped))}`);
     // `cat <(x) | bash`, `echo "$(x)" | xargs git`: the command before the pipe may print
     // what x prints. In a group piped on, each line x prints reaches the reader.
     if (pipedSubstitutions.length > 0 && (at !== -1 || handed !== null)) {
-      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : `xargs ${handed}`}`);
+      const xargs = xargsUsesNull(words) ? `xargs -0 ${handed}` : `xargs ${handed}`;
+      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : xargs}`);
     }
     if (pipe && piped !== null && passesOn(words)) {
       // `echo x | tee f | bash`: tee hands on what echo printed. Its own `$(x)` and `<(x)`
@@ -4697,7 +4800,7 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
     // `xargs git <<EOF`: the body's words are the program's words.
     if (!handedTo.has(doc.cmd)) handedTo.set(doc.cmd, xargsCommand(line[doc.cmd] ?? []));
     const handed = handedTo.get(doc.cmd) ?? null;
-    if (handed !== null) out.push(...commandWords(`${handed} ${body.replace(/\s+/g, ' ')}`, depth + 1));
+    if (handed !== null) out.push(...commandWords(`${handed} ${xargsInput(line[doc.cmd] ?? [], body)}`, depth + 1));
     const last = ends[doc.cmd] ?? doc.cmd;
     const isOpenPipe = last > doc.cmd && line[last].length === 0;
     const isRead = doc.group ? doc.group.reads : feedsShell(line[doc.cmd] ?? []);

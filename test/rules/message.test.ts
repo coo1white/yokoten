@@ -95,7 +95,7 @@ import {
   privacyNotes,
   upstreamNote,
   userAgentHooks,
-} from '../../src/setup/doctor.ts';
+} from '../../src/setup/doctor/index.ts';
 import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
@@ -220,7 +220,20 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   mkdirSync(join(dir, '.config', 'muse'), { recursive: true });
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
   // Command output (#390): the mailmap note, and the refusal for an agent that can't rewrite.
-  for (const c of privacyNotes({ HOME: dir, GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, null)) add(c.finding);
+  // Claude's user rules file is there, and so is Muse's hook file. With no project root the
+  // note stays off. With this folder as the project, the note is produced once (#681).
+  const privacyEnv = { HOME: dir, GIT_CONFIG_GLOBAL: join(dir, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
+  mkdirSync(join(dir, '.claude'), { recursive: true });
+  writeFileSync(join(dir, '.claude', 'CLAUDE.md'), 'not-sent-to-muse\n');
+  mkdirSync(join(dir, '.muse'), { recursive: true });
+  writeFileSync(join(dir, '.muse', 'hooks.json'), '{}\n');
+  const privacy = privacyNotes(privacyEnv, null);
+  assert.ok(!privacy.some((note) => note.finding.id === 'muse-claude-rules'));
+  for (const c of privacy) add(c.finding);
+  const museRules = privacyNotes(privacyEnv, dir).find((note) => note.finding.id === 'muse-claude-rules');
+  assert.ok(museRules);
+  assert.ok(!JSON.stringify(museRules).includes('not-sent-to-muse'));
+  add(museRules.finding);
   add(privateOutput('`git log` prints author names and emails', 'set -o pipefail; (\ngit log\n) 2>&1 | yokoten redact'));
   // The plugin (#198): enabled, and installed at a version older than this yokoten.
   const pluginHome = makeTempDir();

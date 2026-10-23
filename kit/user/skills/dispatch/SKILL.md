@@ -101,3 +101,8 @@ never changes lead-only files (the guard stops it).
    round 4.
 6. Remove the worktree once the pull request is merged: `git worktree remove <dir>`.
    That removes the mark too.
+
+## When several pull requests wait
+
+With two or more pull requests open, name a merge order before you merge one.
+After each merge, update the order for the rest.

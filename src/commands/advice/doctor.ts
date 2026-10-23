@@ -11,7 +11,7 @@ import { formatFinding } from '../../rules/message.ts';
 import { hideHome } from '../../rules/privacy.ts';
 import { draft, facts, table } from '../../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../../setup/advice/explain.ts';
-import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../../setup/doctor.ts';
+import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../../setup/doctor/index.ts';
 import { READERS } from '../hook.ts';
 import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from '../shared.ts';
 
