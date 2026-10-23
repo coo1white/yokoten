@@ -109,7 +109,9 @@ async function runAnchor(invocation: Invocation, root: string, notes: Finding[],
   try {
     // Read once, with no check first: another process may remove the log between the two.
     text = readFileSync(logPath, 'utf8');
-  } catch {
+  } catch (err) {
+    // A log that is there but unreadable is not a missing log; let the caller see the error.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     return [finding('anchor', `there is no event log to check (${hideHome(logPath, env)} is not there)`, 'the hooks and runners write it; there is nothing to anchor before the first event')];
   }
   const repo = anchorRepo(root, env, values['--repo']);
