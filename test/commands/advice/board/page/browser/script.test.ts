@@ -551,9 +551,27 @@ test('board script: the agent panel is folded, then shows context known or unkno
   assert.equal(folded.textContent.includes('src/a.ts'), false, 'the body stays folded');
   const button = folded.all().find((node) => node.getAttribute('data-panel') === '~/w');
   assert.equal(button?.getAttribute('aria-expanded'), 'false');
-  state.ui.open['panel:~/w'] = true;
+  // The real click handler, on a child of the header, as the browser sends it.
+  const nodes = new Map<string, FakeNode>();
+  Object.assign(fakeDocument, {
+    documentElement: new FakeNode('html'),
+    getElementById: (id: string) => {
+      if (!nodes.has(id)) nodes.set(id, new FakeNode('div'));
+      return nodes.get(id) as FakeNode;
+    },
+    querySelector: () => null,
+  });
+  const inner = button?.all().find((node) => node.tag === 'b');
+  assert.ok(inner, 'the header has a label');
+  onClick(state, { target: inner } as unknown as Event);
+  assert.equal(state.ui.open['panel:~/w'], true, 'a click on the header opens the panel');
   const open = renderCenter(state, data) as unknown as FakeNode;
   for (const words of ['Context', 'Environment', 'Runtime', 'Muse', 'feat', '~/w', 'Outputs', 'src/a.ts', 'Background tasks', 'npm test']) assert.match(open.textContent, new RegExp(words.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  // The environment list is the grid itself: dt and dd are direct children, with no wrapper.
+  const env = open.all().find((node) => node.getAttribute('class') === 'env');
+  assert.ok(env, 'the open panel has an environment list');
+  assert.deepEqual(env.children.map((node) => node.tag), ['dt', 'dd', 'dt', 'dd', 'dt', 'dd', 'dt', 'dd', 'dt', 'dd', 'dt', 'dd']);
+  assert.equal(env.all().some((node) => node.getAttribute('class') === 'kv'), false, 'no wrapper breaks the two-column grid');
   const unknown = agent({ contextUsed: null, contextLimit: null, outputs: [], background: [] });
   const blankData = makeData({ agents: [unknown] });
   const blankState = makeState(blankData);

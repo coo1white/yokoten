@@ -334,7 +334,7 @@ export function onClick(state: PageState, event: Event): void {
     state.isNeedsOpen = false;
     closedNeeds = true;
   }
-  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
+  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],[data-panel],#lang,#theme,#needs') ?? null;
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {

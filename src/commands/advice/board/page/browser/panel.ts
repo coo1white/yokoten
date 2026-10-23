@@ -38,7 +38,8 @@ export function renderAgentPanel(state: PageState, agent: AgentView): HTMLElemen
   const contextWords = context ? say(state, 'contextUsed', { n: context.percent }) : say(state, 'contextUnknown');
   const outputs = agent.outputs ?? [];
   const background = agent.background ?? [];
-  const row = (label: string, value: string): HTMLElement => el('div', { class: 'kv' }, el('dt', {}, label), el('dd', {}, value || say(state, 'unknown')));
+  // The dl is a two-column grid, so each pair goes in as a dt and a dd, with no wrapper.
+  const row = (label: string, value: string): [HTMLElement, HTMLElement] => [el('dt', {}, label), el('dd', {}, value || say(state, 'unknown'))];
   const section = (title: string, ...children: (HTMLElement | null)[]): HTMLElement => el('section', { class: 'panel-sec' }, el('h3', {}, title), ...children);
   const outputList = outputs.length
     ? el('ul', { class: 'out-list' }, ...outputs.map((file) => el('li', {}, el('code', {}, file))))
@@ -63,12 +64,12 @@ export function renderAgentPanel(state: PageState, agent: AgentView): HTMLElemen
       context?.isSoon ? el('p', { class: 'warn' }, icon('bell', true), say(state, 'contextSoon')) : null),
     section(say(state, 'panelEnvironment'),
       el('dl', { class: 'env' },
-        row(say(state, 'panelRuntime'), agent.vendor.name),
-        row(say(state, 'panelModel'), agent.model),
-        row(say(state, 'panelEffort'), agent.effort),
-        row(say(state, 'panelWorktree'), agent.worktree || agent.key),
-        row(say(state, 'panelBranch'), agent.branch),
-        row(say(state, 'panelStarted'), timeAgo(state, agent.started || agent.updated)))),
+        ...row(say(state, 'panelRuntime'), agent.vendor.name),
+        ...row(say(state, 'panelModel'), agent.model),
+        ...row(say(state, 'panelEffort'), agent.effort),
+        ...row(say(state, 'panelWorktree'), agent.worktree || agent.key),
+        ...row(say(state, 'panelBranch'), agent.branch),
+        ...row(say(state, 'panelStarted'), timeAgo(state, agent.started || agent.updated)))),
     section(say(state, 'panelOutputs'), outputList),
     section(say(state, 'panelBackground'), backgroundList));
   return el('section', { class: 'panel open' }, head, body);

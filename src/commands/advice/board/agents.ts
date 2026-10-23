@@ -22,8 +22,8 @@ export const BOARD_AGENT_FILE = '.yokoten-agent.json';
 export const BOARD_OUTPUT_LIMIT = 20;
 /** The most background tasks the panel shows. */
 export const BOARD_BACKGROUND_LIMIT = 8;
-/** How long the changed files stand before git is asked again. */
-export const BOARD_OUTPUT_CACHE_MS = 10000;
+/** How long the changed files stand before git is asked again. The page reads every 15 seconds, so a poll reuses the last answer. */
+export const BOARD_OUTPUT_CACHE_MS = 15000;
 /** Seats per vendor, in the common git folder. The owner writes it by hand (#698). */
 export const BOARD_SEATS_FILE = 'yokoten-seats.json';
 /** Keys a seats file must not set. A bad file is ignored, not trusted. */
@@ -252,7 +252,7 @@ export function readBoardOutputs(tree: string, base: string, env: Env, now: numb
   if (held && now - held.at < BOARD_OUTPUT_CACHE_MS) return held.files;
   let files: string[] = [];
   try {
-    const text = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, '--'], { cwd: tree, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS, maxBuffer: 1 << 24 });
+    const text = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', '--end-of-options', base, '--'], { cwd: tree, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS, maxBuffer: 1 << 24 });
     files = text.split('\0').filter((file) => file !== '').slice(0, BOARD_OUTPUT_LIMIT);
   } catch {
     // No git, no base or no worktree: the panel says it has no files to show.
