@@ -38,7 +38,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
+import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isMachineSetUp, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -117,6 +117,16 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.match(await skillsLine(), /^\s+done\s+skills$/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
   assert.match(await skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `npx yokoten install`, or install the Claude Code plugin$/);
+});
+
+test('isMachineSetUp: false before install, true after, false when the runtime is gone (#548)', async () => {
+  const sandbox = makeSandbox();
+  assert.equal(isMachineSetUp(sandbox.env), false, 'a fresh machine is not set up');
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  assert.equal(isMachineSetUp(sandbox.env), true, 'install set the machine up');
+  // The runtime the user hooks run is the one piece that must be there.
+  rmSync(join(paths(sandbox.env).runtime, 'bin'), { recursive: true });
+  assert.equal(isMachineSetUp(sandbox.env), false, 'no runtime, no working hooks');
 });
 
 test('uninstall: takes back what install wrote, keeps the user\'s own files and settings (#300)', async () => {
