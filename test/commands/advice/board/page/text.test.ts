@@ -94,3 +94,23 @@ test('board text: the waiting list and the started runs', () => {
   const legacy = renderBoardText(board);
   assert.ok(!legacy.some((line) => line.includes('Waiting for you:')), 'no extra, no new sections');
 });
+
+// #611: the usage view gives each agent, model and day its tokens and an estimate.
+test('board text: the usage view says tokens and an API price in plain words', () => {
+  const board: BoardData = {
+    repo: '/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '',
+    usage: {
+      cells: [{ agent: 'Ada', vendor: 'Claude', model: 'claude-opus-5-5', role: 'engineer', day: '2026-10-22', input: 2_000_000, cached: 1_000_000, output: 100_000, usd: 39, isPartial: false, isLocal: false }],
+      days: ['2026-10-22'],
+      partial: ['mystery-9: no price in the table'],
+      checked: '2026-10-23',
+      sources: [],
+    },
+  };
+  const text = renderBoardText(board).join('\n');
+  assert.match(text, /Usage \(estimates from local session logs; nothing leaves this machine\):/);
+  assert.match(text, /- Claude Ada \[engineer\] · claude-opus-5-5 · 2026-10-22: 2,000,000 in, 1,000,000 cached, 100,000 out: about \$39.00 if paid by API/);
+  assert.match(text, /- Total: 2,000,000 in, 1,000,000 cached, 100,000 out: about \$39.00 if paid by API/);
+  assert.match(text, /Partial:\n- mystery-9: no price in the table\./);
+  assert.match(text, /Prices checked 2026-10-23/);
+});

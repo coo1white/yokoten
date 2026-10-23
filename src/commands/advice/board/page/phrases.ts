@@ -149,6 +149,17 @@ export const ZH_TW: Record<WordKey, string> = {
   timelineEmpty: '最近 24 小時沒有進行中的事。',
   scaleAgo: '24 小時前',
   scaleNow: '現在',
+  usage: '用量與費用',
+  usageHint: '依這台機器上的工作階段日誌估算，不會離開這台機器。',
+  usageEmpty: '本機日誌裡還沒有 token 數。',
+  usageAll: '全部',
+  usageChecker: '檢查員',
+  usageTotal: '合計',
+  usageAbout: '以 API 計價約 {usd}',
+  usagePartial: '不完整',
+  usageLocal: '本機模型，無 API 費用',
+  usageTokens: '{input} 輸入 · {cached} 快取 · {output} 輸出',
+  usagePrices: '價格核對於 {date}，為廠商標價。',
 };
 
 export const JA: Record<WordKey, string> = {
@@ -297,4 +308,15 @@ export const JA: Record<WordKey, string> = {
   timelineEmpty: '直近 24 時間に進行中の作業はありません。',
   scaleAgo: '24 時間前',
   scaleNow: '今',
+  usage: '使用量と費用',
+  usageHint: 'このマシンのセッションログからの推定です。外には出ません。',
+  usageEmpty: 'ローカルログにトークン数がまだありません。',
+  usageAll: 'すべて',
+  usageChecker: 'チェック担当',
+  usageTotal: '合計',
+  usageAbout: 'API 料金なら約 {usd}',
+  usagePartial: '一部のみ',
+  usageLocal: 'ローカルモデルなので API 料金はなし',
+  usageTokens: '入力 {input} · キャッシュ {cached} · 出力 {output}',
+  usagePrices: '価格は {date} に確認したベンダーの表示価格です。',
 };

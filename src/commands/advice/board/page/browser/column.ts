@@ -6,6 +6,7 @@
 import type { AgentView, NeedView } from '../../view.ts';
 import { isCheckoutLead, roleGroup } from '../groups.ts';
 import { renderDesk } from './desk.ts';
+import { renderUsage } from './usage.ts';
 import { ageOf, clearedId, el, icon, say, summaryOf, type PageData, type PageState } from './script.ts';
 
 /** How old a Needs you row is. A day or more says so, in the page's language. */
@@ -150,6 +151,7 @@ export function renderSide(state: PageState, data: PageData): [HTMLElement, HTML
     }
   }
   if (!others.length) list.append(el('p', { class: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));
+  list.append(renderUsage(state, data));
   return [pinned, list];
 }
 

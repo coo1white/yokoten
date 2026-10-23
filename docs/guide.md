@@ -904,7 +904,7 @@ It puts three safe defaults in `.github/` too:
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
-| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text] [--no-open] [--role name] [--vendor name]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, each pull request stage, and each agent's estimated API cost. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests, worktrees and usage as plain text. `--role` and `--vendor` keep only that role's or vendor's usage rows. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1877,6 +1877,17 @@ When a read fails, the page keeps the last lists and says when they were read.
 It only shows; to talk to an agent, use its own terminal for now.
 
 `yokoten board --text` prints the same in plain text.
+
+Each agent's tokens show under the agents, in **Use and cost**.
+The board reads the session logs the agents already write: Claude Code and Muse Code.
+It sends nothing anywhere, and it keeps no message text.
+Each row is one agent, model and day: input, cached and output tokens.
+The price is the vendor's list price in `src/commands/advice/board/feed/read/prices.ts`.
+That table names the day it was checked and each vendor's price page.
+A model with no price, or a log without token counts, says "partial" instead of a guess.
+The dollars are only an estimate: "about $1.20 if paid by API".
+Filter the rows by role (engineers, reviewers, checkers) or by vendor.
+With `--text`, `--role reviewer` and `--vendor claude` keep the same rows.
 
 `yokoten board --text` prints Waiting for you when something waits. It lists tier A
 pull requests with green checks and no Approve on the latest commit, commands the

@@ -39,6 +39,10 @@ export interface PageUi {
   theme: '' | 'light' | 'dark';
   /** The language tag the owner picked, or the browser's. */
   lang: string;
+  /** The role word the usage view keeps, or '' for every role (#611). */
+  usageRole?: string;
+  /** The vendor the usage view keeps, or '' for every vendor. */
+  usageVendor?: string;
 }
 
 /** Everything the page holds while it runs. The board's cookie is not one of these fields. */
@@ -166,7 +170,7 @@ export function loadUi(isPhone: boolean, browserLangs: readonly string[] = []): 
   const groups = ['group.manager', 'group.engineer', 'group.reviewer', 'group.verifier', 'group.helper'];
   const fold: Record<string, boolean> = { 'group.finished': true };
   if (isPhone) for (const group of groups) fold[group] = true;
-  const ui: PageUi = { current: '', fold, open: {}, cleared: [], showCleared: false, mergedCleared: '', theme: '', lang: pickLang(browserLangs) };
+  const ui: PageUi = { current: '', fold, open: {}, cleared: [], showCleared: false, mergedCleared: '', theme: '', lang: pickLang(browserLangs), usageRole: '', usageVendor: '' };
   try {
     const saved = JSON.parse(localStorage.getItem('yokoten-board') ?? 'null');
     if (saved && typeof saved === 'object') {
@@ -332,7 +336,7 @@ export function onClick(state: PageState, event: Event): void {
     state.isNeedsOpen = false;
     closedNeeds = true;
   }
-  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
+  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],[data-usage-role],[data-usage-vendor],#lang,#theme,#needs') ?? null;
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
@@ -371,6 +375,8 @@ export function onClick(state: PageState, event: Event): void {
     ui.cleared.push(...ids);
     showToast(state, 'clearedMany', ids, false);
   } else if (ask('data-fold')) ui.fold[ask('data-fold') as string] = !ui.fold[ask('data-fold') as string];
+  else if (ask('data-usage-role') !== null) ui.usageRole = ask('data-usage-role') as string;
+  else if (ask('data-usage-vendor') !== null) ui.usageVendor = ask('data-usage-vendor') as string;
   else if (ask('data-show-cleared')) ui.showCleared = !ui.showCleared;
   else if (ask('data-restore')) ui.cleared = ui.cleared.filter((id) => id !== ask('data-restore'));
   else if (ask('data-group')) ui.open[ask('data-group') as string] = !ui.open[ask('data-group') as string];

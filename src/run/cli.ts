@@ -382,7 +382,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'board',
     summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
-    usage: '[--text] [--no-open]',
+    usage: '[--text] [--no-open] [--role name] [--vendor name]',
     text: [
       'Serves a live page on this machine only, at http://<repo>.localhost:<port>/.',
       'The folder name is the host. The port stays with this repo. The first visit',
@@ -396,6 +396,8 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' },
       { name: '--no-open', text: 'only print the link; do not open the browser' },
+      { name: '--role', value: 'name', text: 'with --text: only this role in the usage view: engineer, reviewer or checker' },
+      { name: '--vendor', value: 'name', text: 'with --text: only this vendor in the usage view, such as claude or muse' },
     ],
     example: 'yokoten board --text',
   },

@@ -23,6 +23,7 @@ import { type Invocation, parse, print, requireRoot, usage } from '../../shared.
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
 import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssues, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
 import { feedAnswer, makeBoardMask, makeFeedStreams } from './feed/route.ts';
+import { filterUsage, isKnownRole } from './feed/read/usage.ts';
 import { feedsJson, makeFeedStore, recordFeed } from './feed/steps.ts';
 import { boardManifest, boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
 import { renderBoardText } from './page/text.ts';
@@ -434,10 +435,15 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
   if (!root) return 1;
   const gh = ghIn(root, invocation.env, BOARD_READ_TIMEOUT_MS);
   const controls = options.controls ?? createBoardControls(join(root, '.yokoten-board.log'));
+  if (!parsed.flags.has('--text') && (parsed.values['--role'] || parsed.values['--vendor'])) return usage(invocation, '--role and --vendor go with --text');
   if (parsed.flags.has('--text')) {
+    const role = parsed.values['--role'] ?? '';
+    const vendor = parsed.values['--vendor'] ?? '';
+    if (!isKnownRole(role)) return usage(invocation, `unknown --role ${role}; use engineer, reviewer or checker`);
     const remote = repoOf(readOriginUrl(root, invocation.env));
     const openIssues = issueNumbersOf(remote ? readBoardIssues(gh, remote) : BOARD_NO_REMOTE_ISSUES);
     const board = collectBoard(root, invocation.env, gh, Date.now(), openIssues);
+    if ((role || vendor) && board.usage) board.usage = filterUsage(board.usage, { role, vendor });
     const trees = readBoardWorktrees(root, invocation.env);
     const waiting = collectBoardWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls.runs, controls.seen);
     // A run's worktree hides the home folder here, exactly as /data serves it.
