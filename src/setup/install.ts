@@ -25,6 +25,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import { STOPS_FILE, STOPS_OFF_FILE } from '../rules/guards.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -452,6 +453,13 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const hadRuntime = existsSync(target.runtime);
   rmSync(target.runtime, { recursive: true, force: true });
   report.push(`${hadRuntime ? 'removed' : 'not there'} ${target.runtime}`);
+  // The stop log is yokoten's own, so uninstall takes it with the rest (#621).
+  const stopLog = join(target.config, STOPS_FILE);
+  const stopOff = join(target.config, STOPS_OFF_FILE);
+  const hadStopLog = existsSync(stopLog) || existsSync(stopOff);
+  rmSync(stopLog, { force: true });
+  rmSync(stopOff, { force: true });
+  report.push(`${hadStopLog ? 'removed' : 'not there'} the stop log`);
   if (existsSync(target.config)) report.push(`kept ${target.config} (your keys and private marks)`);
   return { ok: true, lines: report };
 }
