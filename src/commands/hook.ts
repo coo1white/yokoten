@@ -465,7 +465,7 @@ function answerBuffer(): { stream: Output; text: () => string } {
   let text = '';
   const stream = new Writable({
     decodeStrings: false,
-    write(chunk, _encoding, done) {
+    write(chunk, _, done) {
       text += String(chunk);
       done();
     },
