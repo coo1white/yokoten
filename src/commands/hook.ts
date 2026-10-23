@@ -2,13 +2,14 @@
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import * as antigravity from '../agents/runtimes/antigravity.ts';
+import * as antigravity from '../agents/runtimes/small/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
+import * as deepseekHarness from '../agents/runtimes/small/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import * as opencode from '../agents/runtimes/small/opencode.ts';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
@@ -51,6 +52,7 @@ export const READERS: Record<string, (input: unknown) => Action> = {
   muse: muse.readToolCall,
   'deepseek-harness': deepseekHarness.readToolCall,
   grok: grok.readToolCall,
+  opencode: opencode.readToolCall,
 };
 
 // What a runtime reads on stdout when a call is refused, and the exit code it wants. The
@@ -61,6 +63,8 @@ const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: nu
   'claude-code': claudeCode.formatDenial,
   antigravity: antigravity.formatDenial,
   grok: grok.formatDenial,
+  // OpenCode's plugin throws the reason from stderr. Stdout stays empty.
+  opencode: opencode.formatDenial,
 };
 
 // How the owner approves a release in each runtime (#350): the command that starts it with
@@ -77,6 +81,7 @@ const RELEASE_FIXES: Record<string, string> = {
   muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
   grok: releaseFix(approve('grok')),
+  opencode: 'OpenCode is not known to pass YOKOTEN_RELEASE_APPROVAL to its plugin. If the owner asked for this, stop and tell them to release outside OpenCode; do not look for another way',
 };
 
 // The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
