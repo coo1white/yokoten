@@ -28,6 +28,11 @@ export interface Finding {
   grade?: FindingGrade;
   /** Why a reviewer may let this finding through. An ignored finding stays in the output. */
   ignored?: string;
+  /**
+   * A question before an action, not a refusal (#401): the owner may let it run. The
+   * hook asks where its runtime can ask, and says the finding anywhere else.
+   */
+  ask?: boolean;
 }
 
 /** A rule as `explain` tells it: the rule, its reason, and the check that holds it. */
@@ -520,7 +525,7 @@ export const RULES = {
   'disk-space': {
     rule: 'the disk that holds the repo has room left (record 0012)',
     why: 'on a full disk, every agent session stops, and the agent cannot tell you why',
-    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading; a note, never a failure',
+    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading. When a heavy job starts and that reading is low, the tool-call guard asks first; it never refuses',
     docs: guide('machine-notes'),
   },
   'agent-temp-dir': {

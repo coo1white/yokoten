@@ -1004,7 +1004,10 @@ Full `doctor` lists them under `machine:` as notes. A note never changes the exi
   the VM frees nothing on the Windows drive. So the note says: back up your work to
   another drive first. Then free space on the Windows drive, or shrink or move the disk
   file with [Microsoft's guide](https://learn.microsoft.com/windows/wsl/disk-space).
-  yokoten does not suggest WSL's sparse mode: WSL marks it unsafe.
+  yokoten does not suggest WSL's sparse mode: WSL marks it unsafe. When the kept reading is
+  low, the tool-call guard asks before a build, a test suite, a package install or a
+  container build starts. Claude Code shows the question; the other agents get the same
+  words as a note. The guard never refuses this, and reads only the kept reading.
 
 - **agent-temp-dir**: another user owns Claude Code's temp folder, `claude-<uid>`. The
   folder is in `CLAUDE_CODE_TMPDIR`, else in `TMPDIR`, by default `/tmp`.
