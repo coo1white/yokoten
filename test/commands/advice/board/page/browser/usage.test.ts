@@ -70,7 +70,8 @@ test('board usage view: a row shows its tokens and an API estimate in plain word
   assert.match(box.textContent, /2,000,000 in · 1,000,000 cached · 100,000 out/);
   assert.match(box.textContent, /about \$39\.00 if paid by API/);
   assert.match(box.textContent, /Prices checked 2026-10-23/);
-  assert.doesNotMatch(box.textContent, /claude-opus-5-5/);
+  assert.match(box.textContent, /claude-opus-5-5 · 2026-10-22/, 'the row names the model and the day');
+  assert.match(box.textContent, /Ada \[engineer\]/, 'the row names the role');
 });
 
 test('board usage view: an unknown price is partial, and says why', () => {

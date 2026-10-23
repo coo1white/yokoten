@@ -160,6 +160,7 @@ export const ZH_TW: Record<WordKey, string> = {
   usageLocal: '本機模型，無 API 費用',
   usageTokens: '{input} 輸入 · {cached} 快取 · {output} 輸出',
   usagePrices: '價格核對於 {date}，為廠商標價。',
+  usageLinks: '價格頁面：',
 };
 
 export const JA: Record<WordKey, string> = {
@@ -319,4 +320,5 @@ export const JA: Record<WordKey, string> = {
   usageLocal: 'ローカルモデルなので API 料金はなし',
   usageTokens: '入力 {input} · キャッシュ {cached} · 出力 {output}',
   usagePrices: '価格は {date} に確認したベンダーの表示価格です。',
+  usageLinks: '価格ページ：',
 };

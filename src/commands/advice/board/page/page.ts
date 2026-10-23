@@ -91,7 +91,7 @@ h2.sh{line-height:inherit}
 .usage .urow,.usage .utotal{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:5px 2px;border-top:1px solid var(--border);font-size:12px}
 .usage .urow:first-of-type{border-top:0}
 .usage .uwho{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.usage .uday{color:var(--mut-fg);font-size:11px}
+.usage .umodel{flex-basis:100%;color:var(--mut-fg);font-size:11px}
 .usage .utok{flex-basis:100%;color:var(--mut-fg);font-size:11px}
 .usage .ucost{margin-left:auto;font-weight:500}
 .usage .ucost.partial{color:var(--wait)}

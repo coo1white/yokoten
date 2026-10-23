@@ -173,6 +173,7 @@ const EN = {
   usageLocal: 'no API bill: a local model',
   usageTokens: '{input} in · {cached} cached · {output} out',
   usagePrices: "Prices checked {date}. Each is the vendor's list price.",
+  usageLinks: 'Price pages:',
 };
 
 /** One word key. Every language has every key; a test holds this. */
@@ -335,6 +336,7 @@ const ZH_CN: Record<WordKey, string> = {
   usageLocal: '本地模型，无 API 费用',
   usageTokens: '{input} 输入 · {cached} 缓存 · {output} 输出',
   usagePrices: '价格核对于 {date}，为厂商标价。',
+  usageLinks: '价格页面：',
 };
 
 /** Every language's words. English also holds the singular forms. */

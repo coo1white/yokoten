@@ -74,11 +74,12 @@ export function renderUsage(state: PageState, data: PageData): HTMLElement {
   ], vendorWord));
   for (const cell of shown) {
     const total = cell.usd;
+    const role = cell.role && state.words.en[`role.${cell.role}`] ? ` [${say(state, `role.${cell.role}`)}]` : cell.role ? ` [${cell.role}]` : '';
     box.append(el('div', { class: 'urow' },
-      el('span', { class: 'uwho' }, `${cell.vendor} · ${cell.agent}`),
-      el('span', { class: 'uday' }, cell.day || '—'),
-      el('span', { class: 'utok' }, say(state, 'usageTokens', { input: usageTokens(state, cell.input), cached: usageTokens(state, cell.cached), output: usageTokens(state, cell.output) })),
-      el('span', { class: `ucost${cell.isPartial ? ' partial' : ''}` }, usageCost(state, total, cell.isLocal))));
+      el('span', { class: 'uwho' }, `${cell.vendor} · ${cell.agent}${role}`),
+      el('span', { class: `ucost${cell.isPartial ? ' partial' : ''}` }, usageCost(state, total, cell.isLocal)),
+      el('span', { class: 'umodel' }, `${cell.model}${cell.day ? ` · ${cell.day}` : ''}`),
+      el('span', { class: 'utok' }, say(state, 'usageTokens', { input: usageTokens(state, cell.input), cached: usageTokens(state, cell.cached), output: usageTokens(state, cell.output) }))));
   }
   if (!shown.length) box.append(el('p', { class: 'quiet' }, say(state, 'usageEmpty')));
   const isPartial = shown.some((cell) => cell.isPartial);
@@ -95,6 +96,15 @@ export function renderUsage(state: PageState, data: PageData): HTMLElement {
   for (const note of usage?.partial ?? []) box.append(el('p', { class: 'quiet' }, note));
   box.append(el('p', { class: 'quiet' }, say(state, 'usageHint')));
   box.append(el('p', { class: 'quiet' }, say(state, 'usagePrices', { date: usage?.checked ?? '' })));
+  const sources = usage?.sources ?? [];
+  if (sources.length) {
+    const links: (HTMLElement | string)[] = [say(state, 'usageLinks')];
+    sources.forEach((source, index) => {
+      if (index) links.push(' · ');
+      links.push(el('a', { href: source.url, target: '_blank', rel: 'noopener noreferrer' }, source.vendor));
+    });
+    box.append(el('p', { class: 'quiet' }, ...links));
+  }
   return box;
 }
 
