@@ -118,12 +118,14 @@ export function installedSkillDirs(env: Env): string[] {
 }
 
 /**
- * The project skill folders that hold a managed yokoten skill, relative to `root`, for the
- * duplicate note (#540). `npx skills add` puts a copy in `.agents/skills` or `.claude/skills`.
+ * The project folders that hold one managed yokoten skill, relative to `root`, for the
+ * duplicate note (#540): `.agents/skills/dispatch` and so on. `npx skills add` puts a copy
+ * in `.agents/skills` or `.claude/skills`. The note names each folder, never the whole
+ * folder above it, which holds other packages' skills too.
  */
 export function projectSkillDirs(root: string): string[] {
   const dirs = ['.agents/skills', '.claude/skills'];
-  return dirs.filter((dir) => kitSkills().some((name) => isManaged(join(root, dir, name, 'SKILL.md'))));
+  return dirs.flatMap((dir) => kitSkills().filter((name) => isManaged(join(root, dir, name, 'SKILL.md'))).map((name) => `${dir}/${name}`));
 }
 
 /** The example install prints when it asks the owner to type a mark (#525). */

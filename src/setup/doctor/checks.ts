@@ -447,23 +447,30 @@ export function doubleInstallCheck(root: string | null, env: Env): Finding | nul
   const homeSkills = installedSkillDirs(env);
   const projectSkills = root ? projectSkillDirs(root) : [];
   if (!pieces.length && !projectSkills.length) return null;
-  const places = [...pieces, ...projectSkills.map((dir) => `the skills in ${dir}`)];
   // A skills-only copy has no hooks and no runtime, so only the skills show up twice.
   const skillsOnly = !pieces.some((piece) => !piece.startsWith('the skills in'));
   const projectList = projectSkills.map((dir) => `\`${dir}\``).join(' and ');
-  const remove =
-    homeSkills.length || !skillsOnly
-      ? projectSkills.length
-        ? `remove the copy with \`yokoten uninstall\`, or delete ${projectList}`
-        : 'remove the copy with `yokoten uninstall`'
-      : `remove the copy: delete ${projectList}`;
-  const what = skillsOnly
-    ? `the yokoten plugin is on, and a skills-only copy is here too: ${places.join('; ')}`
-    : `the yokoten plugin is on, and \`yokoten install\` put these here too: ${places.join('; ')}`;
-  const why = skillsOnly
-    ? 'the plugin brings the same skills, so every skill shows up twice'
-    : 'with both, the guard and the session doctor run twice and every skill shows up twice';
-  return finding('machine-runtime', what, `${remove}; the plugin brings its own`, { why });
+  // One fix per place: uninstall takes the home copy back, and each project skill folder goes.
+  const fixes: string[] = [];
+  if (homeSkills.length) fixes.push('remove the home copy with `yokoten uninstall`');
+  if (projectSkills.length) fixes.push(`delete ${projectList}`);
+  if (!fixes.length) fixes.push('remove the copy with `yokoten uninstall`');
+  const said: string[] = [];
+  if (pieces.length) {
+    said.push(skillsOnly
+      ? `a skills-only copy is here too: the skills in ${homeSkills.join(' and ')}`
+      : `\`yokoten install\` put these here too: ${pieces.join('; ')}`);
+  }
+  // `npx skills add` put this copy here, not install, so install gets no credit for it.
+  if (projectSkills.length) said.push(`\`npx skills add\` put a copy here too: ${projectList}`);
+  const what = `the yokoten plugin is on, and ${said.join('; ')}`;
+  const installsHooks = pieces.some((piece) => piece.startsWith('the SessionStart') || piece.startsWith('the agents'));
+  const why = installsHooks
+    ? 'with both, the guard and the session doctor run twice and every skill shows up twice'
+    : homeSkills.length || projectSkills.length
+      ? 'the plugin brings the same skills, so every skill shows up twice'
+      : 'the plugin brings its own runtime, so it is here twice';
+  return finding('machine-runtime', what, `${fixes.join(' and ')}; the plugin brings its own`, { why });
 }
 
 /**
