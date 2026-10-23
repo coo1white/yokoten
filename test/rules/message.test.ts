@@ -35,6 +35,7 @@ import {
   finding,
   type Finding,
   formatFinding,
+  formatRefusal,
   measureWork,
   noteWork,
   notRepoFinding,
@@ -314,6 +315,22 @@ test('docs: every link goes to a heading of docs/guide.md, so a renamed heading 
     assert.deepEqual(rest, [], `${id}: one anchor`);
     assert.ok(anchors.has(anchor), `${id}: docs/guide.md has no heading for #${anchor}`);
   }
+});
+
+test('refusal: a person reads one labelled line per field (#707)', () => {
+  const found = finding('skip-check', '`git commit --no-verify` skips the commit check', 'fix what the check reports instead');
+  assert.equal(formatRefusal(found), [
+    'yokoten: the guard refused this call: `git commit --no-verify` skips the commit check.',
+    '  why  The commit check is the inspection step, and a skipped check makes a broken commit look reviewed.',
+    '  fix  Fix what the check reports instead.',
+    '  rule skip-check · `yokoten explain skip-check`',
+    `  docs ${DOCS_URL}#the-core-rules`,
+  ].join('\n'));
+  const plain = finding('large-diff', 'big', 'split it');
+  assert.ok(!formatRefusal(plain).includes('  docs '), 'no section fits: no link line');
+  assert.equal(formatRefusal(plain).split('\n').length, 4, 'what, why, fix and rule');
+  // A file and a line stay in front of the what, as in the text form.
+  assert.match(formatRefusal({ ...plain, file: 'a.md', line: 3 }), /^yokoten: the guard refused this call: a\.md:3: big\./);
 });
 
 test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)', () => {

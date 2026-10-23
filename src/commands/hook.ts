@@ -13,7 +13,7 @@ import * as opencode from '../agents/runtimes/small/opencode.ts';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
-import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
+import { type Finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import {
   type Action,
@@ -493,7 +493,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     }
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
-    const reason = `yokoten: ${formatFinding(found)}`;
+    // A person watching the terminal reads the same text, one field per line (#707).
+    const reason = formatRefusal(found);
     say(invocation, `${reason}\n`, invocation.stderr);
     const denial = Object.hasOwn(DENIALS, agent) ? DENIALS[agent](reason) : { stdout: '', exitCode: 2 };
     if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);

@@ -710,6 +710,23 @@ export const formatFindingMarks = (f: Finding): string => {
 export const formatFinding = (f: Finding): string =>
   `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
 
+/**
+ * The text a person watching the terminal sees when the guard stops a call (#707): the
+ * event on the first line, then one labelled line each for the reason, the fix, the rule
+ * and its link. The agent reads the same text, so neither reader gets a run-on paragraph.
+ * The first line stands alone: Grok CLI shows the model only stderr's first line.
+ */
+export const formatRefusal = (f: Finding): string => {
+  const lines = [
+    `yokoten: the guard refused this call: ${place(f)}${f.what}${formatFindingMarks(f)}.`,
+    `  why  ${sentence(f.why)}.`,
+    `  fix  ${sentence(f.fix)}.`,
+    `  rule ${f.id} · \`yokoten explain ${f.id}\``,
+  ];
+  if (f.docs !== undefined) lines.push(`  docs ${f.docs}`);
+  return lines.join('\n');
+};
+
 // ---- Steps a scan takes (#754) ----
 //
 // The linear tests read this count, not the clock. A busy runner made an 8-times longer

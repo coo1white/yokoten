@@ -133,7 +133,7 @@ test('hook --stop: sends the agent back once with the findings in changed files,
   result = await sandbox.call(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Bash', tool_input: { command: 'git push --tags' } }) });
   assert.equal(result.status, 2);
   assert.doesNotMatch(result.stderr, /fatal|not a git repository/);
-  assert.match(result.stderr, /^yokoten: git push --tags pushes tags\..*`YOKOTEN_RELEASE_APPROVAL=1 claude` \(or your agent's command\)/);
+  assert.match(result.stderr, /^yokoten: the guard refused this call: git push --tags pushes tags\.[\s\S]*`YOKOTEN_RELEASE_APPROVAL=1 claude` \(or your agent's command\)/);
   // A broken config is an internal error: the turn ends, with one line on stderr.
   sandbox.write('yokoten.json', '{ broken');
   result = await sandbox.call(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo }) });
@@ -222,7 +222,7 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
   };
   for (const [agent, [input, fix]] of Object.entries(agents)) {
     const result = await sandbox.call(['hook', '--agent', agent], { input: JSON.stringify(input) });
-    assert.match(result.stderr, /^yokoten: git push --tags pushes tags\. Only the owner decides when to release\./, agent);
+    assert.match(result.stderr, /^yokoten: the guard refused this call: git push --tags pushes tags\.[\s\S]*Only the owner decides when to release\./, agent);
     assert.match(result.stderr, fix, agent);
     // --json carries the same fix.
     const json = JSON.parse((await sandbox.call(['hook', '--agent', agent, '--json'], { input: JSON.stringify(input) })).stdout);
@@ -347,7 +347,7 @@ test("hook: an agent that can't rewrite runs the command, or with privacy.output
   const result = await codexCall();
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /^yokoten: `git remote` prints remote URLs, and this agent can't filter it\./);
+  assert.match(result.stderr, /^yokoten: the guard refused this call: `git remote` prints remote URLs, and this agent can't filter it\./);
   assert.match(result.stderr, /Run it as `set -o pipefail # yokoten-redact\n\(\ngit remote -v\n\) 2>&1 \| \{ "[^"]+" "[^"]+" redact \|\| cat; \}`\./);
   // A push still runs: only plain reads are ever stopped.
   assert.deepEqual(pick(await codexCall('git push origin main')), [0, '', '']);
@@ -369,7 +369,7 @@ test('hook: in-process, the tool call and the end-of-turn event come from the gi
   const call = (command: string) => JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
   const force = await run([], call('git push --force'));
   assert.equal(force.code, 2);
-  assert.match(force.stderr, /^yokoten: git push --force forces the push\./);
+  assert.match(force.stderr, /^yokoten: the guard refused this call: git push --force forces the push\./);
   assert.deepEqual(await run([], call('git status')), { code: 0, stdout: '', stderr: '' });
   assert.deepEqual(await run(['--json'], 'not json'), { code: 0, stdout: `${JSON.stringify({ blocked: false, toolCall: false }, null, 2)}\n`, stderr: '' });
   // The stop check: a secret in a changed file sends the agent back, once.

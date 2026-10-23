@@ -892,7 +892,7 @@ export function judgeWithDeadline(action: Action, options: JudgeOptions, deadlin
 }
 
 /** The finding when the guard reads an action past its deadline. */
-export const lateFinding = (action: Action, deadlineMs: number): Finding => unreadable(`the guard took longer than ${deadlineMs} ms to read this ${action.command === undefined ? 'edit' : 'command'}`);
+export const lateFinding = (action: Action, deadlineMs: number): Finding => unreadable(`reading this ${action.command === undefined ? 'edit' : 'command'} took longer than ${deadlineMs} ms`);
 const unreadable = (what: string): Finding => finding('unreadable-command', what, 'split the command into smaller ones');
 
 // The guard worker loads this file alone. This layer cannot import the host layer
