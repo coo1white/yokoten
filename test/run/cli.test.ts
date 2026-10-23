@@ -646,6 +646,58 @@ test('plugin launcher: a safe cache copy runs, and any other path does not (#706
   assert.match(launchText, /userInfo\(\)\.homedir/, 'the account home comes from the password file');
 });
 
+// A spawn that sets `error`, or that has no exit status, did not run the guard (#706).
+test('plugin launcher: a spawn error, or no exit status, refuses the tool call (#706)', async () => {
+  const sandbox = makeSandbox();
+  const rootBinary = join(sandbox.repo, 'plugin-root', 'bin', 'yokoten.mjs');
+  mkdirSync(dirname(rootBinary), { recursive: true });
+  writeFileSync(rootBinary, "process.stdout.write('root hook --commands-only');\n");
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const refused = "yokoten's guard failed (exit 1), so the command is refused; run `yokoten doctor`\n";
+  const run = (child: { status: number | null; signal: null; error?: Error; stdout: Buffer; stderr: Buffer }) => launch.runLaunch({
+    mode: 'tool', fallback: rootBinary, args: ['hook', '--commands-only'], env: sandbox.env, input: '{}', cwd: sandbox.repo, accountHome: sandbox.home, spawn: () => child,
+  });
+  const error = Object.assign(new Error('spawn EPERM'), { code: 'EPERM' });
+  const bytes = { signal: null, stdout: Buffer.from('ran'), stderr: Buffer.from('') } as const;
+  assert.deepEqual(pick(run({ status: 0, error, ...bytes })), [2, '', refused], 'status 0 with a spawn error');
+  assert.deepEqual(pick(run({ status: null, ...bytes })), [2, '', refused], 'no exit status');
+  assert.deepEqual(pick(run({ status: 2, error, ...bytes, stderr: Buffer.from('no\n') })), [2, '', refused], 'status 2 with a spawn error');
+});
+
+// The session copy is checked like the cache copy: a symlink may not leave the plugin folder (#706).
+test('plugin launcher: a fallback symlink must stay inside the plugin folder (#706)', async () => {
+  const sandbox = makeSandbox();
+  const rootDir = join(sandbox.repo, 'plugin-root');
+  const rootBinary = join(rootDir, 'bin', 'yokoten.mjs');
+  const evil = join(sandbox.repo, 'evil.mjs');
+  mkdirSync(dirname(rootBinary), { recursive: true });
+  writeFileSync(evil, "process.stdout.write('evil hook --commands-only');\n");
+  symlinkSync(evil, rootBinary);
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const run = () => launch.runLaunch({
+    mode: 'tool', fallback: rootBinary, args: ['hook', '--commands-only'], env: sandbox.env, input: '{}', cwd: sandbox.repo, accountHome: sandbox.home,
+  });
+  const leaked = run();
+  assert.equal(leaked.stdout, '', 'a symlink out of the plugin folder does not run');
+  assert.equal(leaked.status, 2, 'no safe fallback refuses the call');
+  writeFileSync(join(rootDir, 'bin', 'inner.mjs'), "process.stdout.write('inner hook --commands-only');\n");
+  rmSync(rootBinary);
+  symlinkSync(join(rootDir, 'bin', 'inner.mjs'), rootBinary);
+  assert.deepEqual(pick(run()), [0, 'inner hook --commands-only', ''], 'a symlink inside the plugin folder runs');
+});
+
+// A Windows account cache is `C:\Users\...\cache\<marketplace>\yokoten\<version>` (#706).
+test('plugin launcher: a drive-letter cache path is safe, and a colon elsewhere is not (#706)', async () => {
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const windowsPath = (...parts: string[]) => parts.join('\\');
+  const cache = windowsPath('C:', 'Users', 'account', '.claude', 'plugins', 'cache', 'yokoten', 'yokoten', 'abc123');
+  assert.equal(launch.isSafeFolder(cache, 'yokoten', 'abc123'), true, 'the account cache on a drive letter');
+  assert.equal(launch.isSafeFolder(cache.replaceAll('\\', '/'), 'yokoten', 'abc123'), true, 'the same cache with slashes');
+  assert.equal(launch.isSafeFolder(windowsPath('C:', 'Users', 'account', 'notes.txt'), 'yokoten', 'abc123'), false, 'a drive path that is not the cache');
+  assert.equal(launch.isSafeFolder(windowsPath('C:', 'Users', 'ac:count', '.claude', 'plugins', 'cache', 'yokoten', 'yokoten', 'abc123'), 'yokoten', 'abc123'), false, 'a colon in a later segment');
+  assert.equal(launch.isSafeFolder(windowsPath('C:', 'Users', 'account', '.claude', 'plugins', 'cache', 'yokoten', 'yokoten', 'ab:c'), 'yokoten', 'ab:c'), false, 'a colon in the version');
+});
+
 // #174: the pitch demo runs end to end, offline, in a temp folder it removes, and never
 // touches this repo's kit.
 test('demo: scripts/demo/loop.ts walks the loop from an incident to a doctor note, and leaves nothing', () => {
