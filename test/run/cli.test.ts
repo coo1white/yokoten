@@ -293,8 +293,8 @@ test('help: a typo in a command or an option names the closest one; a far one li
 });
 
 // A guard that crashes, runs out of memory or is killed must refuse the call: the agents
-// run a call on any exit but 2 (#260). Each tool-call hook, as init, install and the plugin
-// write it, runs through sh with its runtime replaced by a script that ends one way.
+// run a call on any exit but 2 (#260). Each direct tool-call hook runs through sh, with its
+// runtime replaced by a script that ends one way. The plugin guard goes through runLaunch.
 test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', async () => {
   const sandbox = makeSandbox();
   // Codex and Gemini CLI are installed, so install writes their home hooks too.
@@ -314,6 +314,8 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   const plugin = (manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command as string).replaceAll(PLUGIN_ROOT, '$PLUGIN');
   const calls = [...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1), ...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool, plugin];
   assert.equal(calls.length, 7);
+  // The shell runs the six direct guards. The plugin guard is runLaunch, below.
+  const directCalls = calls.filter((command) => command !== plugin);
   // The project, the home and the plugin all sit under a path with a space.
   const base = join(sandbox.home, 'a b');
   const repo = join(base, 'my repo');
@@ -333,6 +335,11 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   // The plugin command runs bin/launch.mjs, which then runs yokoten.mjs (#706).
   mkdirSync(join(pluginRoot, 'bin'), { recursive: true });
   writeFileSync(join(pluginRoot, 'bin', 'launch.mjs'), readFileSync(join(dirname(CLI), 'launch.mjs')));
+  // The plugin guard is runLaunch with this temp home. A machine install stays outside this check (#706).
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const pluginBinary = join(pluginRoot, 'bin', 'yokoten.mjs');
+  const pluginRun = () => launch.runLaunch({ mode: 'tool', fallback: pluginBinary, args: ['hook', '--commands-only'], env, input: '{}', cwd: repo, accountHome: home });
+  const expectPlugin = (expected: unknown[]) => assert.deepEqual(pick(pluginRun()), expected, 'plugin');
   // Gemini CLI puts $GEMINI_PROJECT_DIR in the command shell-quoted itself, as shell-quote writes it.
   const quoted = `'${repo.replaceAll("'", "'\\''")}'`;
   // dash (Linux's /bin/sh) and bash each print a job line for a killed child; bash's holds
@@ -346,24 +353,28 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   const refused = (code: number) => `yokoten's guard failed (exit ${code}), so the command is refused; run \`yokoten doctor\`\n`;
   // A failure gives our one line on stderr and nothing else: node's own error is dropped.
   runtime("process.stderr.write('a trace with /a/path\\n'); process.exit(1);\n");
-  each(calls, [2, '', refused(1)]);
+  each(directCalls, [2, '', refused(1)]);
+  expectPlugin([2, '', refused(1)]);
   runtime("process.stderr.write('/a/path\\n'); process.kill(process.pid, 'SIGKILL');\n");
-  each(calls, [2, '', refused(137)]);
+  each(directCalls, [2, '', refused(137)]);
+  expectPlugin([2, '', refused(137)]);
   // A guard's own answer passes as it is, stdout and stderr byte for byte.
   runtime("process.stdout.write('{\"a\":1}\\n\\n'); process.stderr.write('note\\n\\n'); process.exit(0);\n");
-  each(calls, [0, '{"a":1}\n\n', 'note\n\n']);
+  each(directCalls, [0, '{"a":1}\n\n', 'note\n\n']);
+  expectPlugin([0, '{"a":1}\n\n', 'note\n\n']);
   runtime("process.stdout.write('{}'); process.stderr.write('no\\n'); process.exit(2);\n");
-  each(calls, [2, '{}', 'no\n']);
+  each(directCalls, [2, '{}', 'no\n']);
+  expectPlugin([2, '{}', 'no\n']);
   // A runaway read stops at the small heap and is refused, without swapping, and without
   // the heap trace V8 writes.
   runtime('const a = []; for (;;) a.push(new Array(1e6).fill(1));\n');
-  each([project.PreToolUse[0], plugin], [2, '', refused(134)]);
+  each([project.PreToolUse[0]], [2, '', refused(134)]);
+  expectPlugin([2, '', refused(134)]);
   // No node on the agent's PATH: one line, and the call goes on, so `yokoten doctor` can run.
   const noNode = join(base, 'no-node');
   mkdirSync(noNode);
   symlinkSync(spawnSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noNode, 'git'));
   runtime('process.exit(0);\n');
-  const directCalls = calls.filter((command) => command !== plugin);
   for (const sh of shells) for (const command of directCalls) assert.deepEqual(pick(shell(command, sh, { PATH: noNode })), [1, '', `${MISSING_NODE}\n`], `${sh}: ${command}`);
   // The plugin command is `node bin/launch.mjs`. With no node, the shell cannot print MISSING_NODE.
   // Exit is not 2, so the call still goes on.
