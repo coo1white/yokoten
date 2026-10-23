@@ -309,11 +309,12 @@ test('hook: a quote that hides a redirect gets no allow, and the file is not wri
   }
 });
 
-test('hook: a glob that a file name turns into an option gets no allow (#413)', async () => {
+test('hook: a glob that a file name turns into an option is refused (#413, #457)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('--output=leak.txt', 'x\n');
   const result = await sandbox.call(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'git log *' } }) });
-  assert.deepEqual(pick(result), [0, '', '']);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /may expand to an option/);
   assert.equal(existsSync(join(sandbox.repo, 'leak.txt')), false);
 });
 
