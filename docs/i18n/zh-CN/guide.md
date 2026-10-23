@@ -682,6 +682,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签；最后一行写明做出这个 PR 的每个 AI 和模型：`🤖 Made with <agent> (<model>)`，可写一个或多个逗号分隔的组合；审阅的 AI 也可以写上：`🤖 Made with worker <X> (<模型>), reviewed by <Y> (<模型>) and <Z> (<模型>), lead Claude Code (<模型>)`（一个或两个审阅者，最多两个）。见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败 |
 | `check --pr <number>` | 同样的检查，但通过 `gh` 读这个编号的 PR，没有 CI 的仓库合并前自己跑 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `borrowed [--dry-run] [--json]` | 通过 `gh` 把 `src/borrowed/` 里的每个文件和上游默认分支对比，每个有变化的来源开一个 issue。安全修复会在标题里点出来。`--dry-run` 只显示报告，不开 issue；`--json` 以数据形式输出报告。见[借来的代码](#借来的代码) |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
@@ -981,6 +982,60 @@ commit 或同一个 PR 里。
 「至少」落后几个 commit。不够用时，`check` 整次运行只给一条提醒，说有几份译文没检查，
 不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。`check` 从不
 fetch。CI 里 checkout 时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
+
+### 借来的代码
+
+记录 0024 说明 yokoten 什么时候可以复制别的项目的代码。复制来的一小块叫**轮子**。轮子
+放在 `src/borrowed/`，永远不作为依赖。它很小：只放我们需要的那部分。轮子里不是本项目
+自己的代码，所以读者必须能看出它从哪来。
+
+只在宽松许可证下复制：MIT、BSD-2-Clause、BSD-3-Clause、ISC 或 Apache-2.0。其他许可证
+走净室路线：一个 agent 只写代码做什么，另一个没看过源码的 agent 根据这份说明写代码。
+
+每个轮子开头都有一段注释文件头，放在任何代码之前：
+
+```ts
+// source: https://github.com/example/upstream/blob/3f2a1c9d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f/src/thing.ts
+// commit: 3f2a1c9d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f
+// license: MIT
+// copyright: Copyright (c) 2026 Example Authors
+// changes: renamed readThing to parseThing
+```
+
+| 字段 | 是否必需 | 内容 |
+|------|----------|------|
+| `source` | 总是 | 上游文件的网址，形如 `github.com/<owner>/<repo>/blob/...` |
+| `commit` | 总是 | 取代码时上游提交的完整 40 位 sha |
+| `license` | 总是 | SPDX 名称：`MIT`、`BSD-2-Clause`、`BSD-3-Clause`、`ISC` 或 `Apache-2.0` |
+| `copyright` | 总是 | 上游的版权声明，逐字保留 |
+| `notice` | Apache-2.0 | 上游的 NOTICE 文本 |
+| `changes` | 否 | 我们改了什么，让读者分得清我们的修改和上游的代码 |
+
+每个字段占一行：`// 字段: 值`。文件头必须在最前面，在代码之前。只有第一段注释算数。
+同一个字段写两次时，第一个值生效。
+
+`yokoten check` 会读 `src/borrowed/` 里每个文件的文件头，既查整棵树，也查即将提交的
+改动。每个缺失的字段都会报告，并给出文件和要补的那一行。文件头不对，提交就过不去。
+来源不是网址，或者提交不是完整 sha，也会被拒绝。
+
+五种之外的许可证会被拒绝，即使文件头是完整的。修改办法是
+`use the clean-room road in record 0024`（走记录 0024 的净室路线）。检查不认识的许可证
+名称也一样。
+
+`borrowed` 工作流每周一运行 `yokoten borrowed`。对每个轮子，命令问 GitHub：上游默认分支
+上，哪些提交改动过这个源文件。如果有晚于我们所取提交的提交，上游就变了。
+
+命令**每个来源开一个 issue**，不是每个文件一个。它会先找已经提到这个来源的未关闭 issue，
+所以之后的运行不会重复开。issue 里列出本地文件、我们取的提交，以及上游更新的提交。提交
+说明里提到安全修复时，标题是 `check: take a borrowed security fix`；其他变化用
+`check: review borrowed code upstream`。
+
+主机回答不了的来源是一个缺口，不是通过。任务会说明是哪个来源，并以失败结束，免得有人
+把沉默当成「上游没变」。只想看报告、不开 issue，运行 `yokoten borrowed --dry-run`。
+
+上游修了 bug，就取新的提交：更新 `source` 和 `commit`，重新应用我们的 `changes`，让测试
+通过。如果变化没有碰到我们用的那部分，在 issue 里说明并关闭它。不再用某个轮子时，删掉
+那个文件。退路也是出路：这段代码很小，测试说明了它必须做什么（记录 0014）。
 
 ### 更新规则
 

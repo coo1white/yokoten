@@ -58,4 +58,6 @@ Every borrowed piece, a "wheel", goes the same way, whoever does the work.
 
 - Each wheel costs one look at its sources before any code is written.
 - `src/borrowed/` is the seventh entry in `src/`, at the folder cap.
-- The check and the upstream watch are work still to do (issue #676). Until then, the lead checks notices by hand in review.
+- The check and the upstream watch run (#676): `yokoten check` refuses a wheel with no
+  source, commit, license or notice, and the `borrowed` job opens one issue when upstream
+  moves.
