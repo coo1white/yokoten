@@ -1498,8 +1498,6 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // with nothing keeping it out of .git is the same loss (#573, #744). For a worker
       // the mark rule above already answers, with its own id.
       checkRemoveGit(words, postCwd, env) ??
-      // git's own ways to lose uncommitted work, a stash, the reflog or the default branch (#828).
-      checkGitLoseWork(words, postCwd, env) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -1511,7 +1509,11 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // The likely folder, read as written: a write there is refused, never let through.
       checkGitSetupWrites(words, { folder: nearCwd, from, env }) ??
       // A changed home folder hides the private marks (#664).
-      checkHomeSetting(words, env);
+      checkHomeSetting(words, env) ??
+      // Git's own ways to lose uncommitted work, a stash, the reflog or the default branch
+      // (#828). It answers last among the late rules, so a command that also points at the
+      // config folder or sets the folder git works in keeps its own rule (#591).
+      checkGitLoseWork(words, postCwd, env);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
