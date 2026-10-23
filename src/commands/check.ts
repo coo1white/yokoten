@@ -86,9 +86,8 @@ function anchorRepo(root: string, env: Invocation['env'], given?: string): strin
   }
 }
 
-/** The event log: `--log`, or `.git/yokoten/events.jsonl` under the common git folder. */
-function eventLogPath(root: string, env: Invocation['env'], given?: string): string {
-  if (given) return resolve(root, given);
+/** The event log: `.git/yokoten/events.jsonl` under the repo's common git folder. */
+function eventLogPath(root: string, env: Invocation['env']): string {
   const common = readGit(root, ['rev-parse', '--git-common-dir'], { env }).toString('utf8').trim();
   return resolve(root, common, 'yokoten', 'events.jsonl');
 }
@@ -101,9 +100,9 @@ async function runAnchor(invocation: Invocation, root: string, notes: Finding[],
   const { env } = invocation;
   let logPath: string;
   try {
-    logPath = eventLogPath(root, env, values['--log']);
+    logPath = eventLogPath(root, env);
   } catch {
-    return [finding('anchor', 'git cannot name the event log for this repo', 'run the check inside the repo, or pass --log path')];
+    return [finding('anchor', 'git cannot name the event log for this repo', 'run the check inside the repo')];
   }
   let text: string;
   try {

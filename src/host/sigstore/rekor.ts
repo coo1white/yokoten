@@ -35,10 +35,8 @@ export const workflowIdentity = (repo: string, workflow = ANCHOR_WORKFLOW, ref =
 /** The SHA-256 of the 64 hex characters, as the hashedrekord entry stores it. */
 export const anchoredDigest = (hash: string): string => createHash('sha256').update(hash).digest('hex');
 
-/** What one check needs: the API, the identity expected, and a fetch for tests. */
+/** What one check needs: the identity expected, and a fetch for tests. */
 export interface RekorOptions {
-  /** The API's base URL; a test points it at its own server. */
-  api?: string;
   /** The certificate URI that must have signed the anchor. */
   identity: string;
   /** The fetch to use; the process's own by default. */
@@ -55,8 +53,8 @@ export interface RekorAnchor {
 
 export type RekorFind = { found: RekorAnchor } | { problem: string };
 
-/** The PEM of Rekor's public key, fetched once per API for a whole check. */
-const rekorKeys = new Map<string, Promise<string>>();
+/** Rekor's public key, fetched once for a whole check. */
+let rekorKey: Promise<string> | undefined;
 
 /** One HTTP answer, as text, with a failure of our own that never names the address. */
 async function read(call: typeof fetch, url: string, init: RequestInit = {}): Promise<{ status: number; text: string }> {
@@ -69,19 +67,21 @@ async function read(call: typeof fetch, url: string, init: RequestInit = {}): Pr
   return { status: response.status, text: await response.text() };
 }
 
-/** Rekor's public key, for a test server or the real one. */
-function rekorKey(options: RekorOptions, api: string): Promise<string> {
-  let key = rekorKeys.get(api);
-  if (!key) {
-    key = (async () => {
-      const { status, text } = await read(options.fetch ?? fetch, `${api}/api/v1/log/publicKey`);
+/** Rekor's public key, from the real Rekor or a test's fetch. */
+function readPublicKey(options: RekorOptions): Promise<string> {
+  if (!rekorKey) {
+    const asked = (async () => {
+      const { status, text } = await read(options.fetch ?? fetch, `${REKOR_API}/api/v1/log/publicKey`);
       if (status !== 200 || !text.includes('BEGIN PUBLIC KEY')) throw new Error('Rekor did not give its public key');
       return text;
     })();
-    rekorKeys.set(api, key);
-    key.catch(() => rekorKeys.delete(api));
+    rekorKey = asked;
+    // A read that failed is not kept: the next check asks again.
+    asked.catch(() => {
+      if (rekorKey === asked) rekorKey = undefined;
+    });
   }
-  return key;
+  return rekorKey;
 }
 
 const base64 = (value: unknown): Buffer | null => (typeof value === 'string' ? Buffer.from(value, 'base64') : null);
@@ -168,11 +168,10 @@ function verifyEntry(body: string, publicKeyPem: string, hash: string, options: 
 export async function findAnchor(hash: string, options: RekorOptions): Promise<RekorFind> {
   // Only the one shape an anchor has leaves the machine: 64 lowercase hex characters.
   if (!/^[0-9a-f]{64}$/.test(hash)) return { problem: 'the day has no 64-character lowercase hex hash to look up' };
-  const api = (options.api ?? REKOR_API).replace(/\/$/, '');
   const call = options.fetch ?? fetch;
   let index: { status: number; text: string };
   try {
-    index = await read(call, `${api}/api/v1/index/retrieve`, {
+    index = await read(call, `${REKOR_API}/api/v1/index/retrieve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ hash: `sha256:${hash}` }),
@@ -192,7 +191,7 @@ export async function findAnchor(hash: string, options: RekorOptions): Promise<R
 
   let key: string;
   try {
-    key = await rekorKey(options, api);
+    key = await readPublicKey(options);
   } catch (err) {
     return { problem: (err as Error).message };
   }
@@ -202,7 +201,7 @@ export async function findAnchor(hash: string, options: RekorOptions): Promise<R
     if (typeof uuid !== 'string') continue;
     let answer: { status: number; text: string };
     try {
-      answer = await read(call, `${api}/api/v1/log/entries/${encodeURIComponent(uuid)}`);
+      answer = await read(call, `${REKOR_API}/api/v1/log/entries/${encodeURIComponent(uuid)}`);
     } catch (err) {
       why = (err as Error).message;
       continue;

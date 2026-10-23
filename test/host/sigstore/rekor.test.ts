@@ -115,14 +115,17 @@ async function fakeRekor(read: (hash: string) => Entry | undefined) {
     res.end('{}');
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
-  return { asked, api: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  // The test's server answers the paths findAnchor asks for; Rekor's own address stays fixed.
+  const call = ((input: string | URL | Request, init?: RequestInit) => fetch(new URL(new URL(String(input)).pathname, base), init)) as typeof fetch;
+  return { asked, call, close: () => server.close() };
 }
 
 test('rekor: an entry this workflow signed is found, with its log index', async () => {
   const good = entryFor(HASH, mine);
   const fake = await fakeRekor((hash) => (hash === HASH ? good : undefined));
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { found: { uuid: 'uuid-1', logIndex: 42, integratedTime: good.integratedTime } });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { found: { uuid: 'uuid-1', logIndex: 42, integratedTime: good.integratedTime } });
     assert.deepEqual(fake.asked, [HASH]);
   } finally {
     fake.close();
@@ -132,7 +135,7 @@ test('rekor: an entry this workflow signed is found, with its log index', async 
 test('rekor: a hash Rekor does not hold is not anchored', async () => {
   const fake = await fakeRekor(() => undefined);
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { problem: 'Rekor holds no entry for this hash' });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { problem: 'Rekor holds no entry for this hash' });
   } finally {
     fake.close();
   }
@@ -142,7 +145,7 @@ test('rekor: another identity signed it, so it is not an anchor of this repo', a
   const other = entryFor(HASH, theirs);
   const fake = await fakeRekor(() => other);
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { problem: 'another identity signed the anchor' });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { problem: 'another identity signed the anchor' });
   } finally {
     fake.close();
   }
@@ -155,7 +158,7 @@ test('rekor: a body changed after the SET was signed is refused', async () => {
   changed.body = Buffer.from(JSON.stringify(body)).toString('base64');
   const fake = await fakeRekor(() => changed);
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { problem: 'the signed entry timestamp does not verify with Rekor\'s public key' });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { problem: 'the signed entry timestamp does not verify with Rekor\'s public key' });
   } finally {
     fake.close();
   }
@@ -169,7 +172,7 @@ test('rekor: a re-sealed entry that commits to another hash is refused', async (
   reseal(wrong);
   const fake = await fakeRekor(() => wrong);
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { problem: 'the entry commits to another hash' });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { problem: 'the entry commits to another hash' });
   } finally {
     fake.close();
   }
@@ -183,7 +186,7 @@ test('rekor: a signature over another hash is refused', async () => {
   reseal(wrong);
   const fake = await fakeRekor(() => wrong);
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { problem: 'the workflow\'s signature over the hash does not verify' });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { problem: 'the workflow\'s signature over the hash does not verify' });
   } finally {
     fake.close();
   }
@@ -195,7 +198,7 @@ test('rekor: the certificate must be valid when Rekor took the entry', async () 
   reseal(old);
   const fake = await fakeRekor(() => old);
   try {
-    assert.deepEqual(await findAnchor(HASH, { api: fake.api, identity: IDENTITY }), { problem: 'the certificate was not valid when Rekor took the entry' });
+    assert.deepEqual(await findAnchor(HASH, { identity: IDENTITY, fetch: fake.call }), { problem: 'the certificate was not valid when Rekor took the entry' });
   } finally {
     fake.close();
   }
