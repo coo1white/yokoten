@@ -4,6 +4,10 @@ description: Hand one task to a worker agent and take its result back. Use when 
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line. Then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Dispatch a task to a worker
 
 The lead plans and reviews; a worker changes code. Treat the worker like a new

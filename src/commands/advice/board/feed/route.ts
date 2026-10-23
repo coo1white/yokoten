@@ -61,5 +61,5 @@ export function feedAnswer(streams: StreamStore, root: string, env: Env, key: st
   if (!found) return null;
   // The masks are built before any line is read, so a failure sends nothing.
   streams.mask('');
-  return readStream(streams, key, found.tree.path, found.agent.vendor, cursor);
+  return readStream(streams, key, found.tree.path, found.agent.vendor, cursor, Date.now(), found.agent.log);
 }
