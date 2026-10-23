@@ -6,7 +6,7 @@ import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
-import { ageText, BOARD_OUTPUT_LIMIT, parseBoardAgent, readBoardAgents, readBoardOutputs, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
+import { ageText, BOARD_OUTPUT_CACHE_LIMIT, BOARD_OUTPUT_CACHE_MS, BOARD_OUTPUT_LIMIT, type BoardOutputEntry, parseBoardAgent, readBoardAgents, readBoardOutputs, readBoardWorktrees, readDefaultBranch, readMergeBase, trimBoardOutputs } from '../../../../src/commands/advice/board/agents.ts';
 
 const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '', contextUsed: null, contextLimit: null, background: [] };
 
@@ -95,5 +95,53 @@ test('board outputs: changed files are capped at 20 and a bad base is no files',
   assert.equal(files.length, BOARD_OUTPUT_LIMIT);
   assert.ok(files.every((file) => /^out-\d+\.txt$/.test(file)), files.join(','));
   assert.deepEqual(readBoardOutputs(sandbox.repo, 'no-such-base', sandbox.env), []);
+});
+
+// #784: a new file the desk has not staged yet is still a file it changed.
+test('board outputs: a staged file and an untracked file both show', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  writeFileSync(join(sandbox.repo, 'staged.txt'), 'x');
+  assert.equal(sandbox.git('add', 'staged.txt').status, 0);
+  writeFileSync(join(sandbox.repo, 'untracked.txt'), 'x');
+  assert.deepEqual(readBoardOutputs(sandbox.repo, 'HEAD', sandbox.env), ['staged.txt', 'untracked.txt']);
+});
+
+// #784: the page reads every 15 seconds, so the answer must stand a little longer than that.
+test('board outputs: an answer stands past the page refresh, then git is asked again', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  assert.ok(BOARD_OUTPUT_CACHE_MS > 15000, `the window is ${BOARD_OUTPUT_CACHE_MS} ms`);
+  writeFileSync(join(sandbox.repo, 'first.txt'), 'x');
+  assert.deepEqual(readBoardOutputs(sandbox.repo, 'HEAD', sandbox.env, 1000), ['first.txt']);
+  writeFileSync(join(sandbox.repo, 'second.txt'), 'x');
+  assert.deepEqual(readBoardOutputs(sandbox.repo, 'HEAD', sandbox.env, 1000 + BOARD_OUTPUT_CACHE_MS - 1), ['first.txt']);
+  assert.deepEqual(readBoardOutputs(sandbox.repo, 'HEAD', sandbox.env, 1000 + BOARD_OUTPUT_CACHE_MS), ['first.txt', 'second.txt']);
+});
+
+// #784: a board left open all day keeps a fixed number of answers, and the oldest go first.
+test('board outputs: the cache keeps 64 answers and drops the oldest', () => {
+  const entries = new Map<string, BoardOutputEntry>();
+  for (let index = 0; index < BOARD_OUTPUT_CACHE_LIMIT + 6; index += 1) entries.set(`key-${index}`, { at: index, files: [] });
+  trimBoardOutputs(entries);
+  assert.equal(entries.size, BOARD_OUTPUT_CACHE_LIMIT);
+  assert.equal(entries.has('key-5'), false, 'the oldest keys go');
+  assert.equal(entries.has('key-6'), true, 'the rest stay');
+});
+
+// #784: a desk on the main branch, or on none, counts from where it left the default
+// branch, so the commits it made on its own branch are not lost.
+test('board outputs: the merge base shows a commit that a HEAD base hides', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  assert.equal(readDefaultBranch(sandbox.repo, sandbox.env), 'main');
+  assert.equal(sandbox.git('checkout', '-q', '-b', 'feature').status, 0);
+  writeFileSync(join(sandbox.repo, 'work.txt'), 'x');
+  assert.equal(sandbox.git('add', 'work.txt').status, 0);
+  assert.equal(sandbox.git('commit', '-q', '-m', 'work').status, 0);
+  assert.deepEqual(readBoardOutputs(sandbox.repo, 'HEAD', sandbox.env), []);
+  const where = readMergeBase(sandbox.repo, 'main', sandbox.env);
+  assert.notEqual(where, '');
+  assert.deepEqual(readBoardOutputs(sandbox.repo, where, sandbox.env), ['work.txt']);
 });
 

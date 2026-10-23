@@ -22,8 +22,10 @@ export const BOARD_AGENT_FILE = '.yokoten-agent.json';
 export const BOARD_OUTPUT_LIMIT = 20;
 /** The most background tasks the panel shows. */
 export const BOARD_BACKGROUND_LIMIT = 8;
-/** How long the changed files stand before git is asked again. The page reads every 15 seconds, so a poll reuses the last answer. */
-export const BOARD_OUTPUT_CACHE_MS = 15000;
+/** How long the changed files stand before git is asked again. The page reads every 15 seconds, so a poll reuses the last answer, and a poll a little late still finds it (#784). */
+export const BOARD_OUTPUT_CACHE_MS = 20000;
+/** The most answers the cache keeps. Past this the oldest key goes, so a board left open all day keeps a fixed size (#784). */
+export const BOARD_OUTPUT_CACHE_LIMIT = 64;
 /** Seats per vendor, in the common git folder. The owner writes it by hand (#698). */
 export const BOARD_SEATS_FILE = 'yokoten-seats.json';
 /** Keys a seats file must not set. A bad file is ignored, not trusted. */
@@ -242,27 +244,69 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
 }
 
 /**
- * The files a worktree changed against `base`, at most BOARD_OUTPUT_LIMIT (#644).
- * One git call. The answer stands for BOARD_OUTPUT_CACHE_MS, because the page reads
+ * The files a worktree changed against `base`, at most BOARD_OUTPUT_LIMIT (#644, #784):
+ * what git tracks and `base` does not have, and the new files it does not track yet.
+ * Two git calls. The answer stands for BOARD_OUTPUT_CACHE_MS, because the page reads
  * every 15 seconds. A git failure is no files, not a broken board.
  */
 export function readBoardOutputs(tree: string, base: string, env: Env, now: number = Date.now()): string[] {
   const key = `${tree}\0${base}`;
   const held = outputsCache.get(key);
   if (held && now - held.at < BOARD_OUTPUT_CACHE_MS) return held.files;
-  let files: string[] = [];
-  try {
-    const text = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', '--end-of-options', base, '--'], { cwd: tree, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS, maxBuffer: 1 << 24 });
-    files = text.split('\0').filter((file) => file !== '').slice(0, BOARD_OUTPUT_LIMIT);
-  } catch {
-    // No git, no base or no worktree: the panel says it has no files to show.
-  }
+  const files = [
+    ...gitText(['diff', '--name-only', '--no-renames', '-z', '--end-of-options', base, '--'], tree, env).split('\0'),
+    ...gitText(['ls-files', '--others', '--exclude-standard', '-z'], tree, env).split('\0'),
+  ].filter((file) => file !== '').slice(0, BOARD_OUTPUT_LIMIT);
+  outputsCache.delete(key);
   outputsCache.set(key, { at: now, files });
+  trimBoardOutputs(outputsCache);
   return files;
 }
 
+/** What the cache keeps for one worktree and base. */
+export interface BoardOutputEntry {
+  at: number;
+  files: string[];
+}
+
+/** Keeps the newest BOARD_OUTPUT_CACHE_LIMIT answers, and the oldest keys go first. */
+export function trimBoardOutputs(entries: Map<string, BoardOutputEntry>): void {
+  while (entries.size > BOARD_OUTPUT_CACHE_LIMIT) {
+    const oldest = entries.keys().next();
+    if (oldest.done) return;
+    entries.delete(oldest.value);
+  }
+}
+
 /** The changed files the board has read, by worktree and base. */
-const outputsCache = new Map<string, { at: number; files: string[] }>();
+const outputsCache = new Map<string, BoardOutputEntry>();
+
+/** What git printed, or '' when it could not answer. */
+function gitText(args: string[], tree: string, env: Env): string {
+  try {
+    return execFileSync('git', args, { cwd: tree, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS, maxBuffer: 1 << 24 });
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The default branch this worktree was cloned from (#784): `origin/HEAD` when the
+ * remote says, else main, else master. '' when the worktree has none of them.
+ */
+export function readDefaultBranch(tree: string, env: Env): string {
+  const fromRemote = gitText(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], tree, env).trim();
+  if (fromRemote) return fromRemote;
+  for (const name of ['main', 'master']) {
+    if (gitText(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`], tree, env).trim()) return name;
+  }
+  return '';
+}
+
+/** The commit where `ref` left the worktree's HEAD, or '' when git could not say. */
+export function readMergeBase(tree: string, ref: string, env: Env): string {
+  return ref ? gitText(['merge-base', '--end-of-options', 'HEAD', ref], tree, env).trim() : '';
+}
 
 /**
  * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.

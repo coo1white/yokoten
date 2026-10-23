@@ -234,6 +234,21 @@ test('board view: the panel masks the worktree and reads the new status fields',
   assert.deepEqual(agent.background, [{ text: 'npm run build', since: '2026-10-22T09:00:00Z' }]);
 });
 
+// #784: a desk whose branch is the main checkout's branch counts its files from the
+// merge base with the default branch, so the commit it made still shows.
+test('board view: a desk on the main checkout branch shows the commit it made', () => {
+  const sandbox = makeSandbox();
+  assert.equal(sandbox.git('commit', '-q', '--allow-empty', '-m', 'start').status, 0);
+  assert.equal(sandbox.git('checkout', '-q', '-b', 'feature').status, 0);
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', task: 't' }));
+  writeFileSync(join(sandbox.repo, 'work.txt'), 'x');
+  assert.equal(sandbox.git('add', 'work.txt').status, 0);
+  assert.equal(sandbox.git('commit', '-q', '-m', 'work').status, 0);
+  const [agent] = collectBoardWith(sandbox.repo, sandbox.env, null, 'no remote', NOW).agents;
+  assert.equal(agent?.branch, 'feature');
+  assert.deepEqual([...(agent?.outputs ?? [])].sort(), ['.yokoten-agent.json', 'work.txt']);
+});
+
 /** A shell call in each runtime's own shape, for its hook (#685). */
 const SHELL_CALLS: Record<string, (cwd: string) => unknown> = {
   'claude-code': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } }),
