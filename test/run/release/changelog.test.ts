@@ -1,6 +1,6 @@
-// Tests for src/run/changelog.ts.
+// Tests for src/run/release/changelog.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   existsSync,
@@ -11,14 +11,14 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTempDir } from '../repo/helpers.ts';
+import { makeTempDir } from '../../repo/helpers.ts';
 import {
   formatChanges,
   mergeChanges,
   parseChange,
   readChanges,
   writeChanges,
-} from '../../src/run/changelog.ts';
+} from '../../../src/run/release/changelog.ts';
 
 // ---- Change files (#132) ----
 

@@ -12,7 +12,7 @@ import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
 import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
-import { parseChange, readChanges } from './changelog.ts';
+import { parseChange, readChanges } from './release/changelog.ts';
 import { isShallowNote, translationNotes } from './translations.ts';
 
 // ---- Git answers kept for a run (#408, #453) ----

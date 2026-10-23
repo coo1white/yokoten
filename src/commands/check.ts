@@ -18,7 +18,7 @@ import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullReque
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
-import { parseChange } from '../run/changelog.ts';
+import { parseChange } from '../run/release/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';

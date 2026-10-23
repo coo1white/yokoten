@@ -1,13 +1,13 @@
-// Tests for src/run/packaging.ts and scripts/packaging.ts.
+// Tests for src/run/release/packaging.ts and scripts/release/packaging.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTempDir } from '../repo/helpers.ts';
-import { findReleaseProblems, renderHomebrewFormula, renderReleaseFiles, renderScoopManifest, sha256OfFile, writeReleaseFiles } from '../../src/run/packaging.ts';
-import { main } from '../../scripts/packaging.ts';
+import { makeTempDir } from '../../repo/helpers.ts';
+import { findReleaseProblems, renderHomebrewFormula, renderReleaseFiles, renderScoopManifest, sha256OfFile, writeReleaseFiles } from '../../../src/run/release/packaging.ts';
+import { main } from '../../../scripts/release/packaging.ts';
 
 const RELEASE = { version: '0.1.0', sha256: 'a'.repeat(64) };
 

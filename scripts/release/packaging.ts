@@ -3,8 +3,8 @@
 // Both carry the version and the sha256 of the npm tarball, so a release runs this
 // script on the tarball it is about to publish, and nobody edits a checksum by hand.
 //
-//   node scripts/packaging.ts --tarball yokoten-0.1.0.tgz
-//   node scripts/packaging.ts --sha256 <64 lowercase hex> [--out <dir>]
+//   node scripts/release/packaging.ts --tarball yokoten-0.1.0.tgz
+//   node scripts/release/packaging.ts --sha256 <64 lowercase hex> [--out <dir>]
 //
 // The output has one folder per repo, under --out (default: packaging/out):
 //   homebrew-tap/Formula/yokoten.rb
@@ -14,10 +14,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findReleaseProblems, sha256OfFile, writeReleaseFiles } from '../src/run/packaging.ts';
+import { findReleaseProblems, sha256OfFile, writeReleaseFiles } from '../../src/run/release/packaging.ts';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const USAGE = 'usage: node scripts/packaging.ts (--tarball <packed .tgz> | --sha256 <64 hex>) [--out <dir>]';
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const USAGE = 'usage: node scripts/release/packaging.ts (--tarball <packed .tgz> | --sha256 <64 hex>) [--out <dir>]';
 
 /** Run the command; returns the exit code. */
 export function main(args: string[]): number {
