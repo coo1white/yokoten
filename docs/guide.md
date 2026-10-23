@@ -1649,11 +1649,12 @@ is to undo (record 0004):
 | Tier | Kind of change | Who reviews |
 |------|----------------|-------------|
 | C | Standard: docs, wording, styles | The lead |
-| B | Normal: other code, with tests | The lead |
-| A | Hard to undo: secrets, data, install, releases, owned files | The owner |
+| B | Normal: other code, with tests | Another vendor's agent reviews; the lead approves |
+| A | Hard to undo: owned files, or a change that makes a rule looser | The owner |
 
-`.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
-records. It does not list every file. In a new project, `init` writes one for the
+In yokoten's own repo, `.github/CODEOWNERS` lists the owned files: the core rules,
+CODEOWNERS, CI that publishes or holds a secret, the bot token, guard config and
+`package.json` (record 0037). In a new project, `init` writes one for the
 lead-only paths. With "require review from code owners" on, the
 host asks the owner to review a pull request that changes one of them.
 
