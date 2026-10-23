@@ -3,7 +3,7 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir, said, serverGh } from '../../repo/helpers.ts';
@@ -236,4 +236,187 @@ test('approval: a shared newest second with different states is no Approve (#612
   // The same second with the same state still stands.
   const agreed = [review('friend', 'APPROVED', head, at), review('friend', 'APPROVED', head, at)].join('\n');
   assert.deepEqual(readApprovalState(fakeGh(agreed), dir, env, 32, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+});
+
+/** The git env the Approve tests use: no home config, and an example.com author. */
+function makeApprovalEnv(home: string) {
+  return {
+    PATH: process.env.PATH,
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
+    GIT_AUTHOR_NAME: 'T',
+    GIT_AUTHOR_EMAIL: 't@example.com',
+    GIT_COMMITTER_NAME: 'T',
+    GIT_COMMITTER_EMAIL: 't@example.com',
+  };
+}
+
+/** One git command's output. A non-zero exit fails the test. */
+function runGitOk(cwd: string, env: ReturnType<typeof makeApprovalEnv>, args: string[]): string {
+  const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+/** Whether this checkout has `sha` as a commit. */
+function hasCommit(cwd: string, env: ReturnType<typeof makeApprovalEnv>, sha: string): boolean {
+  return spawnSync('git', ['cat-file', '-e', `${sha}^{commit}`], { cwd, env, encoding: 'utf8' }).status === 0;
+}
+
+/** A tier A pull request whose head `friend` approved, aimed at `base`. */
+function makeFriendView(head: string, base: string) {
+  return {
+    body: 'tier: A\n',
+    labels: [{ name: 'tier A' }],
+    head: { sha: head, ref: 'topic' },
+    base: { sha: base, ref: 'main' },
+  };
+}
+
+/** The review line: `friend` approved `commit`. */
+function makeFriendReview(commit: string): string {
+  return JSON.stringify({ login: 'friend', assoc: 'COLLABORATOR', state: 'APPROVED', commit, at: '2026-10-22T11:00:00Z' });
+}
+
+/** A contents API file body. Newlines sit in `content`, as GitHub writes them. */
+function makeOwnersFile(text: string) {
+  return { type: 'file', encoding: 'base64', content: `\n${Buffer.from(text).toString('base64')}\n` };
+}
+
+const ownersText = '/a.txt @friend\n';
+
+// #670: a lead's clone often lacks the pull request's base commit. The check
+// fetches that commit and reads CODEOWNERS from it. The contents API is not used
+// once the commit is here.
+test('approval: a missing base commit is fetched before CODEOWNERS is read (#670)', () => {
+  const root = makeTempDir('yokoten-');
+  const env = makeApprovalEnv(root);
+  const origin = join(root, 'origin.git');
+  const seed = join(root, 'seed');
+  const dir = join(root, 'clone');
+  runGitOk(root, env, ['init', '-q', '--bare', '-b', 'main', origin]);
+  runGitOk(origin, env, ['config', 'uploadpack.allowReachableSHA1InWant', 'true']);
+  runGitOk(origin, env, ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
+  runGitOk(root, env, ['init', '-q', '-b', 'main', seed]);
+  writeFileSync(join(seed, 'a.txt'), 'a\n');
+  runGitOk(seed, env, ['add', '.']);
+  runGitOk(seed, env, ['commit', '-qm', 'old']);
+  runGitOk(seed, env, ['remote', 'add', 'origin', origin]);
+  runGitOk(seed, env, ['push', '-q', 'origin', 'main']);
+  runGitOk(root, env, ['clone', '-q', origin, dir]);
+  writeFileSync(join(seed, 'CODEOWNERS'), ownersText);
+  runGitOk(seed, env, ['add', '.']);
+  runGitOk(seed, env, ['commit', '-qm', 'owners']);
+  runGitOk(seed, env, ['push', '-q', 'origin', 'main']);
+  const base = runGitOk(seed, env, ['rev-parse', 'HEAD']).trim();
+  const head = 'a'.repeat(40);
+  assert.equal(hasCommit(dir, env, base), false, 'the clone does not have the base commit yet');
+  const contents = `repos/me/repo/contents/.github/CODEOWNERS?ref=${base}`;
+  const routes: Record<string, unknown> = {
+    'repos/me/repo/pulls/40': makeFriendView(head, base),
+    'repos/me/repo/pulls/40/files': ['a.txt'],
+    'repos/me/repo/pulls/40/reviews': makeFriendReview(head),
+    // A body that names nobody useful: using it would not count friend's Approve.
+    [contents]: makeOwnersFile('/a.txt @stranger\n'),
+  };
+  const { gh, calls } = serverGh(routes);
+  assert.deepEqual(readApprovalState(gh, dir, env, 40, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+  assert.equal(hasCommit(dir, env, base), true, 'the check fetched the base commit');
+  assert.ok(!calls.some((args) => args.some((arg) => arg.includes('/contents/'))), 'a fetched commit is not read through the contents API');
+});
+
+// #670: with no remote, the fetch cannot get the base commit. A contents body for
+// `.github/CODEOWNERS` is enough. A file over 64 KiB is ignored, and the next
+// place is read. `@friend` approved the head.
+test('approval: the contents API supplies CODEOWNERS when the base stays missing (#670)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = makeApprovalEnv(dir);
+  runGitOk(dir, env, ['init', '-q', '-b', 'main']);
+  // A worktree file must not count: the base commit is the one that is read.
+  writeFileSync(join(dir, 'CODEOWNERS'), '/a.txt @stranger\n');
+  const base = 'b'.repeat(40);
+  const head = 'c'.repeat(40);
+  const huge = 'x'.repeat(64 * 1024 + 1);
+  const laterBase = 'e'.repeat(40);
+  const routes: Record<string, unknown> = {
+    'repos/me/repo/pulls/41': makeFriendView(head, base),
+    'repos/me/repo/pulls/41/files': ['a.txt'],
+    'repos/me/repo/pulls/41/reviews': makeFriendReview(head),
+    [`repos/me/repo/contents/.github/CODEOWNERS?ref=${base}`]: makeOwnersFile(ownersText),
+    'repos/me/repo/pulls/42': makeFriendView(head, laterBase),
+    'repos/me/repo/pulls/42/files': ['a.txt'],
+    'repos/me/repo/pulls/42/reviews': makeFriendReview(head),
+    [`repos/me/repo/contents/.github/CODEOWNERS?ref=${laterBase}`]: makeOwnersFile(huge),
+    [`repos/me/repo/contents/CODEOWNERS?ref=${laterBase}`]: makeOwnersFile(ownersText),
+  };
+  const { gh, calls } = serverGh(routes);
+  assert.deepEqual(readApprovalState(gh, dir, env, 41, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+  assert.equal(hasCommit(dir, env, base), false, 'the contents API does not fetch the commit');
+  assert.ok(
+    calls.some((args) => args[0] === 'api' && args[1] === `repos/me/repo/contents/.github/CODEOWNERS?ref=${base}`),
+    'the contents path is one argument',
+  );
+  assert.ok(!calls.some((args) => args[1] === `repos/me/repo/contents/CODEOWNERS?ref=${base}`), 'the first file wins');
+  // The first place is over 64 KiB, so it is ignored and the next place is read.
+  calls.length = 0;
+  assert.deepEqual(readApprovalState(gh, dir, env, 42, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+  assert.ok(calls.some((args) => args[1] === `repos/me/repo/contents/CODEOWNERS?ref=${laterBase}`));
+});
+
+// #670: when the base commit stays missing and no contents body answers, the
+// reason names the short sha and says to fetch. It does not ask for an Approve.
+// A name that is not a commit id keeps today's failure. A commit that is already
+// here, but whose CODEOWNERS git cannot read, does too, and the contents API is
+// not called.
+test('approval: a base commit that stays missing names the short sha (#670)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = makeApprovalEnv(dir);
+  runGitOk(dir, env, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(dir, 'a.txt'), 'a\n');
+  runGitOk(dir, env, ['add', '.']);
+  runGitOk(dir, env, ['commit', '-qm', 'base']);
+  const base = 'd'.repeat(40);
+  const head = 'a'.repeat(40);
+  const missing = `the base commit ${base.slice(0, 7)} isn't in this clone; run \`git fetch origin\``;
+  const makePulls = (number: number, sha: string) => ({
+    [`repos/me/repo/pulls/${number}`]: makeFriendView(head, sha),
+    [`repos/me/repo/pulls/${number}/files`]: ['a.txt'],
+    [`repos/me/repo/pulls/${number}/reviews`]: makeFriendReview(head),
+  });
+  const { gh, calls } = serverGh({ ...makePulls(43, base), ...makePulls(44, 'no-such-branch') });
+  const absent = readApprovalState(gh, dir, env, 43, 'me/repo');
+  assert.deepEqual(absent, { unsure: missing });
+  assert.equal(missing.includes('approve'), false);
+  calls.length = 0;
+  assert.deepEqual(readApprovalState(gh, dir, env, 44, 'me/repo'), { unsure: 'the CODEOWNERS file for pull request 44 could not be read' });
+  assert.ok(!calls.some((args) => args.some((arg) => arg.includes('/contents/'))), 'a branch name is not read through the contents API');
+  // The commit is local, but its CODEOWNERS blob is gone, so git cannot read the file.
+  writeFileSync(join(dir, 'CODEOWNERS'), ownersText);
+  runGitOk(dir, env, ['add', '.']);
+  runGitOk(dir, env, ['commit', '-qm', 'owners']);
+  const present = runGitOk(dir, env, ['rev-parse', 'HEAD']).trim();
+  const blob = runGitOk(dir, env, ['rev-parse', 'HEAD:CODEOWNERS']).trim();
+  rmSync(join(dir, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+  const { gh: brokenGh, calls: brokenCalls } = serverGh({
+    ...makePulls(46, present),
+    // A usable file, so a wrong call would count friend's Approve.
+    [`repos/me/repo/contents/.github/CODEOWNERS?ref=${present}`]: makeOwnersFile(ownersText),
+  });
+  assert.equal(hasCommit(dir, env, present), true);
+  assert.deepEqual(readApprovalState(brokenGh, dir, env, 46, 'me/repo'), { unsure: 'the CODEOWNERS file for pull request 46 could not be read' });
+  assert.ok(!brokenCalls.some((args) => args.some((arg) => arg.includes('/contents/'))), 'a local commit is not read through the contents API');
+  // A good read with no CODEOWNERS file keeps the old reason.
+  const bare = makeTempDir('yokoten-');
+  const bareEnv = makeApprovalEnv(bare);
+  runGitOk(bare, bareEnv, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(bare, 'a.txt'), 'a\n');
+  runGitOk(bare, bareEnv, ['add', '.']);
+  runGitOk(bare, bareEnv, ['commit', '-qm', 'no owners']);
+  const none = runGitOk(bare, bareEnv, ['rev-parse', 'HEAD']).trim();
+  const { gh: noneGh, calls: noneCalls } = serverGh(makePulls(47, none));
+  assert.deepEqual(readApprovalState(noneGh, bare, bareEnv, 47, 'me/repo'), {
+    unsure: 'no CODEOWNERS file covers pull request 47, so no code owner can approve it',
+  });
+  assert.ok(!noneCalls.some((args) => args.some((arg) => arg.includes('/contents/'))));
 });
