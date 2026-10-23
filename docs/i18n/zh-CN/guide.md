@@ -281,7 +281,7 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
 | Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍，这是有意的 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
-| OpenCode | `.opencode/plugins/yokoten.ts`：OpenCode 2 的 permission `evaluate`，以及 OpenCode 1 的 `tool.execute.before` | OpenCode 2 把 `effect` 设为 deny；OpenCode 1 抛出理由 | 没有完整跑过 | 没有收尾检查。守卫失败或超时就拒绝这次调用。不是只读、又读不出命令或路径时，也拒绝 |
+| OpenCode | `.opencode/plugins/yokoten.ts`：OpenCode 2 的 permission `evaluate`，以及 OpenCode 1 的 `tool.execute.before` | OpenCode 2 把 `effect` 设为 deny；OpenCode 1 抛出理由 | 是，2026-10-23：OpenCode 2.1.4，`opencode-go/deepseek-v4.1-flash`，插件就是 `init` 写的那份 | 没有收尾检查。守卫失败或超时就拒绝这次调用。不是只读、又读不出命令或路径时，也拒绝。子 agent 的调用没有完整跑过 |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
 用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
@@ -704,6 +704,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `train <pr>... [--wait <秒>]` | 按给出的顺序，以 bot 的身份合并一批已批准、检查全绿的 PR；第一个需要人来处理的 PR 就让它停下。第一次合并之前先记下每个 PR 的基础分支，所以叠在被 squash 合并的分支上的 PR，会用它和那个分支真正共有的基础来合并。只涉及 import 行的冲突取并集；真正的冲突、测试失败、`check` 失败或缺少批准都会让列车停下。每次合并后的树先测试再推送；推送后的合并要等 CI 通过；`--wait` 设等多久，默认 1800 秒。只有 lead 能跑 |
 | `board [--text] [--no-open]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
@@ -1281,6 +1282,35 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 `tier:` 一样。少了哪个、哪个不对，各报一条，每条都说怎么改。
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
+
+### 在 PR 上会看到的审查机器人
+
+审查机器人会在你开 PR 之后读这个 PR。它把评论发在 PR 页面上。你可能会看到改动的讲解、
+风险等级、合并前检查清单，还有修改建议。有的机器人能直接把这些修改推上去。
+
+分两种：
+
+- **商业的。** 机器人是闭源的。公司替你运行，你的代码会发到公司的服务器。很多对公开仓库
+  免费，对私有仓库收费。
+- **开源的。** 你自己运行，用你自己的模型 API 密钥。模型用的 token 由你向模型厂商付费，
+  代码留在你自己的机器上。
+
+价格、许可证和数据的去向会变。本指南不推荐任何一款机器人。打开它之前，先读它自己的页面。
+机器人的评论里一般有链接。
+
+yokoten 在 PR 之前工作，在你这台机器上：
+
+- 守卫拦住危险的命令、密钥和个人信息；
+- `inspect` skill 在你的 agent 会话里审查改动，不额外花钱；
+- 检查和合并规则拦住你没有批准的合并或发版。
+
+审查机器人在 PR 之后工作。两者配合得很好。机器人看到 PR；yokoten 看到写出这个 PR 的会话。
+
+刚开始不需要审查机器人。yokoten 自己的审查就够了。团队想在 PR 页面上多一个读者时，再加
+一个机器人。`doctor` 从不叫你装一个：它只说 yokoten 自己的下一步。
+
+yokoten 在 PR 页面上的结果，只来自它自己的检查。它不重复别的机器人的结论，也不再审一遍
+代码（#91）。
 
 ### 工位
 

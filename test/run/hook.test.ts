@@ -2,19 +2,20 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { chmodSync, constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   CLI,
+  makeGitFolder,
   makeTempDir,
   makeSandbox,
   runChild,
   stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { SECRET } from '../../src/rules/secrets.ts';
+import { SECRET } from '../../src/rules/privacy/secrets.ts';
 import {
   AGENT_STATUS_FILE,
   bumpDoneTries,
@@ -385,6 +386,68 @@ test('refused marker: the same worker stays recent for 5 minutes (#614)', () => 
   assert.equal(existsSync(path), false);
   assert.equal(refusedMarkerPath(join(sandbox.home, 'outside'), key), null);
   assert.doesNotThrow(() => noteRefused(join(sandbox.home, 'outside'), key));
+});
+
+// #746: an empty `.git` above a work folder is not the checkout, so no marker lands in it.
+test('refused marker: an empty .git above a work folder is not the checkout (#746)', () => {
+  const base = makeTempDir('yokoten-empty-git-');
+  makeGitFolder(base);
+  const outer = join(base, 'outer');
+  mkdirSync(join(outer, '.git'), { recursive: true });
+  mkdirSync(join(outer, 'work'), { recursive: true });
+  writeFileSync(join(base, '.git', 'yokoten-done-when'), 'node --test\n');
+  assert.equal(refusedMarkerPath(join(outer, 'work'), 'k'), join(base, '.git', 'yokoten-stop-refused', 'k'));
+  assert.equal(readDoneWhen({}, join(outer, 'work')), 'node --test');
+});
+
+// #746: the same walk for a desk that keeps its mark and done-when but lost HEAD or objects:
+// it is broken, so the parent's done-when and git folder are not used. Its own file still runs.
+test('done-when: a desk that lost HEAD or objects reads its own, not its parent checkout (#746)', () => {
+  const base = makeTempDir('yokoten-desk-partial-');
+  const removals: Record<string, (desk: string) => void> = {
+    head: (desk) => rmSync(join(desk, '.git', 'HEAD')),
+    objects: (desk) => rmSync(join(desk, '.git', 'objects'), { recursive: true }),
+    both: (desk) => {
+      rmSync(join(desk, '.git', 'HEAD'));
+      rmSync(join(desk, '.git', 'objects'), { recursive: true });
+    },
+  };
+  const makeDesk = (top: string, name: string) => {
+    const desk = join(top, name);
+    mkdirSync(desk);
+    makeGitFolder(desk);
+    writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+    writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'node --test-desk\n');
+    mkdirSync(join(desk, 'src'));
+    return desk;
+  };
+  const contexts: Record<string, (name: string) => string> = {
+    sibling: (name) => {
+      const top = join(base, 'sibling');
+      mkdirSync(top, { recursive: true });
+      return makeDesk(top, name);
+    },
+    nested: (name) => {
+      const parent = join(base, 'nested');
+      makeGitFolder(parent);
+      writeFileSync(join(parent, '.git', 'yokoten-done-when'), 'node --test-parent\n');
+      return makeDesk(parent, name);
+    },
+  };
+  for (const [context, make] of Object.entries(contexts)) {
+    for (const [removal, remove] of Object.entries(removals)) {
+      const desk = make(`${context}-${removal}`);
+      remove(desk);
+      const src = join(desk, 'src');
+      const label = `${context}/${removal}`;
+      assert.equal(existsSync(join(desk, '.git', 'yokoten-worker')), true, `${label}: the mark is kept`);
+      assert.equal(existsSync(join(desk, '.git', 'yokoten-done-when')), true, `${label}: the done-when is kept`);
+      assert.equal(readDoneWhen({}, src), 'node --test-desk', `${label}: the desk's own done-when still runs, never a skip`);
+      assert.equal(refusedMarkerPath(src, 'k'), null, `${label}: no marker lands in the parent's git folder`);
+      const parent = join(base, 'nested');
+      if (context === 'nested') assert.equal(readDoneWhen({}, parent), 'node --test-parent', `${label}: the parent still reads its own`);
+    }
+  }
 });
 
 test('done-when: Windows tree kill uses taskkill /F /T while the shell can still be alive (#614)', () => {
