@@ -80,3 +80,36 @@ jobs:
       - name: Publish
         # `./` makes npm read a file: it reads `package/x.tgz` as a GitHub repo and clones it.
         run: npm publish ./package/*.tgz --provenance --access public
+  # The release page starts from CHANGELOG.md, so the page and the changelog never tell
+  # different stories (#533). It runs only after the package is on npm, and it owns the
+  # one write permission the publish job does not have. The Marketplace listing for the
+  # Action (#328) is a button on this page, which the owner presses once.
+  release-page:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '^22.23.4'
+          package-manager-cache: false
+      # The tag is read from the environment, never pasted into this shell line.
+      - name: Write the notes from CHANGELOG.md
+        run: node bin/yokoten.ts changelog --notes "$GITHUB_REF_NAME" > notes.md
+      # A rerun edits the page instead of failing on a page that already exists.
+      - name: Create the release page
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="yokoten ${GITHUB_REF_NAME#v}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$title" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "$title" --notes-file notes.md
+          fi

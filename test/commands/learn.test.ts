@@ -49,6 +49,15 @@ test('changelog: previews the change files, and --write moves them into CHANGELO
   assert.equal(readFileSync(join(sandbox.repo, 'CHANGELOG.md'), 'utf8'), '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- A thing.\n\n### Fixed\n\n- A fix.\n\n## [0.1.0] - 2026-10-18\n\n### Added\n\n- The first release.\n');
   assert.deepEqual(readdirSync(join(sandbox.repo, 'changes')), ['README.md']);
   assert.equal((await sandbox.call(['changelog', '--wrote'])).status, 1, 'an unknown option is refused');
+  // --notes prints one released entry for a host release page, and reads only (#533).
+  result = await sandbox.call(['changelog', '--notes', '0.1.0']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '### Added\n\n- The first release.\n');
+  assert.equal((await sandbox.call(['changelog', '--notes', 'v0.1.0'])).stdout, '### Added\n\n- The first release.\n');
+  result = await sandbox.call(['changelog', '--notes', '9.9.9']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /no entry for 9\.9\.9/);
+  assert.equal((await sandbox.call(['changelog', '--notes', '0.1.0', '--write'])).status, 1, '--notes and --write do not mix');
 });
 
 // #77: `learn` turns an incident issue into a check draft. A fake gh first on PATH gives the

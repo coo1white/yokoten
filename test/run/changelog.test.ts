@@ -17,6 +17,7 @@ import {
   mergeChanges,
   parseChange,
   readChanges,
+  releaseNotes,
   writeChanges,
 } from '../../src/run/changelog.ts';
 
@@ -127,4 +128,15 @@ test('changes: --write puts each entry after its section, deletes the files, and
   const mixed = mergeChanges([`${firstLine}\r`, ...otherLines].join('\n'), changes);
   assert.equal(typeof mixed, 'string', 'a stray CRLF line still has an Unreleased heading');
   assert.ok((mixed as string).startsWith(CHANGELOG.split('\n')[0] + '\r\n'), 'the CRLF line is kept');
+});
+
+test('release notes: one released entry, without its heading, for a host release page (#533)', () => {
+  assert.equal(releaseNotes(CHANGELOG, '0.1.0'), '### Added\n\n- The first release.', 'the entry only');
+  assert.equal(releaseNotes(CHANGELOG, 'v0.1.0'), '### Added\n\n- The first release.', 'a tag name is accepted');
+  assert.equal(releaseNotes(CHANGELOG, '9.9.9'), null, 'a version with no heading');
+  assert.equal(releaseNotes(CHANGELOG, '0.1'), null, 'a prefix is not a version');
+  assert.equal(releaseNotes('## [Unreleased]\n\n## [0.1.0]\n\n- A.\n', 'Unreleased'), '', 'an empty entry is empty, not missing');
+  assert.equal(releaseNotes('## [0.1.0]\n\n## [0.2.0]\n\n- Later.\n', '0.1.0'), '', 'the next heading ends the entry');
+  assert.equal(releaseNotes('## [0.1.0]\n\n- A fix.\n\n[0.1.0]: https://example.com/0.1.0\n', '0.1.0'), '- A fix.', 'link definitions stay in the file');
+  assert.equal(releaseNotes('# Changelog\r\n\r\n## [0.1.0] - 2026-10-18\r\n\r\n- A fix.\r\n', '0.1.0'), '- A fix.', 'CRLF is read');
 });

@@ -1609,3 +1609,19 @@ test('the release workflow publishes the tarball as a file, not a GitHub repo na
   assert.ok(publish.length > 0, 'the release workflow runs npm publish');
   for (const line of publish) assert.match(line, /npm publish \.\//, line.trim());
 });
+
+test('the release workflow makes the GitHub release page from the changelog (#533)', () => {
+  const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  const jobs = [...workflow.matchAll(/\n {2}([a-z][\w-]*):\n/g)];
+  const at = jobs.findIndex(([, name]) => name === 'release-page');
+  assert.ok(at >= 0, 'the release workflow has a release-page job');
+  const [start, end] = [jobs[at].index ?? 0, jobs[at + 1]?.index ?? workflow.length];
+  const job = workflow.slice(start, end);
+  assert.match(job, /needs: publish/, 'the page waits for npm');
+  assert.match(job, /permissions:\n {6}contents: write/, 'only this job writes');
+  assert.match(job, /node bin\/yokoten\.ts changelog --notes "\$GITHUB_REF_NAME"/, 'the notes come from CHANGELOG.md');
+  assert.match(job, /gh release create "\$GITHUB_REF_NAME" --verify-tag --latest --title "\$title" --notes-file notes\.md/);
+  assert.match(job, /gh release edit "\$GITHUB_REF_NAME" --title "\$title" --notes-file notes\.md/, 'a rerun edits the page');
+  const publishJob = workflow.slice(jobs.find(([, name]) => name === 'publish')?.index ?? 0, start);
+  assert.doesNotMatch(publishJob, /contents: write/, 'the publish job does not write to the repo');
+});
