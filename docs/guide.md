@@ -1055,11 +1055,12 @@ flowchart LR
 - The command uses the platform shell. That is `sh` on Linux and macOS, and `cmd.exe`
   on Windows. It may run for two minutes. When it ends, or the time runs out, yokoten
   stops the command and the programs it started.
-- On Windows, `cmd.exe` runs in a job. Closing the job stops those programs after
-  `cmd.exe` has exited. This uses Windows PowerShell. If PowerShell cannot start the
-  job, those programs can keep running.
-- A program that starts its own session is not stopped. `setsid` starts one. A new
-  process group in the same session is stopped.
+- On Windows, `cmd.exe` runs in a job when Windows PowerShell is there. Closing the
+  job stops those programs after `cmd.exe` has exited. If PowerShell is missing,
+  blocked, or cannot start the job, the check runs `cmd.exe` alone. A program left
+  behind can then keep running.
+- A program that has already started its own session is not stopped. `setsid` starts
+  one. A new process group in the same session is stopped.
 - A failing check sends the worker back, with the output in short and what to fix.
   The worker gets three tries. On the third, the hook says the next stop is let through.
   The worker's final message to the lead must start with `NOT DONE: checks failing`.

@@ -40,7 +40,9 @@ import {
   STATUS_TEXT_LIMIT,
   startGuard,
   wasRefusedRecently,
+  powerShellBlocked,
   windowsJobArgs,
+  windowsPowerShellPath,
   windowsTreeKillArgs,
   writeAgentChecks,
 } from '../../src/run/hook.ts';
@@ -407,6 +409,38 @@ test('done-when: Windows starts cmd.exe in a job that closes with the shell (#73
   assert.match(script, /YOKOTEN_DONE_COMMAND/);
   assert.match(script, /Remove-Item Env:\\YOKOTEN_DONE_COMMAND/);
   assert.match(script, /\/d \/s \/c/);
+});
+
+test('windowsPowerShellPath: only the real program, and a blocked start is ENOENT or EACCES (#735)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(windowsPowerShellPath(undefined), null);
+  assert.equal(windowsPowerShellPath(sandbox.repo), null, 'no powershell.exe under this root');
+  const program = join(sandbox.repo, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  mkdirSync(dirname(program), { recursive: true });
+  writeFileSync(program, '');
+  assert.equal(windowsPowerShellPath(sandbox.repo), program);
+  assert.equal(powerShellBlocked('ENOENT'), true);
+  assert.equal(powerShellBlocked('EACCES'), true);
+  assert.equal(powerShellBlocked('EPERM'), false, 'any other spawn error still fails the check');
+  assert.equal(powerShellBlocked(undefined), false);
+});
+
+// The host is named, then missing or mode 0. The check must run in the shell, not fail closed (#735).
+test('done-when: a missing or blocked PowerShell still runs the check (#735)', { skip: process.platform === 'win32' && 'the stand-in host is spawned, then the POSIX shell runs the check', timeout: 8000 }, async () => {
+  const sandbox = makeSandbox();
+  const missing = join(sandbox.repo, 'missing-powershell.exe');
+  const passed = await runDoneWhen('echo fell-back-735', sandbox.repo, sandbox.env, 5000, undefined, missing);
+  assert.equal(passed.ok, true, passed.output);
+  assert.match(passed.output, /fell-back-735/);
+  const failed = await runDoneWhen('echo bad-735 >&2; exit 3', sandbox.repo, sandbox.env, 5000, undefined, missing);
+  assert.equal(failed.ok, false);
+  assert.match(failed.output, /bad-735/);
+  const blocked = join(sandbox.repo, 'blocked-powershell.exe');
+  writeFileSync(blocked, '');
+  chmodSync(blocked, 0);
+  const blockedRun = await runDoneWhen('echo blocked-735', sandbox.repo, sandbox.env, 5000, undefined, blocked);
+  assert.equal(blockedRun.ok, true, blockedRun.output);
+  assert.match(blockedRun.output, /blocked-735/);
 });
 
 test('sessionFromStat: the session is the field after the command name (#735)', () => {

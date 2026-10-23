@@ -221,8 +221,9 @@ const DONE_COMMAND_ENV = 'YOKOTEN_DONE_COMMAND';
  * PowerShell that puts `cmd.exe` in a job and closes the job when `cmd.exe` exits.
  * `taskkill /T` finds a tree only while its root is still running, and the root is already
  * gone by the time a passing check returns (#735). The job holds the tree. No native module:
- * Windows PowerShell compiles this once per check. If that fails, the script runs `cmd.exe`
- * the old way, and a program it left behind can keep running.
+ * Windows PowerShell compiles this once per check. If PowerShell is missing, blocked, or
+ * cannot start the job, the check runs `cmd.exe` the old way. A program it left behind
+ * can then keep running.
  */
 const WINDOWS_JOB_SCRIPT = `
 $ErrorActionPreference = 'Stop'
@@ -426,13 +427,25 @@ export function windowsJobArgs(): string[] {
   return ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded];
 }
 
-/** `powershell.exe` on Windows, or null so the caller starts `cmd.exe` itself. */
-function windowsPowerShell(): string | null {
+/**
+ * The Windows PowerShell program under `systemRoot`, or null when that file is not there.
+ * A missing file must not become a failed check: the caller runs `cmd.exe` instead (#735).
+ */
+export function windowsPowerShellPath(systemRoot: string | undefined): string | null {
+  if (!systemRoot) return null;
+  const path = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return existsSync(path) ? path : null;
+}
+
+/** `powershell.exe` when this is Windows and that file is there. Null means the caller runs `cmd.exe`. */
+function windowsPowerShell(env: Env): string | null {
   if (process.platform !== 'win32') return null;
-  const root = process.env.SystemRoot;
-  if (!root) return 'powershell.exe';
-  const path = join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return existsSync(path) ? path : 'powershell.exe';
+  return windowsPowerShellPath(env.SystemRoot);
+}
+
+/** True when spawning PowerShell failed because the program is missing or blocked (#735). */
+export function powerShellBlocked(code: string | undefined): boolean {
+  return code === 'ENOENT' || code === 'EACCES';
 }
 
 /** The session id from one `/proc` stat line, or null when the line is not a stat. */
@@ -533,11 +546,13 @@ function killCommandTree(pid: number): void {
   killSessionMembers(pid);
 }
 
-/** Start the done-when command. On Windows the host is a job; elsewhere it is a new session. */
-function spawnDoneWhen(command: string, cwd: string, env: Record<string, string>): ChildProcess {
-  const powershell = windowsPowerShell();
-  if (powershell) {
-    return spawn(powershell, windowsJobArgs(), {
+/**
+ * Start the done-when command. `powerShell` puts `cmd.exe` in a job. Null starts the
+ * platform shell: a new session on POSIX, `cmd.exe` on Windows.
+ */
+function spawnDoneWhen(command: string, cwd: string, env: Record<string, string>, powerShell: string | null): ChildProcess {
+  if (powerShell) {
+    return spawn(powerShell, windowsJobArgs(), {
       cwd,
       env: { ...env, [DONE_COMMAND_ENV]: command },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -920,8 +935,9 @@ export function shortenOutput(text: string, env: Env = {}): string {
  * job host then. `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree
  * would stay (#614). When the shell exits, programs still in its group or its session are
  * stopped the same way. On Windows the job host has already closed the job, which stops
- * programs `cmd.exe` left behind (#735). A program that started its own session is not
- * stopped, and it cannot hold the check open. The check ends on the shell's own result.
+ * programs `cmd.exe` left behind (#735). A program that has already started its own session
+ * is not stopped, and it cannot hold the check open. The check ends on the shell's own result.
+ * `powerShellHost`, when set, is tried first. A missing or blocked program runs the platform shell.
  * A short wait collects the last output, then the pipes are dropped. The result is given once.
  */
 export function runDoneWhen(
@@ -930,9 +946,12 @@ export function runDoneWhen(
   env: Env,
   timeoutMs: number = DONE_WHEN_MS,
   killTree: (pid: number) => void = killCommandTree,
+  powerShellHost?: string,
 ): Promise<{ ok: boolean; output: string }> {
   const childEnv: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) childEnv[name] = value;
+  // The hook passes no host. A test points it at a program that is not there (#735).
+  const host = powerShellHost ?? windowsPowerShell(env);
   return new Promise((resolvePromise) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -948,7 +967,7 @@ export function runDoneWhen(
     try {
       // A new session on POSIX, so a timeout or a normal exit can stop what the shell started.
       // On Windows the host puts cmd.exe in a job, so the tree still exists after cmd.exe exits.
-      child = spawnDoneWhen(command, cwd, childEnv);
+      child = spawnDoneWhen(command, cwd, childEnv, host);
     } catch (error) {
       finish({ ok: false, output: shortenOutput((error as Error).message.split('\n')[0], env) });
       return;
@@ -965,52 +984,76 @@ export function runDoneWhen(
       if (code === 0) return { ok: true, output: body };
       return { ok: false, output: body || `the check exited ${code}` };
     };
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout = take(stdout, chunk);
-    });
-    child.stderr?.on('data', (chunk: string) => {
-      stderr = take(stderr, chunk);
-    });
     // Drop our end of the pipes. A grandchild that left the group can hold the other end.
-    const dropPipes = () => {
-      child.stdout?.destroy();
-      child.stderr?.destroy();
+    const dropPipes = (proc: ChildProcess) => {
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
     };
     timer = setTimeout(() => {
       timedOut = true;
       try {
         if (child.pid) killTree(child.pid);
-        dropPipes();
+        dropPipes(child);
       } catch {
         // The tree kill can throw. The check still ends below.
       } finally {
         finish(resultFor(null, null));
       }
     }, timeoutMs);
-    child.once('error', (error) => finish({ ok: false, output: shortenOutput(error.message.split('\n')[0], env) }));
-    child.once('exit', (code, signal) => {
-      if (settled || timedOut) return;
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-      // The shell has exited. Stop programs still in its group or its session.
-      // A program that called setsid is in another session, so this does not reach it (#735).
-      try {
-        if (child.pid) killTree(child.pid);
-      } catch {
-        // The tree kill can throw. The check still ends on the shell's status.
-      }
-      if (settled) return;
-      grace = setTimeout(() => {
-        try {
-          dropPipes();
-        } finally {
-          finish(resultFor(code, signal));
+    // `generation` drops events from a PowerShell that failed to start, after the shell takes over.
+    let generation = 0;
+    const watchChild = (proc: ChildProcess, fromPowerShell: boolean) => {
+      const generationHere = ++generation;
+      const isCurrent = () => generationHere === generation && !settled;
+      proc.stdout?.setEncoding('utf8');
+      proc.stderr?.setEncoding('utf8');
+      proc.stdout?.on('data', (chunk: string) => {
+        if (isCurrent()) stdout = take(stdout, chunk);
+      });
+      proc.stderr?.on('data', (chunk: string) => {
+        if (isCurrent()) stderr = take(stderr, chunk);
+      });
+      proc.once('error', (error) => {
+        if (!isCurrent()) return;
+        const code = (error as NodeJS.ErrnoException).code;
+        // The file was there at the stat, then missing or blocked. Run cmd.exe the old way (#735).
+        if (fromPowerShell && powerShellBlocked(code)) {
+          try {
+            child = spawnDoneWhen(command, cwd, childEnv, null);
+          } catch (spawnError) {
+            finish({ ok: false, output: shortenOutput((spawnError as Error).message.split('\n')[0], env) });
+            return;
+          }
+          watchChild(child, false);
+          return;
         }
-      }, CLOSE_GRACE_MS);
-    });
-    child.once('close', (status, signal) => finish(resultFor(status, signal)));
+        finish({ ok: false, output: shortenOutput(error.message.split('\n')[0], env) });
+      });
+      proc.once('exit', (code, signal) => {
+        if (!isCurrent() || timedOut) return;
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        // The shell has exited. Stop programs still in its group or its session.
+        // A program that called setsid is in another session, so this does not reach it (#735).
+        try {
+          if (proc.pid) killTree(proc.pid);
+        } catch {
+          // The tree kill can throw. The check still ends on the shell's status.
+        }
+        if (settled) return;
+        grace = setTimeout(() => {
+          try {
+            dropPipes(proc);
+          } finally {
+            finish(resultFor(code, signal));
+          }
+        }, CLOSE_GRACE_MS);
+      });
+      proc.once('close', (status, signal) => {
+        if (isCurrent()) finish(resultFor(status, signal));
+      });
+    };
+    watchChild(child, host !== null);
   });
 }
 
