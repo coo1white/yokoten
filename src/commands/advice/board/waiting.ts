@@ -9,7 +9,7 @@ import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { ageText, BOARD_AGENT_FILE, parseBoardAgent, type BoardWorktree } from './agents.ts';
 import { type BoardAttention, type BoardControls, type BoardIssue, type BoardRun, type BoardSnapshot, type BoardWaiting } from './controls.ts';
-import { EMPTY_SCHEDULE, planSchedule, scheduleIssueOf, type ScheduleSummary, summarizeSchedule } from '../schedule.ts';
+import { EMPTY_SCHEDULE, freeMemoryMb as freeMemory, planSchedule, roomStateOf, scheduleIssueOf, type SchedulePlan, type ScheduleRoom, type ScheduleSummary, summarizeSchedule } from '../schedule.ts';
 import { dependsOf } from './feed/read/desk.ts';
 import { makeBoardMask } from './feed/route.ts';
 import { type AgentView, type BoardData, BOARD_ISSUE_LIMIT, type PullView } from './view.ts';
@@ -17,9 +17,9 @@ import { type AgentView, type BoardData, BOARD_ISSUE_LIMIT, type PullView } from
 /** How many of a run's output lines /data serves. */
 const BOARD_OUTPUT_SHOWN = 30;
 
-/** The gh query for the open issues. */
+/** The gh query for the open issues. It reads one past the board's limit, so a cut-off list is known. */
 function boardIssueQuery(repo: string): string[] {
-  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_ISSUE_LIMIT), '--json', 'number,title,url,body,createdAt,updatedAt,labels,milestone'];
+  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_ISSUE_LIMIT + 1), '--json', 'number,title,url,body,createdAt,updatedAt,labels,milestone'];
 }
 
 /** The open issues, gh's order, or why gh cannot read them. */
@@ -210,11 +210,27 @@ function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls
   }));
 }
 
-/** The schedule of the open issues, or an empty one when they cannot be read or may be cut off. */
+/**
+ * The dependency plan of the open issues, or null when they cannot be read or were
+ * actually cut off. The read asks for one issue past the limit, so a list longer than
+ * the limit is the only proof that issues are missing (#693).
+ */
+export function planOf(issues: BoardIssue[] | string): SchedulePlan | null {
+  if (typeof issues === 'string' || issues.length > BOARD_ISSUE_LIMIT) return null;
+  return planSchedule(issues.map(scheduleIssueOf));
+}
+
+/** The schedule of the open issues, or an empty one when they cannot be read or were cut off. */
 export function scheduleOf(issues: BoardIssue[] | string): ScheduleSummary {
-  // A list at the limit may be cut off, so a missing dependency could look closed (#693).
-  if (typeof issues === 'string' || issues.length >= BOARD_ISSUE_LIMIT) return { ...EMPTY_SCHEDULE };
-  return summarizeSchedule(planSchedule(issues.map(scheduleIssueOf)));
+  const plan = planOf(issues);
+  return plan ? summarizeSchedule(plan) : { ...EMPTY_SCHEDULE };
+}
+
+/** The room the machine has now: the board's running agents and free memory by its limits (#709). */
+export function roomOf(controls: BoardControls): ScheduleRoom {
+  const running = controls.runs.filter((run) => run.status === 'running').length;
+  const freeMemoryMb = freeMemory();
+  return roomStateOf({ running, freeMemoryMb }, { maxAgents: controls.limits.maxAgents, memoryFloorMb: controls.limits.memoryFloorMb });
 }
 
 /** The snapshot for /data: the waiting list, the open issues as last read, the runs, and the limits. */
@@ -226,6 +242,7 @@ export function readBoardSnapshot(env: Env, controls: BoardControls, board: Boar
     runs: snapshotRuns(controls.runs, env),
     limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },
     schedule: scheduleOf(issues),
+    room: roomOf(controls),
   };
 }
 

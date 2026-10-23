@@ -115,7 +115,7 @@ function makeState(data: PageData, lang = 'en'): PageState {
 }
 
 function makeData(fields: Partial<PageData>): PageData {
-  return { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} }, ...fields };
+  return { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 }, ...fields };
 }
 
 test('board script: three or more routine steps fold; waits, failures and the latest step never do', () => {
@@ -256,7 +256,7 @@ test('board script: the controls start and stop agents from the page', () => {
       { name: 'issue-603-codex', issue: '603', vendor: 'codex', model: 'model-a', worktree: '~/repo/.worktrees/603', pid: 1000, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: ['hello', 'world'] },
       { name: 'issue-604-codex', issue: '604', vendor: 'codex', model: 'model-a', worktree: '', pid: null, status: 'stopped', startedAt: '', stoppedAt: '', exitCode: 1, output: [] },
     ],
-    limits: { maxAgents: 2, byModel: { 'model-a': 1 } },
+    limits: { maxAgents: 2, byModel: { 'model-a': 1 }, memoryFloorMb: 1024 },
   });
   const state = makeState(data);
   const byId = (root: FakeNode, id: string) => root.all().find((node) => node.getAttribute('id') === id);
@@ -270,7 +270,8 @@ test('board script: the controls start and stop agents from the page', () => {
   const limits = renderLimits(state, data.limits) as unknown as FakeNode;
   assert.ok(byId(limits, 'limits-max'), 'the cap field');
   assert.ok(byId(limits, 'limits-models'), 'the per-model field');
-  assert.match(limits.textContent, /Now: 2 at once · model-a: 1/);
+  assert.ok(byId(limits, 'limits-memory'), 'the memory floor field');
+  assert.match(limits.textContent, /Now: 2 at once, 1024 MB free kept · model-a: 1/);
   assert.ok(limits.all().some((node) => node.tag === 'button' && node.getAttribute('data-limits') === '1' && node.textContent === 'Save'), 'the save button');
   const runs = renderRuns(state, data.runs) as unknown as FakeNode;
   assert.match(runs.textContent, /Started here2/);

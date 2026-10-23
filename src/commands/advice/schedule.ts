@@ -3,7 +3,8 @@
 // issue it names is closed. A cycle is reported, never followed.
 //
 // The next ready issue comes from a heap: P0 (security and privacy), then P1 (an open
-// milestone), then P2, then P3; the smallest issue number next; the oldest issue last.
+// milestone), then P2, then P3; then the smallest issue number. An issue number is
+// unique, so it decides: the heap is a total order.
 // A start also needs room on the machine: a cap on agents at once, and a floor on free
 // memory, both settings. The longest chain still open is the critical path, which the
 // board's timeline puts first.
@@ -20,7 +21,6 @@ export type Priority = 0 | 1 | 2 | 3;
 export interface ScheduleIssue {
   number: number;
   title: string;
-  createdAt: string;
   priority: Priority;
   dependsOn: number[];
 }
@@ -36,7 +36,6 @@ export interface PriorityFields {
 export interface IssueFields extends PriorityFields {
   number: number;
   title: string;
-  createdAt: string;
   dependsOn?: readonly number[];
 }
 
@@ -79,23 +78,18 @@ export function scheduleIssueOf(issue: IssueFields): ScheduleIssue {
   return {
     number: issue.number,
     title: issue.title,
-    createdAt: issue.createdAt,
     priority: priorityOf(issue),
     dependsOn: [...(issue.dependsOn ?? [])],
   };
 }
 
-/** A time for ordering, or the end of time when the text is not a time. */
-function timeOf(when: string): number {
-  const time = Date.parse(when);
-  return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
-}
-
-/** The heap order: priority, then the smallest issue number, then the oldest issue. */
+/**
+ * The heap order: priority, then the smallest issue number. A number is unique, so
+ * nothing else is needed to decide between two issues.
+ */
 export function compareIssues(left: ScheduleIssue, right: ScheduleIssue): number {
   if (left.priority !== right.priority) return left.priority - right.priority;
-  if (left.number !== right.number) return left.number - right.number;
-  return timeOf(left.createdAt) - timeOf(right.createdAt);
+  return left.number - right.number;
 }
 
 /** Add `item` to a binary heap, keeping `compare`'s smallest at the top. */
@@ -307,6 +301,17 @@ export function roomFor(state: MachineState, settings: ScheduleSettings = SCHEDU
   return null;
 }
 
+/** The machine now, and why it cannot take another agent, for a page that shows it. */
+export interface ScheduleRoom extends MachineState {
+  /** Why a start waits, or null when the machine has room. */
+  hold: 'slots' | 'memory' | null;
+}
+
+/** The room a machine has by its settings. */
+export function roomStateOf(state: MachineState, settings: ScheduleSettings = SCHEDULE_DEFAULTS): ScheduleRoom {
+  return { running: state.running, freeMemoryMb: state.freeMemoryMb, hold: roomFor(state, settings) };
+}
+
 /** What one machine's room allows now. */
 export interface Starts {
   /** The ready issues to start, in start order. */
@@ -331,7 +336,13 @@ export function takeStarts(ready: readonly ScheduleIssue[], state: MachineState,
   return { started, stoppedBy: null };
 }
 
-/** The machine's free memory now, in whole megabytes. */
+/**
+ * The machine's free memory now, in whole megabytes: what it can give a new process
+ * without swapping. `process.availableMemory` counts the memory macOS can reclaim, so a
+ * floor means the same thing on each platform; `freemem` is the fallback where the call
+ * is missing.
+ */
 export function freeMemoryMb(): number {
-  return Math.floor(freemem() / (1024 * 1024));
+  const bytes = typeof process.availableMemory === 'function' ? process.availableMemory() : freemem();
+  return Math.floor(bytes / (1024 * 1024));
 }

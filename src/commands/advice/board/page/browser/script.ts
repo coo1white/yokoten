@@ -5,10 +5,10 @@
 
 import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../../controls.ts';
 import type { FeedEvent } from '../../feed/steps.ts';
-import type { ScheduleSummary } from '../../../schedule.ts';
+import type { ScheduleRoom, ScheduleSummary } from '../../../schedule.ts';
 import type { AgentView, BoardData } from '../../view.ts';
 import { ageOfNeed, fillNeeds, foldHead, idOfNeed, noteNewNeeds, refChip, renderNeedItem, renderSide, vendorChip } from './column.ts';
-import { renderTimeline } from './desk.ts';
+import { renderQueue, renderTimeline } from './desk.ts';
 import { isCheckoutLead, roleGroup } from '../groups.ts';
 import { githubNote, renderBar, renderLimits, renderOutput, renderRight, renderRuns, renderStart, RIGHT_FUNCTIONS } from '../right.ts';
 import { followStream, renderStream, type StreamView } from './stream.ts';
@@ -25,6 +25,8 @@ export type PageData = BoardData & {
   limits: BoardLimits;
   /** The dependency order and longest open chain (#709); missing before the first read. */
   schedule?: ScheduleSummary;
+  /** The machine's room now: agents running, free memory, and why a start waits (#709). */
+  room?: ScheduleRoom;
   /** How fresh the GitHub lists are (#688): a read runs now, when they were last read, and why the last read failed. */
   github?: { isReading: boolean; readAt: string; failed: string };
 };
@@ -220,8 +222,8 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
   const foot = agent.dot === 'done'
     ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
     : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
-  // The lead's middle is the timeline (#701). Another agent's session is unchanged (#694).
-  if (isLead) return el('section', { class: 'center-in' }, head, renderTimeline(state, data), foot);
+  // The lead's middle is the queue and the timeline (#701, #709). Another agent's session is unchanged (#694).
+  if (isLead) return el('section', { class: 'center-in' }, head, renderQueue(state, data), renderTimeline(state, data), foot);
   // The agent's own session when its log is found (#694); else the steps the board saw.
   const stream = renderStream(state, agent);
   if (stream) {
@@ -335,7 +337,7 @@ export function onClick(state: PageState, event: Event): void {
     state.isNeedsOpen = false;
     closedNeeds = true;
   }
-  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
+  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-start-next],[data-queue-limits],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
@@ -388,8 +390,12 @@ export function onClick(state: PageState, event: Event): void {
     state.toast = null;
   } else if (ask('data-start') !== null) {
     postForm(state, 'agents/start', [['issue', fieldValue('start-issue')], ['vendor', fieldValue('start-vendor')], ['model', fieldValue('start-model')]], 'start-note', 'startDone');
+  } else if (ask('data-start-next') !== null) {
+    postForm(state, 'agents/start', [['next', '1'], ['vendor', fieldValue('q-vendor')], ['model', fieldValue('q-model')]], 'queue-note', 'startDone');
+  } else if (ask('data-queue-limits') !== null) {
+    postForm(state, 'agents/limits', [['maxAgents', fieldValue('q-max')], ['memory', fieldValue('q-floor')]], 'queue-limits-note', 'limitsDone');
   } else if (ask('data-limits') !== null) {
-    postForm(state, 'agents/limits', [['maxAgents', fieldValue('limits-max')], ['models', fieldValue('limits-models')]], 'limits-note', 'limitsDone');
+    postForm(state, 'agents/limits', [['maxAgents', fieldValue('limits-max')], ['models', fieldValue('limits-models')], ['memory', fieldValue('limits-memory')]], 'limits-note', 'limitsDone');
   } else if (ask('data-stop')) {
     postForm(state, 'agents/stop', [['name', ask('data-stop') as string]], 'runs-note', 'stopDone');
   } else if (ask('data-pick')) {

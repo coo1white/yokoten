@@ -4,11 +4,11 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { compareIssues, heapPop, heapPush, planSchedule, priorityOf, readyQueue, roomFor, scheduleIssueOf, SCHEDULE_DEFAULTS, summarizeSchedule, takeStarts } from '../../../src/commands/advice/schedule.ts';
+import { compareIssues, heapPop, heapPush, planSchedule, priorityOf, readyQueue, roomFor, roomStateOf, scheduleIssueOf, SCHEDULE_DEFAULTS, summarizeSchedule, takeStarts } from '../../../src/commands/advice/schedule.ts';
 
 /** One open issue with the priority the tests name, not a label. */
-function issue(number: number, priority: 0 | 1 | 2 | 3 = 2, dependsOn: number[] = [], createdAt = '2026-10-01T00:00:00Z') {
-  return { number, title: `issue ${number}`, createdAt, priority, dependsOn };
+function issue(number: number, priority: 0 | 1 | 2 | 3 = 2, dependsOn: number[] = []) {
+  return { number, title: `issue ${number}`, priority, dependsOn };
 }
 
 test('schedule: a topological order puts a dependency before its issue', () => {
@@ -37,13 +37,13 @@ test('schedule: a cycle is reported, never followed', () => {
   assert.deepEqual(plan.ready.map((item) => item.number), [4], 'no issue in a cycle is ready');
 });
 
-test('schedule: the heap picks priority, then the smallest issue, then the oldest', () => {
+test('schedule: the heap picks priority, then the smallest issue number', () => {
   const rows = [
-    issue(5, 2, [], '2026-09-01T00:00:00Z'),
-    issue(2, 2, [], '2026-10-01T00:00:00Z'),
-    issue(20, 0, [], '2026-10-02T00:00:00Z'),
-    issue(9, 1, [], '2026-10-03T00:00:00Z'),
-    issue(7, 2, [], '2026-08-01T00:00:00Z'),
+    issue(5, 2),
+    issue(2, 2),
+    issue(20, 0),
+    issue(9, 1),
+    issue(7, 2),
   ];
   assert.deepEqual(readyQueue(rows).map((item) => item.number), [20, 9, 2, 5, 7]);
   // The same order comes out of the heap itself, one pop at a time.
@@ -52,6 +52,8 @@ test('schedule: the heap picks priority, then the smallest issue, then the oldes
   const popped: number[] = [];
   for (let next = heapPop(heap, compareIssues); next; next = heapPop(heap, compareIssues)) popped.push(next.number);
   assert.deepEqual(popped, [20, 9, 2, 5, 7]);
+  // A number is unique, so nothing after it can decide between two issues.
+  assert.equal(compareIssues(issue(3, 1), issue(4, 1)) < 0, true, 'the smaller number comes first');
 });
 
 test('schedule: an issue waits until its dependency closes', () => {
@@ -71,6 +73,7 @@ test('schedule: the memory floor stops a start; the slot cap stops the rest', ()
   assert.equal(roomFor({ running: 2, freeMemoryMb: 8000 }, SCHEDULE_DEFAULTS), null);
   assert.deepEqual(takeStarts(ready, { running: 1, freeMemoryMb: 4096 }, { maxAgents: 3, memoryFloorMb: 1024 }), { started: [1, 2], stoppedBy: 'slots' });
   assert.deepEqual(takeStarts(ready, { running: 0, freeMemoryMb: 4096 }, { maxAgents: 3, memoryFloorMb: 1024 }), { started: [1, 2, 3], stoppedBy: null });
+  assert.deepEqual(roomStateOf({ running: 0, freeMemoryMb: 100 }, { maxAgents: 3, memoryFloorMb: 1024 }), { running: 0, freeMemoryMb: 100, hold: 'memory' }, 'the page gets the reason with the numbers');
 });
 
 test('schedule: the critical path is the longest chain still open, from the first start', () => {
@@ -96,8 +99,8 @@ test('schedule: the priority comes from labels, a milestone or the title area', 
   assert.equal(priorityOf({ labels: ['later'] }), 3);
   assert.equal(priorityOf({ milestone: 'First release' }), 1);
   assert.equal(priorityOf({}), 2);
-  assert.equal(scheduleIssueOf({ number: 7, title: 'fix: one thing', createdAt: '', labels: ['security'], dependsOn: [6] }).priority, 0);
-  assert.deepEqual(scheduleIssueOf({ number: 7, title: 'fix: one thing', createdAt: '', dependsOn: [6] }).dependsOn, [6]);
+  assert.equal(scheduleIssueOf({ number: 7, title: 'fix: one thing', labels: ['security'], dependsOn: [6] }).priority, 0);
+  assert.deepEqual(scheduleIssueOf({ number: 7, title: 'fix: one thing', dependsOn: [6] }).dependsOn, [6]);
 });
 
 test('schedule: the summary names issues by number for /data', () => {

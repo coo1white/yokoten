@@ -69,7 +69,7 @@ test('board waiting: the snapshot hides the latch time and the home folder', () 
   const seen: BoardWaiting[] = [{ kind: 'guard', agent: 'w', role: 'engineer', wait: '', why: 'stopped', link: '', latchedAt: '2026-10-22T10:00:00Z' }];
   const lines = Array.from({ length: 31 }, (_, index) => `line ${index}`);
   const controls = {
-    limits: { maxAgents: 3, byModel: { 'model-a': 1 } },
+    limits: { maxAgents: 3, byModel: { 'model-a': 1 }, memoryFloorMb: 1024 },
     runs: [{ name: 'w', issue: '1', vendor: 'grok', model: 'm', worktree: `${home}/repo/.worktrees/1`, pid: 1, status: 'running' as const, startedAt: '', stoppedAt: '', exitCode: null, output: lines }],
     seen,
     handles: new Map(),
@@ -82,14 +82,18 @@ test('board waiting: the snapshot hides the latch time and the home folder', () 
   assert.equal(snapshot.runs[0].output[0], 'line 1');
   assert.equal(snapshot.runs[0].worktree, '~/repo/.worktrees/1', 'the home folder stays hidden');
   assert.deepEqual(snapshot.issues, [{ number: 9, title: 'open', url: '', createdAt: '', updatedAt: '', dependsOn: [] }]);
-  assert.deepEqual(snapshot.limits, { maxAgents: 3, byModel: { 'model-a': 1 } });
+  assert.deepEqual(snapshot.limits, { maxAgents: 3, byModel: { 'model-a': 1 }, memoryFloorMb: 1024 });
   assert.deepEqual(snapshot.schedule, { ready: [9], order: [9], cycles: [], blocked: [], criticalPath: [9] });
+  assert.equal(snapshot.room.running, 1, 'the running run is counted');
+  assert.equal(typeof snapshot.room.freeMemoryMb, 'number', 'the machine is read when the snapshot is made');
 });
 
-// #709: a list at the board's limit may be cut off, so a missing dependency could look
-// closed. The schedule stays empty rather than starting the wrong issue.
-test('board waiting: a cut-off issue list plans nothing', () => {
+// #709: a list longer than the board's limit is cut off, so a missing dependency could
+// look closed. A list at the limit may be complete, so it plans.
+test('board waiting: only a cut-off issue list plans nothing', () => {
   assert.deepEqual(scheduleOf('reading GitHub…'), { ready: [], order: [], cycles: [], blocked: [], criticalPath: [] });
-  const full = Array.from({ length: 30 }, (_, at) => ({ number: at + 1, title: `${at + 1}`, url: '', createdAt: '', updatedAt: '', dependsOn: at ? [at] : [] }));
-  assert.deepEqual(scheduleOf(full), { ready: [], order: [], cycles: [], blocked: [], criticalPath: [] });
+  const atLimit = Array.from({ length: 30 }, (_, at) => ({ number: at + 1, title: `${at + 1}`, url: '', createdAt: '', updatedAt: '', dependsOn: at ? [at] : [] }));
+  assert.deepEqual(scheduleOf(atLimit).order, Array.from({ length: 30 }, (_, at) => at + 1), 'a complete list at the limit plans every issue');
+  const cutOff = [...atLimit, { number: 31, title: '31', url: '', createdAt: '', updatedAt: '', dependsOn: [] }];
+  assert.deepEqual(scheduleOf(cutOff), { ready: [], order: [], cycles: [], blocked: [], criticalPath: [] }, 'one issue past the limit proves the list was cut');
 });

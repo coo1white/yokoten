@@ -359,14 +359,14 @@ export const BOARD_NO_REMOTE_ISSUES = 'this repo has no GitHub remote, so the bo
 /** What the lists say before the first read from GitHub finishes (#688). */
 export const BOARD_READING_GITHUB = 'reading GitHub…';
 /**
- * The most open issues the board reads. A list this long may be cut off, so it
- * cannot prove that an issue is closed (#693).
+ * The most open issues the board lists. It reads one more, so it can tell a complete
+ * list from a cut-off one: an issue missing from a cut-off list could look closed (#693).
  */
 export const BOARD_ISSUE_LIMIT = 30;
 
-/** The open issue numbers, or null when the list is missing or may be cut off. */
+/** The open issue numbers, or null when the list is missing or was actually cut off. */
 export function issueNumbersOf(issues: { number: number }[] | string): number[] | null {
-  if (!Array.isArray(issues) || issues.length >= BOARD_ISSUE_LIMIT) return null;
+  if (!Array.isArray(issues) || issues.length > BOARD_ISSUE_LIMIT) return null;
   return issues.map((issue) => issue.number);
 }
 

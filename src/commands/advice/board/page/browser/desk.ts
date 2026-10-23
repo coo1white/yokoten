@@ -79,6 +79,61 @@ function formatWaits(state: PageState, numbers: number[]): string {
   return say(state, 'afterIssue', { refs: numbers.map((number) => `#${number}`).join(', ') });
 }
 
+/** How many ready issues the queue lists. The rest show as a count. */
+const QUEUE_ROWS = 5;
+
+/** The board's issue limit, repeated here because page.ts copies this source into the page. */
+const ISSUE_LIMIT = 30;
+
+/**
+ * Why a start waits, in the page's words: the machine's room by the board's limits
+ * (#709). A missing room (before the first read) still shows the settings.
+ */
+function roomNote(state: PageState, data: PageData): string {
+  const floor = data.limits.memoryFloorMb;
+  const max = data.limits.maxAgents;
+  const room = data.room;
+  if (room?.hold === 'memory') return say(state, 'queueHeldMemory', { free: room.freeMemoryMb, floor });
+  if (room?.hold === 'slots') return say(state, 'queueHeldSlots', { max });
+  return say(state, 'queueRoom', { max, floor });
+}
+
+/**
+ * The dependency queue (#709): the next ready issues in start order, any cycle, why a
+ * start waits, and the board's one start control. The ready list and the cycles are the
+ * ones /data already serves, so the page never works the graph out again.
+ */
+export function renderQueue(state: PageState, data: PageData): HTMLElement | null {
+  const schedule = data.schedule;
+  if (!schedule) return null;
+  const issues = typeof data.issues === 'string' ? [] : data.issues;
+  const titleOf = new Map(issues.map((issue) => [issue.number, issue.title || `#${issue.number}`]));
+  const box = el('div', { class: 'queue' });
+  box.append(el('h3', {}, say(state, 'queueTitle'), el('span', { class: 'n' }, String(schedule.ready.length))));
+  if (!schedule.ready.length) box.append(el('p', { class: 'quiet' }, say(state, issues.length > ISSUE_LIMIT ? 'queueCutOff' : 'queueEmpty')));
+  for (const number of schedule.ready.slice(0, QUEUE_ROWS)) {
+    box.append(el('p', { class: 'q-row' }, el('span', { class: 'num' }, `#${number}`), ` ${titleOf.get(number) ?? ''}`));
+  }
+  const more = schedule.ready.length - QUEUE_ROWS;
+  if (more > 0) box.append(el('p', { class: 'quiet' }, say(state, 'queueMore', { n: more })));
+  for (const cycle of schedule.cycles) {
+    box.append(el('p', { class: 'q-cycle' }, say(state, 'queueCycle', { refs: cycle.map((number) => `#${number}`).join(' → ') })));
+  }
+  if (schedule.blocked.length) box.append(el('p', { class: 'quiet' }, say(state, 'queueBlocked', { n: schedule.blocked.length })));
+  box.append(el('p', { class: 'quiet' }, roomNote(state, data)));
+  const vendor = el('select', { id: 'q-vendor', name: 'vendor' }, ...['claude-code', 'codex', 'muse', 'grok', 'antigravity', 'deepseek-harness'].map((name) => el('option', { value: name }, name)));
+  const model = el('input', { id: 'q-model', name: 'model', placeholder: say(state, 'modelName') });
+  box.append(el('div', { class: 'q-start' }, vendor, model, el('button', { class: 'hbtn', 'data-start-next': '1' }, say(state, 'startNext'))));
+  box.append(el('p', { class: 'quiet', id: 'queue-note' }, ''));
+  // The settings that hold a start, set here so the lead view can change them (#709).
+  box.append(el('p', { class: 'quiet' }, say(state, 'queueLimitsHint')));
+  const max = el('input', { id: 'q-max', name: 'maxAgents', inputmode: 'numeric', value: String(data.limits.maxAgents), 'aria-label': say(state, 'maxAgents') });
+  const floor = el('input', { id: 'q-floor', name: 'memory', inputmode: 'numeric', value: String(data.limits.memoryFloorMb), 'aria-label': say(state, 'memoryFloor') });
+  box.append(el('div', { class: 'q-start' }, max, floor, el('button', { class: 'hbtn', 'data-queue-limits': '1' }, say(state, 'saveNow'))));
+  box.append(el('p', { class: 'quiet', id: 'queue-limits-note' }, ''));
+  return box;
+}
+
 /** The lead box: what the lead is doing, at most three decisions, and the last reply. */
 export function renderDesk(state: PageState, data: PageData, lead: AgentView | undefined): HTMLElement {
   const desk = data.desk;
@@ -132,4 +187,4 @@ export function renderTimeline(state: PageState, data: PageData, now: number = D
 }
 
 /** The desk and timeline functions, in the order page.ts writes them. */
-export const DESK_FUNCTIONS = [barPlace, isRecent, timelineOf, formatWaits, renderDesk, renderTimeline];
+export const DESK_FUNCTIONS = [barPlace, isRecent, timelineOf, formatWaits, roomNote, renderQueue, renderDesk, renderTimeline];
