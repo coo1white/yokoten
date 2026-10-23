@@ -364,8 +364,11 @@ test('tests-job: a node --test project gets the time budget, another runner does
   const node = project({ 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }), [WORKFLOW]: workflowFile() });
   writeTestsJob(node, { ask: () => 'y' });
   const text = readFileSync(join(node, WORKFLOW), 'utf8');
-  assert.match(text, /NODE_OPTIONS: .*--test-reporter=tap .*runner\.temp \}\}\/tests\.tap/);
-  assert.match(text, /run: node \.yokoten\/bin\/yokoten\.ts speed \$\{\{ runner\.temp \}\}\/tests\.tap --budget 180/);
+  assert.match(text, /NODE_OPTIONS: .*--test-reporter=tap .*tests-\$\{\{ matrix\.shard \}\}\.tap --test-shard=\$\{\{ matrix\.shard \}\}\/3/);
+  assert.match(text, /strategy:/);
+  assert.match(text, /fail-fast: false/);
+  assert.match(text, /shard: \[1, 2, 3\]/);
+  assert.match(text, /run: node \.yokoten\/bin\/yokoten\.ts speed \$\{\{ runner\.temp \}\}\/tests-\$\{\{ matrix\.shard \}\}\.tap --budget 180/);
   assert.match(text, /- if: \$\{\{ !cancelled\(\) \}\}/);
   const vitest = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), [WORKFLOW]: workflowFile() });
   writeTestsJob(vitest, { ask: () => 'y' });
