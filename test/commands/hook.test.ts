@@ -25,13 +25,14 @@ import {
 import { test } from 'node:test';
 import {
   at,
+  CLI,
   makeSandbox,
   pick,
   makeTempDir,
   runChild,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { redactCommand } from '../../src/commands/hook.ts';
+import { chooseDenial, redactCommand } from '../../src/commands/hook.ts';
 import { parseRefusal } from '../../src/rules/message.ts';
 
 // A session started outside the repo, or a worker in a worktree elsewhere, loads no project
@@ -269,6 +270,64 @@ test('hook: a refusal is the four parts, as JSON for a named Claude Code hook an
   const json = await sandbox.call(['hook', '--json'], { input });
   assert.equal(json.status, 2);
   assert.ok(!`${claude.stdout}${claude.stderr}${fallback.stdout}${fallback.stderr}${tty.stdout}${tty.stderr}${json.stdout}${json.stderr}`.includes('\u001b'), 'no ANSI code in a hook answer');
+});
+
+// #800: every refusal the hook can make, as Claude Code reads it. The deny is the whole of
+// stdout on exit 0: Claude Code takes exit 0 as success, so any other text there would make
+// it plain output, and the call would run. The test sets CLAUDECODE=1 for the environment
+// Claude Code gives its hooks, and passes the same tests outside Claude Code.
+test('hook: a Claude Code refusal is one JSON deny on exit 0, for every kind of refusal (#800)', async () => {
+  const sandbox = makeSandbox();
+  const call = (command: string, extra: Record<string, string> = {}) =>
+    sandbox.call(['hook', '--commands-only', '--agent', 'claude-code'], {
+      input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }),
+      extra: { CLAUDECODE: '1', ...extra },
+    });
+  const denied = (result: { status: number | null; stdout: string; stderr: string }, kind: string) => {
+    assert.equal(result.status, 0, `${kind}: exit 0 is the answer Claude Code reads`);
+    const answer = JSON.parse(result.stdout);
+    // Nothing before or after the JSON: the round trip gives back its bytes exactly.
+    assert.equal(result.stdout, JSON.stringify(answer), `${kind}: stdout is the JSON and nothing else`);
+    assert.equal(answer.hookSpecificOutput.hookEventName, 'PreToolUse', kind);
+    assert.equal(answer.hookSpecificOutput.permissionDecision, 'deny', kind);
+    const reason = answer.hookSpecificOutput.permissionDecisionReason as string;
+    assert.match(reason, /^yokoten stopped this: /, kind);
+    assert.ok(result.stderr.includes(reason), `${kind}: stderr keeps the reason`);
+    assert.ok(!result.stdout.includes('\u001b'), `${kind}: no ANSI code`);
+  };
+  denied(await call('git push --force origin main'), 'a guard finding');
+  denied(await call(`bash -c "${':;'.repeat(300000)}"`), 'a command too long to read');
+  denied(await call(`gh issue create --title "a fix" --body "mail me${at}gmail.com"`), 'a privacy finding');
+  // Past the deadline the guard stops reading and refuses (#274). A child, as the hook runs:
+  // the heap cap is node's own option, and the test process keeps its own.
+  const late = JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `find . ${'-exec env '.repeat(30000)}` } });
+  const deadline = runChild('node', ['--max-old-space-size=256', CLI, 'hook', '--commands-only', '--agent', 'claude-code'], { cwd: sandbox.repo, env: { ...sandbox.env, CLAUDECODE: '1', YOKOTEN_GUARD_DEADLINE_MS: '1' }, input: late });
+  denied(deadline, 'the deadline');
+  // The project hook names no agent: Copilot CLI reads it, so it refuses on exit 2 even in
+  // a process that carries Claude Code's marker. A refusal never becomes an allow.
+  const shared = await sandbox.call(['hook', '--commands-only'], {
+    input: JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push --force origin main' } }),
+    extra: { CLAUDECODE: '1' },
+  });
+  assert.equal(shared.status, 2);
+  assert.equal(JSON.parse(shared.stdout).permissionDecision, 'deny');
+});
+
+// #800: a deny in JSON on exit 0 is the whole answer, or it is no answer at all. A hook that
+// already wrote to stdout falls back to the exit-2 answer, which blocks the call anyway.
+test('hook: a structured deny falls back to exit 2 unless it would be alone on stdout (#800)', () => {
+  const reason = 'yokoten stopped this: a test [force-push]\nWhy: why\nDo instead: fix\nMore: https://example.com/x';
+  const clean = chooseDenial('claude-code', reason, { CLAUDECODE: '1' }, { isNamed: true, isStdoutEmpty: true });
+  assert.equal(clean.exitCode, 0);
+  assert.equal(JSON.parse(clean.stdout).hookSpecificOutput.permissionDecision, 'deny');
+  // One line already on stdout, and Claude Code would read the deny as plain output.
+  const dirty = chooseDenial('claude-code', reason, { CLAUDECODE: '1' }, { isNamed: true, isStdoutEmpty: false });
+  assert.equal(dirty.exitCode, 2);
+  assert.equal(JSON.parse(dirty.stdout).permissionDecision, 'deny');
+  // An unnamed hook is also Copilot CLI's: it keeps the exit-2 answer.
+  assert.equal(chooseDenial('claude-code', reason, { CLAUDECODE: '1' }, { isNamed: false, isStdoutEmpty: true }).exitCode, 2);
+  // An agent that never reads a structured deny still gets nothing on stdout.
+  assert.deepEqual(chooseDenial('codex', reason, {}, { isNamed: true, isStdoutEmpty: true }), { stdout: '', exitCode: 2 });
 });
 
 // ---- Commands that print account details (#390) ----

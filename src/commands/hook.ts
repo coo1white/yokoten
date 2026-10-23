@@ -2,6 +2,7 @@
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
+import { Writable } from 'node:stream';
 import * as antigravity from '../agents/runtimes/small/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -41,7 +42,7 @@ import {
   wasRefusedRecently,
   writeAgentChecks,
 } from '../run/hook.ts';
-import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
+import { bullets, type Invocation, type Output, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
 export const READERS: Record<string, (input: unknown) => Action> = {
@@ -436,6 +437,42 @@ function allowFailingStop(
   return 0;
 }
 
+/**
+ * The answer a refusal gets (#707). Only a hook installed for Claude Code (`--agent
+ * claude-code`) answers with a deny in `hookSpecificOutput` on exit 0: an unnamed hook is
+ * read by Copilot CLI too, so it keeps the exit-2 answer. A structured answer is safe only
+ * as the whole of stdout: on exit 0 Claude Code reads any surrounding text as plain
+ * output, which lets the call run. So a refusal beside other text falls back to exit 2.
+ */
+export function chooseDenial(
+  agent: string,
+  reason: string,
+  env: Env,
+  { isNamed, isStdoutEmpty }: { isNamed: boolean; isStdoutEmpty: boolean },
+): { stdout: string; exitCode: number } {
+  const denial = isNamed && Object.hasOwn(DENIALS, agent)
+    ? DENIALS[agent](reason, env)
+    : agent === 'claude-code' ? claudeCode.fallbackDenial(reason) : { stdout: '', exitCode: 2 };
+  return denial.exitCode === 0 && !isStdoutEmpty ? claudeCode.fallbackDenial(reason) : denial;
+}
+
+/**
+ * The one answer a tool call gets on stdout (#707): a rewrite, a context note or a refusal.
+ * Keep it in hand until the branch knows which, so a refusal can check that its JSON would
+ * be alone there (see `chooseDenial`).
+ */
+function answerBuffer(): { stream: Output; text: () => string } {
+  let text = '';
+  const stream = new Writable({
+    decodeStrings: false,
+    write(chunk, _encoding, done) {
+      text += String(chunk);
+      done();
+    },
+  }) as Output;
+  return { stream, text: () => text };
+}
+
 /** `guard`: the guard's worker, when bin/main.ts started it early (#408). */
 export function runHook(invocation: Invocation, guard?: Guard): number | Promise<number> {
   const { cwd } = invocation;
@@ -471,6 +508,13 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
+  const answer = answerBuffer();
+  const answerInvocation: Invocation = { ...invocation, stdout: answer.stream };
+  /** Writes the branch's one answer to stdout, then returns `code`. */
+  const finish = (code: number): number => {
+    invocation.stdout.write(answer.text());
+    return code;
+  };
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
     let found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;
@@ -479,26 +523,26 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (printed && action.command !== undefined) {
       const wrapped = wrapForRedact(hardenRead(action.command), redactCommand(process.execPath, invocation.script, env.HOME));
       if (Object.hasOwn(REWRITES, agent)) {
-        if (json) printJson(invocation, { blocked: false, toolCall: true, rewritten: wrapped });
+        if (json) printJson(answerInvocation, { blocked: false, toolCall: true, rewritten: wrapped });
         // Written as it is: hiding the home folder would change the command.
-        else invocation.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
+        else answerInvocation.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
         noteToolCall(cwd, agent, action, role !== null || action.worker, null);
-        return 0;
+        return finish(0);
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
-    if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+    if (json) printJson(answerInvocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
       return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
-        if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
-        return 0;
+        if (messages) say(answerInvocation, CONTEXTS[agent](messages), answerInvocation.stdout);
+        return finish(0);
       });
     }
-    if (!found) return 0;
+    if (!found) return finish(0);
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
     // Every rule gives the same four parts (#707): title, why, do instead, more.
     const reason = formatRefusal(found);
@@ -506,11 +550,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // The --agent the hook was installed with decides the answer, never an environment
     // variable another host could inherit (#707). An unnamed hook may be read by another
     // host through the shared .claude/settings.json, so it keeps exit 2.
-    const denial = namedAgent !== undefined && Object.hasOwn(DENIALS, agent)
-      ? DENIALS[agent](reason, invocation.env)
-      : agent === 'claude-code' ? claudeCode.fallbackDenial(reason) : { stdout: '', exitCode: 2 };
-    if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
-    return json ? 2 : denial.exitCode;
+    const denial = chooseDenial(agent, reason, invocation.env, { isNamed: namedAgent !== undefined, isStdoutEmpty: answer.text() === '' });
+    if (!json && denial.stdout) say(answerInvocation, denial.stdout, answerInvocation.stdout);
+    return finish(json ? 2 : denial.exitCode);
   });
 }
 
