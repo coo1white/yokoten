@@ -150,7 +150,7 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   // No origin remote at all: say so, in one line for every step that reads the server (#208, #502).
   const cant = result.lines.filter((l) => /can't check/.test(l));
   assert.equal(cant.length, 1, cant.join('\n'));
-  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; run `git remote add origin <url>`/m);
+  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
   assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, "can't check", 'the data still has each step');
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
@@ -459,9 +459,9 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   const next = async () => (await sandbox.call(['doctor', '--session'])).stdout.split('\n')[0];
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'our rules live in the wiki for now' } }));
   assert.match(await next(), /stage 1 of 5, safety net\. Next: no tool-call guard/);
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e' } }));
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', remote: 'no remote yet' } }));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run/, 'a stage with every step not now is passed');
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', ci: 'no remote yet', issues: 'f' } }));
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', remote: 'no remote yet', ci: 'no remote yet', issues: 'f' } }));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: no issue templates and no pull request template/);
   const full = (await sandbox.call(['doctor'])).stdout;
   assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
@@ -483,6 +483,11 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', as
   // Stage 1 done, stage 2 not: init without its CI workflow.
   assert.equal((await sandbox.call(['init'])).status, 0);
   sandbox.withTests();
+  // The remote comes first (#655): make the repo, add it as origin, and push.
+  assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: there is no origin remote/);
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   rmSync(join(sandbox.repo, '.github', 'workflows', 'yokoten.yml'));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run `yokoten check`/, 'the pull request check alone is not the CI check');
   sandbox.write('TODO.md', '- one\n');
@@ -551,7 +556,7 @@ test('doctor: exits 0 on a set-up project with steps to do, and 1 on a problem (
   assert.equal((await sandbox.call(['init'])).status, 0);
   // The doctor calls here are real children: the exit code 0 and 1 come through the entry point.
   let result = sandbox.run(['doctor']);
-  assert.match(result.stdout, /\n +next +codeowners[^]*\n +to do +bot/, 'later steps are left');
+  assert.match(result.stdout, /\n +next +remote[^]*\n +to do +codeowners/, 'later steps are left');
   assert.equal(result.status, 0, result.stdout);
   assert.equal(JSON.parse((await sandbox.call(['doctor', '--json'])).stdout).ok, true);
   // A problem: a private mark in the tree.
@@ -575,7 +580,7 @@ test('doctor: lists the work only on this machine; a session hears at most three
   assert.match((await sandbox.call(['doctor'], { extra })).stdout, /^unsaved work \(only on this machine\):\n {2}note {4}uncommitted-changes: \. has 1 uncommitted file, the oldest changed 1 minute ago; /m);
   const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
   utimesSync(join(sandbox.repo, 'a.txt'), old, old);
-  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git -C . add -A && git -C . commit`; once the repo has a remote, push it.', UNSAVED_OFFER]);
+  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git add -A && git commit -m "chore: save work"`; once the repo has a remote, push it.', UNSAVED_OFFER]);
   const json = JSON.parse((await sandbox.call(['doctor', '--session', '--json'], { extra })).stdout);
   assert.deepEqual(json.notes.map((n: { id: string }) => n.id), ['uncommitted-changes']);
   assert.equal(json.ok, true, 'a note never fails doctor');
@@ -633,7 +638,7 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
   // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
-  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo']);
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it writes ~/.config/yokoten/mailmap and sets `git config --global mailmap.file ~/.config/yokoten/mailmap`, so git prints a private address in place of your email']);
   execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
   // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).
@@ -928,7 +933,7 @@ test('doctor: with "notNow" ci the default-branch lookup leaves out the Dependab
 // #453: full doctor in an empty repo started 31 child processes. git read the index three
 // times, and several config keys twice. Each git read now runs once per run, and the
 // config values come from one `git config --list`.
-test('doctor: full doctor in an empty repo starts each git read once, nine child processes in all (#453)', () => {
+test('doctor: full doctor in an empty repo starts each git read once, ten child processes in all (#453)', () => {
   const sandbox = makeSandbox();
   // As the command runs it: the environment is the process's own (src/commands/shared.ts).
   const saved = process.env.YOKOTEN_TEMP_DIRS;
@@ -953,7 +958,40 @@ test('doctor: full doctor in an empty repo starts each git read once, nine child
     else process.env.YOKOTEN_TEMP_DIRS = saved;
   }
   assert.deepEqual(runs.filter((run, i) => runs.indexOf(run) !== i), [], `a git read ran twice:\n${runs.join('\n')}`);
-  assert.equal(runs.length, 9, runs.join('\n'));
+  assert.equal(runs.length, 10, runs.join('\n'));
+});
+
+// #760, #775: a repo with a default branch reads its merge history in one git process.
+// A `for-each-ref` to pick the ref and a `log` to read it would be two (#453).
+test('doctor: a repo with a default branch reads its merge history in one git process (#453, #760)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('one.md', 'one\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'one');
+  // As the command runs it: the environment is the process's own (src/commands/shared.ts).
+  const saved = process.env.YOKOTEN_TEMP_DIRS;
+  process.env.YOKOTEN_TEMP_DIRS = '';
+  const runs: string[] = [];
+  const originals = { ...childProcess };
+  for (const name of ['execFileSync', 'spawnSync', 'execSync', 'execFile', 'spawn', 'exec'] as const) {
+    const original = originals[name] as (...args: unknown[]) => unknown;
+    (childProcess as Record<string, unknown>)[name] = (file: string, args?: unknown, options?: { cwd?: string }) => {
+      runs.push(`${Array.isArray(args) ? [file, ...args].join(' ') : file} (in ${options?.cwd === sandbox.repo ? 'the repo' : options?.cwd})`);
+      return original(file, args, options);
+    };
+  }
+  syncBuiltinESMExports();
+  try {
+    doctor(sandbox.repo, { env: process.env, config: DEFAULTS, gh: () => { throw new Error('no network in this test'); }, machine: fakeMachine(100 * GB) });
+  } finally {
+    Object.assign(childProcess, originals);
+    syncBuiltinESMExports();
+    if (saved === undefined) delete process.env.YOKOTEN_TEMP_DIRS;
+    else process.env.YOKOTEN_TEMP_DIRS = saved;
+  }
+  const logs = runs.filter((run) => run.startsWith('git log'));
+  assert.equal(logs.length, 1, runs.join('\n'));
+  assert.ok(!runs.some((run) => run.includes('for-each-ref --format=%(refname) ')), runs.join('\n'));
 });
 
 // ---- The sandbox step (#589): doctor names the one missing or too-wide sandbox. ----

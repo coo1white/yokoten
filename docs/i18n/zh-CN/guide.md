@@ -102,7 +102,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 | 关 | 步骤 |
 |---|---|
 | **1 · 安全网** | `rules`、`tool-hook`、`commit-check`、`runtime`、`tests`（有测试命令，CI 会跑） |
-| **2 · 先开 issue，再走 PR** | `ci`（CI 跑 `check`，或者用了 yokoten 的 Action）、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
+| **2 · 先开 issue，再走 PR** | `remote`（仓库已经在托管平台上，而且这个仓库有分支推上去了）、`ci`（CI 跑 `check`，或者用了 yokoten 的 Action）、`issues`（没有 todo 文件）、`templates`、`labels`（标准标签都在）、`milestone`（有一个没关的里程碑）、`no-build-output`（`dist/`、`build/`、`out/` 里没有提交的文件，也没有编译出来的二进制文件） |
 | **3 · 发版** | `changelog`、`titles`（CI 跑 `check --pr`；用 Action 的话，要在 PR 上跑，而且没设 `pr-check: false`） |
 | **4 · 带一支 AI 团队** | `codeowners`、`bot`、`skills`、`review`（合并到默认分支前要有一个人批准） |
 | **5 · 公开** | `security-files`（安全说明、Dependabot、许可证）、`protection`（默认分支和 `v*` tag 上的规则集）、`merge-settings`（只许 squash 合并，合并后自动删分支）、`security-settings`（secret scanning、push protection、私下报告漏洞、Dependabot 提醒） |
@@ -118,7 +118,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 它们不会卡住关卡。自建服务器的名字从不打印，doctor 一律叫它 "this host"。接下来会做 Gitea 适配（issue #505）。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
-`owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
+`owner`、`incident`、`good first issue`、`hotfix`、`security`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
 `init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
 
 第 4 关的 `review` 也这样读服务器。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
@@ -281,7 +281,7 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
 | Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍，这是有意的 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
-| OpenCode | `.opencode/plugins/yokoten.ts`：OpenCode 2 的 permission `evaluate`，以及 OpenCode 1 的 `tool.execute.before` | OpenCode 2 把 `effect` 设为 deny；OpenCode 1 抛出理由 | 没有完整跑过 | 没有收尾检查。守卫失败或超时就拒绝这次调用。不是只读、又读不出命令或路径时，也拒绝 |
+| OpenCode | `.opencode/plugins/yokoten.ts`：OpenCode 2 的 permission `evaluate`，以及 OpenCode 1 的 `tool.execute.before` | OpenCode 2 把 `effect` 设为 deny；OpenCode 1 抛出理由 | 是，2026-10-23：OpenCode 2.1.4，`opencode-go/deepseek-v4.1-flash`，插件就是 `init` 写的那份 | 没有收尾检查。守卫失败或超时就拒绝这次调用。不是只读、又读不出命令或路径时，也拒绝。子 agent 的调用没有完整跑过 |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
 用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
@@ -450,6 +450,10 @@ Codex 0.163.0 已经不接受 `wire_api = "chat"`。它会提示找不到 `deeps
 下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
 Windows 上请用 Git Bash。
 
+也有人只装了技能：`npx skills add yokoten-labs/yokoten` 只复制技能。技能只是给 agent 的
+说明，真正拦住命令的是守卫。所以只装技能等于没有守卫：要跑 `npx yokoten install`，或者用插件，
+守卫才会打开。
+
 ### 装哪个版本
 
 有三个发布通道。Stable 是稳妥的默认选择。
@@ -497,8 +501,9 @@ Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，�
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
 在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
 `claude plugin update yokoten@yokoten` 也一样；Beta 或 Dev 要用 `yokoten-beta@yokoten` 或
-`yokoten-dev@yokoten`。跑完要重启 Claude Code。插件要是比跑 `doctor` 的这份 yokoten 旧，
-`doctor` 会提醒你。
+`yokoten-dev@yokoten`。下一次工具调用会跑更新后的守卫。还带着旧 hook 命令的会话需要重启一次。
+会话还在跑的时候，要是旧的插件文件夹被删掉了，这次工具调用会被拒绝，并提示你重启。插件要是比跑 `doctor`
+的这份 yokoten 旧，`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
 插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。
@@ -1273,10 +1278,11 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 | tier | 什么样的改动 | 谁来审 |
 |------|--------------|--------|
 | C | 日常小改：文档、措辞、样式 | lead 审 |
-| B | 普通改动：其他代码，带测试 | lead 审 |
-| A | 改错了很难收回：密钥、数据、安装、发版、CODEOWNERS 里的文件 | 主人审 |
+| B | 普通改动：其他代码，带测试 | 另一家厂商的 agent 审，lead 批准 |
+| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审 |
 
-`.github/CODEOWNERS` 只列出改错了很难收回的文件：规则、kit、agent 配置、CI、记录。
+在 yokoten 自己的仓库里，`.github/CODEOWNERS` 只列出改错了很难收回的文件：核心规则、CODEOWNERS、
+会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和 `package.json`（记录 0037）。
 不是每个文件都列。新项目跑 `init` 时，会按只许 lead 改的路径写好一份。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
 就会请主人来审。
 
@@ -1294,6 +1300,35 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 `tier:` 一样。少了哪个、哪个不对，各报一条，每条都说怎么改。
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
+
+### 在 PR 上会看到的审查机器人
+
+审查机器人会在你开 PR 之后读这个 PR。它把评论发在 PR 页面上。你可能会看到改动的讲解、
+风险等级、合并前检查清单，还有修改建议。有的机器人能直接把这些修改推上去。
+
+分两种：
+
+- **商业的。** 机器人是闭源的。公司替你运行，你的代码会发到公司的服务器。很多对公开仓库
+  免费，对私有仓库收费。
+- **开源的。** 你自己运行，用你自己的模型 API 密钥。模型用的 token 由你向模型厂商付费，
+  代码留在你自己的机器上。
+
+价格、许可证和数据的去向会变。本指南不推荐任何一款机器人。打开它之前，先读它自己的页面。
+机器人的评论里一般有链接。
+
+yokoten 在 PR 之前工作，在你这台机器上：
+
+- 守卫拦住危险的命令、密钥和个人信息；
+- `inspect` skill 在你的 agent 会话里审查改动，不额外花钱；
+- 检查和合并规则拦住你没有批准的合并或发版。
+
+审查机器人在 PR 之后工作。两者配合得很好。机器人看到 PR；yokoten 看到写出这个 PR 的会话。
+
+刚开始不需要审查机器人。yokoten 自己的审查就够了。团队想在 PR 页面上多一个读者时，再加
+一个机器人。`doctor` 从不叫你装一个：它只说 yokoten 自己的下一步。
+
+yokoten 在 PR 页面上的结果，只来自它自己的检查。它不重复别的机器人的结论，也不再审一遍
+代码（#91）。
 
 ### 工位
 
@@ -1370,7 +1405,9 @@ git diff main refs/desks/42
 - **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。规则从「全部不许」开始，只放开工位
   要用的读、写、Mach 服务和代理端口，挡住 `open`、`osascript`、Launch Services 和 Apple 事件。
   还没在 Mac 上跑过：请在 Mac 上跑一次 `node --test test/agents/desk/start.test.ts`，检查这套规矩。
-- **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
+- **原生 Windows**：实验性功能，还没做好（#669）。它需要受限令牌（restricted token）辅助程序、
+  工位上的 ACL 和防火墙规则，并且 #637 的契约测试要在真实的 Windows 11 上通过，才能启动 worker。
+  在那之前，请在 WSL2 里用 yokoten，Linux 工位在那里可用。原生 Windows 上只有守卫在把关。
 
 ### agent 之间发消息
 
@@ -1433,6 +1470,15 @@ Codex 用 DeepSeek 模型时，也显示为 DeepSeek。
 看板能读 Claude、Grok、Muse 和 Codex 的日志。DeepSeek 走 Codex 的日志。
 找不到日志时，中间照旧显示它写的 `doing` 步骤。
 选中负责人时，中间改成最近 24 小时的时间线。
+
+底栏数空闲的座位。
+每家 vendor 显示在忙的 agent 数和空闲座位数。
+在主目录的 `.git/yokoten-seats.json` 里，用 JSON 写每家 vendor 的座位数。
+例如 `{"claude": 2, "grok": 4}` 是 Claude 两个座位、Grok 四个。
+也可以写运行时名，比如 `claude-code`。
+没有 agent 在忙的 vendor，座位全算空闲。
+没有这个文件时，底栏改数空闲的 agent。
+
 铃铛上的数字在 0 时是灰色，大于 0 时是橙色。点一下，列表在铃铛下面打开。
 每一行写清是什么、哪个 PR 或 issue、过了多久，并有一个「在这里处理」链接。
 按 Esc、点外面，或再点铃铛，列表就关上。同一个 PR 或 issue 只占一行。

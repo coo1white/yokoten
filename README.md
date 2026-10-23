@@ -34,6 +34,8 @@ hooks, sandbox and settings, and doesn't replace them.
 3. **A board for a team of agents.** Agents from different vendors work side by side,
    each in its own fenced desk, and you see all of them on one page.
 
+yokoten works before the pull request and alongside [PR review bots](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests).
+
 ## Install
 
 You need [Node](https://nodejs.org/) 22.23.4 or later (24.22.1 or later on Node 24, 26.12.1
@@ -52,6 +54,9 @@ Choose [which version to install](https://github.com/yokoten-labs/yokoten/blob/m
 Stable (the default), Beta or Dev. For CI only,
 [use it as a GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action).
 The commit check asks for UTC commit times, so add `export TZ=UTC` to your shell profile once.
+
+`npx skills add yokoten-labs/yokoten` copies the skills only: run `npx yokoten install`
+too, or you get no command guard and no session doctor.
 
 ## What you see
 

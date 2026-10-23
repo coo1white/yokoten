@@ -47,7 +47,7 @@ export function visibleLength(text: string): number {
  * `documentation`. A label that is the type name itself always counts.
  */
 const TYPE_LABEL_ALIASES: Record<string, string[]> = {
-  fix: ['bug', 'hotfix', 'incident'],
+  fix: ['bug', 'hotfix', 'incident', 'security'],
   feat: ['feature', 'enhancement'],
   docs: ['documentation'],
 };
@@ -220,7 +220,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   const body = pr.body ?? '';
   const tier = bodyTier(body);
   if (!tier) {
-    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: files CODEOWNERS owns, or a change that makes a rule looser; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);
@@ -849,7 +849,7 @@ export interface CommandLabels {
 }
 
 // Aliases that say more than the type, so the bot never picks them for a person.
-const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident']);
+const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident', 'security']);
 
 /** The label names that say a title's type, best first: the shown one (`bug` for fix), the type, then its aliases. */
 function typeLabelNames(type: string): string[] {

@@ -21,7 +21,7 @@ import {
   ROOT,
 } from '../../repo/helpers.ts';
 import { addProjectSandbox, addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, readStop, sandboxProblem } from '../../../src/agents/runtimes/claude-code.ts';
-import { refuseOnFailure } from '../../../src/run/cli.ts';
+import { pluginHookCommand } from '../../../src/run/cli.ts';
 
 test('claude-code readStop: a Stop or SubagentStop event is checked; a worker subagent is a worker (#614)', () => {
   assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, subagent: false, sessionId: undefined });
@@ -103,17 +103,20 @@ test('plugin: every path it names exists inside the plugin, and the kit is not c
   for (const s of scripts) assert.ok(existsSync(join(ROOT, s)), s);
 });
 
-test('plugin: its hooks are the ones install adds, and the guard it registers blocks', async () => {
+test('plugin: install keeps a direct path, and the guard the plugin registers blocks (#706)', async () => {
   const sandbox = makeSandbox();
   const hooks = manifest('plugin.json').hooks as Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
-  // install's user-level hooks, with the plugin's root in place of the machine copy.
-  // install's entry, through the real binary.
+  // install's entry, through the real binary. Its hooks stay a direct path (#706).
   assert.equal(sandbox.run(['install']).status, 0);
-  const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
-  // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
-  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node |command -v node )/, '');
-  const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${unguard(x.command).replace(cli, 'CLI')}`) }))]));
-  assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.mjs"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.mjs"'));
+  const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks as typeof hooks;
+  // The same events and hook types. The commands differ: the plugin resolves a cache copy on each call.
+  const shape = (table: typeof hooks) => Object.fromEntries(Object.entries(table).map(([event, groups]) => [event, groups.map((group) => ({ matcher: group.matcher, types: group.hooks.map((hook) => hook.type) }))]));
+  assert.deepEqual(shape(hooks), shape(installed));
+  const direct = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
+  for (const event of ['SessionStart', 'PreToolUse'] as const) {
+    assert.ok(installed[event][0].hooks[0].command.includes(direct), event);
+    assert.notEqual(hooks[event][0].hooks[0].command, installed[event][0].hooks[0].command, event);
+  }
   // The command as Claude Code runs it: the root filled in, through the shell.
   const run = (command: string, input?: string, extra: Record<string, string> = {}) =>
     spawnSync(command.replaceAll(PLUGIN_ROOT, ROOT), { shell: true, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: ROOT, ...extra }, input, encoding: 'utf8' });
@@ -167,9 +170,20 @@ test('plugin: /yokoten:update previews from the plugin, then writes with --write
   assert.match(run(commands[0]).stdout, /up to date/);
 });
 
-// The plugin's guard is the text the builder makes, so the two cannot drift (#260).
-test('plugin: its tool-call guard is the command refuseOnFailure builds', () => {
-  assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.mjs"`, 'hook --commands-only'));
+// The plugin's hooks are the text the builder makes, so the two cannot drift (#260, #706).
+test('plugin: its hooks are the commands pluginHookCommand builds (#706)', () => {
+  const hooks = manifest('plugin.json').hooks;
+  assert.equal(hooks.PreToolUse[0].hooks[0].command, pluginHookCommand(false));
+  assert.equal(hooks.SessionStart[0].hooks[0].command, pluginHookCommand(true));
+});
+
+// Claude Code prints the hook command in front of a refusal, so the line stays short (#706).
+test('plugin: the longest hook command is under 400 characters (#706)', () => {
+  const hooks = manifest('plugin.json').hooks;
+  const commands = [hooks.PreToolUse[0].hooks[0].command, hooks.SessionStart[0].hooks[0].command] as string[];
+  const longest = Math.max(...commands.map((command) => command.length));
+  assert.ok(longest < 400, `the longest hook command is ${longest} characters`);
+  for (const command of commands) assert.equal(command.includes('\n'), false, 'one line');
 });
 
 test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', async () => {

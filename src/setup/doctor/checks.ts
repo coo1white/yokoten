@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
-import { homeIn, homeOf, loadMarks, machineAllowed, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
+import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
 import { enabledPluginChannel, hasPlugin, hasProjectHook, hasSessionDoctor, type PluginChannel, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
@@ -20,7 +20,7 @@ import type { FolderTrust } from '../../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../../agents/hooks-file.ts';
 import { runtimeVersion, VERSION } from '../files.ts';
 import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init.ts';
-import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
+import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, installedSkillDirs, projectSkillDirs, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
 
 export interface Practice {
   name: string;
@@ -274,7 +274,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   const notes: Practice[] = [];
   if (output !== 'stop' && usesOtherAgent(env, root)) notes.push(practice('private-output', 'private-output', false, UNFILTERED, OUTPUT_STOP));
   const mailmap = mailmapState(env);
-  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', 'run `yokoten install`; it sets a git mailmap outside every repo'));
+  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', `run \`yokoten install\`; it writes ${MAILMAP_SETTING} and sets \`git config --global mailmap.file ${MAILMAP_SETTING}\`, so git prints a private address in place of your email`));
   if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
   let marks: string[] = [];
   try {
@@ -345,7 +345,7 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
 }
 
 /** The one command that updates a plugin, from a shell. */
-const updatePluginCommand = (id: string) => `\`claude plugin update ${id}\`, then restart Claude Code`;
+const updatePluginCommand = (id: string) => `\`claude plugin update ${id}\`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart`;
 
 /** The one command that updates the stable plugin, from a shell. */
 export const PLUGIN_UPDATE = updatePluginCommand('yokoten@yokoten');
@@ -378,6 +378,45 @@ function readDefaultBranch(root: string, env: Env): string | null {
     }
   }
   return null;
+}
+
+/** How many commits on the default branch doctor reads for its time zone count (#760). */
+export const HISTORY_DEPTH = 200;
+
+/** The default branch as a person names it, in the order doctor reads it: `origin/HEAD`, else `origin/main`, else `main`. */
+const DEFAULT_BRANCH_NAMES = ['origin/HEAD', 'origin/main', 'main'];
+
+/**
+ * The revision arguments for the last `HISTORY_DEPTH` commits on each default-branch name.
+ * `--ignore-missing` drops a ref that is not here, and a `~` depth past a short history.
+ * One `git log` takes them all, so doctor starts one git process, not two (#453).
+ */
+function historyWindow(): string[] {
+  return [...DEFAULT_BRANCH_NAMES, '--not', ...DEFAULT_BRANCH_NAMES.map((name) => `${name}~${HISTORY_DEPTH}`)];
+}
+
+/**
+ * A note when a merge commit among the last `HISTORY_DEPTH` commits on the default branch
+ * carries an author or committer time zone other than UTC (#760). One `git log` reads them
+ * all, against the same refs and window the note prints, so the count and the command agree
+ * (#775). The zone is never printed, and neither is a name or email. Null when every merge is
+ * UTC, or git can't answer.
+ */
+export function mergeTimeZones(root: string, env: Env): Finding | null {
+  let text = '';
+  try {
+    text = execFileSync('git', ['log', '--first-parent', '--merges', '--ignore-missing', '--format=%H%x00%ad|%cd', '--date=format:%z', ...historyWindow()], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: 1 << 26 }).trim();
+  } catch {
+    return null;
+  }
+  const count = text.split('\n').filter((line) => {
+    if (line === '') return false;
+    const [, zones = ''] = line.split('\0');
+    const [author = '', committer = ''] = zones.split('|');
+    return notUtc(` ${author}`) || notUtc(` ${committer}`);
+  }).length;
+  if (!count) return null;
+  return finding('time-zone', `${count} merge commit(s) among the last ${HISTORY_DEPTH} commits on the default branch carry an author or committer time zone other than UTC`, `see them with \`git log --first-parent --merges --ignore-missing --date=format:%z --format='%h %ad %cd' ${historyWindow().join(' ')}\`; each line ends with its zone, and +0000 is UTC; leave history as it is, and merge through the bot so new merges stay UTC`);
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
@@ -413,17 +452,40 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 }
 
 /**
- * A note when the plugin is on and install's pieces are here too (#300): then the guard
- * and the session doctor run twice, and every skill shows up twice. It names what to
- * remove, and the one command that does it.
+ * A note when the plugin is on and install's pieces, or a skills-only copy, are here too
+ * (#300, #540): then the guard and the session doctor run twice, and every skill shows up
+ * twice. It names what to remove, and the one command that does it.
  */
-export function doubleInstallCheck(env: Env): Finding | null {
+export function doubleInstallCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const pieces = installedPieces(env);
-  if (!pieces.length) return null;
-  return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
-    why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
-  });
+  const homeSkills = installedSkillDirs(env);
+  const projectSkills = root ? projectSkillDirs(root) : [];
+  if (!pieces.length && !projectSkills.length) return null;
+  // A skills-only copy has no hooks and no runtime, so only the skills show up twice.
+  const skillsOnly = !pieces.some((piece) => !piece.startsWith('the skills in'));
+  const projectList = projectSkills.map((dir) => `\`${dir}\``).join(' and ');
+  // One fix per place: uninstall takes the home copy back, and each project skill folder goes.
+  const fixes: string[] = [];
+  if (homeSkills.length) fixes.push('remove the home copy with `yokoten uninstall`');
+  if (projectSkills.length) fixes.push(`delete ${projectList}`);
+  if (!fixes.length) fixes.push('remove the copy with `yokoten uninstall`');
+  const said: string[] = [];
+  if (pieces.length) {
+    said.push(skillsOnly
+      ? `a skills-only copy is here too: the skills in ${homeSkills.join(' and ')}`
+      : `\`yokoten install\` put these here too: ${pieces.join('; ')}`);
+  }
+  // `npx skills add` put this copy here, not install, so install gets no credit for it.
+  if (projectSkills.length) said.push(`\`npx skills add\` put a copy in this project too: ${projectList}`);
+  const what = `the yokoten plugin is on, and ${said.join('; ')}`;
+  const installsHooks = pieces.some((piece) => piece.startsWith('the SessionStart') || piece.startsWith('the agents'));
+  const why = installsHooks
+    ? 'with both, the guard and the session doctor run twice and every skill shows up twice'
+    : homeSkills.length || projectSkills.length
+      ? 'the plugin brings the same skills, so every skill shows up twice'
+      : 'the plugin brings its own runtime, so it is here twice';
+  return finding('machine-runtime', what, `${fixes.join(' and ')}; the plugin brings its own`, { why });
 }
 
 /**
