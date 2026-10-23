@@ -395,7 +395,7 @@ test('init writes the OpenCode plugin, and doctor notes a project that has OpenC
   const after = await sandbox.call(['doctor']);
   assert.doesNotMatch(after.stdout, /opencode-hook/);
   const again = await sandbox.call(['init']);
-  assert.match(again.stdout, /same the OpenCode tool-call plugin in \.opencode\/plugins\/yokoten\.ts/);
+  assert.match(again.stdout, /kept the OpenCode tool-call plugin in \.opencode\/plugins\/yokoten\.ts/);
   sandbox.write(PLUGIN_FILE, 'old\n');
   noted = agentHooks(sandbox.repo, sandbox.env).filter((item) => item.name === 'opencode-hook');
   assert.match(noted[0]?.finding.what ?? '', /out of date/);
