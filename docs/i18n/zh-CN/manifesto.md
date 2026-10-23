@@ -2,7 +2,7 @@
 
 ### 写给 AI agent 时代的宣言
 
-[English](../../manifesto.md) | 简体中文 | [繁體中文](../zh-TW/manifesto.md) | [日本語](../ja/manifesto.md)
+[English](../../assets/manifesto.md) | 简体中文 | [繁體中文](../zh-TW/manifesto.md) | [日本語](../ja/manifesto.md)
 
 写代码已经不值钱了。一个团队一周的活，模型一分钟写完。谁都能一句话叫来十个工程师。
 
