@@ -400,8 +400,8 @@ test('refused marker: an empty .git above a work folder is not the checkout (#74
 });
 
 // #746: the same walk for a desk that keeps its mark and done-when but lost HEAD or objects:
-// it is broken, so the parent's done-when and git folder are not used.
-test('done-when: a desk that lost HEAD or objects is not its parent checkout (#746)', () => {
+// it is broken, so the parent's done-when and git folder are not used. Its own file still runs.
+test('done-when: a desk that lost HEAD or objects reads its own, not its parent checkout (#746)', () => {
   const base = makeTempDir('yokoten-desk-partial-');
   const removals: Record<string, (desk: string) => void> = {
     head: (desk) => rmSync(join(desk, '.git', 'HEAD')),
@@ -441,7 +441,7 @@ test('done-when: a desk that lost HEAD or objects is not its parent checkout (#7
       const label = `${context}/${removal}`;
       assert.equal(existsSync(join(desk, '.git', 'yokoten-worker')), true, `${label}: the mark is kept`);
       assert.equal(existsSync(join(desk, '.git', 'yokoten-done-when')), true, `${label}: the done-when is kept`);
-      assert.equal(readDoneWhen({}, src), undefined, `${label}: the parent's done-when is not used`);
+      assert.equal(readDoneWhen({}, src), 'node --test-desk', `${label}: the desk's own done-when still runs, never a skip`);
       assert.equal(refusedMarkerPath(src, 'k'), null, `${label}: no marker lands in the parent's git folder`);
       const parent = join(base, 'nested');
       if (context === 'nested') assert.equal(readDoneWhen({}, parent), 'node --test-parent', `${label}: the parent still reads its own`);

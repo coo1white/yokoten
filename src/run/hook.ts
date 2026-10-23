@@ -111,9 +111,12 @@ export function readDoneWhen(env: Env, folder: string): string | undefined {
   const fromEnv = env.YOKOTEN_DONE_WHEN?.trim();
   if (fromEnv) return fromEnv;
   const link = gitLinkAbove(folder);
-  if (!link || link.kind === 'broken') return undefined;
+  if (!link) return undefined;
+  // A broken link still fails closed: read the file on disk (#746). It runs, or the stop
+  // refuses when it fails. Never the parent's file, and never a silent skip.
+  const gitDir = link.kind === 'broken' ? join(link.top, '.git') : link.gitDir;
   try {
-    const text = readFileSync(join(link.gitDir, DONE_WHEN_FILE), 'utf8');
+    const text = readFileSync(join(gitDir, DONE_WHEN_FILE), 'utf8');
     const line = text.split('\n').find((row) => {
       const trimmed = row.trim();
       return trimmed !== '' && !trimmed.startsWith('#');

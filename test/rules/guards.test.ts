@@ -2820,25 +2820,44 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
 
 // #746: a `.git` folder git would not use is not a checkout, and the walk goes on past it: an
 // empty `/tmp/.git` must not make every folder in /tmp a checkout.
-test('git link: a .git folder needs HEAD and an objects folder (#746)', () => {
+test('git link: a .git folder needs a HEAD line, objects and refs (#746)', () => {
   const base = makeTempDir('yokoten-empty-git-');
   makeGitFolder(base);
+  const parent = { kind: 'folder', top: base, gitDir: join(base, '.git') };
   const empty = join(base, 'empty');
   mkdirSync(join(empty, '.git'), { recursive: true });
   mkdirSync(join(empty, 'work'));
-  assert.deepEqual(gitLinkAbove(join(empty, 'work')), { kind: 'folder', top: base, gitDir: join(base, '.git') }, 'an empty .git is passed over');
+  assert.deepEqual(gitLinkAbove(join(empty, 'work')), parent, 'an empty .git is passed over');
   assert.equal(workerMarkAt(join(empty, 'work')), null, 'and it makes no worker');
   const headOnly = join(base, 'head-only');
   mkdirSync(join(headOnly, '.git'), { recursive: true });
   mkdirSync(join(headOnly, 'work'));
   writeFileSync(join(headOnly, '.git', 'HEAD'), 'ref: refs/heads/main\n');
-  assert.deepEqual(gitLinkAbove(join(headOnly, 'work')), { kind: 'folder', top: base, gitDir: join(base, '.git') }, 'HEAD without objects is not a checkout');
+  assert.deepEqual(gitLinkAbove(join(headOnly, 'work')), parent, 'HEAD without objects is not a checkout');
   const objectsOnly = join(base, 'objects-only');
   mkdirSync(join(objectsOnly, '.git', 'objects'), { recursive: true });
   mkdirSync(join(objectsOnly, 'work'));
-  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: base, gitDir: join(base, '.git') }, 'objects without HEAD is not a checkout');
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), parent, 'objects without HEAD is not a checkout');
   writeFileSync(join(objectsOnly, '.git', 'HEAD'), 'ref: refs/heads/main\n');
-  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: objectsOnly, gitDir: join(objectsOnly, '.git') }, 'HEAD and objects is a checkout');
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), parent, 'HEAD and objects without refs is not a checkout');
+  mkdirSync(join(objectsOnly, '.git', 'refs'));
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: objectsOnly, gitDir: join(objectsOnly, '.git') }, 'HEAD, objects and refs is a checkout');
+  // A HEAD git cannot read is no HEAD: a symlink, or text that names no ref and no commit.
+  const symlinkHead = join(base, 'symlink-head');
+  mkdirSync(join(symlinkHead, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(symlinkHead, '.git', 'refs'), { recursive: true });
+  mkdirSync(join(symlinkHead, 'work'));
+  writeFileSync(join(symlinkHead, 'head-text'), 'ref: refs/heads/main\n');
+  symlinkSync(join(symlinkHead, 'head-text'), join(symlinkHead, '.git', 'HEAD'));
+  assert.deepEqual(gitLinkAbove(join(symlinkHead, 'work')), parent, 'a HEAD symlink is not a checkout');
+  const strayHead = join(base, 'stray-head');
+  mkdirSync(join(strayHead, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(strayHead, '.git', 'refs'), { recursive: true });
+  mkdirSync(join(strayHead, 'work'));
+  writeFileSync(join(strayHead, '.git', 'HEAD'), 'not a ref\n');
+  assert.deepEqual(gitLinkAbove(join(strayHead, 'work')), parent, 'HEAD text that is no ref and no sha is not a checkout');
+  writeFileSync(join(strayHead, '.git', 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n');
+  assert.deepEqual(gitLinkAbove(join(strayHead, 'work')), { kind: 'folder', top: strayHead, gitDir: join(strayHead, '.git') }, 'a detached HEAD sha is a checkout');
 });
 
 // #746: a desk that keeps its worker mark and done-when but lost HEAD or objects must not

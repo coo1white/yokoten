@@ -692,6 +692,40 @@ test('hook --stop: a subagent runs the done-when command only in the worktree th
   assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(nested), 'a subagent in the lead folder runs in the event folder');
 });
 
+// #746: a desk whose `.git` lost what git needs is broken, but its own done-when is still on
+// disk: the stop runs it in the desk, never the parent's, and never skips it.
+test('hook --stop: a partial desk runs its own done-when in the desk (#746)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const desk = join(sandbox.repo, 'desk');
+  // `HEAD` and `objects` alone are not a checkout: git walks up to the parent, so does yokoten.
+  mkdirSync(join(desk, '.git', 'objects'), { recursive: true });
+  writeFileSync(join(desk, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+  mkdirSync(join(desk, 'src'));
+  const record = join(sandbox.repo, 'record.mjs');
+  writeFileSync(record, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], process.cwd());\n');
+  const marker = join(sandbox.repo, 'desk-ran');
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), 'exit 1\n');
+  writeFileSync(join(desk, '.git', 'yokoten-done-when'), `${process.execPath} ${record} ${marker}\n`);
+  const stop = (session: string) =>
+    sandbox.call(['hook', '--stop'], {
+      cwd: join(desk, 'src'),
+      input: JSON.stringify({ session_id: session, cwd: join(desk, 'src'), hook_event_name: 'Stop', stop_hook_active: false }),
+    });
+  let result = await stop('desk-partial-746');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(realpathSync(readFileSync(marker, 'utf8')), realpathSync(desk), 'the command ran in the desk, not the parent');
+  // A failing one refuses the stop: the check is kept, not skipped.
+  rmSync(marker);
+  writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'echo desk-failed >&2; exit 1\n');
+  result = await stop('desk-partial-746-fail');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /desk-failed/);
+});
+
 // #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every
 // agent in it a worker, whatever env reaches the hook; the lead's main checkout is not affected.
 // Every call here is Muse-shaped, piped to `hook --agent muse`, with YOKOTEN_ROLE unset.

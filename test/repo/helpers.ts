@@ -98,9 +98,10 @@ export function stopCheckoutWalk(folder: string): void {
   writeFileSync(join(folder, '.git'), 'not a checkout\n');
 }
 
-/** A `.git` folder git would use: `HEAD` and an `objects` folder, with no git process (#746). */
+/** A `.git` folder git would use: `HEAD`, an `objects` folder and a `refs` folder, with no git process (#746). */
 export function makeGitFolder(top: string): void {
   mkdirSync(join(top, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(top, '.git', 'refs'), { recursive: true });
   writeFileSync(join(top, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 }
 

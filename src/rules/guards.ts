@@ -268,9 +268,10 @@ const DOT_GIT_LIMIT = 4096;
 
 /**
  * What the `.git` at or above `folder` says, with no git process: `folder`, a main checkout's
- * git folder (it holds `HEAD` and an `objects` folder, as git needs); `file`, the git folder a
+ * git folder (it holds the `HEAD`, `objects` and `refs` git needs); `file`, the git folder a
  * linked worktree's or a submodule's `.git` names (it may be gone); `broken`, a `.git` that is
- * no folder and no small readable file with a gitdir line; null outside a checkout.
+ * no folder and no small readable file with a gitdir line, a folder the guard cannot read, or
+ * a folder that kept the worker's own files but lost what git needs; null outside a checkout.
  */
 export type GitLink = { kind: 'folder' | 'file'; top: string; gitDir: string } | { kind: 'broken'; top: string } | null;
 
@@ -301,14 +302,13 @@ export function gitLinkAbove(folder: string): GitLink {
 }
 
 /**
- * Whether a `.git` folder is one git would use: it holds a `HEAD` file and an `objects` folder.
- * `broken` when the guard can't read them, or when the folder carries the worker's own files
- * but has lost `HEAD` or `objects`: a desk must not become its parent's checkout (#746).
- * The caller then fails closed. No git process runs.
+ * Whether a `.git` folder is one git would use. `broken` when the guard can't read it, or when
+ * the folder carries the worker's own files but git would not use it: a desk must not become
+ * its parent's checkout (#746). The caller then fails closed. No git process runs.
  */
 function gitFolderState(gitDir: string): 'yes' | 'no' | 'broken' {
   try {
-    if (statSync(join(gitDir, 'HEAD')).isFile() && statSync(join(gitDir, 'objects')).isDirectory()) return 'yes';
+    if (isGitFolder(gitDir)) return 'yes';
   } catch (error) {
     if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
   }
@@ -321,6 +321,20 @@ function gitFolderState(gitDir: string): 'yes' | 'no' | 'broken' {
     }
   }
   return 'no';
+}
+
+/**
+ * Whether git itself would use this folder: `HEAD` a regular file (not a symlink) whose text is
+ * a `ref:` line or a commit sha, plus `objects` and `refs` folders. Git ignores anything less
+ * and walks up to the parent checkout, so the guard must too (#746). A reftable store is not
+ * checked: git still writes a `HEAD` line beside it, and no git here has `--ref-format`.
+ */
+function isGitFolder(gitDir: string): boolean {
+  const head = join(gitDir, 'HEAD');
+  if (!lstatSync(head).isFile()) return false;
+  const text = readSmallFile(head)?.trim() ?? '';
+  if (!/^ref:[ \t]*\S/.test(text) && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(text)) return false;
+  return statSync(join(gitDir, 'objects')).isDirectory() && statSync(join(gitDir, 'refs')).isDirectory();
 }
 
 function isFolder(path: string): boolean {
