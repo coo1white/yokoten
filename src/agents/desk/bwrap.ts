@@ -12,6 +12,7 @@
 //   nothing left running when the desk command ends.
 
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Env } from '../../rules/config.ts';
@@ -31,6 +32,12 @@ const KIND_ORDER = { hide: 0, read: 1, write: 2, lock: 3 } as const;
 
 type MountKind = keyof typeof KIND_ORDER;
 
+/**
+ * System settings folders that a program reads from /etc. One is mounted read-only when
+ * this machine has it, so a program sees what is there (#771).
+ */
+export const SYSTEM_SETTINGS = ['/etc/grok'];
+
 /** The mounts of a plan, in the order bwrap must make them: outer folders first. */
 export function orderMounts(plan: DeskPlan): { kind: MountKind; path: string }[] {
   const mounts: { kind: MountKind; path: string }[] = [
@@ -44,8 +51,9 @@ export function orderMounts(plan: DeskPlan): { kind: MountKind; path: string }[]
 }
 
 /** bwrap's words for a plan, up to and including the `--` before the bridge. */
-export function bwrapArgs(plan: DeskPlan, socket: string): string[] {
+export function bwrapArgs(plan: DeskPlan, socket: string, settings: readonly string[] = SYSTEM_SETTINGS): string[] {
   const args = ['--die-with-parent', '--new-session', '--unshare-all', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp'];
+  for (const path of settings) if (existsSync(path)) args.push('--ro-bind', path, path);
   for (const { kind, path } of orderMounts(plan)) {
     if (kind === 'hide') args.push('--tmpfs', path);
     else if (kind === 'write') args.push('--bind', path, path);

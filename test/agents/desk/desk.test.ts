@@ -57,6 +57,23 @@ test('programFolders: the folder named, and the package the real file is in', ()
   assert.deepEqual(programFolders(join(root, 'bin', 'agent')), [join(root, 'bin'), join(root, 'lib', 'agent')]);
 });
 
+test("planDesk: Grok's PATH link shows one file in its state, not the rest (#771)", () => {
+  const home = realpathSync(makeTempDir('grok-home-'));
+  const state = join(home, '.grok');
+  const downloads = join(state, 'downloads');
+  mkdirSync(downloads, { recursive: true });
+  const program = join(downloads, 'grok-1.0.67-macos-aarch64');
+  writeFileSync(program, '');
+  const bin = join(home, '.local', 'bin');
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(program, join(bin, 'grok'));
+  writeFileSync(join(state, 'auth.json'), '{}');
+  const { desk } = makeDesk();
+  const plan = planDesk({ runtime: 'grok', desk, command: ['grok', '--version'], env: { ...env(), HOME: home, PATH: bin }, markDesk: writeMark });
+  assert.deepEqual(plan.readable.filter((path) => isInside(path, state)), [realpathSync(program)], 'the real program file, and nothing else of ~/.grok');
+  assert.ok(plan.hidden.includes(home), 'the home folder stays hidden');
+});
+
 test('hiddenFolders: every home, other drives, and the desk parent; only those that are there', () => {
   const desk = join(makeTempDir('projects-'), 'desk');
   const linux = hiddenFolders('linux', TEST_HOME, desk);
