@@ -94,7 +94,7 @@ yokoten 自身も、このようなチームで作っています。リードの
 
 ## もっと知る
 
-- **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
+- **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
 - **[決定記録](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：なぜこう作ったのか。
 - **[変更履歴](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[コントリビュート](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[セキュリティ](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[サーバーの設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 
