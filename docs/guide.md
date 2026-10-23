@@ -1059,7 +1059,8 @@ flowchart LR
   `cmd.exe` has exited. This uses Windows PowerShell. If PowerShell cannot start the
   job, those programs can keep running.
 - A program that starts its own session is not stopped. `setsid` starts one. A new
-  process group in the same session is stopped.
+  process group in the same session is stopped on Linux. On macOS, `ps` gives no session
+  id, so only the check's own process group is stopped.
 - A failing check sends the worker back, with the output in short and what to fix.
   The worker gets three tries. On the third, the hook says the next stop is let through.
   The worker's final message to the lead must start with `NOT DONE: checks failing`.
