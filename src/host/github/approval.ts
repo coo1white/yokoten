@@ -153,8 +153,13 @@ function gitRead(root: string, args: string[], env: Env, input?: string): string
 /** A commit id: 4 to 64 hex characters. A branch name is not one. */
 const COMMIT_ID = /^[0-9a-f]{4,64}$/i;
 
-/** CODEOWNERS text from the contents API over this size is ignored. */
+/** Our cap on a contents read, not GitHub's. Over this, the read fails closed. */
 const CODEOWNERS_TEXT_LIMIT = 64 * 1024;
+
+/** True when this gh failure is HTTP 404: that place is not there. */
+function isMissingContents(err: unknown): boolean {
+  return /HTTP 404/.test(String((err as { stderr?: string }).stderr || (err as Error).message));
+}
 
 /** Whether `sha` names a commit in this checkout. */
 function hasLocalCommit(root: string, sha: string, env: Env): boolean {
@@ -168,40 +173,43 @@ function hasLocalCommit(root: string, sha: string, env: Env): boolean {
 }
 
 /**
- * One CODEOWNERS place from the contents API, or null when the answer is not a
- * usable file. A file over 64 KiB is ignored. The text never goes into a reason.
+ * One CODEOWNERS place from the contents API. `missing` is only a real HTTP 404.
+ * Any other failure, including a file over the cap, is `failed`. The text never
+ * goes into a reason.
  */
-function readContentsText(gh: Gh, repo: string, place: string, base: string): string | null {
+function readContentsPlace(gh: Gh, repo: string, place: string, base: string): { text: string } | { missing: true } | { failed: true } {
   let body: unknown;
   try {
     body = JSON.parse(gh(['api', `repos/${repo}/contents/${place}?ref=${base}`]));
-  } catch {
-    return null;
+  } catch (err) {
+    return isMissingContents(err) ? { missing: true } : { failed: true };
   }
-  if (!isObject(body) || asText(body.type) !== 'file') return null;
-  if (body.encoding !== undefined && body.encoding !== 'base64') return null;
-  if (typeof body.content !== 'string') return null;
+  if (!isObject(body) || asText(body.type) !== 'file') return { failed: true };
+  if (body.encoding !== undefined && body.encoding !== 'base64') return { failed: true };
+  if (typeof body.content !== 'string') return { failed: true };
   const text = Buffer.from(body.content.replace(/\s/g, ''), 'base64').toString('utf8');
-  if (Buffer.byteLength(text) > CODEOWNERS_TEXT_LIMIT) return null;
-  return text;
+  if (Buffer.byteLength(text) > CODEOWNERS_TEXT_LIMIT) return { failed: true };
+  return { text };
 }
 
 /**
- * CODEOWNERS at `base` from the contents API, or null when no place is a usable
- * file. The first place that is a file wins. `from` is the base branch.
+ * CODEOWNERS at `base` from the contents API. The next place is read only after
+ * a real 404. A failed read stops the search. `from` is the base branch.
  */
-function readContentsOwners(gh: Gh, repo: string, base: string): CodeOwners | null {
+function readContentsOwners(gh: Gh, repo: string, base: string): { owners: CodeOwners | null } | { failed: true } {
   for (const place of CODEOWNERS_PLACES) {
-    const text = readContentsText(gh, repo, place, base);
-    if (text !== null) return { text, from: 'the base branch' };
+    const read = readContentsPlace(gh, repo, place, base);
+    if ('failed' in read) return { failed: true };
+    if ('missing' in read) continue;
+    return { owners: { text: read.text, from: 'the base branch' } };
   }
-  return null;
+  return { owners: null };
 }
 
 /**
  * CODEOWNERS at the base commit, or why it could not be read. A missing commit
  * is fetched, then read again. When it is still missing, the contents API is
- * next. The reason never holds the file text.
+ * next. Only a 404 moves to the next place. The reason never holds the file text.
  */
 function loadBaseOwners(gh: Gh, root: string, env: Env, number: number, repo: string, base: string): { owners: CodeOwners | null } | { unsure: string } {
   const unreadable = { unsure: `the CODEOWNERS file for pull request ${number} could not be read` };
@@ -219,7 +227,8 @@ function loadBaseOwners(gh: Gh, root: string, env: Env, number: number, repo: st
     if (hasLocalCommit(root, base, env)) return unreadable;
   }
   const remote = readContentsOwners(gh, repo, base);
-  if (remote) return { owners: remote };
+  if ('failed' in remote) return unreadable;
+  if (remote.owners) return { owners: remote.owners };
   if (!hasLocalCommit(root, base, env)) {
     return { unsure: `the base commit ${base.slice(0, 7)} isn't in this clone; run \`git fetch origin\`` };
   }

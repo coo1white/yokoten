@@ -358,11 +358,14 @@ function addArgs(args: string[], added: string[]): string[] {
   return end === -1 ? [...args, ...added] : [...args.slice(0, end), ...added, ...args.slice(end)];
 }
 
-/** Runs the gh the command names, with the bot's token. It throws when gh fails. */
+/**
+ * Runs the gh the command names, with the bot's token. It throws when gh fails.
+ * The error keeps gh's stderr, so a contents 404 is not a failed read.
+ */
 const ghWith =
   (file: string, cwd: string, ghEnv: Env): Gh =>
   (args) =>
-    execFileSync(file, args, { cwd, env: ghEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    execFileSync(file, args, { cwd, env: ghEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 /**
  * The milestone of the first linked issue that has one (#512). False, after saying why,
@@ -584,22 +587,28 @@ function refuseApiMerge(invocation: Invocation, gh: Gh, cwd: string, env: Env, o
   }
   const refusal = approvalRefusal(gh, cwd, env, merge.number, merge.repo);
   if (!refusal) return false;
-  print(invocation, [`yokoten bot: ${refusal}. Nothing was merged`], invocation.stderr);
+  print(invocation, [`yokoten bot: ${refusal.text}. Nothing was merged`], invocation.stderr);
   return true;
+}
+
+/** Why a merge stops. `kind` picks the status list, so the words of `text` do not. */
+interface MergeStop {
+  kind: 'unchecked' | 'needsApprove';
+  text: string;
 }
 
 /**
  * Why pull request `number` must not merge yet, or null when it may: not tier A, or the
  * owner's Approve is on its head, or only base merges came after it with the same own
- * diff. What gh or git can't answer is a refusal too. That refusal names the
- * cause. It does not ask for a new Approve. A missing or stale Approve still does.
+ * diff. What gh or git can't answer is `unchecked`. It names the cause and does not
+ * ask for a new Approve. A missing or stale Approve is `needsApprove`.
  */
-function approvalRefusal(gh: Gh, root: string, env: Env, number: number, repo: string): string | null {
+function approvalRefusal(gh: Gh, root: string, env: Env, number: number, repo: string): MergeStop | null {
   const state = readApprovalState(gh, root, env, number, repo);
-  if ('unsure' in state) return `could not check the owner's Approve (${state.unsure})`;
+  if ('unsure' in state) return { kind: 'unchecked', text: `could not check the owner's Approve (${state.unsure})` };
   if (state.tier !== 'A') return null;
   const problem = checkApprovalFreshness(state);
-  return problem ? problem.what : null;
+  return problem ? { kind: 'needsApprove', text: problem.what } : null;
 }
 
 /** Refuses a `gh pr merge` the Approve check stops. True when it refused. */
@@ -611,7 +620,7 @@ function refuseStaleMerge(invocation: Invocation, gh: Gh, cwd: string, env: Env,
   }
   const refusal = approvalRefusal(gh, cwd, env, found.number, found.repo);
   if (!refusal) return false;
-  print(invocation, [`yokoten bot: ${refusal}. Nothing was merged`], invocation.stderr);
+  print(invocation, [`yokoten bot: ${refusal.text}. Nothing was merged`], invocation.stderr);
   return true;
 }
 
@@ -671,9 +680,9 @@ function runPrStatus(invocation: Invocation, file: string, args: string[], run: 
     if (tier !== null && tier !== 'A') continue;
     const refusal = approvalRefusal(gh, run.cwd, invocation.env, number, repo);
     if (!refusal) continue;
-    const row = `- #${number}: ${refusal}`;
+    const row = `- #${number}: ${refusal.text}`;
     // A check that could not be read is not a missing Approve.
-    if (refusal.startsWith('could not check')) unchecked.push(row);
+    if (refusal.kind === 'unchecked') unchecked.push(row);
     else needsApprove.push(row);
   }
   if (needsApprove.length) print(invocation, ['yokoten bot: these need a new owner Approve before they merge:', ...needsApprove]);

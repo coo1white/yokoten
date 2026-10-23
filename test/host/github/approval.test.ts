@@ -327,8 +327,8 @@ test('approval: a missing base commit is fetched before CODEOWNERS is read (#670
 });
 
 // #670: with no remote, the fetch cannot get the base commit. A contents body for
-// `.github/CODEOWNERS` is enough. A file over 64 KiB is ignored, and the next
-// place is read. `@friend` approved the head.
+// `.github/CODEOWNERS` is enough. A file over 64 KiB is a failed read, not a
+// reason to use the next place. `@friend` approved the head.
 test('approval: the contents API supplies CODEOWNERS when the base stays missing (#670)', () => {
   const dir = makeTempDir('yokoten-');
   const env = makeApprovalEnv(dir);
@@ -358,10 +358,57 @@ test('approval: the contents API supplies CODEOWNERS when the base stays missing
     'the contents path is one argument',
   );
   assert.ok(!calls.some((args) => args[1] === `repos/me/repo/contents/CODEOWNERS?ref=${base}`), 'the first file wins');
-  // The first place is over 64 KiB, so it is ignored and the next place is read.
+  // The first place is over 64 KiB. The cap is ours, so the read fails closed.
   calls.length = 0;
-  assert.deepEqual(readApprovalState(gh, dir, env, 42, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
-  assert.ok(calls.some((args) => args[1] === `repos/me/repo/contents/CODEOWNERS?ref=${laterBase}`));
+  assert.deepEqual(readApprovalState(gh, dir, env, 42, 'me/repo'), { unsure: 'the CODEOWNERS file for pull request 42 could not be read' });
+  assert.ok(!calls.some((args) => args[1] === `repos/me/repo/contents/CODEOWNERS?ref=${laterBase}`), 'a file over the cap is not a 404');
+});
+
+// #670: GitHub keeps the first CODEOWNERS place that exists. A real 404 means
+// that place is absent, so the next place is read. Any other failure stops the
+// search. A later file must not count as the owner's Approve.
+test('approval: only a real 404 moves to the next CODEOWNERS place (#670)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = makeApprovalEnv(dir);
+  runGitOk(dir, env, ['init', '-q', '-b', 'main']);
+  // A worktree file must not count: the base commit is the one that is read.
+  writeFileSync(join(dir, 'CODEOWNERS'), '/a.txt @stranger\n');
+  const head = 'a'.repeat(40);
+  const broken = 'f'.repeat(40);
+  const absent = '1'.repeat(40);
+  const middle = '2'.repeat(40);
+  const contentsAt = (base: string, place: string) => `repos/me/repo/contents/${place}?ref=${base}`;
+  const makePull = (number: number, base: string) => ({
+    [`repos/me/repo/pulls/${number}`]: makeFriendView(head, base),
+    [`repos/me/repo/pulls/${number}/files`]: ['a.txt'],
+    [`repos/me/repo/pulls/${number}/reviews`]: makeFriendReview(head),
+  });
+  const routes: Record<string, unknown> = {
+    ...makePull(48, broken),
+    [contentsAt(broken, '.github/CODEOWNERS')]: said(500),
+    // A later file that would approve, if the 500 were treated as "no file".
+    [contentsAt(broken, 'CODEOWNERS')]: makeOwnersFile(ownersText),
+    ...makePull(49, absent),
+    [contentsAt(absent, '.github/CODEOWNERS')]: said(404),
+    [contentsAt(absent, 'CODEOWNERS')]: makeOwnersFile(ownersText),
+    ...makePull(50, middle),
+    [contentsAt(middle, '.github/CODEOWNERS')]: said(404),
+    [contentsAt(middle, 'CODEOWNERS')]: said(500),
+    [contentsAt(middle, 'docs/CODEOWNERS')]: makeOwnersFile(ownersText),
+  };
+  const { gh, calls } = serverGh(routes);
+  const refused = readApprovalState(gh, dir, env, 48, 'me/repo');
+  assert.deepEqual(refused, { unsure: 'the CODEOWNERS file for pull request 48 could not be read' });
+  assert.equal(JSON.stringify(refused).includes('approve'), false);
+  assert.ok(!calls.some((args) => args[1] === contentsAt(broken, 'CODEOWNERS')), 'an HTTP 500 is not a 404');
+  calls.length = 0;
+  assert.deepEqual(readApprovalState(gh, dir, env, 49, 'me/repo'), { tier: 'A', head, approved: head, after: 0, sameDiff: true });
+  assert.ok(calls.some((args) => args[1] === contentsAt(absent, 'CODEOWNERS')), 'a 404 moves to the next place');
+  assert.ok(!calls.some((args) => args[1] === contentsAt(absent, 'docs/CODEOWNERS')), 'the first file that exists wins');
+  calls.length = 0;
+  assert.deepEqual(readApprovalState(gh, dir, env, 50, 'me/repo'), { unsure: 'the CODEOWNERS file for pull request 50 could not be read' });
+  assert.ok(calls.some((args) => args[1] === contentsAt(middle, 'CODEOWNERS')), 'the 404 place is passed');
+  assert.ok(!calls.some((args) => args[1] === contentsAt(middle, 'docs/CODEOWNERS')), 'a later 500 stops the search');
 });
 
 // #670: when the base commit stays missing and no contents body answers, the
