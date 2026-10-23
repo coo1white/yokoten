@@ -2826,6 +2826,19 @@ test('guard: a find that deletes is refused unless .git is kept out (#744)', () 
     "find . -exec sh -c '$cmd' \\;",
     'cd src && find . -delete',
     'find / -delete',
+    // A path that never writes `.git` can still name the history (#744 review).
+    "find . -path '*/objects/??/*' -delete",
+    "find . -name '*.idx' -delete",
+    "find . -path '*/refs/heads/master' -delete",
+    "find . -path '*/refs/heads/develop' -delete",
+    "find . -name '*.rev' -delete",
+    "find . -path '*/objects/info/alternates' -delete",
+    "find . -path '*/refs/tags/*' -delete",
+    "find . -path '*/[0-9a-f][0-9a-f]/*' -delete",
+    "find . -name '*.{idx,rev}' -delete",
+    "find . -name '*.log' -o -name '*.idx' -delete",
+    "find . -depth -path ./.git -prune -o -path '*/refs/heads/develop' -delete",
+    "find . -path '*/.git/objects/info/alternates' -delete",
   ]) refusedAs(command, 'remove-git');
   for (const command of [
     "find . -path ./.git -prune -o -name '*.tmp' -delete",
@@ -2849,12 +2862,29 @@ test('guard: a find that deletes is refused unless .git is kept out (#744)', () 
     "find . -name 'yokoten-w*' -delete",
     'cd ./src && find . -delete',
     "find src ../other -name '*.tmp' -delete",
+    // The same shapes are safe when the walk cannot enter `.git`, or the characters
+    // name an ordinary file (`.log`, `.ts`) rather than git storage.
+    "find . -path ./.git -prune -o -name '*.idx' -delete",
+    "find . -path ./.git -prune -o -path '*/refs/heads/develop' -delete",
+    "find . -path ./.git -prune -o -path '*/refs/*' -delete",
+    "find . -name 'index.ts' -delete",
+    "find . -name 'package.json' -delete",
+    "find . -name 'note?.tmp' -delete",
+    "find . -name 'test*.log' -delete",
+    "find . -path '*/config/*' -delete",
+    "find . -maxdepth 1 -path '*/refs/heads/develop' -delete",
+    "find dist -name '*.idx' -delete",
+    "find . -name '*.idx' -o -name '*.log' -delete",
   ]) allowed(command);
   // The worker hears the mark rule first when the walk can still reach the mark.
   assert.equal(checkCommand('find . -delete', { cwd: process.cwd(), env: worker })?.id, 'worker-mark');
   assert.equal(checkCommand('find . -exec rm -rf {} +', { cwd: process.cwd(), env: worker })?.id, 'worker-mark');
+  // The mark rule does not read a path that never writes `.git`. remove-git still refuses it.
+  assert.equal(checkCommand("find . -path '*/objects/??/*' -delete", { cwd: process.cwd(), env: worker })?.id, 'remove-git');
+  assert.equal(checkCommand("find . -name '*.idx' -delete", { cwd: process.cwd(), env: worker })?.id, 'remove-git');
   // A prune or an exclusion that keeps .git out is allowed for the worker too.
   allowed("find . -path ./.git -prune -o -name '*.tmp' -delete", worker);
+  allowed("find . -path ./.git -prune -o -name '*.idx' -delete", worker);
   allowed("find . -name .git -prune -o -name '*.tmp' -delete", worker);
   allowed("find . -not -path '*/.git/*' -delete", worker);
   allowed("find . -not \\( -path '*/.git' -o -path '*/.git/*' \\) -delete", worker);

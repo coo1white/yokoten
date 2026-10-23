@@ -1703,7 +1703,9 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
 // The guard refuses that unless something keeps the walk out: a prune of `.git`,
 // an exclusion such as `-not -path '*/.git/*'`, or a start folder that cannot hold
 // this repo's `.git` (`find dist -delete`). No test, or only tests that can match
-// `.git`, is refused. When the guard cannot tell, it refuses.
+// `.git`, is refused. A name or path whose characters name git storage (`objects`,
+// `refs`, `*.idx`) but match no sample is refused too: the guard reads those
+// characters, not the glob grammar. When the guard cannot tell, it refuses.
 //
 // `-delete` turns depth on, and GNU find then refuses to run a prune at all, so the
 // prune form deletes nothing. An explicit `-depth` or `-d` is different: prune stops
@@ -1766,8 +1768,23 @@ const FIND_FILE_ACTIONS = new Set(['-fprint', '-fprint0', '-fls']);
 const FIND_OR = new Set(['-o', '-or']);
 const FIND_AND = new Set(['-a', '-and']);
 // Files and folders a real checkout keeps. A test that matches one can reach the history.
-const GIT_FILE_TAILS = ['HEAD', 'config', 'index', 'packed-refs', 'COMMIT_EDITMSG', 'description', 'objects/pack/pack-1.pack', 'refs/heads/main', 'hooks/pre-commit', 'logs/HEAD', 'info/exclude', 'worktrees/wt/HEAD'];
-const GIT_DIR_TAILS = ['', 'objects', 'objects/pack', 'refs', 'refs/heads', 'hooks', 'logs', 'info', 'worktrees', 'worktrees/wt'];
+// The loose object (empty blob, two hex characters then the rest), the pack index and
+// the other refs are samples too: a pattern can name them without writing `.git`.
+const GIT_FILE_TAILS = [
+  'HEAD', 'config', 'index', 'packed-refs', 'COMMIT_EDITMSG', 'description',
+  'objects/pack/pack-1.pack', 'objects/pack/pack-1.idx', 'objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+  'refs/heads/main', 'refs/heads/master', 'refs/tags/sample-tag', 'refs/remotes/origin/HEAD',
+  'hooks/pre-commit', 'logs/HEAD', 'info/exclude', 'worktrees/wt/HEAD',
+];
+const GIT_DIR_TAILS = [
+  '', 'objects', 'objects/pack', 'objects/e6', 'refs', 'refs/heads', 'refs/tags',
+  'refs/remotes', 'refs/remotes/origin', 'hooks', 'logs', 'info', 'worktrees', 'worktrees/wt',
+];
+// Words under `.git` that a pattern can name without matching a sample (`refs/heads/develop`).
+// Exact file names the samples already cover (`config`, `index`) stay off this list.
+const GIT_STORAGE_PARTS = new Set(['objects', 'refs', 'hooks', 'logs', 'pack', 'worktrees', 'heads', 'tags', 'remotes', 'origin']);
+// Pack side files. `.idx` is the index; the rest sit beside the pack.
+const GIT_STORAGE_SUFFIXES = ['.idx', '.pack', '.rev', '.bitmap', '.keep', '.mtimes', '.promisor'];
 
 /** Whether a find that deletes can remove this repo's history. A parse the guard cannot finish refuses only when the line looks like a delete. */
 function findRemovesGit(args: string[], cwd: string | null, home: string | null): boolean {
@@ -1814,7 +1831,7 @@ function expressionSpares(parsed: FindParsed, cwd: string | null, home: string |
     if (hold === 'unsure') return null;
     if (hold === 'no') continue;
     const probes = gitProbes(hold.root, start, mode);
-    if (hasUnsampledGitPath(parsed.pathPatterns, probes)) return null;
+    if (hasUnsampledGitPath(parsed, probes)) return null;
     if (probesHarmed(parsed, probes)) return false;
   }
   return true;
@@ -1912,14 +1929,119 @@ function depthBelow(start: string, printed: string): number {
   return printed.split('/').filter(Boolean).length;
 }
 
-/** Whether a `-path` test names `.git` but matches none of the samples, so the guard cannot tell. */
-function hasUnsampledGitPath(patterns: string[], probes: GitProbe[]): boolean {
-  for (const pattern of patterns) {
+/** A `-name` or `-path` test that selects a delete. */
+interface HarmPattern {
+  kind: 'name' | 'path';
+  pattern: string;
+}
+
+/**
+ * Whether a pattern can reach git storage the samples do not cover, so the guard cannot tell.
+ * A `-path` that names `.git` and matches nothing is refused, prune or not.
+ * A delete whose characters name storage (`objects`, `*.idx`) but match no sample is refused
+ * too, unless a prune keeps the walk out or no interior sample is visited.
+ */
+function hasUnsampledGitPath(parsed: FindParsed, probes: GitProbe[]): boolean {
+  for (const pattern of parsed.pathPatterns) {
     const namesDotGit = /[$`]/.test(pattern) || pattern.split(/[\\/]+/).some((part) => mayBeDotGit(part));
     if (!namesDotGit) continue;
     if (!probes.some((probe) => findGlobMatches(pattern, probe.path))) return true;
   }
+  if (gitDirPruned(parsed, probes) || !interiorVisited(parsed, probes)) return false;
+  for (const item of harmPatterns(parsed.node)) {
+    if (!namesGitStorage(item.pattern)) continue;
+    const read = (probe: GitProbe) => (item.kind === 'name' ? probe.base : probe.path);
+    if (!probes.some((probe) => findGlobMatches(item.pattern, read(probe)))) return true;
+  }
   return false;
+}
+
+/** Whether the git folder itself is pruned, so the walk never enters it. An explicit depth turns prune off. */
+function gitDirPruned(parsed: FindParsed, probes: GitProbe[]): boolean {
+  const gitDir = probes.find((probe) => probe.isGitDir);
+  if (!gitDir || parsed.forcesDepth || !probeIsVisited(gitDir, parsed)) return false;
+  return evalFind(parsed.node, gitDir).prunes;
+}
+
+/** Whether any sample inside the git folder is visited. A shallow `-maxdepth` visits none. */
+function interiorVisited(parsed: FindParsed, probes: GitProbe[]): boolean {
+  return probes.some((probe) => !probe.isGitDir && probeIsVisited(probe, parsed));
+}
+
+/** Whether `pattern`'s own characters name git storage. A safe suffix (`.log`, `.ts`) does not. */
+function namesGitStorage(pattern: string): boolean {
+  if (/[$`]/.test(pattern)) return true;
+  return pattern.split(/[\\/]+/).filter(Boolean).some((part) => partNamesGitStorage(part));
+}
+
+/**
+ * One path component. A dotted tail that is not a git ending allows the name.
+ * `?`, a class, a brace, or a star inside the word is grammar, so the guard cannot tell.
+ */
+function partNamesGitStorage(part: string): boolean {
+  const lower = part.toLowerCase();
+  const tail = /[^*?[\]{}\\]+$/.exec(lower)?.[0] ?? '';
+  if (tail.includes('.') && !GIT_STORAGE_SUFFIXES.some((suffix) => tail.endsWith(suffix))) return false;
+  if (/[?[{}]/.test(lower)) return true;
+  const core = lower.replace(/^\*+/, '').replace(/\*+$/, '');
+  if (core.includes('*')) return true;
+  if (core === '') return false;
+  if (GIT_STORAGE_PARTS.has(core)) return true;
+  return GIT_STORAGE_SUFFIXES.some((suffix) => core.endsWith(suffix));
+}
+
+/** Name and path tests that sit on a delete, so they choose what is removed. A negated test excludes. */
+function harmPatterns(node: FindNode): HarmPattern[] {
+  switch (node.kind) {
+    case 'and': {
+      const found = [...harmPatterns(node.left), ...harmPatterns(node.right)];
+      if (nodeHarms(node.right)) found.push(...testPatterns(node.left, false));
+      if (nodeHarms(node.left)) found.push(...testPatterns(node.right, false));
+      return found;
+    }
+    case 'or':
+    case 'comma':
+      return [...harmPatterns(node.left), ...harmPatterns(node.right)];
+    case 'not':
+      return harmPatterns(node.inner);
+    default:
+      return [];
+  }
+}
+
+/** Name and path tests in `node`. `isNegated` drops a test that only excludes. */
+function testPatterns(node: FindNode, isNegated: boolean): HarmPattern[] {
+  switch (node.kind) {
+    case 'name':
+    case 'path':
+      return isNegated ? [] : [{ kind: node.kind, pattern: node.pattern }];
+    case 'and':
+    case 'or':
+    case 'comma':
+      return [...testPatterns(node.left, isNegated), ...testPatterns(node.right, isNegated)];
+    case 'not':
+      return testPatterns(node.inner, !isNegated);
+    default:
+      return [];
+  }
+}
+
+/** Whether `node` deletes a file it selects. */
+function nodeHarms(node: FindNode): boolean {
+  switch (node.kind) {
+    case 'harm':
+      return true;
+    case 'exec':
+      return node.harms;
+    case 'and':
+    case 'or':
+    case 'comma':
+      return nodeHarms(node.left) || nodeHarms(node.right);
+    case 'not':
+      return nodeHarms(node.inner);
+    default:
+      return false;
+  }
 }
 
 /** find's `*` matches a leading dot and a slash. A pattern the guard cannot read counts as a match. */
