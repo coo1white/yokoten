@@ -16,7 +16,8 @@ on:
   push:
     branches: [main]
 permissions: {}
-# One run at a time. A run still going is never cancelled: the next one waits.
+# One run at a time. A run still going is never cancelled; a later one waits.
+# GitHub keeps only the newest waiter, so the schedule no longer starts runs that queue.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false

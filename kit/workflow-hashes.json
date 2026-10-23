@@ -2,7 +2,7 @@
   "about": "Every version of each kit workflow that init has written, oldest first, the newest last (#456). Each is the SHA-256 of the file as init wrote it ({{cli}} filled in, Unix line ends, one newline at the end). init replaces a project's copy that matches one of these; a test fails when a kit workflow changes and its new hash is not added at the end.",
   "files": {
     ".github/workflows/actions-health.yml": [
-      "041df9ce45b0c1b40276806f1446835ddb987b2e5a42299fe079ae942d90107d"
+      "b9f73c7e88785ba179defb578adab8b4b25444443ff9b0e4ad1abcb3990166ff"
     ],
     ".github/workflows/issue.yml": [
       "facb4835349a8f753333d6bdb479f710abb670a5984d5f93564e08a0bc2019ba",

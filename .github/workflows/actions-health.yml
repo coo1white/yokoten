@@ -10,7 +10,8 @@ on:
   workflow_dispatch:
 # No job gets a permission it does not name.
 permissions: {}
-# One report at a time. A report still going is never cancelled: the next one waits.
+# One report at a time. A report still going is never cancelled; a later one waits.
+# GitHub keeps only the newest waiter, so keep one report short and well inside 30 minutes.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
