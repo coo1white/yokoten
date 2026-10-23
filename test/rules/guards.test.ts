@@ -2695,6 +2695,59 @@ test('git link: a .git folder needs HEAD and an objects folder (#746)', () => {
   assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: objectsOnly, gitDir: join(objectsOnly, '.git') }, 'HEAD and objects is a checkout');
 });
 
+// #746: a desk that keeps its worker mark and done-when but lost HEAD or objects must not
+// become its parent's checkout. It fails closed, as a `.git` the guard cannot read does.
+test('git link: a desk that lost HEAD or objects is broken, not its parent checkout (#746)', () => {
+  const base = makeTempDir('yokoten-desk-partial-');
+  const home = join(base, 'home');
+  const env = { HOME: home };
+  const worker = { HOME: home, YOKOTEN_ROLE: 'worker' };
+  const removals: Record<string, (desk: string) => void> = {
+    head: (desk) => rmSync(join(desk, '.git', 'HEAD')),
+    objects: (desk) => rmSync(join(desk, '.git', 'objects'), { recursive: true }),
+    both: (desk) => {
+      rmSync(join(desk, '.git', 'HEAD'));
+      rmSync(join(desk, '.git', 'objects'), { recursive: true });
+    },
+  };
+  const makeDesk = (top: string, name: string) => {
+    const desk = join(top, name);
+    mkdirSync(desk);
+    makeGitFolder(desk);
+    writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+    writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'node --test-desk\n');
+    mkdirSync(join(desk, 'src'));
+    return desk;
+  };
+  const contexts: Record<string, (name: string) => string> = {
+    sibling: (name) => {
+      const top = join(base, 'sibling');
+      mkdirSync(top, { recursive: true });
+      return makeDesk(top, name);
+    },
+    nested: (name) => {
+      const parent = join(base, 'nested');
+      makeGitFolder(parent);
+      writeFileSync(join(parent, '.git', 'yokoten-done-when'), 'node --test-parent\n');
+      return makeDesk(parent, name);
+    },
+  };
+  for (const [context, make] of Object.entries(contexts)) {
+    for (const [removal, remove] of Object.entries(removals)) {
+      const desk = make(`${context}-${removal}`);
+      remove(desk);
+      const src = join(desk, 'src');
+      const label = `${context}/${removal}`;
+      assert.deepEqual(gitLinkAbove(src), { kind: 'broken', top: desk }, `${label}: the desk stays the checkout`);
+      assert.equal(workerMarkAt(src, env), 'broken', `${label}: fail closed`);
+      assert.equal(workerRole(env, [src]), 'mark', `${label}: the mark still makes a worker`);
+      assert.match(markNote([src], env), /can't be read/, `${label}: the note names the broken link`);
+      assert.equal(checkCommand('cd ../..', { cwd: src, env: worker })?.id, 'worker-mark', `${label}: cd ../.. is refused`);
+      assert.equal(checkCommand('cd ..', { cwd: src, env: worker }), null, `${label}: the desk itself is the box`);
+    }
+  }
+});
+
 // #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
 // #672: a desk is a plain clone, so its mark sits in its own `.git` folder.
 test('worker mark: a plain clone with the mark in its .git is a worker; without it, the lead (#672)', () => {

@@ -72,6 +72,9 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 /** The mark's file name, in the worktree's own git folder. */
 export const WORKER_MARK = 'yokoten-worker';
 
+/** The file in a checkout's git folder that holds a worker's done-when command. */
+export const DONE_WHEN_FILE = 'yokoten-done-when';
+
 // ---- The worker list (#566) ----
 //
 // The mark in the git folder goes with the worktree: moving `.git` away takes it too.
@@ -285,8 +288,8 @@ export function gitLinkAbove(folder: string): GitLink {
       if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) {
         const isGit = gitFolderState(dotGit);
         if (isGit === 'yes') return { kind: 'folder', top: dir, gitDir: dotGit };
-        if (isGit === 'unknown') return { kind: 'broken', top: dir };
-        // An empty or partial `.git` is not a checkout: walk on past it (#746).
+        if (isGit === 'broken') return { kind: 'broken', top: dir };
+        // An empty `.git` is not a checkout: walk on past it (#746).
       } else {
         const text = readSmallFile(dotGit);
         const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
@@ -299,15 +302,25 @@ export function gitLinkAbove(folder: string): GitLink {
 
 /**
  * Whether a `.git` folder is one git would use: it holds a `HEAD` file and an `objects` folder.
- * `unknown` when the guard can't read them, so the caller fails closed. No git process runs.
+ * `broken` when the guard can't read them, or when the folder carries the worker's own files
+ * but has lost `HEAD` or `objects`: a desk must not become its parent's checkout (#746).
+ * The caller then fails closed. No git process runs.
  */
-function gitFolderState(gitDir: string): 'yes' | 'no' | 'unknown' {
+function gitFolderState(gitDir: string): 'yes' | 'no' | 'broken' {
   try {
-    if (!statSync(join(gitDir, 'HEAD')).isFile()) return 'no';
-    return statSync(join(gitDir, 'objects')).isDirectory() ? 'yes' : 'no';
+    if (statSync(join(gitDir, 'HEAD')).isFile() && statSync(join(gitDir, 'objects')).isDirectory()) return 'yes';
   } catch (error) {
-    return ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '') ? 'no' : 'unknown';
+    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
   }
+  for (const name of [WORKER_MARK, DONE_WHEN_FILE]) {
+    try {
+      statSync(join(gitDir, name));
+      return 'broken';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+  }
+  return 'no';
 }
 
 function isFolder(path: string): boolean {

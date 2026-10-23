@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
@@ -83,7 +83,7 @@ export const DONE_WHEN_MS = 120_000;
 const CLOSE_GRACE_MS = 200;
 
 /** The file in a worktree's git folder that holds the task's done-when command. */
-export const DONE_WHEN_FILE = 'yokoten-done-when';
+export { DONE_WHEN_FILE };
 
 /**
  * The agent's status file, at a linked worktree's root. The lead reads it.
