@@ -217,10 +217,19 @@ export function codexItems(record: unknown, tree: string): StreamItem[] {
   return [];
 }
 
+/**
+ * One line of a plain text log (`log` in the status file): the line itself, as the agent's
+ * words, cut when long. No JSON, no tool calls.
+ */
+export function plainItems(line: unknown, _tree: string): StreamItem[] {
+  return typeof line === 'string' ? saidItem('say', line.replace(/\r$/, ''), '') : [];
+}
+
 /** The reader for each runtime's log lines. A new runtime is one reader here, and nothing else. */
 export const LINE_READERS: Record<StreamSource, (record: unknown, tree: string) => StreamItem[]> = {
   claude: claudeItems,
   muse: museItems,
   grok: grokItems,
   codex: codexItems,
+  plain: plainItems,
 };

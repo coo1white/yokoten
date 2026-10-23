@@ -94,6 +94,26 @@ test('board stream logs: a Codex rollout by its cwd, for Codex and DeepSeek', ()
   assert.equal(deepseek?.file, join(desk, 'rollout-desk.jsonl'));
 });
 
+test('board stream logs: a plain log is read when no session log is found (#694)', () => {
+  const home = makeTempDir('yokoten-logs-');
+  const tree = join(home, 'dev', 'repo');
+  const env = { HOME: home };
+  const plain = join(tree, 'runner.log');
+  put(plain, 'opencode run\n');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.source, 'plain', 'OpenCode keeps no session log this reader can follow');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.file, plain);
+  // A session log wins over the plain log.
+  const day = join(home, '.codex', 'sessions', '2026', '10', '23');
+  put(join(day, 'rollout-1.jsonl'), `${JSON.stringify({ type: 'session_meta', payload: { cwd: tree } })}\n`, 0);
+  assert.equal(findAgentLog(tree, 'codex', env, new Map(), plain)?.source, 'codex', 'the session log wins over the plain log');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.source, 'plain', 'an OpenCode agent does not take another runtime\'s log');
+  // A log path that is missing, relative or not a file is no log at all.
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), join(tree, 'missing.log')), null);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), 'runner.log'), null, 'a relative path is refused');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), tree), null, 'a folder is not a file');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), ''), null);
+});
+
 // #700: the main checkout's lead log is the registered path, when that path stays inside
 // Claude's projects folder. A path that escapes, a symlink out, or a non-jsonl file is
 // refused, and the folder search runs as before. A missing file does the same.
