@@ -1,7 +1,7 @@
 # 0034 One safeguard for everyone, on by default
 
 Status: accepted
-Date: 2026-10-24 (UTC)
+Date: 2026-10-23 (UTC)
 
 ## Context
 
