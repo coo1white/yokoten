@@ -430,11 +430,26 @@ test('check --pr: a Dependabot pull request passes with notes; the same body fro
   assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title']);
 });
 
+/** The error code when this machine may not listen on 127.0.0.1 (a sandbox), else null. */
+async function listenRefusal(): Promise<string | null> {
+  const server = createServer();
+  return new Promise((done) => {
+    server.once('error', (error: NodeJS.ErrnoException) => done(error.code ?? 'a refusal'));
+    server.listen(0, '127.0.0.1', () => server.close(() => done(null)));
+  });
+}
+
 // #645: GitHub can start the runs of one pull request in any order, and each event file
 // keeps the labels of its own moment. When the workflow asks (YOKOTEN_PR_LIVE), every run
 // reads the pull request as it is now, so a late run for `opened` judges the labels added
 // since, and a rerun judges it again. A draft is judged in full, like any pull request.
-test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async () => {
+test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async (t) => {
+  // A sandbox can refuse the call itself (`listen EPERM`) before any assertion runs; say so
+  // in one line and skip (#827). CI allows a local server, so the test runs there.
+  if ((await listenRefusal()) !== null) {
+    t.skip('this machine does not allow a local server; skipped');
+    return;
+  }
   const sandbox = makeSandbox();
   sandbox.write('README.md', 'Short.\n');
   sandbox.git('add', '.');

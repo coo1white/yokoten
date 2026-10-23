@@ -304,7 +304,7 @@ function doctorRun(
     // This note only. The other privacy notes stay out of a session (#681).
     const claudeRules = museClaudeRules(env, root);
     if (claudeRules) blocks.push([`yokoten: ${formatFinding(claudeRules.finding)}`]);
-    const double = hasHome ? doubleInstallCheck(env) : null;
+    const double = hasHome ? doubleInstallCheck(root, env) : null;
     if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
@@ -449,7 +449,7 @@ function doctorRun(
     lines.push(`  note    plugin: ${stepText(stale)}`);
     notes.push(stale);
   }
-  const double = hasHome ? doubleInstallCheck(env) : null;
+  const double = hasHome ? doubleInstallCheck(root, env) : null;
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
