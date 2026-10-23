@@ -422,6 +422,8 @@ test('plugin launcher: a safe cache copy runs, and any other path does not (#706
     rmSync(join(sandbox.repo, 'placed'), { recursive: true, force: true });
     rmSync(join(sandbox.repo, 'linked'), { recursive: true, force: true });
     rmSync(join(sandbox.repo, 'evil.mjs'), { force: true });
+    rmSync(join(sandbox.repo, 'fake-home'), { recursive: true, force: true });
+    rmSync(join(sandbox.repo, 'fake-marker'), { force: true });
   };
   // Resolver cases call runLaunch in this process (#475). The shell below is a child:
   // only a shell runs the hook command.
@@ -429,11 +431,20 @@ test('plugin launcher: a safe cache copy runs, and any other path does not (#706
   const run = (command: string) => {
     const mode = command === sessionCommand ? 'session' : 'tool';
     const yokotenArgs = mode === 'session' ? ['doctor', '--session'] : ['hook', '--commands-only'];
-    return launch.runLaunch({ mode, fallback: rootBinary, args: yokotenArgs, env: sandbox.env, input: '{}', cwd: sandbox.repo });
+    return launch.runLaunch({ mode, fallback: rootBinary, args: yokotenArgs, env: sandbox.env, input: '{}', cwd: sandbox.repo, accountHome: home });
   };
-  const shell = (command: string, sh = '/bin/sh') => spawnSync(command, { shell: sh, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: rootDir }, input: '{}', encoding: 'utf8', timeout: 15000 });
+  const shell = (command: string, sh = '/bin/sh', extra: Record<string, string> = {}) => spawnSync(command, { shell: sh, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: rootDir, ...extra }, input: '{}', encoding: 'utf8', timeout: 15000 });
   const withRoot = () => script(rootBinary, 'root');
   const withCache = () => script(cacheBinary, 'cache');
+  const fakeHome = join(sandbox.repo, 'fake-home');
+  const fakeMarker = join(sandbox.repo, 'fake-marker');
+  const plantFake = () => {
+    const fakePlugins = join(fakeHome, '.claude', 'plugins');
+    const fakeCache = join(fakePlugins, 'cache', 'yokoten', 'yokoten', 'v1');
+    mkdirSync(join(fakeCache, 'bin'), { recursive: true });
+    writeFileSync(join(fakeCache, 'bin', 'yokoten.mjs'), `require('node:fs').writeFileSync(${JSON.stringify(fakeMarker)}, 'ran');\nprocess.stdout.write('fake hook --commands-only');\n`);
+    writeFileSync(join(fakePlugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: fakeCache, version: 'v1' }] } }));
+  };
 
   reset();
   withRoot();
@@ -544,6 +555,42 @@ test('plugin launcher: a safe cache copy runs, and any other path does not (#706
   install({ scope: 'user', installPath: 4, version: 4 });
   assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'odd entry');
 
+  // A segment is a name. A colon or a Windows device name is refused (#706).
+  reset();
+  withRoot();
+  const badVersion = (version: string, label: string) => {
+    const folder = join(pluginsDir, 'cache', 'yokoten', 'yokoten', version);
+    script(join(folder, 'bin', 'yokoten.mjs'), 'bad');
+    install({ scope: 'user', installPath: folder, version });
+    assert.equal(run(toolCommand).stdout, 'root hook --commands-only', label);
+  };
+  badVersion('ab:c', 'colon in a segment');
+  badVersion('CON', 'device name CON');
+  badVersion('nul', 'device name nul');
+  badVersion('NUL.txt', 'device name with an extension');
+  badVersion('COM1', 'device name COM1');
+  badVersion('LPT9', 'device name LPT9');
+  badVersion('aux', 'device name aux');
+  badVersion('PRN', 'device name PRN');
+  badVersion('CON ', 'device name with a trailing space');
+  badVersion('CON.', 'device name with a trailing dot');
+  reset();
+  withRoot();
+  const conFolder = join(pluginsDir, 'cache', 'CON', 'yokoten', 'yokoten', 'abc123');
+  script(join(conFolder, 'bin', 'yokoten.mjs'), 'device');
+  install({ scope: 'user', installPath: conFolder, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'CON segment inside the cache');
+
+  // HOME is not the plugin root. The account home still supplies the cache copy (#706).
+  reset();
+  withRoot();
+  withCache();
+  install({ scope: 'user', installPath: cache, version: 'abc123' });
+  plantFake();
+  const attacked = launch.runLaunch({ mode: 'tool', fallback: rootBinary, args: ['hook', '--commands-only'], env: { ...sandbox.env, HOME: fakeHome }, input: '{}', cwd: sandbox.repo, accountHome: home });
+  assert.equal(attacked.stdout, 'cache hook --commands-only', 'HOME is not the plugin root');
+  assert.equal(existsSync(fakeMarker), false, 'a fake HOME does not run');
+
   reset();
   script(join(outside, 'bin', 'yokoten.mjs'), 'outside');
   install({ scope: 'user', installPath: outside, version: 'abc123' });
@@ -576,7 +623,16 @@ test('plugin launcher: a safe cache copy runs, and any other path does not (#706
   // The same command runs the file when the folder is still there.
   withRoot();
   writeFileSync(join(rootDir, 'bin', 'launch.mjs'), launchText);
-  assert.equal(shell(toolCommand).stdout, 'root hook --commands-only', 'the short command runs the launcher file');
+  plantFake();
+  const started = shell(toolCommand, '/bin/sh', { HOME: fakeHome });
+  // No readable account plugin: the session copy. An account install: that copy. Never the fake home.
+  assert.equal(existsSync(fakeMarker), false, 'the hook entry does not follow HOME');
+  assert.notEqual(started.stdout, 'fake hook --commands-only', 'the hook entry does not run the fake copy');
+  assert.equal(`${started.stdout}${started.stderr}`.includes('this plugin copy is gone'), false, 'the short command runs the launcher file');
+  assert.ok(started.status === 0 || started.status === 2, `status ${started.status}`);
+  // The plugin root is the account home. The text must not read HOME (#706).
+  assert.doesNotMatch(launchText, /env\.HOME|USERPROFILE/, 'the launcher does not read HOME');
+  assert.match(launchText, /userInfo\(\)\.homedir/, 'the account home comes from the password file');
 });
 
 // #174: the pitch demo runs end to end, offline, in a temp folder it removes, and never

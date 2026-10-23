@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// The Claude Code plugin hook (#706). One short command runs this file, which resolves
-// yokoten. A cache path is used only when it is a real file inside the plugin cache.
-// runLaunch does the work. The script at the bottom calls it, then exits.
+// The Claude Code plugin hook (#706). A cache path is a real file inside the plugin cache, or it is refused.
+// The account home comes from the password file. HOME is never the plugin root.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,7 +16,8 @@ const hasControl = (text) => {
   for (let index = 0; index < text.length; index += 1) if (text.charCodeAt(index) < 32) return true;
   return false;
 };
-const isSegment = (text) => typeof text === 'string' && text.length > 0 && text !== '.' && !text.includes('..') && !text.includes('/') && !text.includes('\\') && !text.includes("'") && !text.includes('"') && !text.includes('`') && !hasControl(text);
+const isReserved = (text) => /^(con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt[1-9])(\..*)?$/i.test(text);
+const isSegment = (text) => typeof text === 'string' && text.length > 0 && text !== '.' && !text.includes('..') && !text.includes('/') && !text.includes('\\') && !text.includes("'") && !text.includes('"') && !text.includes('`') && !text.includes(':') && !text.endsWith(' ') && !text.endsWith('.') && !isReserved(text) && !hasControl(text);
 const isRecord = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const isInside = (realPath, cacheReal) => realPath.startsWith(cacheReal.endsWith(path.sep) ? cacheReal : `${cacheReal}${path.sep}`);
 
@@ -106,11 +106,17 @@ function resolveBinary(home, fallback) {
   return safeBinary(built, picked.marketplace, version, cacheReal) || fallbackBinary(fallback);
 }
 
-// A tool call fails closed (#260): exit 0 and 2 pass, and any other status becomes 2.
-// The child's own error text is dropped, so a trace never shows a path.
-export function runLaunch({ mode, fallback, args, env, input, cwd }) {
+function readAccountHome(accountHome) {
+  try {
+    const home = typeof accountHome === 'string' && path.isAbsolute(accountHome) ? accountHome : os.userInfo().homedir;
+    return typeof home === 'string' && path.isAbsolute(home) ? home : null;
+  } catch { return null; }
+}
+
+// A tool call fails closed (#260): exit 0 and 2 pass, any other status becomes 2, and the child's error text is dropped.
+export function runLaunch({ mode, fallback, args, env, input, cwd, accountHome }) {
   const isTool = mode !== 'session';
-  const binary = resolveBinary(env && env.HOME, fallback);
+  const binary = resolveBinary(readAccountHome(accountHome), fallback);
   if (!binary) {
     const line = `${isTool ? toolLine : sessionLine}\n`;
     return isTool ? { status: 2, stdout: '', stderr: line } : { status: 0, stdout: line, stderr: '' };
@@ -126,7 +132,6 @@ export function runLaunch({ mode, fallback, args, env, input, cwd }) {
   return { status: 2, stdout, stderr: `yokoten's guard failed (exit ${code}), so the command is refused; run \`yokoten doctor\`\n` };
 }
 
-// The hook command starts this file. Stdin is the tool call; the child still reads it.
 let isEntry = false;
 try {
   const entry = process.argv[1];
