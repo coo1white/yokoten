@@ -241,6 +241,7 @@ h2.sh{line-height:inherit}
 .tool{height:40px;min-width:40px}
 #lang-name,.logo .word,.pill .live-word{display:none}
 .top{gap:6px;padding:0 6px 0 12px}
+.needs-panel{position:fixed;left:8px;right:8px;top:60px;width:auto;max-height:min(70dvh,420px)}
 #center{position:static;height:auto}
 }
 `;
