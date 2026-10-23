@@ -1,23 +1,27 @@
-// The suite's time budget (#475). The test job writes a TAP copy of node --test's report to
-// a file; this reads how long the run took and its slowest tests, adds them to the job
-// summary, and exits 1 when the run took longer than the budget.
+// The suite's time budget (#475, #783). The test job writes a TAP copy of node --test's
+// report to a file; this reads how long the run took and its slowest tests, adds them to
+// the job summary, and exits 1 when the run took longer than the budget plus the room a
+// busy runner needs.
 //
 //   node scripts/time/suite.ts <tap file>                against the budget, 180 s
 //   node scripts/time/suite.ts <tap file> --budget 90    another budget, in seconds
 //
-// The budget is for one CI shard: a third of the test files, four at a time. A runner can be
-// twice as slow as another, so the budget sits well above the slowest shard seen (about
-// 110 s, Node 22): it catches a suite that drifts back to slow, not a slow runner. The Node 24
-// jobs on Linux, the fastest, pass --budget 90: their slowest shard seen took about 60 s.
-// The stable check is the child-process cap in test/repo/architecture.test.ts; this one is
-// the backstop.
+// The budget is for one CI shard on a quiet runner: a third of the test files, four at a
+// time. A shared runner is sometimes busy, and the same work then takes longer: 365 s and
+// 302.7 s against 300 s on macOS, twice on 2026-10-23 (#783). So a run may take LOAD_ROOM
+// more before it fails. That wall clock is only a backstop. The stable checks count work:
+// the child-process cap in test/repo/architecture.test.ts, and the guard's work budget. A
+// new child process per test still fails the cap, however much room the clock is given.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-/** The budget of one CI shard, in seconds. */
+/** The budget of one CI shard, in seconds, on a quiet runner. */
 export const SUITE_BUDGET = 180;
+
+/** How much longer the same work may take on a busy runner before the run fails. */
+export const LOAD_ROOM = 1.5;
 
 /** How many of the slowest tests the summary names. */
 const SLOWEST = 5;
@@ -45,12 +49,15 @@ export function readReport(tap: string): { ms: number; tests: { name: string; ms
 export function judgeSuite(tap: string, budget = SUITE_BUDGET): { isOver: boolean; text: string } {
   const { ms, tests } = readReport(tap);
   const seconds = (value: number) => `${(value / 1000).toFixed(1)} s`;
-  const isOver = ms > budget * 1000;
+  const isOver = ms > budget * 1000 * LOAD_ROOM;
+  const room = Math.round((LOAD_ROOM - 1) * 100);
   const slowest = tests.toSorted((a, b) => b.ms - a.ms).slice(0, SLOWEST);
   const text = [
     isOver
-      ? `The tests took ${seconds(ms)}, over the budget of ${budget} s by ${seconds(ms - budget * 1000)}. Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.`
-      : `The tests took ${seconds(ms)}, under the budget of ${budget} s.`,
+      ? `The tests took ${seconds(ms)}, over the budget of ${budget} s by ${seconds(ms - budget * 1000)}, past the room a busy runner needs (${room}%). Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.`
+      : ms > budget * 1000
+        ? `The tests took ${seconds(ms)}, over the budget of ${budget} s by ${seconds(ms - budget * 1000)}, inside the room a busy runner needs (${room}%).`
+        : `The tests took ${seconds(ms)}, under the budget of ${budget} s.`,
     ...(slowest.length ? ['', 'The slowest tests:', ...slowest.map((test) => `- ${seconds(test.ms)}: ${test.name}`)] : []),
   ].join('\n');
   return { isOver, text: `${text}\n` };

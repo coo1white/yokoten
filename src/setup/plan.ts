@@ -48,8 +48,9 @@ export const LABELS: Label[] = [
   { name: 'incident', color: 'b60205', description: 'Something went wrong; the fix adds a check' },
   { name: 'good first issue', color: '7057ff', description: 'A small, clear task for a new contributor' },
   { name: 'hotfix', color: 'e11d21', description: 'Urgent: fix and release soon' },
-  { name: 'tier A', color: 'b60205', description: 'Hard to take back: secrets, data, install/update path, releases, going public. Owner reviews.' },
-  { name: 'tier B', color: 'fbca04', description: 'Other code. Tests for the change; merges when CI is green.' },
+  { name: 'security', color: 'b60205', description: 'A hole in the guard, the privacy checks or the supply chain' },
+  { name: 'tier A', color: 'b60205', description: 'Hard to take back: secrets, data, install/update path, releases, going public. The owner approves.' },
+  { name: 'tier B', color: 'fbca04', description: 'Other code. Tests for the change; another vendor approves, then the bot merges when CI is green.' },
   { name: 'tier C', color: '0e8a16', description: 'Docs, wording, styles. Merges when CI is green.' },
 ];
 
@@ -203,7 +204,7 @@ const SET_UP = `yokoten init --github --yes`;
  */
 export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, areas = [], board = false }: PlanningOptions): { ok: boolean; skipped: boolean; lines: string[] } {
   const skip = (line: string) => ({ ok: true, skipped: true, lines: [line] });
-  if (!remote.trim()) return skip(`GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run \`${SET_UP}\` to set up labels and a milestone`);
+  if (!remote.trim()) return skip(`GitHub: skipped, because there is no origin remote yet. Make the repo on GitHub, add it as origin, and push; then run \`${SET_UP}\` to set up labels and a milestone`);
   const repo = repoOf(remote);
   if (!repo) return skip('GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo');
   const found = readPlanning(gh, repo);
