@@ -216,6 +216,21 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'ci-health',
+    summary: 'the last 200 Actions runs, in one issue that is updated in place',
+    usage: '[--repo owner/name] [--dry-run]',
+    text: [
+      'Reads the Actions runs and the checks of open pull requests through gh. Writes one',
+      'Markdown report to the pinned issue "CI health", creating it on the first run.',
+      '--dry-run prints the report and changes nothing.',
+    ],
+    options: [
+      { name: '--repo', value: 'owner/name', text: 'the repo to read; the default is GITHUB_REPOSITORY, or the origin remote' },
+      { name: '--dry-run', text: 'print the report; do not create or edit the issue' },
+    ],
+    example: 'yokoten ci-health --dry-run',
+  },
+  {
     name: 'redact',
     summary: 'command output with your name, emails, logins and private hosts hidden',
     usage: '',

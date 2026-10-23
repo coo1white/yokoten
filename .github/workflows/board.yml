@@ -5,13 +5,14 @@
 # The token is the bot App's, made for this run with only project and read rights.
 # No `pull_request` trigger: that runs the pull request's own files with the App's key.
 # A new pull request gets its Status at the next hourly run, a merged one at the push to main.
+# No `issues` trigger either: each issue event started its own run, and with one run at a
+# time a queued one was replaced by the next, which GitHub shows as cancelled (✗). The
+# hourly run reads every open issue anyway, so an issue's Status now waits for it (#647).
 name: board
 on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
-  issues:
-    types: [opened, closed, reopened, milestoned, demilestoned]
   push:
     branches: [main]
 permissions: {}

@@ -1342,7 +1342,7 @@ test('update: the .yokoten/ copy has the kit\'s AGENTS.md, so doctor and update 
   const workflows = join('project', '.github', 'workflows');
   assert.deepEqual(
     kitFiles.filter((path) => !path.startsWith('lessons')),
-    ['project', join('project', '.github'), workflows, ...['issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
+    ['project', join('project', '.github'), workflows, ...['actions-health.yml', 'issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
     'the kit\'s AGENTS.md, workflows and their hashes, and the lessons, no more',
   );
   assert.ok(kitFiles.includes(join('lessons', 'README.md')), 'the lessons table');
@@ -1597,7 +1597,7 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   // The remote step is done once a branch is pushed; a local ref is enough for the road.
   sandbox.git('commit', '--allow-empty', '-qm', 'first');
   sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
-  const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/dependabot.yml'];
+  const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/workflows/actions-health.yml', '.github/dependabot.yml'];
   const isThere = (file: string) => existsSync(join(sandbox.repo, file));
   const notNow = () => JSON.parse(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8')).notNow;
   const marks = join(sandbox.home, 'marks');
@@ -1624,7 +1624,7 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   result = await sandbox.call(['init', '--no-ci'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^wrote "notNow" ci in yokoten\.json/m);
-  for (const file of ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/dependabot.yml']) {
+  for (const file of ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/actions-health.yml', '.github/dependabot.yml']) {
     assert.match(result.stdout, new RegExp(`^removed ${file.replaceAll('.', '\\.')} \\(the kit's copy; CI is off\\)$`, 'm'));
     assert.ok(!isThere(file), file);
   }
@@ -1711,7 +1711,7 @@ test('init --no-ci: a kit copy with Windows line ends is removed; a symlinked fi
   result = await other.call(['init', '--no-ci']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml: \.github\/workflows is a symlink/m);
-  assert.deepEqual(readdirSync(real).sort(), ['issue.yml', 'pr.yml', 'yokoten.yml']);
+  assert.deepEqual(readdirSync(real).sort(), ['actions-health.yml', 'issue.yml', 'pr.yml', 'yokoten.yml']);
   // The control: dependabot.yml is a plain file, the kit's copy, so it goes.
   assert.match(result.stdout, /^removed \.github\/dependabot\.yml/m);
 });

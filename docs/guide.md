@@ -822,12 +822,12 @@ hook), `init` leaves `core.hooksPath` unset and prints what to do. With a global
 does not count the commit check as done while such a hook would be dropped. For a
 workflow of the project's own that `init` keeps, `doctor` gives the step to add to it.
 
-`init` also writes three workflows into `.github/workflows/`: `yokoten.yml` (the
+`init` also writes four workflows into `.github/workflows/`: `yokoten.yml` (the
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
-check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
-limit, checkout keeps no token, and in `yokoten.yml` a new push cancels the old run on the
-same pull request. A push to `main` cancels nothing: every commit is tested on its own.
-`pr.yml` cancels nothing. Its runs can start in any order, so each one
+check), `pr.yml`, `issue.yml` and `actions-health.yml`. Each action is pinned to a commit,
+each job has a time limit, checkout keeps no token, and in `yokoten.yml` a new push cancels
+the old run on the same pull request. A push to `main` cancels nothing: every commit is
+tested on its own. `pr.yml` cancels nothing. Its runs can start in any order, so each one
 reads the pull request's title, body, labels and milestone as they are now, with the job's
 token, and a rerun reads them again. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
@@ -837,6 +837,13 @@ required checks as a pull request. A merge group run has no pull request. `yokot
 runs every job in full, and the `pr` job skips, which counts as green for the queue.
 Turn the queue on in the repo settings. `issue.yml` never runs there: an issue is not
 a check on a merge.
+
+`actions-health.yml` runs every 30 minutes. It reads the last 200 Actions runs and the
+checks of the open pull requests, then updates one pinned issue, `CI health`. The issue
+lists failed or cancelled runs on `main`, failed or cancelled checks on open pull
+requests, slow workflows, queue waits, and branches that both passed and failed. It only
+writes that one issue. Delete the file to stop it, or run `yokoten init --no-ci`.
+`yokoten ci-health --dry-run` prints the same report without writing anything.
 
 When a workflow is already there, `init` checks whether you changed it. The kit keeps a
 list of every version it wrote. A file that matches one of them, Windows line ends or not,
@@ -888,6 +895,7 @@ It puts three safe defaults in `.github/` too:
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
+| `ci-health [--repo <owner/name>] [--dry-run]` | Reads the last 200 Actions runs and the checks of the open pull requests, then updates one pinned issue, `CI health`. `--dry-run` prints the report and writes nothing |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
