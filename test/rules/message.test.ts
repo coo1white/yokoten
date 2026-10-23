@@ -55,9 +55,11 @@ import {
   POSITIVE_CONTROL,
   scanText,
 } from '../../src/rules/privacy.ts';
-import { SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { SECRET_CONTROL } from '../../src/rules/privacy/secrets.ts';
 import { parseChange } from '../../src/run/changelog.ts';
 import {
+  BORROWED_DIR,
+  borrowedProblems,
   check,
   checkHistory,
   GitReadError,
@@ -179,6 +181,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
   found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  // A wheel with no header (#676).
+  found.push(...borrowedProblems(`${BORROWED_DIR}thing.ts`, ''));
   translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
   add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // A git read a gate depends on, which git can't answer (#403).
@@ -224,8 +228,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));
   add(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, { ...fullMachine, now: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) })?.finding);
-  // The Codex, Gemini CLI, Grok CLI, Muse Code and OpenCode user hooks: only once their folders exist.
+  // The user hooks of Codex, Gemini CLI, Antigravity CLI, Copilot CLI, Grok CLI, Muse Code and OpenCode: only once their folders exist.
   for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
+  mkdirSync(join(dir, '.gemini', 'config'));
   mkdirSync(join(dir, '.config', 'muse'), { recursive: true });
   mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
   // A project that uses OpenCode without the plugin (#767).
