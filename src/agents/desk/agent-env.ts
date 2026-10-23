@@ -19,10 +19,11 @@
 import type { Env } from '../../rules/config.ts';
 import { findSecrets } from '../../rules/secrets.ts';
 import { AGENT_ENV as COPILOT } from '../copilot.ts';
-import { AGENT_ENV as ANTIGRAVITY } from '../runtimes/antigravity.ts';
+import { AGENT_ENV as ANTIGRAVITY } from '../runtimes/small/antigravity.ts';
 import { AGENT_ENV as CLAUDE_CODE } from '../runtimes/claude-code.ts';
 import { AGENT_ENV as CODEX } from '../runtimes/codex.ts';
-import { AGENT_ENV as DEEPSEEK_HARNESS } from '../runtimes/deepseek-harness.ts';
+import { AGENT_ENV as DEEPSEEK_HARNESS } from '../runtimes/small/deepseek-harness.ts';
+import { AGENT_ENV as OPENCODE } from '../runtimes/small/opencode.ts';
 import { AGENT_ENV as GEMINI } from '../runtimes/gemini.ts';
 import { AGENT_ENV as GROK } from '../runtimes/grok.ts';
 import { AGENT_ENV as MUSE } from '../runtimes/muse.ts';
@@ -44,6 +45,7 @@ export const RUNTIME_ENVS: Readonly<Record<string, RuntimeEnv>> = {
   muse: MUSE,
   'deepseek-harness': DEEPSEEK_HARNESS,
   grok: GROK,
+  opencode: OPENCODE,
   copilot: COPILOT,
 };
 
