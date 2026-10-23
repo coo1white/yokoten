@@ -29,8 +29,8 @@ export interface TestsJob {
 const KIT_NODE = '^22.23.4';
 /** `engines.node` may name a range. Anything else is not a version we can copy. */
 const ENGINES_NODE = /^[0-9A-Za-z.^~<>=* |]+$/;
-/** One version on the first line of `.nvmrc` or `.node-version`, with one leading `v` dropped. */
-const VERSION_LINE = /^v?(\d+\.\d+(?:\.\d+)?)$/;
+/** A version (`20`, `v20.14.0`) or an lts alias (`lts/*`, `lts/Hydrogen`). A leading `v` is dropped. */
+const VERSION_LINE = /^(?:v?(\d+(?:\.\d+){0,2})|(lts\/(?:\*|[A-Za-z]+)))$/i;
 
 /**
  * Languages `yokoten init` can write a job for. The first six follow the order in
@@ -178,12 +178,16 @@ const WORKFLOW = '.github/workflows/yokoten.yml';
 /** A remote action pinned to a full commit. A tag or a branch can move, so neither counts. */
 const isCommitPin = (uses: string) => /^[^@\s]+@[0-9a-f]{40}$/.test(uses);
 
-/** The first line of a version file, or '' when the file is missing or the line is not a version. */
-const versionFile = (root: string, name: string): string => VERSION_LINE.exec(readText(join(root, name)).split(/\r?\n/, 1)[0] ?? '')?.[1] ?? '';
+/** The first line of a version file, or '' when the file is missing or the line is not a pin. */
+const versionFile = (root: string, name: string): string => {
+  const line = (readText(join(root, name)).split(/\r?\n/, 1)[0] ?? '').trim();
+  const match = VERSION_LINE.exec(line);
+  return match?.[1] ?? match?.[2] ?? '';
+};
 
 /**
  * The `node-version` for setup-node: `engines.node`, else `.nvmrc`, else `.node-version`,
- * else the kit default.
+ * else the kit default. A version file counts when its line is a version or an lts alias.
  */
 export const nodeVersion = (root: string): string => {
   try {

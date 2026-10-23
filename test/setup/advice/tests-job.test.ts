@@ -332,6 +332,21 @@ test('tests-job: node-version comes from engines, then a version file, then the 
   assert.equal(version({ 'package.json': '{' }), '^22.23.4');
 });
 
+// A project that pins Node 20, or an lts alias, must not get the kit's Node 22 with no warning.
+test('tests-job: .nvmrc and .node-version may be a major or an lts alias (#653)', () => {
+  const version = (files: Record<string, string>) => nodeVersion(project(files));
+  assert.equal(version({ '.nvmrc': '20\n' }), '20');
+  assert.equal(version({ '.nvmrc': 'v20\n' }), '20');
+  assert.equal(version({ '.nvmrc': 'lts/*\n' }), 'lts/*');
+  assert.equal(version({ '.nvmrc': '22.14\n' }), '22.14');
+  assert.equal(version({ '.node-version': '20\n' }), '20');
+  assert.equal(version({ '.node-version': 'v20\n' }), '20');
+  assert.equal(version({ '.node-version': 'lts/*\n' }), 'lts/*');
+  assert.equal(version({ '.nvmrc': 'lts/Hydrogen\n' }), 'lts/Hydrogen');
+  assert.equal(version({ '.nvmrc': 'lts/*\n', '.node-version': '24.11.1\n' }), 'lts/*');
+  assert.equal(version({ '.nvmrc': 'latest\n' }), '^22.23.4');
+});
+
 test('tests-job: init asks and writes the job on a yes (#550)', () => {
   const sandbox = makeSandbox();
   sandbox.write('go.mod', 'module example.com/demo\n');
