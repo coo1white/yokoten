@@ -1,6 +1,7 @@
 // `yokoten board --text` (#601, #603): the board's data as plain text, for a terminal or an agent.
 
 import { terminalText } from '../../../../run/learn.ts';
+import type { MachineStatus } from '../../machine.ts';
 import type { BoardRun, BoardWaiting } from '../controls.ts';
 import type { AgentView, BoardData, PullView } from '../view.ts';
 
@@ -28,6 +29,8 @@ function countText(count: number, one: string): string {
 export interface BoardTextExtra {
   waiting: BoardWaiting[];
   runs: BoardRun[];
+  /** The machines the owner added: name, reach, load. Never a target. */
+  machines?: MachineStatus[];
 }
 
 /** One waiting row as plain words, the same data the page shows. */
@@ -39,7 +42,12 @@ function formatBoardWaiting(row: BoardWaiting): string {
 
 /** One started run as plain words, the same data the page shows. */
 function formatBoardRun(run: BoardRun): string {
-  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${run.status}${run.worktree ? ` in ${run.worktree}` : ''}`;
+  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${run.status}${run.machine ? ` on ${run.machine}` : ''}${run.worktree ? ` in ${run.worktree}` : ''}`;
+}
+
+/** One added machine as plain words: its name, reach and load, never its target. */
+function formatBoardMachine(machine: MachineStatus): string {
+  return `${machine.name}: ${machine.isReachable ? `reachable${machine.load ? `, load ${machine.load}` : ''}` : 'not reachable'}`;
 }
 
 /**
@@ -69,6 +77,9 @@ export function renderBoardText(board: BoardData, extra?: BoardTextExtra): strin
           'Started here:',
           ...(extra.runs.length ? extra.runs.map((run) => `- ${formatBoardRun(run)}`) : ['- No agents started here yet.']),
           '',
+          ...(extra.machines === undefined || extra.machines.length === 0
+            ? []
+            : ['Machines:', ...extra.machines.map((machine) => `- ${formatBoardMachine(machine)}`), '']),
         ]),
     'Pull requests:',
     ...(typeof board.pulls === 'string' ? [`- ${board.pulls}`] : pulls.length ? pulls.map((pull) => `- ${formatPull(pull)}`) : ['- none open.']),

@@ -698,7 +698,8 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
-| `board [--text] [--no-open]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
+| `board [--text] [--no-open]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR、worktree 和加过的机器，见「团队看板」 |
+| `machine <add|list|remove|start|fetch> [<名字>] [<issue>]` | 加一台看板能通过 ssh 或 Tailscale 连上的机器、列出每台机器能不能连上和负载、删掉一台、在上面开始一个任务，或者取回它的提交。add 接受 `--ssh`、`--folder`、`--root`、`--nice`、`--max-agents` 和 `--memory-mb`；start 接受 `--vendor` 和 `--model`；`--json` 输出数据。从不打印地址和用户名。机器上没有这个 agent 的登录就直说，不会往上面复制任何东西。见[机器](#机器) |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -1502,6 +1503,41 @@ agent 也可以自己写这个文件，比如 `task`、`question` 或 `link`；�
 每个字段都是文本，每个字段都可以不写。不是 JSON 对象的文件会被跳过。`role` 只认 `engineer`、`reviewer`、`verifier` 这三个词，别的值会被忽略。`blocked` 或 `question` 进了「等你处理」，只要这个 agent 还在，就会一直显示：文件里不写了也清不掉，只有离开才会消失。
 
 页面从 `/data` 读 JSON 数据。这就是看板的接口，页面只是其中一种展示。
+
+### 机器
+
+看板不只在这台电脑上干活。先把一台机器加进来：
+
+```bash
+yokoten machine add wsl
+yokoten machine add mac --ssh mac
+```
+
+`--ssh` 给的是 ssh 别名或者 Tailscale 里的名字。不给就用机器名当目标。地址和用户名放在
+`~/.ssh/config` 里，yokoten 从不打印它们。机器列表存在
+`~/.config/yokoten/machines.json`，权限是 0600。临时克隆放在那台机器 home 下的
+`.yokoten-machines`；`--root` 可以换个位置。
+
+`yokoten machine list` 列出每台机器、能不能连上、负载多少。`yokoten board --text` 在
+「Machines」下面显示同样的内容。没加过的机器会被拒绝。
+
+任务在加过的机器上，从公开仓库临时克隆一份再开始。这份克隆就是 agent 干活的工位，所以照常
+受工位的围栏保护。它用 `nice` 降低优先级；shell 支持 `ulimit -v` 时再加一个内存上限；
+同一台机器上同时能跑几个 agent 也有上限。看板的工程师上限把每台机器上的任务都算进去。
+
+机器上要有这个 agent 的登录。yokoten 在克隆之前先查 vendor 自己的文件夹。没有登录就直说，
+不会往那台机器上复制任何东西。bot 的密钥和登录文件从不在机器之间复制。
+
+机器只提交，从不推送。lead 把提交取回自己的仓库：
+
+```bash
+yokoten machine fetch wsl 682
+```
+
+提交会落在 `refs/remotes/machine/<名字>/<issue>-machine`。lead 看过之后，和其他工作一样，
+以 bot 的身份推送。
+
+`yokoten machine remove <名字>` 把机器从列表里拿掉。它上面的克隆和提交都留着。
 
 ## 隐私
 

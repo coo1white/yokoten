@@ -895,7 +895,8 @@ It puts three safe defaults in `.github/` too:
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
-| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text, and the added machines. See [The team board](#the-team-board) |
+| `machine <add|list|remove|start|fetch> [<name>] [<issue>]` | Adds a machine the board may reach over ssh or Tailscale, lists each machine's reach and load, removes one, starts a task there, or fetches its commits. Add takes `--ssh`, `--folder`, `--root`, `--nice`, `--max-agents` and `--memory-mb`; start takes `--vendor` and `--model`; `--json` gives data. It never prints an address or a user name. A machine without the agent's sign-in says so, and nothing is copied to it. See [Machines](#machines) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1936,6 +1937,44 @@ The page shows what agents write only as text, never as page code, and links onl
 
 The page reads `/data` as JSON. That is the board's interface. The page is only one
 view of it.
+
+### Machines
+
+The board can work on more than this machine. Add a machine once:
+
+```bash
+yokoten machine add wsl
+yokoten machine add mac --ssh mac
+```
+
+`--ssh` names an ssh alias or a Tailscale name. Without it, the machine's name is the
+target. Keep the address and the user name in `~/.ssh/config`: yokoten never prints
+them. The machines file is `~/.config/yokoten/machines.json`, with mode 0600. Temp
+clones live in `.yokoten-machines` in the machine's home folder; `--root` moves them.
+
+`yokoten machine list` shows each machine, whether it is reachable, and its load.
+`yokoten board --text` shows the same under Machines. An unknown machine is refused.
+
+A task starts on an added machine in a temp clone of the public repo. The clone is the
+desk the agent works in, so the usual desk fence applies. It runs under `nice`, with a
+memory cap where the shell has `ulimit -v`, and a cap on agents at once. The board's
+engineer limit counts every run, on every machine.
+
+A machine needs the agent's sign-in. yokoten checks the vendor's own folder before it
+makes a clone. Without the sign-in it says so, and nothing is copied to that machine.
+The bot key and the login files are never copied between machines.
+
+The machine commits. It never pushes. The lead fetches the commits into its own repo:
+
+```bash
+yokoten machine fetch wsl 682
+```
+
+The commits arrive under `refs/remotes/machine/<name>/<issue>-machine`. The lead
+reviews them and pushes as the bot, as for any other work.
+
+`yokoten machine remove <name>` takes a machine off the list. Its clones and commits
+stay where they are.
 
 ## Privacy
 

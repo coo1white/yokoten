@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
 import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
+import { addMachine, type MachineRunner } from '../../../../src/commands/advice/machine.ts';
 import {
   boardBrief,
   boardGuardReady,
@@ -155,6 +156,54 @@ test('board controls: the log keeps every start on one line', () => {
   const log = readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8');
   assert.equal(log.split('\n').filter((line) => line !== '').length, 1, 'the multi-line brief adds no lines');
   assert.ok(log.includes('Issue: #12'), 'the brief stays readable on the one line');
+});
+
+// #682: the board starts a task on an added machine, and its log names the machine only.
+test('board controls: start and stop a task on an added machine', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/acme/repo.git');
+  const folder = makeTempDir('second-machine-');
+  addMachine(sandbox.env, 'wsl', { folder });
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const scripts: string[] = [];
+  const runner: MachineRunner = (_, script) => {
+    scripts.push(script);
+    return script.includes('kill') ? { code: 0, stdout: 'stopped\n', stderr: '' } : { code: 0, stdout: 'started 71\n', stderr: '' };
+  };
+  controls.machineRunner = runner;
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a', machine: 'wsl' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  assert.equal(run.machine, 'wsl');
+  assert.equal(run.pid, 71);
+  assert.match(run.name, /wsl/);
+  assert.equal(run.worktree, join(folder, 'issue-12'));
+  assert.equal(agents.started.length, 0, 'it starts nothing on this machine');
+  assert.equal(scripts.length, 1);
+  const log = readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8');
+  assert.ok(!log.includes(folder), 'the log never holds the target');
+  assert.match(log, /on machine wsl/);
+  const stopped = stopBoardAgent(controls, run.name);
+  assert.ok(typeof stopped !== 'string', `the stop passes: ${stopped}`);
+  assert.equal(scripts.length, 2);
+  assert.match(scripts[1], /kill/);
+  assert.match(startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a', machine: 'mac' }) as string, /no machine called mac/);
+});
+
+// #682: the engineer limit counts runs on every machine, not just this one.
+test('board controls: the engineer limit counts a machine run too', () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/acme/repo.git');
+  addMachine(sandbox.env, 'wsl', { folder: makeTempDir('second-machine-'), maxAgents: 2 });
+  addMachine(sandbox.env, 'mac', { folder: makeTempDir('second-machine-'), maxAgents: 2 });
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  controls.limits.maxAgents = 1;
+  controls.machineRunner = () => ({ code: 0, stdout: 'started 72\n', stderr: '' });
+  const first = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a', machine: 'wsl' });
+  assert.ok(typeof first !== 'string', `the first start passes: ${first}`);
+  const refused = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a', machine: 'mac' });
+  assert.match(typeof refused === 'string' ? refused : 'started', /already runs 1 agent of 1/, 'the run on wsl counts on the mac too');
 });
 
 // #603 re-inspection (L2): the start marked the worktree before the guard check,

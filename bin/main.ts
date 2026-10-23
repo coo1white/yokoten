@@ -62,6 +62,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/hook.ts').then((m) => m.runWorker(invocation));
     case 'desk':
       return import('../src/commands/hook.ts').then((m) => m.runDesk(invocation));
+    case 'machine':
+      return import('../src/commands/advice/machine.ts').then((m) => m.runMachine(invocation));
     case 'msg':
       return import('../src/commands/advice/messages.ts').then((m) => m.runMsg(invocation));
     case 'check':

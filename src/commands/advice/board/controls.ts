@@ -26,40 +26,20 @@ import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
+import { readOriginUrl } from '../../../setup/plan.ts';
 import { markWorktree } from '../../hook.ts';
+import { AGENT_START_COMMANDS, agentStartParts, findMachine, isMachineName, machineCloneDir, type MachineRunner, startMachineTask, stopMachineTask } from '../machine.ts';
 import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
 /**
- * How the board starts one agent of each vendor, before the brief. Each command is the
- * vendor's own headless form, as the guide names it. A vendor missing here cannot be
- * started from the page: start it by hand, and it still shows on the board.
- * Grok's `-p` takes the prompt as its value, so the brief follows it at once; the
- * other vendors take the brief last. Grok keeps the guide's `--trust --always-approve`:
- * `--sandbox yokoten` names a profile that does not exist, so grok refuses to start
- * with it. Muse's `--trust-workspace` and grok's `--trust` trust the fresh worktree at
- * the start, so their hooks run there.
+ * The board's start command for one vendor, from the machine module. Grok's `-p` takes
+ * the prompt as its value, so the brief follows it at once; the other vendors take the
+ * brief last. Grok keeps the guide's `--trust --always-approve`: `--sandbox yokoten`
+ * names a profile that does not exist, so grok refuses to start with it. Muse's
+ * `--trust-workspace` and grok's `--trust` trust the fresh worktree at the start, so
+ * their hooks run there.
  */
-const BOARD_START_COMMANDS: Record<string, string[]> = {
-  'claude-code': ['claude', '-p'],
-  codex: ['codex', 'exec'],
-  muse: ['muse', 'exec', '--trust-workspace'],
-  grok: ['grok', '-p', '--trust', '--always-approve'],
-  antigravity: ['agy', '-p'],
-  'deepseek-harness': ['dsh', 'headless', '--patch', '.dsh/yokoten.patch.yml'],
-};
-
-/**
- * Each vendor's model flag, as its `--help` names it. DeepSeek Harness has none on
- * record (and `dsh` is not installed here to check): its model stays a label only, in
- * the brief and `YOKOTEN_MODEL`, and the guide says so.
- */
-const BOARD_MODEL_FLAGS: Record<string, string> = {
-  'claude-code': '--model',
-  codex: '--model',
-  muse: '--model',
-  grok: '--model',
-  antigravity: '--model',
-};
+export const boardStartParts = agentStartParts;
 
 /** The board's limits: how many agents run at once, and how many of one model. */
 export interface BoardLimits {
@@ -77,6 +57,8 @@ export interface BoardRun {
   vendor: string;
   model: string;
   worktree: string;
+  /** The machine it runs on, or missing when it runs on this machine. */
+  machine?: string;
   pid: number | null;
   /** Running, or stopped by the owner. A start that fails never joins the list. */
   status: 'running' | 'stopped';
@@ -193,6 +175,8 @@ export interface BoardControls {
   handles: Map<string, BoardChild>;
   logPath: string;
   spawner: BoardSpawner;
+  /** How the board reaches a machine. Tests pass a fake, so they start no agent. */
+  machineRunner?: MachineRunner;
 }
 
 /** Fresh controls for a board: default limits, no runs, the log at the given path. */
@@ -214,6 +198,8 @@ export interface BoardStartAsk {
   issue: string;
   vendor: string;
   model: string;
+  /** The added machine to start on, or missing for this machine. */
+  machine?: string;
 }
 
 /** The brief the board hands the agent: the issue, its worktree, and the model. */
@@ -224,22 +210,6 @@ export function boardBrief(issue: string, worktree: string, model: string): stri
     `Model: ${model}`,
     'Goal: do the issue in this worktree as a yokoten worker. Follow AGENTS.md. Commit the work. Never push.',
   ].join('\n');
-}
-
-/**
- * The vendor's start command with the brief and the model, or null when the board
- * cannot start it. The model goes through the vendor's own flag; a vendor with none
- * keeps it as a label only, in the brief.
- */
-export function boardStartParts(vendor: string, brief: string, model = ''): string[] | null {
-  const head = BOARD_START_COMMANDS[vendor];
-  if (!head) return null;
-  const flag = BOARD_MODEL_FLAGS[vendor];
-  const withModel = model && flag ? [flag, model] : [];
-  // Grok's `-p` takes the prompt as its value: `grok -p --trust ...` fails with
-  // "a value is required for '--single <PROMPT>'", so the brief follows `-p` at once.
-  if (vendor === 'grok') return [...head.slice(0, 2), brief, ...head.slice(2), ...withModel];
-  return [...head, ...withModel, brief];
 }
 
 /**
@@ -292,12 +262,14 @@ export function readBoardStartAsk(fields: Record<string, string>): BoardStartAsk
   const issue = (fields.issue ?? '').trim();
   if (!/^[1-9]\d*$/.test(issue)) return 'give the issue by its number, such as 603';
   const vendor = (fields.vendor ?? '').trim();
-  if (!Object.hasOwn(BOARD_START_COMMANDS, vendor)) {
-    return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${vendor || 'that vendor'} by hand`;
+  if (!Object.hasOwn(AGENT_START_COMMANDS, vendor)) {
+    return `the board starts ${Object.keys(AGENT_START_COMMANDS).join(', ')}: start ${vendor || 'that vendor'} by hand`;
   }
   const model = (fields.model ?? '').trim();
   if (!BOARD_MODEL_PATTERN.test(model)) return 'name the model in letters, numbers, dots and dashes, such as muse-spark-1.3';
-  return { issue, vendor, model };
+  const machine = (fields.machine ?? '').trim();
+  if (machine && !isMachineName(machine)) return 'name a machine with lowercase letters, digits and dashes';
+  return { issue, vendor, model, ...(machine ? { machine } : {}) };
 }
 
 /** The worktree for the issue, made when missing, or the plain reason git cannot make it. */
@@ -345,6 +317,47 @@ function boardLogLine(line: string): string {
 }
 
 /**
+ * Start one task on an added machine. It joins the same run list, so the engineer
+ * limit counts it with every other machine. A machine's own max-agents cap is checked
+ * too. A refused start stops before any clone is made.
+ */
+function startBoardMachine(root: string, env: Env, controls: BoardControls, ask: BoardStartAsk, machineName: string): BoardRun | string {
+  const machine = findMachine(env, machineName);
+  if (typeof machine === 'string') return machine;
+  const onMachine = controls.runs.filter((run) => run.status === 'running' && run.machine === machine.name).length;
+  if (machine.maxAgents > 0 && onMachine >= machine.maxAgents) {
+    return `the machine ${machine.name} already runs ${countText(onMachine, 'agent')} of ${machine.maxAgents}: stop one before starting another`;
+  }
+  const started = startMachineTask(machine, { issue: ask.issue, vendor: ask.vendor, model: ask.model, repoUrl: readOriginUrl(root, env) }, controls.machineRunner);
+  if (typeof started === 'string') return started;
+  let name = `issue-${ask.issue}-${ask.vendor}-${machine.name}`;
+  for (let salt = 2; controls.runs.some((run) => run.name === name); salt += 1) name = `issue-${ask.issue}-${ask.vendor}-${machine.name}-${salt}`;
+  const run: BoardRun = {
+    name,
+    issue: ask.issue,
+    vendor: ask.vendor,
+    model: ask.model,
+    worktree: machineCloneDir(machine, ask.issue),
+    machine: machine.name,
+    pid: started.pid,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    stoppedAt: '',
+    exitCode: null,
+    output: [],
+  };
+  controls.handles.set(name, {
+    pid: started.pid,
+    kill: () => {
+      stopMachineTask(machine, ask.issue, controls.machineRunner);
+    },
+  });
+  controls.runs.push(run);
+  appendBoardLog(controls, boardLogLine(`start ${name} pid ${started.pid ?? '?'} issue #${ask.issue} ${ask.vendor} ${ask.model} on machine ${machine.name}`));
+  return run;
+}
+
+/**
  * Start one agent from the ask: check the limits (they need no dir), make the
  * worktree, check the guard hooks will run there and the vendor can start, then mark
  * it as a worker's right before starting the vendor's command, and keep the run. A
@@ -354,12 +367,13 @@ function boardLogLine(line: string): string {
 export function startBoardAgent(root: string, env: Env, controls: BoardControls, ask: BoardStartAsk): BoardRun | string {
   const over = checkBoardLimits(controls, ask.model);
   if (over) return over;
+  if (ask.machine) return startBoardMachine(root, env, controls, ask, ask.machine);
   const made = boardWorktree(root, env, ask.issue);
   if ('fail' in made) return made.fail;
   const ready = boardGuardReady(ask.vendor, made.dir, env);
   if (ready) return ready;
   const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model), ask.model);
-  if (!parts) return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
+  if (!parts) return `the board starts ${Object.keys(AGENT_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
   const marked = markWorktree(root, made.dir, env);
   if ('fail' in marked) return `the board could not mark the worktree at ${hideHome(made.dir, env)} as a worker's: ${marked.fail}`;
   const [command, ...args] = parts;
