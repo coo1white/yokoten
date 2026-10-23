@@ -569,6 +569,10 @@ are two ways to install: the Claude Code plugin, or the `install` command, from 
 from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
 on Windows, use Git Bash.
 
+Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copies the
+skills only. A skill is advice to the agent; the guard is what stops a command. So skills
+alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -601,8 +605,11 @@ Claude Code runs the plugin's `.ts` files with `node`. Node can do this because 
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
 does not update on its own until you turn on auto-update for it. From your shell,
-`claude plugin update yokoten@yokoten` does the same; restart Claude Code after it. When the
-plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
+`claude plugin update yokoten@yokoten` does the same. The next tool call runs the updated
+guard. A session which still has the old hook command needs one restart. If Claude Code
+removes the old plugin folder while a session still runs, the tool call is refused and
+asks for a restart. When the plugin is older than the yokoten that runs `doctor`,
+`doctor` says so in a note.
 
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
@@ -1615,11 +1622,12 @@ is to undo (record 0004):
 | Tier | Kind of change | Who reviews |
 |------|----------------|-------------|
 | C | Standard: docs, wording, styles | The lead |
-| B | Normal: other code, with tests | The lead |
-| A | Hard to undo: secrets, data, install, releases, owned files | The owner |
+| B | Normal: other code, with tests | Another vendor's agent reviews; the lead approves |
+| A | Hard to undo: owned files, or a change that makes a rule looser | The owner |
 
-`.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
-records. It does not list every file. In a new project, `init` writes one for the
+In yokoten's own repo, `.github/CODEOWNERS` lists the owned files: the core rules,
+CODEOWNERS, CI that publishes or holds a secret, the bot token, guard config and
+`package.json` (record 0037). In a new project, `init` writes one for the
 lead-only paths. With "require review from code owners" on, the
 host asks the owner to review a pull request that changes one of them.
 
@@ -1820,6 +1828,14 @@ The page has two columns. Needs you is a bell in the header, next to Live.
   The board reads Claude, Grok, Muse and Codex logs. DeepSeek runs on Codex.
   With no log, you see the agent's `doing` steps.
   Pick the lead and the middle is the 24-hour timeline.
+
+The bottom bar counts free agent seats.
+Each vendor shows its working agents and its free seats.
+Write `.git/yokoten-seats.json` in the main folder, as a JSON object of vendor to seat count.
+For example, `{"claude": 2, "grok": 4}` gives Claude two seats and Grok four.
+A runtime name works too, such as `claude-code`.
+A vendor with no working agents holds all its seats.
+Without the file, the bar counts idle agents instead.
 
 The bell's badge is grey at zero and orange when something needs you.
 A click opens the list under the bell.

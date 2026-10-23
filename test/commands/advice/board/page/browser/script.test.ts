@@ -448,9 +448,15 @@ test('board script: a working chip breathes, and the bar counts free seats', () 
   assert.match(withSeats, /19 free/);
   assert.match(withSeats, /Grok · 1 working · 15 free/);
   assert.match(withSeats, /Claude · 0 working · 0 free/);
+  assert.match(withSeats, /DeepSeek · 0 working · 4 free/, 'a vendor with seats but no agent still has a line');
   const clamped = renderBar(state, { ...data, seats: { grok: 0 } }).map((node) => (node as unknown as FakeNode).textContent).join('\n');
   assert.match(clamped, /Grok · 1 working · 0 free/);
   assert.match(clamped, /^0 free/m);
+  // A seats file may use the runtime names the hooks file (#693).
+  const aliased = renderBar(state, { ...data, seats: { 'claude-code': 4, 'deepseek-harness': 2 } }).map((node) => (node as unknown as FakeNode).textContent).join('\n');
+  assert.match(aliased, /6 free/);
+  assert.match(aliased, /Claude · 0 working · 4 free/);
+  assert.match(aliased, /DeepSeek · 0 working · 2 free/);
 });
 
 // #737: the bell opens and closes, the badge counts, a new row pulses once, and a
