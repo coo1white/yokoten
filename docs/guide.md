@@ -822,7 +822,8 @@ workflow of the project's own that `init` keeps, `doctor` gives the step to add 
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
 check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
 limit, checkout keeps no token, and in `yokoten.yml` a new push cancels the old run on the
-same pull request. `pr.yml` cancels nothing. Its runs can start in any order, so each one
+same pull request. A push to `main` cancels nothing: every commit is tested on its own.
+`pr.yml` cancels nothing. Its runs can start in any order, so each one
 reads the pull request's title, body, labels and milestone as they are now, with the job's
 token, and a rerun reads them again. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
