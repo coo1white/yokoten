@@ -26,6 +26,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 /** The budget of each entry, in ms, on a CI Linux runner (record 0013). */
 const BUDGET: Record<string, { p50: number; p95: number }> = {
   'guard, Bash': { p50: 100, p95: 200 },
+  'guard, refused': { p50: 100, p95: 200 },
   'guard, Edit': { p50: 100, p95: 200 },
   'session start': { p50: 130, p95: 260 },
   'commit check': { p50: 150, p95: 300 },
@@ -91,8 +92,10 @@ try {
   const cli = options.cli ? resolve(options.cli) : join(repo, '.yokoten', 'bin', 'yokoten.ts');
   const toolCall = (name: string, input: Record<string, string>) => JSON.stringify({ tool_name: name, tool_input: input, cwd: repo, hook_event_name: 'PreToolUse' });
   // Each as its hook runs it: the guard with the heap cap (src/run/cli.ts), the rest plain.
-  const entries: { name: string; args: string[]; input?: string }[] = [
+  // `status` is the exit the entry must give: a refusal exits 2, as the runtimes read it.
+  const entries: { name: string; args: string[]; input?: string; status?: number }[] = [
     { name: 'guard, Bash', args: [GUARD_HEAP, hookCli, 'hook'], input: toolCall('Bash', { command: 'ls -la' }) },
+    { name: 'guard, refused', args: [GUARD_HEAP, hookCli, 'hook'], input: toolCall('Bash', { command: 'git push --tags' }), status: 2 },
     { name: 'guard, Edit', args: [GUARD_HEAP, hookCli, 'hook'], input: toolCall('Edit', { file_path: join(repo, 'README.md'), old_string: 'bench', new_string: 'bench!' }) },
     { name: 'session start', args: [hookCli, 'doctor', '--session'] },
     { name: 'commit check', args: [cli, 'check', '--staged'] },
@@ -103,7 +106,7 @@ try {
   for (let round = 0; round <= runs; round++) {
     for (const entry of entries) {
       const result = run(process.execPath, entry.args, entry.input);
-      if (result.status !== 0) throw new Error(`${entry.name} exited ${result.status}\n${result.output}`);
+      if (result.status !== (entry.status ?? 0)) throw new Error(`${entry.name} exited ${result.status}\n${result.output}`);
       if (round > 0) times.get(entry.name)?.push(result.ms);
     }
   }
