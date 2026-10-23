@@ -257,7 +257,7 @@ export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy":
 
 /** Whether this machine or project is set up for an agent other than Claude Code. */
 function usesOtherAgent(env: Env, root: string | null): boolean {
-  if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env) || opencode.hasUserDir(env)) return true;
+  if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env) || muse.hasUserDir(env) || opencode.hasUserDir(env)) return true;
   if (!root) return false;
   const cli = hookCliPath(root);
   return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || grok.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same' || opencode.usesOpenCode(root);

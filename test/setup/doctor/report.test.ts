@@ -651,6 +651,10 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   // Another agent on this machine: its output is not filtered, and the note says how to opt in.
   mkdirSync(join(home, '.codex'));
   assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
+  // Muse alone is enough too, before the project has any yokoten hook (#549).
+  rmSync(join(home, '.codex'), { recursive: true, force: true });
+  mkdirSync(join(home, '.config', 'muse'), { recursive: true });
+  assert.equal(notes()[0], 'private-output: only Claude Code hides your details in command output; other agents show it as it is; to stop those commands there instead, set "privacy": { "output": "stop" } in yokoten.json');
   assert.equal(privacyNotes(env, null, 'stop').length, 1, 'with "stop", only the mailmap note is left');
   rmSync(home, { recursive: true, force: true });
 });
