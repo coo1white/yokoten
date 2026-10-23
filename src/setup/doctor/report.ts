@@ -250,6 +250,11 @@ function rewordStrings<T>(value: T, reword: (text: string) => string): T {
   return value;
 }
 
+/** `2 and 3`, or `2, 3 and 4`: the stages a jump passed, in the words the road line uses (#514). */
+function stageListText(stages: number[]): string {
+  return stages.length > 1 ? `${stages.slice(0, -1).join(', ')} and ${stages.at(-1)}` : String(stages[0] ?? '');
+}
+
 function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
@@ -330,7 +335,22 @@ function doctorRun(
   }
 
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
+  // Work only on this machine (#365): notes, never a failure, and read only. Read before the
+  // road line, so the state file is found in the git folder it names (#453), as a session
+  // start finds it, and a stage that jumped can say so next to the road (#514).
+  const unsaved = readUnsaved(root, { env });
+  // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
+  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
+  const state = readState(stateFile);
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
+  // A stage that moved by more than one since the last full doctor says which stages it
+  // passed, and why they count as done, in one line (#514). The first run has no stage to
+  // compare with, and a move of one is the usual next step, so neither says anything.
+  if (where.stage !== null && typeof state.lastStage === 'number' && where.stage - state.lastStage >= 2) {
+    const lastStage = state.lastStage;
+    const passed = Array.from({ length: where.stage - lastStage - 1 }, (_, i) => lastStage + i + 1);
+    lines.push(`stages ${stageListText(passed)} are done too: their steps were already in place, or can't be checked yet`);
+  }
   const steps: StepState[] = [];
   // With no origin remote, the steps that read the server say so in one line, not one each (#502).
   const noRemote = server !== undefined && 'unread' in server && server.unread === NO_REMOTE;
@@ -374,17 +394,11 @@ function doctorRun(
     lines.push(`  note    time-zone: ${stepText(zones)}`);
     notes.push(zones);
   }
-  // Work only on this machine (#365): notes, never a failure, and read only. Read here, so
-  // the state file is found in the git folder it names, as a session start finds it (#453).
-  const unsaved = readUnsaved(root, { env });
   const noCi = noCiNote(config.notNow, where.stage, server);
   if (noCi) {
     lines.push(`  note    no-ci: ${stepText(noCi)}`);
     notes.push(noCi);
   }
-  // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
-  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
-  const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
   const nextSeen = seenAfter(seenLessons, lessons);
@@ -397,7 +411,12 @@ function doctorRun(
     notes.push(note);
   }
   const nextWorkflows = [...seenWorkflows, ...workflows.flatMap((w) => (w.seen === undefined ? [] : [w.seen]))];
-  if (nextSeen.length > seenLessons.length || nextWorkflows.length > seenWorkflows.length) saveState(stateFile, { ...state, seenLessons: nextSeen, ...(nextWorkflows.length ? { seenWorkflows: nextWorkflows } : {}) });
+  // The road's stage is kept even when the road is done: a jump back down is no jump up.
+  const nextStage = where.stage ?? state.lastStage;
+  const isStageKept = nextStage !== undefined && nextStage !== state.lastStage;
+  if (nextSeen.length > seenLessons.length || nextWorkflows.length > seenWorkflows.length || isStageKept) {
+    saveState(stateFile, { ...state, seenLessons: nextSeen, ...(nextStage === undefined ? {} : { lastStage: nextStage }), ...(nextWorkflows.length ? { seenWorkflows: nextWorkflows } : {}) });
+  }
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const checkNotes: Finding[] = [];

@@ -528,6 +528,31 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', as
   assert.match((await sandbox.call(['doctor'], { extra: { ...extra, ...bot } })).stdout, /^ +done +security-files \(Scorecard: Security-Policy · OSPS-VM-02\.01\)$/m, 'full doctor names the outside standard (#58)');
 });
 
+test('doctor: a stage that jumped says which stages it passed, once (#514)', async () => {
+  const sandbox = makeSandbox();
+  const jumped = /^stages 2 and 3 are done too: their steps were already in place, or can't be checked yet$/m;
+  // The first run has nothing to compare with: stage 1 is next, and no line.
+  const first = await sandbox.call(['doctor']);
+  assert.match(first.stdout, /^the road: stage 1 of 5/m);
+  assert.doesNotMatch(first.stdout, /are done too/);
+  // Stage 1 to stage 4 at once: init writes the rules, hooks and changelog, and the
+  // remote, the test workflow and the templates finish stages 2 and 3.
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  sandbox.withTests();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  const jumpedRun = await sandbox.call(['doctor']);
+  assert.match(jumpedRun.stdout, /^the road: stage 4 of 5/m);
+  assert.match(jumpedRun.stdout, jumped);
+  // The line is told once: the next run starts from stage 4.
+  const later = await sandbox.call(['doctor']);
+  assert.match(later.stdout, /^the road: stage 4 of 5/m);
+  assert.doesNotMatch(later.stdout, /are done too/);
+  // A session stays short: it never prints the line.
+  assert.doesNotMatch((await sandbox.call(['doctor', '--session'])).stdout, /are done too/);
+});
+
 test('doctor: the tests step wants a test command and a CI step that runs it (#55)', async () => {
   const sandbox = makeSandbox();
   const line = async () => (await sandbox.call(['doctor'])).stdout.split('\n').find((l) => / tests\b/.test(l)) ?? '';

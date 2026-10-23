@@ -131,6 +131,8 @@ export interface DoctorState {
   sessionLessons?: string[];
   /** The kit workflows with the project's changes that full doctor already noted, as "file kit-hash" (#456). */
   seenWorkflows?: string[];
+  /** The stage full doctor saw at its last run, so it can say which stages a jump passed (#514). */
+  lastStage?: number;
   [key: string]: unknown;
 }
 
@@ -150,12 +152,14 @@ export function readState(file: string | null): DoctorState {
   try {
     const state: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
-    const { seenLessons, sessionLessons, seenWorkflows, ...rest } = state as DoctorState;
+    const { seenLessons, sessionLessons, seenWorkflows, lastStage, ...rest } = state as DoctorState;
     const ids = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null);
     const seen = ids(seenLessons);
     const ran = ids(sessionLessons);
     const workflows = ids(seenWorkflows);
-    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}), ...(workflows ? { seenWorkflows: workflows } : {}) };
+    // A stage is a position from 1; anything else is a broken file, treated as missing.
+    const stage = typeof lastStage === 'number' && Number.isInteger(lastStage) && lastStage > 0 ? lastStage : null;
+    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}), ...(workflows ? { seenWorkflows: workflows } : {}), ...(stage === null ? {} : { lastStage: stage }) };
   } catch {
     return {};
   }
