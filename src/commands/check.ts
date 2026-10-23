@@ -608,7 +608,7 @@ function save(file: string, entries: AllowEntry[], skipOwnName?: false): void {
 // it creates and pins on the first run. A scheduled workflow updates it in place. The
 // report says what is red and why: a failed run on main, a failed or cancelled check on
 // an open pull request, a slow workflow, a long wait, or a workflow and branch that both
-// passed and failed in the window. It reads the default branch as `main`.
+// passed and failed in the window. The branch a merge lands on is the repo's default.
 
 /** How long one gh read may take before the command stops waiting. */
 const CI_HEALTH_TIMEOUT = 30000;
@@ -670,6 +670,8 @@ export interface UnstableWorkflow {
 
 /** Everything the report shows. */
 export interface ActionsHealth {
+  /** The branch a merge lands on: `main` unless the repo says otherwise. */
+  defaultBranch: string;
   runs: HealthRun[];
   workflows: WorkflowHealth[];
   mainFailures: HealthRun[];
@@ -677,6 +679,15 @@ export interface ActionsHealth {
   pullProblems: PullCheckProblem[];
   slowest: HealthRun[];
   unstable: UnstableWorkflow[];
+}
+
+/** The repo's default branch, or `main` when gh can't say. */
+export function readDefaultBranch(gh: Gh, repo: string): string {
+  try {
+    return gh(['repo', 'view', repo, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name']).trim() || 'main';
+  } catch {
+    return 'main';
+  }
 }
 
 /** One row of the Actions run list as a run, or null when it has no usable id. */
@@ -860,13 +871,14 @@ function findUnstable(runs: HealthRun[]): UnstableWorkflow[] {
 }
 
 /** What the runs and pull request checks add up to. */
-export function summarizeActionsHealth(runs: HealthRun[], pullProblems: PullCheckProblem[]): ActionsHealth {
+export function summarizeActionsHealth(runs: HealthRun[], pullProblems: PullCheckProblem[], defaultBranch = 'main'): ActionsHealth {
   const completed = runs.filter((run) => run.status === COMPLETED_STATUS && Number.isFinite(timeBetween(run.startedAt, run.updatedAt)));
   return {
+    defaultBranch,
     runs,
     workflows: summarizeWorkflows(runs),
-    mainFailures: runs.filter((run) => run.branch === 'main' && FAILED_CONCLUSIONS.has(run.conclusion)),
-    mainCancelled: runs.filter((run) => run.branch === 'main' && run.conclusion === 'cancelled'),
+    mainFailures: runs.filter((run) => run.branch === defaultBranch && FAILED_CONCLUSIONS.has(run.conclusion)),
+    mainCancelled: runs.filter((run) => run.branch === defaultBranch && run.conclusion === 'cancelled'),
     pullProblems,
     slowest: [...completed].sort((a, b) => timeBetween(b.startedAt, b.updatedAt) - timeBetween(a.startedAt, a.updatedAt)).slice(0, 5),
     unstable: findUnstable(runs),
@@ -898,6 +910,7 @@ function runLine(run: HealthRun): string {
 /** The Markdown body of the `CI health` issue. */
 export function renderActionsHealth(health: ActionsHealth, { repo, now }: { repo: string; now: Date }): string {
   const { runs, mainFailures, mainCancelled, pullProblems } = health;
+  const main = health.defaultBranch;
   const problems = mainFailures.length + mainCancelled.length + pullProblems.length;
   const lines = [
     '<!-- yokoten:ci-health -->',
@@ -915,13 +928,13 @@ export function renderActionsHealth(health: ActionsHealth, { repo, now }: { repo
   lines.push(`Window: ${utcText(oldest.createdAt)} to ${utcText(now.toISOString())}. Newest run first.`, '');
   lines.push(
     problems
-      ? `**${problems} problem${problems === 1 ? ' needs' : 's need'} a look:** ${mainFailures.length} failed on main, ${mainCancelled.length} cancelled on main, ${pullProblems.length} failed or cancelled on open pull requests.`
-      : '**No failed or cancelled run on main, and no failed or cancelled check on an open pull request.**',
+      ? `**${problems} problem${problems === 1 ? ' needs' : 's need'} a look:** ${mainFailures.length} failed on \`${main}\`, ${mainCancelled.length} cancelled on \`${main}\`, ${pullProblems.length} failed or cancelled on open pull requests.`
+      : `**No failed or cancelled run on \`${main}\`, and no failed or cancelled check on an open pull request.**`,
     '',
   );
 
   lines.push('## Main', '');
-  if (!mainFailures.length && !mainCancelled.length) lines.push('No failed or cancelled run on `main` in this window.');
+  if (!mainFailures.length && !mainCancelled.length) lines.push(`No failed or cancelled run on \`${main}\` in this window.`);
   else for (const run of [...mainFailures, ...mainCancelled]) lines.push(runLine(run));
   lines.push('');
 
@@ -1036,13 +1049,14 @@ export function runCiHealth(invocation: Invocation): number {
     return 1;
   }
   const gh = ghIn(root, env, CI_HEALTH_TIMEOUT);
+  const defaultBranch = readDefaultBranch(gh, repo);
   const runs = readActionsRuns(gh, repo);
   if (typeof runs === 'string') {
     print(invocation, [`yokoten ci-health: ${runs}`], invocation.stderr);
     return 1;
   }
   const pulls = readHealthPullChecks(gh, repo);
-  const health = summarizeActionsHealth(runs, typeof pulls === 'string' ? [] : pulls);
+  const health = summarizeActionsHealth(runs, typeof pulls === 'string' ? [] : pulls, defaultBranch);
   let body = renderActionsHealth(health, { repo, now: new Date() });
   if (typeof pulls === 'string') body += `\n> The open pull request checks were not read: ${pulls}\n`;
   const problems = health.mainFailures.length + health.mainCancelled.length + health.pullProblems.length;

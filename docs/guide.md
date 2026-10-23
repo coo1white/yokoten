@@ -840,8 +840,8 @@ a check on a merge.
 
 `actions-health.yml` runs every 30 minutes. It reads the last 200 Actions runs and the
 checks of the open pull requests, then updates one pinned issue, `CI health`. The issue
-lists failed or cancelled runs on `main`, failed or cancelled checks on open pull
-requests, slow workflows, queue waits, and branches that both passed and failed. It only
+lists failed or cancelled runs on the default branch, failed or cancelled checks on open
+pull requests, slow workflows, queue waits, and branches that both passed and failed. It only
 writes that one issue. Delete the file to stop it, or run `yokoten init --no-ci`.
 `yokoten ci-health --dry-run` prints the same report without writing anything.
 

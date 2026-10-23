@@ -910,6 +910,7 @@ const healthRun = (over: Record<string, unknown>) => ({
 // a slow workflow, a long queue wait, and one branch that both passed and failed.
 test('ci-health: reads runs and pull request checks, then says what is red', () => {
   const gh = (args: string[]) => {
+    if (args[0] === 'repo') return 'main\n';
     if (args[0] === 'api') {
       return JSON.stringify({
         workflow_runs: [
@@ -943,6 +944,7 @@ test('ci-health: reads runs and pull request checks, then says what is red', () 
   assert.deepEqual(pulls, [{ number: 646, title: 'drafts first', url: 'https://example.com/pull/646', isDraft: true, check: 'yokoten', conclusion: 'cancelled' }], 'a later green run clears the old failure');
 
   const health = summarizeActionsHealth(runs, pulls);
+  assert.equal(health.defaultBranch, 'main');
   assert.equal(health.mainFailures.length, 1, 'the failed push to main');
   assert.equal(health.mainCancelled.length, 1, 'the cancelled issue run stays apart from a failure');
   assert.equal(health.slowest[0].id, 1, '10 minutes is the slowest run');
@@ -962,6 +964,7 @@ test('ci-health: reads runs and pull request checks, then says what is red', () 
 test('ci-health --dry-run: prints the report and touches no issue', async () => {
   const sandbox = makeSandbox();
   const extra = healthGh(sandbox, {
+    'repo view octo/demo --json defaultBranchRef --jq .defaultBranchRef.name': 'main',
     'api repos/octo/demo/actions/runs?per_page=100&page=1': JSON.stringify({ workflow_runs: [healthRun({ id: 1, conclusion: 'failure' })] }),
     'pr list --repo octo/demo --state open --limit 100 --json number,title,url,isDraft,statusCheckRollup': JSON.stringify([]),
   });
@@ -970,6 +973,7 @@ test('ci-health --dry-run: prints the report and touches no issue', async () => 
   assert.match(result.stdout, /# CI/);
   assert.match(result.stdout, /\*\*failure\*\*/);
   assert.deepEqual(healthCalls(sandbox), [
+    'repo view octo/demo --json defaultBranchRef --jq .defaultBranchRef.name',
     'api repos/octo/demo/actions/runs?per_page=100&page=1',
     'pr list --repo octo/demo --state open --limit 100 --json number,title,url,isDraft,statusCheckRollup',
   ], 'a dry run reads, and writes no issue');
