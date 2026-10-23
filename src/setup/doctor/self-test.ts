@@ -4,7 +4,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
-import { checkCommand, checkEdit } from '../../rules/guards.ts';
+import { checkCommand, checkEdit } from '../../rules/guard/guards.ts';
 import { DEFAULTS } from '../../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../../rules/layout.ts';
 import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy.ts';

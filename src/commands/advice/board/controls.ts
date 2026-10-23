@@ -26,7 +26,7 @@ import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
-import { markWorktree } from '../../hook.ts';
+import { markWorktree } from '../../guard/hook.ts';
 import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
 /**

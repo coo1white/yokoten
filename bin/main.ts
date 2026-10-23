@@ -56,12 +56,12 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     case 'hook': {
       // The tool-call guard's worker, which bin/yokoten.mjs started before this file loaded (#408).
       const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
-      return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
+      return Promise.all([guard, import('../src/commands/guard/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
     }
     case 'worker':
-      return import('../src/commands/hook.ts').then((m) => m.runWorker(invocation));
+      return import('../src/commands/guard/hook.ts').then((m) => m.runWorker(invocation));
     case 'desk':
-      return import('../src/commands/hook.ts').then((m) => m.runDesk(invocation));
+      return import('../src/commands/guard/hook.ts').then((m) => m.runDesk(invocation));
     case 'msg':
       return import('../src/commands/advice/messages.ts').then((m) => m.runMsg(invocation));
     case 'check':
@@ -88,6 +88,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/bot.ts').then((m) => m.runBot(invocation));
     case 'board':
       return import('../src/commands/advice/board/server.ts').then((m) => m.runBoard(invocation));
+    case 'spend':
+      return import('../src/commands/guard/spend.ts').then((m) => m.runSpend(invocation));
     case 'install':
       return import('../src/commands/setup.ts').then((m) => m.runInstall(invocation));
     case 'uninstall':

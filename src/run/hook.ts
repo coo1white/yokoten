@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guard/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 

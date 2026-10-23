@@ -1,6 +1,6 @@
-// Tests for src/commands/hook.ts.
+// Tests for src/commands/guard/hook.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
@@ -29,9 +29,9 @@ import {
   pick,
   makeTempDir,
   runChild,
-} from '../repo/helpers.ts';
-import { invoke } from '../repo/invoke.ts';
-import { redactCommand } from '../../src/commands/hook.ts';
+} from '../../repo/helpers.ts';
+import { invoke } from '../../repo/invoke.ts';
+import { redactCommand } from '../../../src/commands/guard/hook.ts';
 
 // A session started outside the repo, or a worker in a worktree elsewhere, loads no project
 // hook: the user-level guard applies the file's own repo's rules, if yokoten is set up there (#307).

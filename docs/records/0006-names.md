@@ -10,7 +10,7 @@ is an example they read. Names are what a reader meets first and reads most, so 
 must be easy to read.
 
 The code had no rule for names. Most names were good, but some were one letter used far
-from where they were made. In `src/rules/guards.ts`, `i` and `c` were used for 100 lines.
+from where they were made. In `src/rules/guard/guards.ts`, `i` and `c` were used for 100 lines.
 A reader had to scroll back to learn what they held.
 
 What other people say:

@@ -21,7 +21,7 @@ import {
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
 import { cutPoint } from '../../src/commands/check.ts';
-import { wrapForRedact } from '../../src/rules/guards.ts';
+import { wrapForRedact } from '../../src/rules/guard/guards.ts';
 
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {

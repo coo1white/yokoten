@@ -14,12 +14,12 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import type { Config, Env } from './config.ts';
-import { loadConfig, matcher } from './config.ts';
-import { WORKTREES_DIR } from './layout.ts';
-import { type Finding, finding, noteWork } from './message.ts';
-import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import type { Config, Env } from '../config.ts';
+import { loadConfig, matcher } from '../config.ts';
+import { WORKTREES_DIR } from '../layout.ts';
+import { type Finding, finding, noteWork } from '../message.ts';
+import { checkCommandTitle } from '../pr.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from '../privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {

@@ -8,8 +8,8 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
-import { markWorktree } from '../../../src/commands/hook.ts';
-import { workerMarkAt } from '../../../src/rules/guards.ts';
+import { markWorktree } from '../../../src/commands/guard/hook.ts';
+import { workerMarkAt } from '../../../src/rules/guard/guards.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
 import { TEST_HOME } from '../../repo/home.ts';
 

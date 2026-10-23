@@ -2,18 +2,18 @@
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import * as antigravity from '../agents/runtimes/antigravity.ts';
-import * as claudeCode from '../agents/runtimes/claude-code.ts';
-import * as codex from '../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../agents/runtimes/deepseek-harness.ts';
-import * as gemini from '../agents/runtimes/gemini.ts';
-import * as grok from '../agents/runtimes/grok.ts';
-import * as muse from '../agents/runtimes/muse.ts';
-import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
-import { type Env, loadConfig } from '../rules/config.ts';
-import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
-import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
-import { checkChanged, readGit } from '../run/check.ts';
+import * as antigravity from '../../agents/runtimes/antigravity.ts';
+import * as claudeCode from '../../agents/runtimes/claude-code.ts';
+import * as codex from '../../agents/runtimes/codex.ts';
+import * as deepseekHarness from '../../agents/runtimes/deepseek-harness.ts';
+import * as gemini from '../../agents/runtimes/gemini.ts';
+import * as grok from '../../agents/runtimes/grok.ts';
+import * as muse from '../../agents/runtimes/muse.ts';
+import type { DropReason, SortedEnv } from '../../agents/desk/agent-env.ts';
+import { type Env, loadConfig } from '../../rules/config.ts';
+import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../../rules/guard/guards.ts';
+import { type Finding, formatFinding, notRepoFinding } from '../../rules/message.ts';
+import { checkChanged, readGit } from '../../run/check.ts';
 import {
   type Action,
   bumpDoneTries,
@@ -39,8 +39,8 @@ import {
   type StopEvent,
   wasRefusedRecently,
   writeAgentChecks,
-} from '../run/hook.ts';
-import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
+} from '../../run/hook.ts';
+import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from '../shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
 export const READERS: Record<string, (input: unknown) => Action> = {
@@ -85,7 +85,7 @@ const CONTEXTS: Record<string, (text: string) => string> = { 'claude-code': clau
 
 /** The unread team messages for the agent in `folder`, wrapped as data; '' when none (#674). */
 const teamMessages = async (folder: string, env: Env, root: string | null): Promise<string> => {
-  const { deliveryFor } = await import('../agents/desk/team/deliver.ts');
+  const { deliveryFor } = await import('../../agents/desk/team/deliver.ts');
   return deliveryFor(folder, env, root);
 };
 
@@ -616,7 +616,7 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
  * so the guard's path never loads it.
  */
 async function runEnv(invocation: Invocation, runtime: string | undefined): Promise<number> {
-  const { sortAgentEnv } = await import('../agents/desk/agent-env.ts');
+  const { sortAgentEnv } = await import('../../agents/desk/agent-env.ts');
   let sorted: SortedEnv;
   try {
     sorted = sortAgentEnv(invocation.env, runtime);
@@ -673,7 +673,7 @@ function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => 
  */
 export async function runDesk(invocation: Invocation): Promise<number> {
   // Inside a Linux desk, its first program: the bridge to the proxy, then the agent.
-  if (invocation.args[0] === '--bridge') return (await import('../agents/desk/network/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
+  if (invocation.args[0] === '--bridge') return (await import('../../agents/desk/network/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
   const end = invocation.args.indexOf('--');
   const options = parse('desk', end === -1 ? invocation.args : invocation.args.slice(0, end));
   if (typeof options === 'string') return usage(invocation, options);
@@ -685,7 +685,7 @@ export async function runDesk(invocation: Invocation): Promise<number> {
     return 1;
   };
   if (workerRole(invocation.env, [invocation.cwd]) !== null) return fail('only the lead starts a desk: this session is a worker.');
-  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team, { teamFolderFor, teamName }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/who.ts'), import('../agents/desk/team/team.ts')]);
+  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team, { teamFolderFor, teamName }] = await Promise.all([import('../../agents/desk/desk.ts'), import('../../agents/desk/start.ts'), import('../../setup/install.ts'), import('../../agents/desk/team/who.ts'), import('../../agents/desk/team/team.ts')]);
   const backend = chooseBackend(process.platform, invocation.env);
   if (typeof backend === 'string') return fail(backend);
   const list = (name: string) => (options.values[name] ?? '').split(',').map((word) => word.trim()).filter(Boolean);

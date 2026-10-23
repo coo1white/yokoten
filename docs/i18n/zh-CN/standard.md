@@ -212,7 +212,7 @@ agent 离开以后，它的列表也丢掉。
 版本 1。`Action` 没有版本字段。
 
 - [src/run/hook.ts](../../../src/run/hook.ts) 和 [test/run/hook.test.ts](../../../test/run/hook.test.ts)。
-- [src/commands/hook.ts](../../../src/commands/hook.ts) 和 [test/commands/hook.test.ts](../../../test/commands/hook.test.ts)。
+- [src/commands/guard/hook.ts](../../../src/commands/guard/hook.ts) 和 [test/commands/guard/hook.test.ts](../../../test/commands/guard/hook.test.ts)。
 - [src/agents/runtimes/claude-code.ts](../../../src/agents/runtimes/claude-code.ts) 和 [test/agents/runtimes/claude-code.test.ts](../../../test/agents/runtimes/claude-code.test.ts)。
 - [src/agents/runtimes/codex.ts](../../../src/agents/runtimes/codex.ts) 和 [test/agents/runtimes/codex.test.ts](../../../test/agents/runtimes/codex.test.ts)。
 - [src/agents/runtimes/gemini.ts](../../../src/agents/runtimes/gemini.ts) 和 [test/agents/runtimes/gemini.test.ts](../../../test/agents/runtimes/gemini.test.ts)。
@@ -335,7 +335,7 @@ hook 先写临时文件再改名，所以中途出现的符号链接会被换掉
 版本 1。这个文件没有版本字段。
 
 - [src/run/hook.ts](../../../src/run/hook.ts) 和 [test/run/hook.test.ts](../../../test/run/hook.test.ts)。
-- [src/commands/hook.ts](../../../src/commands/hook.ts) 和 [test/commands/hook.test.ts](../../../test/commands/hook.test.ts)。
+- [src/commands/guard/hook.ts](../../../src/commands/guard/hook.ts) 和 [test/commands/guard/hook.test.ts](../../../test/commands/guard/hook.test.ts)。
 - [src/commands/advice/board/agents.ts](../../../src/commands/advice/board/agents.ts) 和 [test/commands/advice/board/agents.test.ts](../../../test/commands/advice/board/agents.test.ts)。
 - [src/commands/advice/board/controls.ts](../../../src/commands/advice/board/controls.ts) 和 [test/commands/advice/board/controls.test.ts](../../../test/commands/advice/board/controls.test.ts)。
 - [src/commands/advice/board/view.ts](../../../src/commands/advice/board/view.ts) 和 [test/commands/advice/board/view.test.ts](../../../test/commands/advice/board/view.test.ts)。

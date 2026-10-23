@@ -896,6 +896,7 @@ It puts three safe defaults in `.github/` too:
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `spend [status]`, `spend check --amount <usd> --service <host> [--json]`, `spend pay --amount <usd> --service <host> -- <command>`, `spend limit --day <usd> --payment <usd> --service <host>[,<host>] [--yes]`, `spend off` | Holds the owner's spending limit for agents that pay on their own, and the log of every payment. The limit is at most an amount a day, at most an amount a payment, and only to named services. A missing or broken limit pays nothing. A worker cannot change it. `board --text` shows today's payments. See [A spending limit for agents](#a-spending-limit-for-agents) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1565,7 +1566,7 @@ three-line loop is clear. The further a name travels, the more it must say.
 Each failure says what to change:
 
 ```
-src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
+src/rules/guard/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
 ```
 
 In any project, `check --pr` notes a one-letter name used far from where it is made,
@@ -1937,8 +1938,49 @@ The page shows what agents write only as text, never as page code, and links onl
 The page reads `/data` as JSON. That is the board's interface. The page is only one
 view of it.
 
-## Privacy
+### A spending limit for agents
 
+An agent can pay for a call by itself, for example with x402. The owner gives it a small
+limit instead of the whole wallet. Inside the limit, the agent pays and goes on. Over it,
+the agent stops and asks.
+
+The limit lives in `~/.config/yokoten/spending.json`, outside every repo. Every payment
+goes beside it in `~/.config/yokoten/payments.jsonl`. With no file, or a file yokoten
+cannot read, an agent pays nothing. The owner's wallet key is never stored here: the
+balance in that wallet is the hard ceiling.
+
+```mermaid
+flowchart LR
+  A[agent wants a call] --> B[spend check]
+  B -->|inside| C[spend pay -- command]
+  B -->|over| D[stop and ask the owner]
+  C --> E[payments.jsonl]
+  E --> F[board --text]
+```
+
+| Action | Tier | Way back |
+|---|---|---|
+| `spend status`, `spend check` | Do by default | Nothing to undo: this reads only |
+| `spend pay` inside the limit | Do by default | `spend off` |
+| Lower a cap, or `spend off` | Do by default | Set a limit again with `--yes` |
+| Set or raise a limit, or add a service | Ask first: it prints the change, and writes only with `--yes` | `spend off`, or a lower cap |
+| Change the limit as a worker | Never | The owner changes it from the lead's clone |
+
+`spend pay` runs the command after `--` only when the call is inside the limit. It then
+records the payment. A failed call is recorded too, and is not counted against the day.
+A payment is at most 6 decimals, and the day is a UTC day (record 0027).
+
+```
+yokoten spend limit --day 2.00 --payment 0.10 --service api.example.com --yes
+yokoten spend check --amount 0.10 --service api.example.com
+yokoten spend pay --amount 0.10 --service api.example.com -- curl -s https://api.example.com/job
+yokoten spend off
+```
+
+`spend status` shows the limit, what is paid today, and what is left. `board --text`
+adds a Payments section: the limit, the total, and every payment today.
+
+## Privacy
 Rule 11 has a check. It scans for personal email addresses and IP addresses, in CI and
 on every commit. On your own machine it also reads `~/.config/yokoten/private-marks`:
 your name, your city, your domains, your server names. That file stays outside the
@@ -2181,7 +2223,7 @@ What is not hidden, said plainly:
 - **Browser pages and screenshots.** Don't read account pages as text.
 
 A hook can't know every command. When output shows your details, open an incident, and
-give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guards.ts`).
+give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guard/guards.ts`).
 
 ### What an agent's environment holds
 

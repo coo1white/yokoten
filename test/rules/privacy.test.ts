@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
 import { at, makeRepoTemplate, makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS, type Env } from '../../src/rules/config.ts';
-import { checkCommand } from '../../src/rules/guards.ts';
+import { checkCommand } from '../../src/rules/guard/guards.ts';
 import { formatFinding } from '../../src/rules/message.ts';
 import {
   describeMark,
