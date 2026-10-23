@@ -79,12 +79,15 @@ function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string,
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
-const answers = ${JSON.stringify(answers)};
-const call = process.argv.slice(2).join(' ');
-require('node:fs').appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
-const said = answers[call];
-if (said === undefined) process.exit(1);
-console.log(said);
+// A dynamic import works whether Node loads this file as CommonJS or as an ES module.
+import('node:fs').then(({ appendFileSync }) => {
+  const answers = ${JSON.stringify(answers)};
+  const call = process.argv.slice(2).join(' ');
+  appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+  const said = answers[call];
+  if (said === undefined) process.exit(1);
+  console.log(said);
+});
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);
@@ -1488,7 +1491,8 @@ test('init: reads GitHub and says what it would do; --github --yes does it, and 
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
-const fs = require('node:fs');
+// A dynamic import works whether Node loads this file as CommonJS or as an ES module.
+import('node:fs').then((fs) => {
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
 const a = process.argv.slice(2);
 const option = (name) => a[a.indexOf(name) + 1];
@@ -1499,6 +1503,7 @@ else if (a.includes('POST')) s.milestones.push(a.at(-1).slice(6));
 else if (a[0] === 'api' && a.some((w) => w.includes('/labels'))) s.labels.forEach((l) => console.log(JSON.stringify(l)));
 else if (a[0] === 'api') s.milestones.forEach((m) => console.log('open ' + m));
 fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
+});
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);

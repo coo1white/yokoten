@@ -215,7 +215,7 @@ test('check --issue: an issue needs the type and tier labels its repo has (#544)
   const labelsFile = join(sandbox.home, 'labels.json');
   writeFileSync(
     join(bin, 'gh'),
-    `#!/usr/bin/env node\nconst fs = require("node:fs");\nif (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\nprocess.exit(1);\n`,
+    `#!/usr/bin/env node\n// A dynamic import works whether Node loads this file as CommonJS or as an ES module.\nimport('node:fs').then((fs) => {\n  if (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\n  process.exit(1);\n});\n`,
     { mode: 0o755 },
   );
   const extra = { PATH: `${bin}:${process.env.PATH}` };
