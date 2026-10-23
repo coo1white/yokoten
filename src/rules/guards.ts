@@ -1257,7 +1257,7 @@ const TEAM_PARTS = new Set(['agents', 'outbox', 'lead']);
 /** What a host adapter says about its own commands. The guard calls these and does not know the host. */
 export interface HostCommands {
   hostRunRemoval(words: string[]): Finding | undefined;
-  /** A `gh api` call that changes repository or organization settings (#825). */
+  /** A host call that changes repository or organization settings (#825). */
   hostSettingsWrite(words: string[]): Finding | undefined;
   hostAlias(words: string[]): Finding | undefined;
   hostHiddenCommand(words: string[]): Finding | undefined;

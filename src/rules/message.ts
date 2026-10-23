@@ -116,7 +116,7 @@ export const RULES = {
   'repo-settings': {
     rule: 'only the owner changes repository and organization settings',
     why: 'the server settings are the lock: visibility, the default branch, branch protection and rulesets hold even when a hook is off',
-    check: 'the tool-call guard stops a `gh api` call that writes (a method other than GET, or a `-f`, `-F` or `--input` field) to a repository or organization settings endpoint: the repo itself, its branch protection, its rulesets, Actions permissions, security switches, an organization and its settings. Reads pass, and the writes the bot needs stay: comments, labels and reviews (#825)',
+    check: 'the tool-call guard stops a `gh` command that calls the API to write (a method other than GET, or a `-f`, `-F` or `--input` field) to a repository or organization settings endpoint: the repo itself, its branch protection, its rulesets, Actions permissions, security switches, an organization and its settings. Reads pass, and the writes the bot needs stay: comments, labels and reviews (#825)',
     docs: guide('the-core-rules'),
   },
   'run-remove': {
