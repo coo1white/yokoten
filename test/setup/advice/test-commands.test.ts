@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fixture, makeTempDir } from '../../repo/helpers.ts';
 import { facts } from '../../../src/setup/advice/adopt.ts';
-import { TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
+import { languagesWithTests, TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
 import { ROAD } from '../../../src/setup/road.ts';
 
 const project = (files: Record<string, string>) => {
@@ -223,6 +223,55 @@ test('test commands: a test folder counts only for the language whose test files
     assert.equal(adopt?.status, 'done', evidence);
     assert.equal(adopt?.evidence, evidence);
   }
+});
+
+test('test commands: Surefire names and a .NET test attribute count as tests (#576)', () => {
+  const found = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [{ language, runner }], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
+  };
+  const missing = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  };
+
+  // Surefire runs Test*.java and *TestCase.java. The prefix only counts under src/test:
+  // src/main/java/TestUtils.java is production code, and mvn test does not run it.
+  found({ 'pom.xml': '<project/>\n', 'src/test/java/TestFoo.java': '' }, 'Maven', 'mvn test');
+  found({ 'pom.xml': '<project/>\n', 'src/test/java/FooTestCase.java': '' }, 'Maven', 'mvn test');
+  found({ 'pom.xml': '<project/>\n', 'mod/src/test/java/com/example/Testing.java': '' }, 'Maven', 'mvn test');
+  found({ 'build.gradle': '', 'src/test/java/TestFoo.java': '' }, 'Gradle', 'gradle test');
+  found({ 'build.gradle': '', 'src/test/java/FooTestCase.java': '' }, 'Gradle', 'gradle test');
+  found({ 'build.gradle.kts': '', 'src/test/kotlin/FooTest.kt': '' }, 'Gradle', 'gradle test');
+  missing({ 'pom.xml': '<project/>\n', 'src/main/java/TestUtils.java': '' }, 'Maven', 'mvn test');
+  missing({ 'pom.xml': '<project/>\n', 'src/main/java/Testing.java': '' }, 'Maven', 'mvn test');
+  missing({ 'pom.xml': '<project/>\n', 'src/test/java/Helper.java': '' }, 'Maven', 'mvn test');
+  missing({ 'pom.xml': '<project/>\n', 'src/test/java/Latest.java': '' }, 'Maven', 'mvn test');
+  missing({ 'build.gradle': '', 'src/main/java/TestUtils.java': '' }, 'Gradle', 'gradle test');
+
+  // dotnet test finds an attribute. The file name does not have to end in Test.
+  const fact = 'using Xunit;\n\npublic class Calculator\n{\n    [Fact]\n    public void Adds() {}\n}\n';
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': fact }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '[Xunit.Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '[Fact(Skip = "slow")]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Rows.cs': 'public class Rows { [Theory] public void Adds(int n) {} }\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Rows.cs': 'public class Rows { [Test] public void Adds() {} }\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Rows.cs': 'public class Rows { [TestMethod] public void Adds() {} }\n' }, '.NET', 'dotnet test');
+  found({ 'Lib.fsproj': '', 'tests/Calculator.fs': '[<Fact>]\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  found({ 'Lib.vbproj': '', 'tests/Calculator.vb': '<Fact>\nPublic Sub Adds()\nEnd Sub\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { public int Add(int a, int b) => a + b; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'var fact = 1;\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'src/List.cs': 'class Box { List<Test> items = new(); }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'src/Setup.cs': 'public class Setup { [TestInitialize] public void Init() {} }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'src/Setup.cs': 'public class Setup { [Other.TestInitialize] public void Init() {} }\n' }, '.NET', 'dotnet test');
+  // Build output is not a source file the project wrote as a test.
+  missing({ 'App.csproj': '<Project/>\n', 'obj/Debug/Generated.cs': '[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
 });
 
 test('test commands: a pubspec.yaml with many blank lines is read in linear time (#546)', () => {

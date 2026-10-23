@@ -204,6 +204,37 @@ const hasTestFile = (scan: TestScan, isTest: (name: string) => boolean) => scan.
  * with Test(s) after a word of its own, so `contest` and `latest` do not count.
  */
 const isSuffixTest = (name: string) => /(?:^|[._-]|\p{Ll})Tests?\.[^.]+$/u.test(name);
+/**
+ * A Java or JVM test file Maven Surefire or the Gradle `test` task runs by name.
+ * `*Test`, `*Tests`, `*TestCase` and `*IT.java` count wherever they sit. A name that
+ * only starts with `Test` (`TestFoo.java`, `Testing.java`) counts under `src/test`,
+ * the source root those runners read. `src/main/java/TestUtils.java` is production
+ * code (#576).
+ */
+const isJavaBuildTest = (path: string): boolean => {
+  const name = baseName(path);
+  if (isSuffixTest(name) || name.endsWith('IT.java') || name.endsWith('TestCase.java')) return true;
+  return name.endsWith('.java') && name.startsWith('Test') && /(?:^|\/)src\/test\//.test(path);
+};
+/**
+ * The attribute names the .NET test runners find: xUnit, NUnit and MSTest.
+ * `Attribute` on the end is the same attribute written out. A longer word
+ * (`TestInitialize`, `Testing`) does not count.
+ */
+const DOTNET_ATTRIBUTE_NAME = String.raw`(?:[A-Za-z_][\w]{0,40}\.){0,3}(?:Fact|Theory|DataTestMethod|TestMethod|TestCase|TestFixture|TestClass|Test)(?:Attribute)?(?![A-Za-z0-9_])`;
+/** C# `[Fact]` and F# `[<Fact>]`. A generic such as `List<Test>` has no square bracket, so it does not count. */
+const CSHARP_TEST_ATTRIBUTE = new RegExp(String.raw`\[<?${DOTNET_ATTRIBUTE_NAME}`);
+/** VB writes the same attributes with angle brackets: `<Fact>` or `<TestMethod()>`. */
+const VB_TEST_ATTRIBUTE = new RegExp(`<${DOTNET_ATTRIBUTE_NAME}`);
+/** A .NET source file. `bin/` and `obj/` are build output, not a test the project keeps. */
+const isDotnetSource = (path: string): boolean => /\.(?:cs|fs|vb)$/.test(path) && !/(?:^|\/)(?:bin|obj)\//.test(path);
+/** Whether the scan holds a .NET test attribute (`[Fact]`, `[Test]`, `[TestMethod]`, and the F# and VB forms). */
+const hasDotnetTestAttribute = (root: string, scan: TestScan): boolean =>
+  scan.files.some((path) => {
+    if (!isDotnetSource(path)) return false;
+    const text = readText(join(root, path));
+    return (path.endsWith('.vb') ? VB_TEST_ATTRIBUTE : CSHARP_TEST_ATTRIBUTE).test(text);
+  });
 
 /**
  * The languages, in the order doctor names them. The first three are its suggestion when
@@ -228,11 +259,11 @@ export const TEST_LANGUAGES: TestLanguage[] = [
   },
   {
     language: 'Maven', files: ['pom.xml'], runner: 'mvn test', runs: [sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test'))],
-    hasTests: (_, scan) => hasTestFile(scan, (name) => isSuffixTest(name) || name.endsWith('IT.java')),
+    hasTests: (_, scan) => scan.files.some(isJavaBuildTest),
   },
   {
     language: 'Gradle', files: ['build.gradle', 'build.gradle.kts'], runner: 'gradle test', runs: [sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test'))],
-    hasTests: (_, scan) => hasTestFile(scan, (name) => isSuffixTest(name) || name.endsWith('IT.java')),
+    hasTests: (_, scan) => scan.files.some(isJavaBuildTest),
   },
   {
     language: 'Deno', files: ['deno.json', 'deno.jsonc'], runner: 'deno test', runs: [sequence(word('deno'), word('test'))],
@@ -240,7 +271,8 @@ export const TEST_LANGUAGES: TestLanguage[] = [
   },
   {
     language: '.NET', files: ['*.csproj', '*.fsproj', '*.vbproj', '*.sln', '*.slnx'], runner: 'dotnet test', runs: [sequence(word('dotnet'), word('test'))],
-    hasTests: (_, scan) => hasTestFile(scan, isSuffixTest),
+    // A suffix name, or a test attribute in source. `tests/Calculator.cs` with `[Fact]` is a test `dotnet test` finds (#576).
+    hasTests: (root, scan) => hasTestFile(scan, isSuffixTest) || hasDotnetTestAttribute(root, scan),
   },
   {
     language: 'Ruby',
