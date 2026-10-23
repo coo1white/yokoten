@@ -124,6 +124,16 @@ export function renderRight(state: PageState, data: PageData, now: number): HTML
 
 /** The bar at the bottom: free seats, or idle agents when no seats file is set (#698). */
 export function renderBar(state: PageState, data: PageData): HTMLElement[] {
+  // The names a hooks file may use for one vendor (#693), so `claude-code` holds Claude's seats.
+  const aliases: Record<string, string> = {
+    anthropic: 'claude',
+    'claude-code': 'claude',
+    xai: 'grok',
+    'codex-deepseek': 'deepseek',
+    'codex on deepseek': 'deepseek',
+    'deepseek-harness': 'deepseek',
+  };
+  const canonical = (key: string) => aliases[key] ?? key;
   const vendors = new Map<string, { name: string; color: string; count: number; working: number; idle: number }>();
   for (const agent of data.agents) {
     if (agent.dot === 'done') continue;
@@ -135,15 +145,17 @@ export function renderBar(state: PageState, data: PageData): HTMLElement[] {
     vendors.set(name, seen);
   }
   const seats = data.seats ?? null;
+  const seatTotals = new Map<string, number>();
+  if (seats) for (const [key, count] of Object.entries(seats)) seatTotals.set(canonical(key), (seatTotals.get(canonical(key)) ?? 0) + count);
   let free = 0;
   if (seats) {
     const used = new Set<string>();
     for (const seen of vendors.values()) {
-      const key = seen.name.toLowerCase();
+      const key = canonical(seen.name.toLowerCase());
       used.add(key);
-      free += Math.max(0, (seats[key] ?? 0) - seen.working);
+      free += Math.max(0, (seatTotals.get(key) ?? 0) - seen.working);
     }
-    for (const [key, count] of Object.entries(seats)) if (!used.has(key)) free += count;
+    for (const [key, count] of seatTotals) if (!used.has(key)) free += count;
   }
   const idle = [...vendors.values()].reduce((sum, seen) => sum + seen.idle, 0);
   const parts: HTMLElement[] = [el('span', {}, icon('shield', true), say(state, 'oneRuleSet', { n: vendors.size }))];
@@ -151,9 +163,9 @@ export function renderBar(state: PageState, data: PageData): HTMLElement[] {
   for (const seen of vendors.values()) {
     const mark = el('span', { class: seen.working > 0 ? 'vm live' : 'vm' });
     mark.style.background = seen.color;
-    const key = seen.name.toLowerCase();
+    const key = canonical(seen.name.toLowerCase());
     const text = seats
-      ? say(state, 'barSeats', { name: seen.name, working: seen.working, free: Math.max(0, (seats[key] ?? 0) - seen.working) })
+      ? say(state, 'barSeats', { name: seen.name, working: seen.working, free: Math.max(0, (seatTotals.get(key) ?? 0) - seen.working) })
       : say(state, 'barOpen', { name: seen.name, n: seen.count, idle: seen.idle });
     parts.push(el('span', {}, mark, text));
   }
