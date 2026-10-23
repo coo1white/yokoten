@@ -975,7 +975,7 @@ export function setUpMailmap(env: Env, found: MachineMark[]): string {
   if (state === 'other') return `kept your own git mailmap.file setting; add the lines of ${file} to that file`;
   // git prints nothing when it sets a value, so the setting is read back to see it took.
   if (state === 'unset') readGitValue(env, ['config', '--global', 'mailmap.file', MAILMAP_SETTING]);
-  if (mailmapState(env) !== 'ours') return `skipped the git mailmap: git config could not set mailmap.file; run \`git config --global mailmap.file ${MAILMAP_SETTING}\``;
+  if (mailmapState(env) !== 'ours') return `skipped the git mailmap: git config could not set mailmap.file; run \`git config --global mailmap.file ${MAILMAP_SETTING}\`; a mailmap makes git print a private address in place of your email`;
   if (state === 'ours') return missing.length ? `added ${missing.length} line(s) to ${file}` : `kept ${file}: it already maps your emails`;
   return `${before === null ? 'wrote' : 'kept'} ${file}, and git log and git show now print your emails as a placeholder`;
 }
