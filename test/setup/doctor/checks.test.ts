@@ -263,7 +263,7 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
   // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
-  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `git config --global mailmap.file ~/.config/yokoten/mailmap`; a mailmap makes git print a private address in place of your email']);
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it writes ~/.config/yokoten/mailmap and sets `git config --global mailmap.file ~/.config/yokoten/mailmap`, so git prints a private address in place of your email']);
   execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
   // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).

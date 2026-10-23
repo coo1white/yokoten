@@ -29,7 +29,7 @@ import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
-import { gitConfig } from '../run/check.ts';
+import { gitConfig, remembered } from '../run/check.ts';
 import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { nodeTestsFix } from './advice/tests-job.ts';
@@ -650,11 +650,14 @@ const keptWorkflow = (root: string, name: string, args: string, after: string): 
 /** True when origin has a branch from this repo: a push put one there. Reads local refs, never the network. */
 const hasPushedOrigin = (root: string, env: Env): boolean => {
   if (!gitConfig(root, 'remote.origin.url', env)) return false;
-  try {
-    return execFileSync('git', ['--no-optional-locks', 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
-  } catch {
-    return false;
-  }
+  // Only origin's own refs count: a branch pushed to another remote is not this repo on origin (#655).
+  return remembered('remote:origin:refs', () => {
+    try {
+      return execFileSync('git', ['--no-optional-locks', 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/origin'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
+    } catch {
+      return false;
+    }
+  });
 };
 
 /** The road, in order. Step names never change: they are the keys for "not now". */

@@ -392,6 +392,10 @@ test('road: make the repo, add the remote and push come before the CODEOWNERS ha
   assert.equal(remote.what(sandbox.repo, sandbox.env, undefined), 'the origin remote has no branch from this repo, so the work is only on this machine');
   assert.equal(remote.fix(sandbox.repo, sandbox.env, undefined), 'push it: `git push -u origin --all`');
   sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  // A branch on another remote is not origin's, so the step stays not done (#655).
+  sandbox.git('remote', 'add', 'upstream', 'https://example.com/octo/fork.git');
+  sandbox.git('update-ref', 'refs/remotes/upstream/main', 'HEAD');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false, "another remote's branch is not origin's");
   sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), true);
   const keys = ROAD.map((s) => s.key);
