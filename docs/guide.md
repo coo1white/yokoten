@@ -113,7 +113,7 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **2 · Issues and pull requests** | `remote` (the repo is on the code host, and a branch from it is pushed), `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`, or uses the Action on pull requests without `pr-check: false`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills`, `sandbox` (each agent may write the worktree, and nothing wider), `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
@@ -212,7 +212,7 @@ A power cut, a crash or a dead disk loses work that lives only on one machine. S
 
 | Note | What it means | The command |
 |---|---|---|
-| `uncommitted-changes` | A worktree has changed files: how many, and how old the oldest is | `git add -A` and `git commit` there, then push |
+| `uncommitted-changes` | A worktree has changed files: how many, and how old the oldest is | `git add -A` and `git commit -m "chore: save work"` there, then push; with `.yokoten/`, the message is `chore: add yokoten`, and committing the copy is the point |
 | `unpushed-commits` | A branch has commits that no remote has, or a detached HEAD has commits that no branch holds | `git push`, or `git push -u origin <branch>` for a branch with no upstream of its own; `git switch -c <name>` first for a detached HEAD |
 | `stashes` | There are stashes. A stash is never pushed | `git stash branch <name>`, then push it |
 | `stale-index-lock` | An `index.lock` is left from a crash, and no git process runs in the repo | `rm` the file |
@@ -863,7 +863,8 @@ It puts three safe defaults in `.github/` too:
   `yokoten.json`, `.yokoten/`, the hooks, the agent config and `.github/`. The guard
   stops a worker on the machine; this file stops the same change on the server. The
   owner is the account in a GitHub `origin` remote. Without one, the file has a
-  placeholder, and `doctor` asks you to put your GitHub handle in it. GitHub takes no
+  placeholder: make the repo, add the remote and push, then `doctor` asks you to put your
+  GitHub handle in it. GitHub takes no
   organization as an owner, so when `gh` says the account is one, the file has the
   placeholder too, and `init` asks for a person or `@org/team`. Full `doctor` flags a
   file whose only owner is the organization. It bites only when
@@ -1389,10 +1390,11 @@ project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
 
-The first time a project's full `doctor` runs a new lesson, it also says so once, even
-when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
-runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
-so the file is never committed.
+The first time a project's full `doctor` runs a new lesson, it says so once. A lesson
+that finds nothing says `note    a new check ran: ok (incident-138); doctor now runs it
+in this project`. One that finds a problem says `note    new lesson: incident-138
+(<what>); doctor now runs it in this project`, then the problem. It keeps the lessons
+it has seen in `.git/yokoten/state.json`, so the file is never committed.
 
 The session start hears a new lesson too, once, when it finds a problem here. It is one
 line, and it names the command that shows where:
