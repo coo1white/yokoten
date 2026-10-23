@@ -639,6 +639,140 @@ test('home folder: an agent may not set HOME or USERPROFILE for git, gh, yokoten
   for (const command of ['HOME=$(mktemp -d) npm test', 'HOME="$(mktemp -d)" node --test', 'XDG_CONFIG_HOME=/tmp/x gh issue create --title x --body y', 'XDG_CONFIG_HOME=$(mktemp -d) node --test test/agents']) allowed(command);
 });
 
+// #739: a worker's HOME or XDG_CONFIG_HOME before the commit check is the same skip as #664,
+// and the fix has to say so. The lead's XDG_CONFIG_HOME, and a plain git commit, stay allowed.
+test('home folder: a worker cannot hide the real home from git commit, yokoten check or a shell (#739)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const fix = 'the commit check needs the real home; in a desk, the runner commits for you (issue #736)';
+  for (const command of [
+    'HOME=/tmp/elsewhere git commit -m x',
+    'env HOME=/tmp/elsewhere git commit -m x',
+    'export HOME=/tmp/elsewhere; git commit -m x',
+    'XDG_CONFIG_HOME=/tmp/elsewhere git commit -m x',
+    'env XDG_CONFIG_HOME=/tmp/elsewhere git commit -m x',
+    'export XDG_CONFIG_HOME=/tmp/elsewhere; git commit -m x',
+    'HOME=/tmp/elsewhere yokoten check',
+    'env HOME=/tmp/elsewhere yokoten check',
+    'export HOME=/tmp/elsewhere; yokoten check',
+    'XDG_CONFIG_HOME=/tmp/elsewhere yokoten check',
+    'env XDG_CONFIG_HOME=/tmp/elsewhere node bin/yokoten.ts check',
+    'export XDG_CONFIG_HOME=/tmp/elsewhere; yokoten check',
+    'HOME=/tmp/elsewhere bash -c "git commit -m x"',
+    'env HOME=/tmp/elsewhere bash -c "yokoten check"',
+    'export HOME=/tmp/elsewhere; sh -c "git commit -m x"',
+    'XDG_CONFIG_HOME=/tmp/elsewhere bash -c "git commit -m x"',
+    'env XDG_CONFIG_HOME=/tmp/elsewhere sh -c "yokoten check"',
+    'export XDG_CONFIG_HOME=/tmp/elsewhere; bash -c "git commit -m x"',
+    'bash -c "HOME=/tmp/elsewhere git commit -m x"',
+    'bash -c "XDG_CONFIG_HOME=/tmp/elsewhere yokoten check"',
+    'USERPROFILE=C:\\elsewhere git commit -m x',
+    'home=/tmp/elsewhere yokoten check',
+    'xdg_config_home=/tmp/elsewhere git commit -m x',
+  ]) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'home-folder', command);
+    assert.match(found?.what ?? '', new RegExp(`sets ${command.match(/[A-Za-z_]+(?==)/)?.[0]}`));
+    assert.equal(found?.fix, fix, command);
+  }
+  // A script file is not in the command. The guard cannot tell whether it sets HOME, so it refuses.
+  // `bash -c` stays allowed: the text is in the command. The lead may still run a script file.
+  const fixForFile = 'the commit check needs the real home; in a desk, the runner commits for you (issue #736)';
+  for (const command of [
+    'bash /tmp/hide-home.sh',
+    'sh /tmp/hide-home.sh',
+    'Bash /tmp/hide-home.sh',
+    'SH script.sh',
+    'dash ./hide.sh',
+    'zsh hide.sh',
+    '/bin/bash /tmp/hide-home.sh',
+    'busybox sh /tmp/hide-home.sh',
+    'rbash /tmp/hide.sh',
+    'mksh /tmp/hide.sh',
+    'bash --posix /tmp/hide.sh',
+    'bash -- /tmp/hide.sh',
+    'env bash /tmp/hide.sh',
+    'nice bash /tmp/hide.sh',
+    'bash < /tmp/hide.sh',
+    'bash </tmp/hide.sh',
+    'bash --rcfile /tmp/e.sh -c "git status"',
+    'bash script.sh -c foo',
+    'bash -o pipefail -c "git status"',
+  ]) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'home-folder', command);
+    assert.match(found?.what ?? '', /cannot read/, command);
+    assert.equal(found?.fix, fixForFile, command);
+    assert.equal(checkCommand(command, { env: {}, cwd: process.cwd() }), null, `the lead may: ${command}`);
+  }
+  for (const command of ['bash -c "git status"', 'sh -c "git commit -m x"', 'bash -eu -c "git status"', 'bash -lc "git status"', 'bash <<EOF\nls\nEOF', 'echo hi | sh']) {
+    allowed(command, worker);
+  }
+  // `source` and `.` already refuse, as a setting the box cannot see. They stay on that rule.
+  assert.equal(checkCommand('source /tmp/hide.sh', { env: worker, cwd: process.cwd() })?.id, 'worker-mark');
+  assert.equal(checkCommand('. /tmp/hide.sh', { env: worker, cwd: process.cwd() })?.id, 'worker-mark');
+  // Unsetting the home is the same skip. The lead's fix names the home folder. A worker's names the commit check.
+  const leadFix = /without changing the home folder/;
+  for (const command of [
+    'unset HOME; git commit -m x',
+    'unset USERPROFILE; yokoten check',
+    'unset home; sh -c "git commit -m x"',
+    'unset -v HOME; git commit -m x',
+    'env -u HOME git commit -m x',
+    'env --unset HOME git commit -m x',
+    'env --unset=HOME git commit -m x',
+    'env -uHOME git commit -m x',
+    'env -u PATH -u HOME git commit -m x',
+    'env -C /tmp -u HOME git commit -m x',
+    'env -iuHOME git commit -m x',
+    'env -iu HOME git commit -m x',
+    'bash -c "unset HOME; git commit -m x"',
+  ]) {
+    const found = checkCommand(command, { env: {}, cwd: process.cwd() });
+    assert.equal(found?.id, 'home-folder', `the lead: ${command}`);
+    assert.match(found?.what ?? '', /unsets/i, command);
+    assert.match(found?.fix ?? '', leadFix, command);
+  }
+  assert.equal(checkCommand('unset XDG_CONFIG_HOME; git commit -m x', { env: {}, cwd: process.cwd() }), null);
+  assert.equal(checkCommand('env -u XDG_CONFIG_HOME git commit -m x', { env: {}, cwd: process.cwd() }), null);
+  assert.equal(checkCommand('env -u HOME npm test', { env: {}, cwd: process.cwd() }), null);
+  assert.equal(checkCommand('env -iu HOME npm test', { env: {}, cwd: process.cwd() }), null);
+  assert.notEqual(checkCommand('env -uiHOME git commit -m x', { env: {}, cwd: process.cwd() })?.id, 'home-folder');
+  assert.notEqual(checkCommand('unset PATH; git commit -m x', { env: {}, cwd: process.cwd() })?.id, 'home-folder');
+  for (const command of [
+    'unset HOME; git commit -m x',
+    'unset USERPROFILE; yokoten check',
+    'unset XDG_CONFIG_HOME; git commit -m x',
+    'unset home; sh -c "git commit -m x"',
+    'unset -v HOME; git commit -m x',
+    'env -u HOME git commit -m x',
+    'env --unset=HOME yokoten check',
+    'env -uHOME sh -c "git status"',
+    'env -u PATH -u HOME git commit -m x',
+    'env -iuHOME git commit -m x',
+    'unset HOME; bash -c "ls"',
+  ]) {
+    const found = checkCommand(command, { env: worker, cwd: process.cwd() });
+    assert.equal(found?.id, 'home-folder', command);
+    assert.match(found?.what ?? '', /unsets/i, command);
+    assert.equal(found?.fix, fix, command);
+  }
+  // An unset that does not reach the commit check stays off this rule.
+  assert.notEqual(checkCommand('unset HOME; rm -rf build', { env: worker, cwd: process.cwd() })?.id, 'home-folder');
+  assert.equal(checkCommand('env -u HOME npm test', { env: worker, cwd: process.cwd() })?.id, 'worker-mark');
+  assert.notEqual(checkCommand('unset PATH; git commit -m x', { env: worker, cwd: process.cwd() })?.id, 'home-folder');
+  allowed('git commit -m x');
+  allowed('git commit -m x', worker);
+  // The lead's XDG_CONFIG_HOME still passes, including before git commit. So does HOME before npm.
+  for (const command of ['XDG_CONFIG_HOME=/tmp/x git commit -m x', 'XDG_CONFIG_HOME=/tmp/x gh issue create --title x --body y', 'XDG_CONFIG_HOME=$(mktemp -d) node --test test/agents', 'export XDG_CONFIG_HOME=/tmp/x', 'HOME=$(mktemp -d) npm test']) allowed(command);
+  // Other settings, and a home before a program that is not the commit check, stay refused.
+  for (const command of ['HOME=/tmp/elsewhere npm test', 'HOME=/tmp/elsewhere git status', 'XDG_CONFIG_HOME=/tmp/elsewhere git status', 'XDG_CONFIG_HOME=/tmp/elsewhere node --test']) {
+    assert.equal(checkCommand(command, { env: worker, cwd: process.cwd() })?.id, 'worker-mark', command);
+  }
+  const lead = checkCommand('HOME=/tmp/elsewhere git commit -m x', { env: {}, cwd: process.cwd() });
+  assert.equal(lead?.id, 'home-folder');
+  assert.match(lead?.fix ?? '', /without changing the home folder/);
+});
+
 test('hooks setting: a read never blocks, in a repo with its own hooks folder (#217)', () => {
   const cwd = makeHooksRepo();
   try {

@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -44,6 +44,7 @@ import {
   repoKey,
   repoMarkKinds,
   scanText,
+  useRealHome,
   withHome,
 } from '../../src/rules/privacy.ts';
 
@@ -250,6 +251,122 @@ test('private marks file: a default file that can not be read throws, whatever t
     assert.throws(() => loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
   } finally {
     chmodSync(own, 0o600);
+  }
+});
+
+test('private marks file: a missing default file fails closed when the real home has one it cannot read (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'mycity\n');
+  chmodSync(hidden, 0o000);
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'otherword\n');
+  const restore = useRealHome(() => real);
+  try {
+    assert.throws(() => loadMarks({ HOME: home }), /cannot be read/);
+    assert.throws(() => loadMarkKinds({ HOME: home }), /cannot be read/);
+    // No HOME is the same file. A process started without HOME cannot skip it.
+    assert.throws(() => loadMarks({}), /cannot be read/);
+    assert.throws(() => loadMarkKinds({}), /cannot be read/);
+    // The setting only adds. It does not hide an unreadable file in the real home.
+    assert.throws(() => loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), /cannot be read/);
+    assert.throws(() => repoMarkKinds({ HOME: home }, home), /cannot be read/);
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
+  }
+});
+
+// The preload is --require, not --import (#750). A child must still get an empty real home,
+// and useRealHome must stack on that same slot. Nothing here prints a path or a mark.
+test('private marks: a node child keeps the empty real-home stand-in (#739)', () => {
+  const root = join(import.meta.dirname, '..', '..');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', [
+    "import { mkdtempSync } from 'node:fs';",
+    "import { tmpdir } from 'node:os';",
+    "import { join } from 'node:path';",
+    "import { loadMarks, useRealHome } from './src/rules/privacy.ts';",
+    "const key = Symbol.for('yokoten.readRealHome');",
+    "const preload = globalThis[key];",
+    "if (typeof preload !== 'function' || preload() !== '') process.exit(2);",
+    "const home = mkdtempSync(join(tmpdir(), 'yokoten-child-home-'));",
+    "if (loadMarks({ HOME: home }).length !== 0) process.exit(3);",
+    "const restore = useRealHome(() => join(tmpdir(), 'not-a-home'));",
+    "const swapped = globalThis[key]() !== '';",
+    "restore();",
+    "if (!swapped || globalThis[key] !== preload) process.exit(4);",
+    "process.stdout.write('ok');",
+  ].join('\n')], { cwd: root, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'ok');
+});
+
+test('private marks file: a missing real-home file stays empty, and a readable one is used (#739)', () => {
+  const home = makeTempDir();
+  const real = makeTempDir();
+  const restore = useRealHome(() => real);
+  try {
+    assert.deepEqual(loadMarks({ HOME: home }), []);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), []);
+    assert.deepEqual(loadMarks({}), []);
+    assert.deepEqual(loadMarkKinds({}), []);
+    mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'MyCity\n# added by yokoten from this machine: forge login\nOcto-Jdoe\n');
+    // A changed HOME must not skip a marks file the check can read. The role does not matter.
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_ROLE: 'worker' }), ['mycity', 'octo-jdoe']);
+    // No HOME, or an empty one, still has the real home. The role does not matter.
+    assert.deepEqual(loadMarks({}), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: '' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: 'relative' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ YOKOTEN_ROLE: 'worker' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), [
+      { value: 'mycity', kind: null },
+      { value: 'octo-jdoe', kind: 'forge login' },
+    ]);
+    assert.deepEqual(loadMarkKinds({}), [
+      { value: 'mycity', kind: null },
+      { value: 'octo-jdoe', kind: 'forge login' },
+    ]);
+    // The setting only adds. It does not replace the real home's marks.
+    const extra = join(home, 'extra');
+    writeFileSync(extra, 'otherword\n');
+    assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), ['mycity', 'octo-jdoe', 'otherword']);
+    assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: extra }), ['mycity', 'octo-jdoe', 'otherword']);
+    // An empty stand-in file is still no marks of its own, so the real file is used.
+    mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), '\n# none\n');
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity', 'octo-jdoe']);
+    // The same folder is the one $HOME already names: there is nothing further to read.
+    const same = useRealHome(() => home);
+    try {
+      assert.deepEqual(loadMarks({ HOME: home }), []);
+    } finally {
+      same();
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('private marks file: a readable default file does not read the real home (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'mycity\n');
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'otherword\n');
+  chmodSync(hidden, 0o000);
+  const restore = useRealHome(() => real);
+  try {
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity']);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), [{ value: 'mycity', kind: null }]);
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
   }
 });
 
