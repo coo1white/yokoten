@@ -218,6 +218,16 @@ const isJavaBuildTest = (path: string): boolean => {
   return name.startsWith('Test') && JVM_TEST_EXTENSION.test(name) && /(?:^|\/)src\/test\//.test(path);
 };
 /**
+ * Gradle runs an annotated class under `src/test` whatever its name.
+ * Maven stays on the Surefire names above (#576).
+ */
+const GRADLE_TEST_MARK = /@(?:[A-Za-z_][\w]*\.)*Test\b/;
+const isGradleAnnotatedTest = (root: string, path: string): boolean => {
+  if (!/(?:^|\/)src\/test\//.test(path) || !JVM_TEST_EXTENSION.test(path)) return false;
+  const text = readText(join(root, path));
+  return GRADLE_TEST_MARK.test(text) || (path.endsWith('.kt') && /\bStringSpec\b/.test(text));
+};
+/**
  * The attribute names the .NET test runners find: xUnit, NUnit and MSTest.
  * `Attribute` on the end is the same attribute written out. A longer word
  * (`TestInitialize`, `Testing`) does not count.
@@ -435,14 +445,51 @@ function scanDotnet(text: string, start: number, holeDollars: number, source: Do
   return { code: parts.join(''), at };
 }
 
+/**
+ * Whether `[` at `bracket` opens an attribute section.
+ * An indexer (`values[Test]`) or a collection (`= [Fact]`) does not (#576).
+ */
+const isAttributeSection = (text: string, bracket: number): boolean => {
+  let at = bracket - 1;
+  while (at >= 0 && (text[at] === ' ' || text[at] === '\t')) at--;
+  // A test attribute starts its line. A collection can too, after `=` or `(`.
+  if (at < 0 || text[at] === '\n' || text[at] === '\r') {
+    while (at >= 0 && (text[at] === ' ' || text[at] === '\t' || text[at] === '\n' || text[at] === '\r')) at--;
+    return at < 0 || !'=(,:?'.includes(text[at]);
+  }
+  const previous = text[at];
+  if (previous === '{' || previous === '}' || previous === ';') return true;
+  if (previous !== ']') return false;
+  let depth = 1;
+  while (at > 0 && depth > 0) {
+    at--;
+    const char = text[at];
+    if (char === ']') depth++;
+    else if (char === '[') depth--;
+  }
+  return depth === 0 && isAttributeSection(text, at);
+};
+
+/** Whether code holds a C# or F# test attribute in attribute position. */
+const hasCsharpTestAttribute = (text: string): boolean => {
+  const pattern = new RegExp(CSHARP_TEST_ATTRIBUTE.source, 'g');
+  for (const match of text.matchAll(pattern)) {
+    if (match.index !== undefined && isAttributeSection(text, match.index)) return true;
+  }
+  return false;
+};
+
 /** Whether the scan holds a .NET test attribute in code. A comment or a string does not count. */
 const hasDotnetTestAttribute = (root: string, scan: TestScan): boolean =>
   scan.files.some((path) => {
     if (!isDotnetSource(path)) return false;
     const source = path.endsWith('.vb') ? 'vb' : path.endsWith('.fs') ? 'fs' : 'cs';
     const text = dotnetCode(readText(join(root, path)), source);
-    return (source === 'vb' ? VB_TEST_ATTRIBUTE : CSHARP_TEST_ATTRIBUTE).test(text);
+    return source === 'vb' ? VB_TEST_ATTRIBUTE.test(text) : hasCsharpTestAttribute(text);
   });
+
+/** `#[test]`, a path such as `#[tokio::test]` or `#[async_std::test]`, or `#[rstest]` (#576). */
+const RUST_TEST_ATTRIBUTE = /#\[\s*(?:[A-Za-z_][\w]*::)*(?:test|rstest)\b/;
 
 /**
  * The languages, in the order doctor names them. The first three are its suggestion when
@@ -462,8 +509,8 @@ export const TEST_LANGUAGES: TestLanguage[] = [
   },
   {
     language: 'Rust', files: ['Cargo.toml'], runner: 'cargo test', runs: [sequence(word('cargo'), word('test'))],
-    // Unit tests live in the sources, so a `#[test]` in any Rust file counts too.
-    hasTests: (root, scan) => hasTestFile(scan, (name) => name.endsWith('_test.rs')) || scan.files.some((path) => path.endsWith('.rs') && readText(join(root, path)).includes('#[test]')),
+    // Unit tests live in the sources. `#[test]`, `#[tokio::test]` and `#[rstest]` count (#576).
+    hasTests: (root, scan) => hasTestFile(scan, (name) => name.endsWith('_test.rs')) || scan.files.some((path) => path.endsWith('.rs') && RUST_TEST_ATTRIBUTE.test(readText(join(root, path)))),
   },
   {
     language: 'Maven', files: ['pom.xml'], runner: 'mvn test', runs: [sequence(word('mvn', 'mvnw', './mvn', './mvnw'), FLAGS, word('test'))],
@@ -471,7 +518,7 @@ export const TEST_LANGUAGES: TestLanguage[] = [
   },
   {
     language: 'Gradle', files: ['build.gradle', 'build.gradle.kts'], runner: 'gradle test', runs: [sequence(word('gradle', 'gradlew', './gradle', './gradlew'), FLAGS, word('test'))],
-    hasTests: (_, scan) => scan.files.some(isJavaBuildTest),
+    hasTests: (root, scan) => scan.files.some((path) => isJavaBuildTest(path) || isGradleAnnotatedTest(root, path)),
   },
   {
     language: 'Deno', files: ['deno.json', 'deno.jsonc'], runner: 'deno test', runs: [sequence(word('deno'), word('test'))],

@@ -324,6 +324,51 @@ test('test commands: a Kotlin Test prefix counts, and a quoted .NET attribute do
   found({ 'Lib.vbproj': '', 'tests/Calculator.vb': "Rem <Fact>\n<Fact>\nPublic Sub Adds()\nEnd Sub\n" }, '.NET', 'dotnet test');
 });
 
+test('test commands: async Rust tests, Gradle annotations and C# indexers (#576)', () => {
+  const found = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [{ language, runner }], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
+  };
+  const missing = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  };
+
+  // cargo test runs an integration test that uses an async or rstest attribute.
+  const rust = (body: string) => ({ 'Cargo.toml': '[package]\n', 'tests/lib.rs': body });
+  found(rust('#[tokio::test]\nasync fn adds() {}\n'), 'Rust', 'cargo test');
+  found(rust('#[async_std::test]\nasync fn adds() {}\n'), 'Rust', 'cargo test');
+  found(rust('#[rstest]\nfn adds() {}\n'), 'Rust', 'cargo test');
+  found(rust('#[tokio::test(flavor = "multi_thread")]\nasync fn adds() {}\n'), 'Rust', 'cargo test');
+  missing(rust('#[cfg(test)]\nmod tests {}\n'), 'Rust', 'cargo test');
+
+  // Gradle discovers @Test and a Kotest StringSpec under src/test. Maven stays on Surefire names.
+  const junit = 'import org.junit.jupiter.api.Test;\nclass Foo {\n    @Test\n    void adds() {}\n}\n';
+  const kotest = 'class FooSpec : StringSpec({\n    "adds" { }\n})\n';
+  found({ 'build.gradle': '', 'src/test/java/Foo.java': junit }, 'Gradle', 'gradle test');
+  found({ 'build.gradle.kts': '', 'src/test/kotlin/FooSpec.kt': kotest }, 'Gradle', 'gradle test');
+  missing({ 'pom.xml': '<project/>\n', 'src/test/java/Foo.java': junit }, 'Maven', 'mvn test');
+  missing({ 'build.gradle': '', 'src/main/java/Foo.java': junit }, 'Gradle', 'gradle test');
+
+  // A bracket after a name or an equals sign is an indexer or a collection, not an attribute.
+  const dotnet = (body: string) => ({ 'App.csproj': '<Project/>\n', 'src/App.cs': body });
+  missing(dotnet('var values = [Fact];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var values =\n[Fact];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var value = values[Test];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var value = map[Theory];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var value = map[key][Theory];\n'), '.NET', 'dotnet test');
+  found(dotnet('[Trait("a", "b")][Fact]\npublic void Adds() {}\n'), '.NET', 'dotnet test');
+  found(dotnet('public class Rows { [Theory] public void Adds(int n) {} }\n'), '.NET', 'dotnet test');
+  found(dotnet('#nullable enable\n\n[Fact]\npublic void Adds() {}\n'), '.NET', 'dotnet test');
+  found({ 'Lib.fsproj': '', 'tests/Calculator.fs': 'module Tests\n\n[<Fact>]\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+});
+
 test('test commands: a pubspec.yaml with many blank lines is read in linear time (#546)', () => {
   const pubspec = `name: app\n${'\n'.repeat(200_000)}x`;
   const started = performance.now();
