@@ -11,6 +11,8 @@ import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy.ts';
 import { SECRET_CONTROL } from '../../rules/secrets.ts';
 import { judge } from '../../run/hook.ts';
 import { readToolCall, sandboxProblem as claudeSandboxProblem } from '../../agents/runtimes/claude-code.ts';
+import { addProjectPlugin } from '../../agents/runtimes/small/opencode.ts';
+import { openCodePluginNote } from './checks.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import * as grok from '../../agents/runtimes/grok.ts';
@@ -44,7 +46,34 @@ export function selfTest(): string[] {
   failed.push(...machineControl());
   failed.push(...leftoverControl());
   failed.push(...sandboxControl());
+  failed.push(...openCodeControl());
   return failed;
+}
+
+/**
+ * A project with `opencode.json` and no plugin must be noted, and a project with the
+ * plugin `init` writes must be quiet. A folder with no OpenCode file must be quiet too.
+ */
+function openCodeControl(): string[] {
+  let quiet = '';
+  let marked = '';
+  try {
+    quiet = mkdtempSync(join(tmpdir(), 'yokoten-opencode-quiet-'));
+    marked = mkdtempSync(join(tmpdir(), 'yokoten-opencode-marked-'));
+    const cli = '.yokoten/bin/yokoten.mjs';
+    if (openCodePluginNote(quiet, cli) !== null) return ['OpenCode plugin note'];
+    writeFileSync(join(marked, 'opencode.json'), '{}\n');
+    const note = openCodePluginNote(marked, cli);
+    if (!note || note.ok || note.finding.id !== 'opencode-hook') return ['OpenCode plugin note'];
+    addProjectPlugin(marked, cli);
+    if (openCodePluginNote(marked, cli) !== null) return ['OpenCode plugin note'];
+    return [];
+  } catch {
+    return ['OpenCode plugin note'];
+  } finally {
+    if (quiet) rmSync(quiet, { recursive: true, force: true });
+    if (marked) rmSync(marked, { recursive: true, force: true });
+  }
 }
 
 /**
