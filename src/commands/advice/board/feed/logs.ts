@@ -1,6 +1,7 @@
 // Where an agent's session log is (#694), found from its worktree. Each runtime keeps its logs
 // in its own state folder: the lead's (~/.claude, ~/.local/share/muse, ~/.grok), or a desk's
 // own, `<worktree>.state/<runtime>` (#637). The newest log that belongs to the worktree wins.
+// The main checkout's lead registers its own log path (#700). That path is tried first.
 //
 // - Claude Code: `<state>/projects/<folder>/<session>.jsonl`, where the folder is the
 //   worktree's path with each character other than a letter or digit as `-`. A subagent of a
@@ -12,11 +13,14 @@
 // - Codex: not read yet. No Codex session log on this machine showed its format; a reader
 //   for it goes in LOG_FINDERS and LINE_READERS (items.ts).
 
-import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, closeSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, sep } from 'node:path';
 import { type Env } from '../../../../rules/config.ts';
 import { homeOf } from '../../../../rules/privacy.ts';
-import type { StreamSource } from './items.ts';
+import { commonGitDir } from '../../../../run/hook.ts';
+import { boardHome } from '../agents.ts';
+import { LINE_READERS, type StreamSource } from './items.ts';
 
 /** One session log the board can stream: which runtime wrote it, the file, and when it last changed. */
 export interface FoundLog {
@@ -27,6 +31,12 @@ export interface FoundLog {
 
 /** How much of a log's start the board reads to tell whose it is. */
 const HEAD_BYTES = 64 * 1024;
+/** The lead's log path, one line, in the repo's main git folder (#700). */
+export const LEAD_SESSION_FILE = 'yokoten-lead-session';
+/** The most bytes that file may hold. A log path is far shorter. */
+const LEAD_SESSION_LIMIT = 4096;
+/** How far back from the end the lead's last words are read. */
+const LEAD_SCAN_BYTES = 1024 * 1024;
 /** A subagent log or a Muse session older than this is not looked at. */
 const RECENT_MS = 24 * 60 * 60 * 1000;
 /** The most Muse day folders, and Claude project folders, looked at for one worktree. */
@@ -116,11 +126,147 @@ export function claudeTask(head: string): string {
 /** What a finder may keep between reads: whose each log is never changes. */
 export type LogCache = Map<string, boolean | string>;
 
+/** Claude Code's `projects` folders for a worktree: the lead's state, and a desk's own. */
+function claudeProjects(tree: string, home: string, env: Env): string[] {
+  return [stateDir(env.CLAUDE_CONFIG_DIR, ['.claude'], home), join(`${tree}.state`, 'claude-code')].map((root) => join(root, 'projects'));
+}
+
+/** The lead log file in the repo's main git folder, or null outside a checkout. */
+function leadSessionPath(folder: string): string | null {
+  const common = commonGitDir(boardHome(folder));
+  return common ? join(common, LEAD_SESSION_FILE) : null;
+}
+
+/** True when `tree` is the repo's main checkout, not a linked worktree. */
+function isMainCheckout(tree: string): boolean {
+  const home = boardHome(tree);
+  try {
+    return realpathSync(tree) === realpathSync(home);
+  } catch {
+    return tree === home;
+  }
+}
+
+/**
+ * Record the lead's session log (#700). One line, mode 0600, replaced by a rename so a
+ * reader never sees a half-written path. A new lead session overwrites the old path.
+ * Returns whether it wrote. It never throws: a session still starts when it cannot.
+ */
+export function writeLeadSession(folder: string, transcriptPath: string): boolean {
+  const line = transcriptPath.split(/[\r\n]/, 1)[0]?.trim() ?? '';
+  if (!line || line.length > LEAD_SESSION_LIMIT) return false;
+  const path = leadSessionPath(folder);
+  if (!path) return false;
+  const temp = join(dirname(path), `.${LEAD_SESSION_FILE}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`);
+  try {
+    writeFileSync(temp, `${line}\n`, { flag: 'wx', mode: 0o600 });
+    chmodSync(temp, 0o600);
+    renameSync(temp, path);
+    chmodSync(path, 0o600);
+    return true;
+  } catch {
+    try {
+      rmSync(temp, { force: true });
+    } catch {
+      // The temp file can stay. The session still starts.
+    }
+    return false;
+  }
+}
+
+/** True when `realFile` is inside one of Claude Code's projects folders. */
+function isInsideProjects(realFile: string, tree: string, env: Env): boolean {
+  const home = homeOf(env);
+  if (!home) return false;
+  return claudeProjects(tree, home, env).some((root) => {
+    try {
+      const base = realpathSync(root);
+      const prefix = base.endsWith(sep) ? base : `${base}${sep}`;
+      return realFile.startsWith(prefix);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * The main checkout's registered lead log, or null. The path must be absolute, end in
+ * `.jsonl`, and resolve to a regular file inside Claude Code's projects folder. A
+ * missing file, a `..` path that leaves that folder, or a symlink out of it is refused.
+ */
+function readLeadSession(tree: string, env: Env): FoundLog | null {
+  if (!isMainCheckout(tree)) return null;
+  const path = leadSessionPath(tree);
+  if (!path) return null;
+  let given = '';
+  try {
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.size === 0 || stats.size > LEAD_SESSION_LIMIT) return null;
+    given = readFileSync(path, 'utf8').split('\n', 1)[0]?.trim() ?? '';
+  } catch {
+    return null;
+  }
+  if (!isAbsolute(given) || !given.endsWith('.jsonl')) return null;
+  let real = '';
+  try {
+    real = realpathSync(given);
+    if (!statSync(real).isFile() || !real.endsWith('.jsonl')) return null;
+  } catch {
+    return null;
+  }
+  if (!isInsideProjects(real, tree, env)) return null;
+  const mtime = fileTime(real);
+  return mtime === null ? null : { source: 'claude', file: real, mtime };
+}
+
+/**
+ * The first non-empty line of the newest thing the agent said in `file`, or ''.
+ * Only the end of a long log is read. Tool calls with no text are skipped.
+ */
+export function lastAssistantLine(file: string, source: StreamSource, tree: string): string {
+  const reader = LINE_READERS[source];
+  let opened: number | null = null;
+  try {
+    opened = openSync(file, 'r');
+    const size = fstatSync(opened).size;
+    const start = Math.max(0, size - LEAD_SCAN_BYTES);
+    const buffer = Buffer.alloc(size - start);
+    readSync(opened, buffer, 0, buffer.length, start);
+    let text = buffer.toString('utf8');
+    // The first line is cut off when the read starts mid-line. It is the oldest one.
+    if (start > 0) {
+      const cut = text.indexOf('\n');
+      text = cut === -1 ? '' : text.slice(cut + 1);
+    }
+    const lines = text.split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (!lines[index].trim()) continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(lines[index]);
+      } catch {
+        continue;
+      }
+      const said = reader(record, tree).find((item) => item.kind === 'say');
+      if (!said) continue;
+      const line = said.text.split('\n').map((part) => part.trim()).find(Boolean);
+      if (line) return line;
+    }
+    return '';
+  } catch {
+    return '';
+  } finally {
+    if (opened !== null) closeSync(opened);
+  }
+}
+
 /** The newest Claude Code log of a worktree: its own sessions, or a subagent whose task names it. */
 export function findClaudeLog(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog | null {
+  const registered = readLeadSession(tree, env);
+  if (registered) return registered;
   const home = homeOf(env);
   if (!home) return null;
-  const roots = [stateDir(env.CLAUDE_CONFIG_DIR, ['.claude'], home), join(`${tree}.state`, 'claude-code')].map((root) => join(root, 'projects'));
+  const roots = claudeProjects(tree, home, env);
   const found: FoundLog[] = [];
   for (const projects of roots) {
     const own = join(projects, claudeFolder(tree));

@@ -12,14 +12,14 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, join } from 'node:path';
 import { ghIn, ghLaterIn, type GhLater, readBoardPullsLater, repoOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { commonGitDir } from '../../../run/hook.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
-import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
+import { BOARD_READ_TIMEOUT_MS, boardHome, readBoardWorktrees } from './agents.ts';
 import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
 import { feedAnswer, makeFeedStreams } from './feed/route.ts';
 import { feedsJson, makeFeedStore, recordFeed } from './feed/steps.ts';
@@ -74,12 +74,6 @@ const BOARD_PORT_BASE = 41000;
 const BOARD_PORT_RANGE = 1000;
 /** The file in the repo's git folder that keeps the board's token between runs, so a bookmark keeps working. */
 const BOARD_TOKEN_FILE = 'yokoten-board-token';
-
-/** The repo's main folder: the same for every worktree, so they all share one board address. */
-function boardHome(root: string): string {
-  const common = commonGitDir(root);
-  return common && basename(common) === '.git' ? dirname(common) : root;
-}
 
 /** The board's host name: the repo folder under .localhost, which browsers send to this machine (#693). */
 export function boardHostName(root: string): string {

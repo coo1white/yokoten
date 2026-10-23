@@ -2,13 +2,14 @@
 
 import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { registerDesk } from '../../../../src/run/hook.ts';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir, runChild } from '../../../repo/helpers.ts';
 import type { BoardAgent } from '../../../../src/commands/advice/board/agents.ts';
-import { type AgentView, collectBoard, dotOf, needsOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
+import { claudeFolder, LEAD_SESSION_FILE } from '../../../../src/commands/advice/board/feed/logs.ts';
+import { type AgentView, collectBoard, dotOf, LEAD_ROW_CHARS, needsOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
@@ -168,4 +169,36 @@ test('board data: agents from each vendor\'s hook, and a desk clone, with their 
   // A desk that is gone drops off.
   rmSync(desk, { recursive: true, force: true });
   assert.ok(!collectBoard(sandbox.repo, sandbox.env, () => '[]').agents.some((agent) => agent.key === desk));
+});
+
+// #700: the lead row's one line is the first line of what the lead last said, masked and
+// cut to the row. It comes from the registered log, not from a stale status file, and not
+// from a newer log that belongs to an older session in the repo's own folder.
+test('board data: the lead line is the registered session\'s last words, masked (#700)', () => {
+  const sandbox = makeSandbox();
+  const home = sandbox.home;
+  const email = ['someone', 'personal-mail.com'].join('@');
+  const projects = join(home, '.claude', 'projects');
+  const said = (text: string) => `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })}\n`;
+  const tool = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } })}\n`;
+  const own = join(projects, claudeFolder(sandbox.repo), 'old.jsonl');
+  const live = join(projects, claudeFolder(join(home, 'parent')), 'live.jsonl');
+  const first = `Mail ${email} about ${home}/notes ${'planning the next change '.repeat(8)}`;
+  mkdirSync(join(own, '..'), { recursive: true });
+  mkdirSync(join(live, '..'), { recursive: true });
+  writeFileSync(live, `${said(`${first}\nsecond line stays off the row`)}${tool}`);
+  writeFileSync(own, said('old stuck session'));
+  const past = new Date(Date.now() - 60_000);
+  utimesSync(live, past, past);
+  writeFileSync(join(sandbox.repo, '.git', LEAD_SESSION_FILE), `${live}\n`, { mode: 0o600 });
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'Lead', vendor: 'claude-code', role: 'lead', doing: 'started an hour ago', updated: '2026-10-22T11:59:00Z' }));
+  const board = collectBoard(sandbox.repo, sandbox.env, () => '[]', NOW);
+  const doing = board.agents.find((agent) => agent.role === 'lead')?.doing ?? '';
+  assert.equal(doing.length, LEAD_ROW_CHARS);
+  assert.ok(doing.startsWith('Mail <email> about ~/notes'), doing);
+  assert.equal(doing.includes(email), false);
+  assert.equal(doing.includes(home), false);
+  assert.equal(doing.includes('second line'), false);
+  assert.equal(doing.includes('old stuck'), false);
+  assert.equal(doing.includes('started'), false);
 });

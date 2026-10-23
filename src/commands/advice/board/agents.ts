@@ -4,9 +4,15 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { type Env } from '../../../rules/config.ts';
 import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
+
+/** The repo's main folder. Every worktree shares it, and the lead's log path is kept there. */
+export function boardHome(root: string): string {
+  const common = commonGitDir(root);
+  return common && basename(common) === '.git' ? dirname(common) : root;
+}
 
 /** How long the board waits for `gh pr list` or `git worktree list`, at most. */
 export const BOARD_READ_TIMEOUT_MS = 15000;

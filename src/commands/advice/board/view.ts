@@ -7,6 +7,11 @@ import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
 import { ageText, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardWorktrees } from './agents.ts';
+import { findAgentLog, lastAssistantLine } from './feed/logs.ts';
+import { makeFeedMask } from './feed/route.ts';
+
+/** Characters that fit on the lead row. The side column is 312px and the line is 12px. */
+export const LEAD_ROW_CHARS = 40;
 
 /** An agent that wrote within this time, and says nothing else, is working. */
 const WORKING_WINDOW_MS = 30 * 60 * 1000;
@@ -176,8 +181,26 @@ export function needsOf(agents: AgentView[], pulls: BoardPull[]): NeedView[] {
   return [...approve, ...answer];
 }
 
+/**
+ * The lead row's one line (#700): the first line of what the lead last said, masked as
+ * the stream masks it, then cut to the row. No log, or no mask: the status file's line.
+ */
+function leadLine(tree: string, vendor: string, env: Env, root: string, fallback: string): string {
+  const log = findAgentLog(tree, vendor, env, new Map());
+  if (!log) return fallback;
+  const text = lastAssistantLine(log.file, log.source, tree);
+  if (!text) return fallback;
+  try {
+    const masked = makeFeedMask(env, root)(text).split('\n')[0]?.trim() ?? '';
+    if (!masked) return fallback;
+    return masked.length <= LEAD_ROW_CHARS ? masked : masked.slice(0, LEAD_ROW_CHARS);
+  } catch {
+    return fallback;
+  }
+}
+
 /** One found agent as the page shows it. */
-function agentView({ agent, tree }: FoundAgent, env: Env, now: number): AgentView {
+function agentView({ agent, tree }: FoundAgent, env: Env, now: number, root: string): AgentView {
   return {
     key: hideHome(tree.path, env),
     name: agent.name,
@@ -189,7 +212,7 @@ function agentView({ agent, tree }: FoundAgent, env: Env, now: number): AgentVie
     task: agent.task,
     title: taskTitle(agent.task),
     ref: refOf(agent.task),
-    doing: agent.doing,
+    doing: agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, agent.doing) : agent.doing,
     checks: agent.checks,
     age: ageText(agent.updated, now),
     updated: agent.updated,
@@ -231,7 +254,7 @@ export function collectBoard(root: string, env: Env, gh: Gh, now: number = Date.
  */
 export function collectBoardWith(root: string, env: Env, remote: string | null, pulls: BoardPull[] | string, now: number = Date.now()): BoardData {
   const worktrees = readBoardWorktrees(root, env);
-  const agents = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees).map((found) => agentView(found, env, now));
+  const agents = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees).map((found) => agentView(found, env, now, root));
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {
     repo: hideHome(root, env),
