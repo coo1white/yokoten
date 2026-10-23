@@ -40,6 +40,7 @@ import {
   noteRefused,
   readDoneWhen,
   type Repo,
+  repeatKeyOf,
   repeatStopFinding,
   REPEAT_STOP_LIMIT,
   runDoneWhen,
@@ -482,8 +483,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
-  // The circuit breaker (#711): one count for the session, one shape for this step.
-  const sessionKey = doneTryKey(sessionIdOf(input), cwd);
+  // The circuit breaker (#711): one count for the session, one shape for this step. A call
+  // with no session id gets no count: the count would belong to the folder, not a session (#792).
+  const sessionKey = repeatKeyOf(sessionIdOf(input));
   const shape = commandShape(action.command, action.paths);
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
@@ -497,7 +499,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
         // Written as it is: hiding the home folder would change the command.
         else invocation.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
         noteToolCall(cwd, agent, action, role !== null || action.worker, null);
-        clearRepeats(env, sessionKey);
+        if (sessionKey !== null) clearRepeats(env, sessionKey);
         return 0;
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
@@ -506,9 +508,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
     // The third same refusal becomes a stop message; any success starts the count again (#711).
     if (found) {
-      const repeats = bumpRepeat(env, sessionKey, found.id, shape);
+      const repeats = sessionKey === null ? null : bumpRepeat(env, sessionKey, found.id, shape);
       if (repeats !== null && repeats >= REPEAT_STOP_LIMIT) found = repeatStopFinding();
-    } else clearRepeats(env, sessionKey);
+    } else if (sessionKey !== null) clearRepeats(env, sessionKey);
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {

@@ -233,6 +233,16 @@ export function sessionIdOf(input: unknown): string | undefined {
   return typeof value === 'string' && /^[\w-]{1,128}$/.test(value) ? value : undefined;
 }
 
+/**
+ * The key a repeat count belongs to: the session id, or null when the runtime sends none
+ * (#792). Counting under the folder instead added up calls from separate sessions in one
+ * project, so the third refusal stopped a session that had repeated nothing. Without a
+ * session id the hook cannot tell sessions apart, so it keeps the refusal's own id.
+ */
+export function repeatKeyOf(sessionId: string | undefined): string | null {
+  return sessionId !== undefined && /^[\w-]{1,128}$/.test(sessionId) ? sessionId : null;
+}
+
 const repeatFolder = (env: Env, key: string): string | null => {
   const folder = configFolder(env);
   return folder ? join(folder, REPEAT_DIR, key) : null;

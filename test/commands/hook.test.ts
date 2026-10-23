@@ -390,9 +390,10 @@ test('hook --stop: a worker is done only when the done-when check passes (#614)'
   const event = (extra: object = {}) => JSON.stringify({ session_id: 'task-614', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false, ...extra });
   const stop = (doneWhen: string, extra: Record<string, string> = {}, input = event()) =>
     sandbox.call(['hook', '--stop'], { input, extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: doneWhen, ...extra } });
-  // A passing check lets the worker stop.
+  // A passing check lets the worker stop, and names the anchor it just saved (#711).
   let result = await stop('true');
-  assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
+  assert.deepEqual([result.status, result.stdout], [0, '']);
+  assert.match(result.stderr, /^yokoten: tests pass\. Anchor [0-9a-f]{12} saved; go back with: git switch -c try-2 [0-9a-f]{40}\n$/);
   // A failing check refuses, with the reason in short.
   result = await stop('echo fail-614 >&2; exit 1');
   assert.equal(result.status, 2);

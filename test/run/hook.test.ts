@@ -26,6 +26,7 @@ import {
   isWorkingTreeClean,
   listAnchors,
   recordAnchor,
+  repeatKeyOf,
   repeatStopFinding,
   REPEAT_STOP_LIMIT,
   DONE_TRY_LIMIT,
@@ -102,6 +103,25 @@ test('hook: the third same refusal becomes a stop message; a success resets it (
   assert.doesNotMatch(result.stderr, /three times/);
 });
 
+// #792: a count belongs to one session. A call with no session id keeps its refusal, so
+// separate calls in one folder never add up to a stop; within a session they still do.
+test('hook: a repeat count needs a session id; two sessions never reach a stop (#792)', async () => {
+  const sandbox = makeSandbox();
+  const call = (command: string, input: Record<string, unknown> = {}) =>
+    sandbox.call(['hook', '--json'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command }, ...input }) });
+  const idOf = async (command: string, input?: Record<string, unknown>) => {
+    const result = await call(command, input);
+    assert.equal(result.status, 2, result.stderr);
+    return (JSON.parse(result.stdout) as { finding: { id: string } }).finding.id;
+  };
+  for (let round = 0; round < 3; round += 1) assert.equal(await idOf('git push --tags'), 'release', 'no session id, no count');
+  for (const session of ['session-a', 'session-b', 'session-a', 'session-b']) {
+    assert.equal(await idOf('git push --tags', { session_id: session }), 'release', session);
+  }
+  const third = await call('git push --tags', { session_id: 'session-a' });
+  assert.equal((JSON.parse(third.stdout) as { finding: { id: string } }).finding.id, 'repeat-stop', 'one session still reaches the stop');
+});
+
 // #711: the counters are per session and shape, and clearing one forgets it.
 test('hook: repeat counts are kept per session and reset on success (#711)', () => {
   const env = { HOME: makeTempDir('yokoten-repeat-') };
@@ -116,6 +136,9 @@ test('hook: repeat counts are kept per session and reset on success (#711)', () 
   clearRepeats(env, 'session-a');
   assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 1);
   assert.match(repeatStopFinding().fix, /last anchor or write your report/);
+  assert.equal(repeatKeyOf('session-a'), 'session-a');
+  assert.equal(repeatKeyOf(undefined), null, 'no session id, no count');
+  assert.equal(repeatKeyOf('not a safe name'), null);
 });
 
 // #711: an anchor is a commit whose checks passed; going back is a new branch from it.
