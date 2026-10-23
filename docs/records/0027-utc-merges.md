@@ -22,11 +22,12 @@ GitHub writes that zone into a commit it creates, such as a squash merge.
 A merge made the yokoten way goes through the bot.
 A person's own merge does not.
 
-The merge skill says: merge only through the bot, then read the new commit.
+The merge skill says: merge only through the bot, then fetch and read `origin/main`.
 Stop when the zone is not UTC. Report a count. Leave the zone value out.
 Leave the commit in place. History stays as it is.
 
 ## Consequences
 
 Doctor does not yet count not-UTC merge commits on the default branch.
-That count remains issue #488. History is not rewritten.
+That count remains issue #488. Link it with `Refs #488`.
+History is not rewritten.

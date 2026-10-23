@@ -50,8 +50,9 @@ test('layers: no module imports from a layer above its own', () => {
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
-// and invoke.ts, which runs a command in-process (#475).
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
+// invoke.ts, which runs a command in-process (#475), and merge-utc.test.ts, which reads
+// the merge skill and record.
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/merge-utc.test.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)

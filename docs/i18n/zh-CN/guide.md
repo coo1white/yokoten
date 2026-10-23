@@ -463,7 +463,7 @@ Windows 上请用 Git Bash。
 
 | 插件带来的 | 来自 |
 |---|---|
-| 技能：`/yokoten:dispatch`、`/yokoten:inspect`、`/yokoten:rca`、`/yokoten:record`、`/yokoten:release`、`/yokoten:yokoten` | `kit/user/skills/` |
+| 技能：`/yokoten:dispatch`、`/yokoten:inspect`、`/yokoten:merge`、`/yokoten:rca`、`/yokoten:record`、`/yokoten:release`、`/yokoten:yokoten` | `kit/user/skills/` |
 | agent：`yokoten:worker`、`yokoten:reviewer`、`yokoten:verifier` | `kit/user/agents/` |
 | `/yokoten:init`、`/yokoten:doctor` 和 `/yokoten:update`：直接用插件里的 yokoten 跑这几个命令 | `kit/plugin/skills/` |
 | 会话开头跑 `doctor` 的 hook 和命令守卫，跟 `install` 加的两个一样 | `.claude-plugin/plugin.json` |
@@ -1237,9 +1237,10 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
   也会经 CODEOWNERS 交给你审；发版要在受保护的 `release` 环境里等你批准。规则集要求你审查，
   所以它开的 PR，你不点头就合不进去。
 
-这套方法靠六个技能来做：`dispatch`（给 worker 派活）、`inspect`（分三轮审查某一个具体提交）、
-`rca`（找根因、加检查、再推广到其他项目）、`record`（把决定写下来）、`release`（定下一个
-版本号、准备更新日志，tag 由主人来打）、`yokoten`（采用这套做法）。三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
+这套方法靠七个技能来做。`dispatch` 给 worker 派活。`inspect` 分三轮审查某一个具体提交。
+`rca` 找根因，加检查，再推广到其他项目。`record` 把决定写下来。`release` 定下一个版本号，并准备更新日志。
+tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停下。`yokoten` 采用这套做法。
+三个 agent 干活：`worker`、`reviewer`（只读）、`verifier`（只跑不修）。
 
 ### 谁来审什么
 
