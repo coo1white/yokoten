@@ -157,7 +157,13 @@ export interface OpenPull {
 }
 
 /** The most open pull requests `pr sync` reads: enough for one team's open work. */
-const OPEN_PULL_LIMIT = 100;
+export const OPEN_PULL_LIMIT = 100;
+
+/** The open pull requests, and whether gh stopped at the limit so the list may be cut. */
+export interface OpenPullList {
+  pulls: OpenPull[];
+  isCut: boolean;
+}
 
 /** Why gh could not list the open pull requests, in words a beginner can act on. */
 function openPullsFailed(err: unknown): string {
@@ -169,9 +175,11 @@ function openPullsFailed(err: unknown): string {
 /**
  * The open pull requests of `repo`, read through gh (#432): the ones whose branches the
  * sync can update. A pull request from a fork is kept and marked, since its branch is not
- * on origin. A row without a number or branch is skipped. Or why the list can't be read.
+ * on origin. A row without a number or branch is skipped. The list says when it stopped at
+ * the limit, so a caller can report that some pull requests were not read. Or why the list
+ * can't be read.
  */
-export function readOpenPulls(gh: Gh, repo: string): OpenPull[] | string {
+export function readOpenPulls(gh: Gh, repo: string): OpenPullList | string {
   let rows: unknown;
   try {
     rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PULL_LIMIT), '--json', 'number,headRefName,baseRefName,isCrossRepository']));
@@ -187,7 +195,7 @@ export function readOpenPulls(gh: Gh, repo: string): OpenPull[] | string {
     if (!branch || !base) continue;
     pulls.push({ number: row.number, branch, base, isFork: row.isCrossRepository === true });
   }
-  return pulls;
+  return { pulls, isCut: rows.length >= OPEN_PULL_LIMIT };
 }
 
 /**

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import { GitReadError } from '../../../src/run/check.ts';
-import { annotation, annotations, readBranchFiles, readCodeOwners, readOpenPulls, stepSummary } from '../../../src/host/github/pull-request.ts';
+import { annotation, annotations, OPEN_PULL_LIMIT, readBranchFiles, readCodeOwners, readOpenPulls, stepSummary } from '../../../src/host/github/pull-request.ts';
 
 // #91: workflow commands, escaped as GitHub's runner decodes them
 // (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands).
@@ -124,10 +124,13 @@ test('readOpenPulls: open rows, a fork marked, odd rows skipped, a failure is a 
       { headRefName: 'no-number', baseRefName: 'main' },
     ]);
   };
-  assert.deepEqual(readOpenPulls(gh, 'octo/demo'), [
-    { number: 3, branch: 'work', base: 'main', isFork: false },
-    { number: 4, branch: 'from-fork', base: 'main', isFork: true },
-  ]);
+  assert.deepEqual(readOpenPulls(gh, 'octo/demo'), {
+    pulls: [
+      { number: 3, branch: 'work', base: 'main', isFork: false },
+      { number: 4, branch: 'from-fork', base: 'main', isFork: true },
+    ],
+    isCut: false,
+  });
   assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '100', '--json', 'number,headRefName,baseRefName,isCrossRepository']]);
   assert.equal(readOpenPulls(() => '{"not":"a list"}', 'o/r'), 'gh gave no pull request list: run it again');
   const missing = () => {
@@ -138,4 +141,12 @@ test('readOpenPulls: open rows, a fork marked, odd rows skipped, a failure is a 
     throw Object.assign(new Error('Command failed'), { stderr: 'HTTP 401: Bad credentials' });
   };
   assert.match(String(readOpenPulls(refused, 'o/r')), /^gh can't list the open pull requests/);
+});
+
+test('readOpenPulls: a full list is marked as cut at the limit (#809)', () => {
+  const rows = Array.from({ length: OPEN_PULL_LIMIT }, (_, at) => ({ number: at + 1, headRefName: `work-${at + 1}`, baseRefName: 'main' }));
+  const full = readOpenPulls(() => JSON.stringify(rows), 'o/r');
+  assert.equal(typeof full === 'string' ? full : full.isCut, true, 'the caller can say some pull requests were not read');
+  const short = readOpenPulls(() => JSON.stringify(rows.slice(0, OPEN_PULL_LIMIT - 1)), 'o/r');
+  assert.equal(typeof short === 'string' ? short : short.isCut, false);
 });

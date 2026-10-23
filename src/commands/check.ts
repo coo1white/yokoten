@@ -15,8 +15,8 @@ import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, rena
 import { dirname, join } from 'node:path';
 
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
-import { botConfig, botEnv, ghIn, installationToken, readCodeOwners, readIssue, readNumberedPullRequest, readOpenPulls, readPullRequest, readRepoLabelNames, repoOf } from '../host/github/index.ts';
-import { loadConfig } from '../rules/config.ts';
+import { botConfig, botEnv, ghIn, installationToken, OPEN_PULL_LIMIT, readCodeOwners, readIssue, readNumberedPullRequest, readOpenPulls, readPullRequest, readRepoLabelNames, repoOf } from '../host/github/index.ts';
+import { type Env, loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
@@ -610,6 +610,11 @@ function save(file: string, entries: AllowEntry[], skipOwnName?: false): void {
 /** How long one git or gh call in the sync may take. */
 const PR_SYNC_TIMEOUT_MS = 120_000;
 
+/** The environment for every git call of the sync: no prompt, and UTC commit times (#809). */
+export function prSyncEnv(env: Env): Env {
+  return { ...env, GIT_TERMINAL_PROMPT: '0', TZ: 'UTC' };
+}
+
 /** One open pull request's branches, as `gh pr list` gives them. */
 export async function runPr(invocation: Invocation): Promise<number> {
   const options = parse('pr', invocation.args);
@@ -624,7 +629,7 @@ export async function runPr(invocation: Invocation): Promise<number> {
 
   let remote = '';
   try {
-    remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, env: prSyncEnv(env), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     // Reported below, with the same words whatever git said.
   }
@@ -645,13 +650,16 @@ export async function runPr(invocation: Invocation): Promise<number> {
     print(invocation, [`yokoten pr sync: ${open}`], invocation.stderr);
     return 1;
   }
-  if (!open.length) {
+  if (open.isCut) {
+    print(invocation, [`yokoten pr sync: the open pull request list stops at ${OPEN_PULL_LIMIT}, so some pull requests are not synced`]);
+  }
+  if (!open.pulls.length) {
     print(invocation, ['yokoten pr sync: no open pull requests']);
     return 0;
   }
 
   // The branches and base branches must be here before any merge. One fetch is enough.
-  const fetched = spawnSync('git', ['fetch', '--prune', 'origin'], { cwd: root, env, encoding: 'utf8', timeout: PR_SYNC_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+  const fetched = spawnSync('git', ['fetch', '--prune', 'origin'], { cwd: root, env: prSyncEnv(env), encoding: 'utf8', timeout: PR_SYNC_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
   if (fetched.status !== 0) {
     print(invocation, [`yokoten pr sync: git fetch origin failed: ${String(fetched.stderr || fetched.stdout).trim().split('\n')[0]}`], invocation.stderr);
     return 1;
@@ -660,7 +668,7 @@ export async function runPr(invocation: Invocation): Promise<number> {
   const git = (args: string[], worktree: string): GitRun => {
     const result = spawnSync('git', ['--no-replace-objects', ...args], {
       cwd: worktree,
-      env: { ...env, GIT_TERMINAL_PROMPT: '0' },
+      env: prSyncEnv(env),
       encoding: 'utf8',
       timeout: PR_SYNC_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
@@ -692,7 +700,7 @@ export async function runPr(invocation: Invocation): Promise<number> {
   };
 
   let needsAgent = false;
-  for (const pull of open) {
+  for (const pull of open.pulls) {
     if (pull.isFork) {
       print(invocation, [`#${pull.number} ${pull.branch}: needs an agent (the branch is in a fork, which yokoten does not push)`]);
       needsAgent = true;
@@ -708,7 +716,7 @@ export async function runPr(invocation: Invocation): Promise<number> {
       verify: (worktree, files) => verifyMerge(worktree, files, env),
       tempRoot: join(root, '.tmp', 'yokoten-pr-sync'),
     });
-    print(invocation, [pullLine(outcome)]);
+    print(invocation, [pullLine({ ...outcome, base: pull.base })]);
     if (outcome.files?.length) print(invocation, ['', 'Files:', ...outcome.files.map((file) => `- ${file}`)]);
     if (outcome.hunksText?.length) print(invocation, ['', 'Conflict hunks:', ...outcome.hunksText.flatMap((hunk) => hunk.split('\n'))]);
     if (outcome.brief) print(invocation, ['', 'Dispatch brief:', ...outcome.brief.split('\n')]);
@@ -717,11 +725,11 @@ export async function runPr(invocation: Invocation): Promise<number> {
   return needsAgent ? 1 : 0;
 }
 
-/** The one line a pull request gets in the sync's report. */
-function pullLine(outcome: { number: number; branch: string; state: string; hunks?: number }): string {
+/** The one line a pull request gets in the sync's report, naming the base it merged. */
+export function pullLine(outcome: { number: number; branch: string; base: string; state: string; hunks?: number }): string {
   const head = `#${outcome.number} ${outcome.branch}: `;
-  if (outcome.state === 'up-to-date') return `${head}up to date`;
-  if (outcome.state === 'merged') return `${head}merged main`;
-  if (outcome.state === 'resolved') return `${head}resolved ${outcome.hunks ?? 0} hunk${outcome.hunks === 1 ? '' : 's'}`;
+  if (outcome.state === 'up-to-date') return `${head}up to date with ${outcome.base}`;
+  if (outcome.state === 'merged') return `${head}merged ${outcome.base}`;
+  if (outcome.state === 'resolved') return `${head}resolved ${outcome.hunks ?? 0} hunk${outcome.hunks === 1 ? '' : 's'} then merged ${outcome.base}`;
   return `${head}needs an agent`;
 }

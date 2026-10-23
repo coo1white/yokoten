@@ -1514,10 +1514,25 @@ test('pr sync: a branch behind main gets main merged in and is pushed (#432)', a
   const sync = runSync(sandbox);
   const outcome = await sync.go();
   assert.equal(outcome.state, 'merged');
+  assert.deepEqual(sync.checked, [['main.txt']], 'a clean merge is verified before the push (#809)');
   assert.deepEqual(sync.pushes, ['work'], 'the branch is pushed once');
   sandbox.git('fetch', '-q', 'origin');
   assert.equal(sandbox.git('merge-base', '--is-ancestor', 'origin/main', 'origin/work').status, 0, 'the remote branch holds main');
   assert.equal(sandbox.git('status', '--porcelain').stdout.trim(), '', 'the main checkout is untouched');
+});
+
+test('pr sync: a clean merge that fails verification is not pushed (#809)', async () => {
+  const { sandbox } = remoteSandbox();
+  diverge(sandbox, (side) => sandbox.write(`${side}.txt`, `${side}\n`));
+  const before = sandbox.git('rev-parse', 'origin/work').stdout.trim();
+  const sync = runSync(sandbox, () => ({ ok: false, said: 'typecheck failed: boom' }));
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'needs-agent');
+  assert.match(outcome.reason ?? '', /failed after the merge/);
+  assert.deepEqual(sync.checked, [['main.txt']]);
+  assert.deepEqual(sync.pushes, [], 'nothing is pushed');
+  assert.equal(sandbox.git('rev-parse', 'origin/work').stdout.trim(), before, 'the remote branch is untouched');
+  assert.ok(outcome.worktree && existsSync(outcome.worktree), 'the temporary worktree waits for the agent');
 });
 
 test('pr sync: two added blocks at one spot are kept, tested and pushed (#432)', async () => {
@@ -1561,6 +1576,27 @@ test('pr sync: two changed import lists become one list, then pass and push (#43
   assert.match(merged, /^import \{ a, c, d \} from '\.\/x\.ts';$/m, 'both additions are kept, each name once');
 });
 
+test('pr sync: an import list keeps a name the base had unless one side deleted it (#809)', async () => {
+  const { sandbox } = remoteSandbox();
+  const base = "import { a, secret } from './x.ts';\n\nexport const value = a;\n";
+  sandbox.write('src/d.ts', base);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  diverge(sandbox, (side) => {
+    const names = side === 'branch' ? 'a, secret, b' : 'a';
+    sandbox.write('src/d.ts', base.replace('{ a, secret }', `{ ${names} }`));
+  });
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'resolved');
+  assert.equal(outcome.hunks, 1);
+  assert.deepEqual(sync.pushes, ['work']);
+  sandbox.git('fetch', '-q', 'origin');
+  const merged = sandbox.git('show', 'origin/work:src/d.ts').stdout;
+  assert.match(merged, /^import \{ a, b \} from '\.\/x\.ts';$/m, 'the branch keeps its add and main\'s delete applies');
+});
+
 test('pr sync: a semantic conflict stops, prints its hunks, and pushes nothing (#432)', async () => {
   const { sandbox } = remoteSandbox();
   sandbox.write('src/c.ts', 'export const n = 1;\n');
@@ -1581,6 +1617,35 @@ test('pr sync: a semantic conflict stops, prints its hunks, and pushes nothing (
   assert.match(outcome.brief ?? '', /Worktree: /, 'the dispatch brief is ready');
   assert.equal(sandbox.git('rev-parse', 'origin/work').stdout.trim(), before, 'the remote branch is untouched');
   assert.ok(outcome.worktree && existsSync(outcome.worktree), 'the conflict is left for the agent to resolve');
+});
+
+test('pr sync: a conflict on a checked-out branch is aborted before needs-agent (#809)', async () => {
+  const { sandbox } = remoteSandbox();
+  sandbox.write('src/e.ts', 'export const n = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('switch', '-q', '-c', 'work');
+  sandbox.write('src/e.ts', 'export const n = 2;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'work');
+  sandbox.git('push', '-q', '-u', 'origin', 'work');
+  sandbox.git('switch', '-q', 'main');
+  sandbox.write('src/e.ts', 'export const n = 3;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'main');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('fetch', '-q', 'origin');
+  sandbox.git('switch', '-q', 'work');
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'needs-agent');
+  assert.deepEqual(sync.pushes, [], 'nothing is pushed');
+  assert.deepEqual(outcome.files, ['src/e.ts']);
+  assert.equal(sandbox.git('status', '--porcelain').stdout.trim(), '', 'the checked-out branch is left clean');
+  assert.notEqual(sandbox.git('rev-parse', '--verify', '--quiet', 'MERGE_HEAD').status, 0, 'no merge is left in progress');
+  assert.equal(readFileSync(join(sandbox.repo, 'src/e.ts'), 'utf8'), 'export const n = 2;\n', 'the branch file is back as it was');
+  assert.equal(outcome.worktree, undefined, 'the checkout is not handed to an agent mid-merge');
 });
 
 test('pr sync: a resolution whose tests fail stops and pushes nothing (#432)', async () => {

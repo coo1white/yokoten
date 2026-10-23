@@ -643,9 +643,11 @@ export const timeZoneNote = (commits: number): Finding =>
 // A merge to main leaves other pull requests behind it. `yokoten pr sync` merges main into
 // each open branch in that branch's own worktree, or in a temporary one. It resolves only
 // the two mechanical conflicts: both sides added whole blocks at the same spot, or both
-// sides changed the same import list. Every other conflict stops, with the files, the
-// hunks and a dispatch brief. Nothing is pushed unless typecheck and the tests of the
-// touched files pass. A branch is never rebased and never force-pushed.
+// sides changed the same import list. Every merge, clean or resolved, is verified first.
+// Any other conflict stops, with the files, the hunks and a dispatch brief. Nothing is
+// pushed unless typecheck and the tests of the touched files pass. A checked-out branch
+// is left clean when the sync stops; a temporary worktree is kept for the agent. A branch
+// is never rebased and never force-pushed.
 
 /** One git call: its exit status and its output. */
 export interface GitRun {
@@ -759,43 +761,100 @@ function parseImportLine(line: string): ImportLine | null {
   return importLine.defaultName || importLine.namespace || importLine.names.length ? importLine : null;
 }
 
-/** The import lines of both sides, joined by module and default name. Null when a line is not an import. */
-function mergeImportLists(sides: string[][]): string[] | null {
-  const parsed: ImportLine[] = [];
-  for (const side of sides) {
-    for (const line of side) {
-      if (!line.trim()) continue;
-      const importLine = parseImportLine(line);
-      if (!importLine) return null;
-      parsed.push(importLine);
-    }
-  }
-  if (!parsed.length) return null;
-  const order: ImportLine[] = [];
-  const byKey = new Map<string, ImportLine>();
-  for (const importLine of parsed) {
-    const key = `${importLine.isType}|${importLine.defaultName}|${importLine.namespace}|${importLine.module}`;
-    const kept = byKey.get(key);
+/** One import line, grouped by module and default name, with the names it keeps. */
+interface ImportGroup {
+  line: ImportLine;
+  names: string[];
+}
+
+/** The key two import lines share when they are the same import. */
+function importKey(importLine: ImportLine): string {
+  return `${importLine.isType}|${importLine.defaultName}|${importLine.namespace}|${importLine.module}`;
+}
+
+/** The import lines of one side, grouped, or null when a line is not an import. */
+function groupImports(lines: string[]): Map<string, ImportGroup> | null {
+  const groups = new Map<string, ImportGroup>();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const importLine = parseImportLine(line);
+    if (!importLine) return null;
+    const key = importKey(importLine);
+    const kept = groups.get(key);
     if (!kept) {
-      const copy = { ...importLine, names: [...importLine.names] };
-      byKey.set(key, copy);
-      order.push(copy);
+      groups.set(key, { line: importLine, names: [...importLine.names] });
       continue;
     }
     for (const name of importLine.names) if (!kept.names.includes(name)) kept.names.push(name);
   }
-  return order.map((importLine) => {
-    if (!importLine.defaultName && !importLine.namespace && !importLine.names.length) return `import ${importLine.quote}${importLine.module}${importLine.quote};`;
-    const clause = importLine.namespace ? `* as ${importLine.namespace}` : importLine.names.length ? `{ ${importLine.names.join(', ')} }` : '';
-    const head = [importLine.defaultName, clause].filter(Boolean).join(', ');
-    return `import ${importLine.isType ? 'type ' : ''}${head} from ${importLine.quote}${importLine.module}${importLine.quote};`;
-  });
+  return groups;
+}
+
+/** True when two name lists hold the same names, in any order. */
+function sameNames(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((name) => right.includes(name));
+}
+
+/** One import line back as text. */
+function renderImportLine(importLine: ImportLine): string {
+  if (!importLine.defaultName && !importLine.namespace && !importLine.names.length) return `import ${importLine.quote}${importLine.module}${importLine.quote};`;
+  const clause = importLine.namespace ? `* as ${importLine.namespace}` : importLine.names.length ? `{ ${importLine.names.join(', ')} }` : '';
+  const head = [importLine.defaultName, clause].filter(Boolean).join(', ');
+  return `import ${importLine.isType ? 'type ' : ''}${head} from ${importLine.quote}${importLine.module}${importLine.quote};`;
+}
+
+/**
+ * The import lines of both sides, merged from the base: each side's added names stay, a
+ * name either side deleted goes (#809). The base form is the diff3 common ancestor.
+ * Null when a line is not an import, or when one side changed a line the other deleted.
+ */
+function mergeImportLists(base: string[], ours: string[], theirs: string[]): string[] | null {
+  const baseGroups = groupImports(base);
+  const ourGroups = groupImports(ours);
+  const theirGroups = groupImports(theirs);
+  if (!baseGroups || !ourGroups || !theirGroups) return null;
+  const groups = new Map<string, ImportGroup>();
+  for (const side of [baseGroups, ourGroups, theirGroups]) {
+    for (const [key, group] of side) {
+      const kept = groups.get(key);
+      if (!kept) {
+        groups.set(key, { line: group.line, names: [...group.names] });
+        continue;
+      }
+      for (const name of group.names) if (!kept.names.includes(name)) kept.names.push(name);
+    }
+  }
+  if (!groups.size) return null;
+  const merged: ImportLine[] = [];
+  for (const [key, group] of groups) {
+    const baseNames = baseGroups.get(key)?.names ?? [];
+    const ourNames = ourGroups.get(key)?.names;
+    const theirNames = theirGroups.get(key)?.names;
+    if (ourNames === undefined && theirNames === undefined) continue;
+    let names: string[];
+    if (ourNames !== undefined && theirNames !== undefined) {
+      const added: string[] = [];
+      for (const name of [...ourNames, ...theirNames]) if (!baseNames.includes(name) && !added.includes(name)) added.push(name);
+      const removed = baseNames.filter((name) => !ourNames.includes(name) || !theirNames.includes(name));
+      names = [...baseNames.filter((name) => !removed.includes(name)), ...added];
+    } else {
+      const only = ourNames ?? theirNames ?? [];
+      if (baseGroups.has(key)) {
+        // One side deleted the line; the other may only have left it as it was.
+        if (!sameNames(only, baseNames)) return null;
+        continue;
+      }
+      names = [...only];
+    }
+    merged.push({ ...group.line, names });
+  }
+  return merged.map(renderImportLine);
 }
 
 /** The lines that replace one conflict block, or null when it is not a mechanical case. */
 function resolveConflictBlock(block: ConflictBlock): string[] | null {
-  // Both sides added whole blocks at the same spot: keep both, in the branch's order first.
-  const imports = mergeImportLists([block.ours, block.theirs]);
+  // Both sides changed the same import list: merge from the base, keeping adds and drops.
+  const imports = mergeImportLists(block.base, block.ours, block.theirs);
   if (imports) return imports;
   if (block.hasBase && !block.base.some((line) => line.trim()) && block.ours.some((line) => line.trim()) && block.theirs.some((line) => line.trim())) {
     return block.ours.join('\n') === block.theirs.join('\n') ? block.ours : [...block.ours, ...block.theirs];
@@ -893,7 +952,7 @@ function syncBrief(request: SyncPull, worktree: string, files: string[]): string
   return [
     'Issue: #432 pr: keep open PRs up to date and fix conflicts',
     `Worktree: ${worktree}`,
-    `Goal: resolve the conflict on ${request.branch} for pull request #${request.number}, so it merges into ${request.base} again.`,
+    `Goal: get ${request.branch} ready again, so pull request #${request.number} merges into ${request.base}.`,
     'Done when: `git status` shows no unmerged files, and `npm run -s typecheck` and the tests of the touched files pass.',
     `Files: ${files.join(', ')}`,
     'Out of scope: do not change tests to make them pass; do not force-push and do not rebase.',
@@ -906,6 +965,23 @@ function syncBrief(request: SyncPull, worktree: string, files: string[]): string
 /** A temporary worktree is removed once its branch is pushed; one left for an agent stays. */
 function removeTemporaryWorktree(root: string, worktree: string, git: GitDo): void {
   if (git(['worktree', 'remove', worktree], root).status !== 0) git(['worktree', 'prune'], root);
+}
+
+/** The files a merge changed, so only their tests run. */
+function mergeChangedFiles(git: GitDo, worktree: string, before: string): string[] {
+  return git(['diff', '--name-only', '-z', before, 'HEAD'], worktree).stdout.split('\0').filter(Boolean);
+}
+
+/**
+ * Put a checked-out branch back as it was (#809): abort a merge in progress, or drop the
+ * merge commit this run made. A temporary worktree is kept for the agent instead.
+ */
+function undoMerge(worktree: string, before: string, git: GitDo): void {
+  if (git(['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'], worktree).status === 0) {
+    git(['merge', '--abort'], worktree);
+    return;
+  }
+  if (git(['rev-parse', 'HEAD'], worktree).stdout.trim() !== before) git(['reset', '--hard', before], worktree);
 }
 
 /** Merge `base` into `branch`, resolve the mechanical conflicts, verify, and push. */
@@ -955,8 +1031,17 @@ export async function syncPull(request: SyncPull): Promise<SyncOutcome> {
   }
   if (git(['rev-parse', '--verify', baseRef], root).status !== 0) return needs(`origin/${base} is not here; fetch it, then run this again`, worktree);
 
+  const before = git(['rev-parse', 'HEAD'], worktree);
+  if (before.status !== 0) return needs(`git could not read the branch ${branch}`, worktree);
   const merged = git(['-c', 'merge.conflictStyle=diff3', 'merge', '--no-ff', '--no-edit', baseRef], worktree);
   if (merged.status === 0) {
+    // A clean merge is verified too: both sides can add code that compiles apart but not together.
+    const files = mergeChangedFiles(git, worktree, before.stdout.trim());
+    const verified = request.verify(worktree, files);
+    if (!verified.ok) {
+      if (!isTemporary) undoMerge(worktree, before.stdout.trim(), git);
+      return needs(`the typecheck or tests failed after the merge, so nothing was pushed:\n${verified.said}`, isTemporary ? worktree : undefined, files);
+    }
     const pushed = await request.push(worktree, branch);
     if (!pushed.ok) return needs(`the push was refused: ${pushed.said}`, worktree);
     if (isTemporary) removeTemporaryWorktree(root, worktree, git);
@@ -964,7 +1049,10 @@ export async function syncPull(request: SyncPull): Promise<SyncOutcome> {
   }
 
   const unmerged = git(['diff', '--name-only', '--diff-filter=U', '-z'], worktree).stdout.split('\0').filter(Boolean);
-  if (!unmerged.length) return needs(`git could not merge ${base}: ${tailLines(merged.stderr, 10)}`, worktree);
+  if (!unmerged.length) {
+    if (!isTemporary) undoMerge(worktree, before.stdout.trim(), git);
+    return needs(`git could not merge ${base}: ${tailLines(merged.stderr, 10)}`, isTemporary ? worktree : undefined);
+  }
 
   const resolved: { file: string; text: string; hunks: number }[] = [];
   let unresolved: { files: string[]; blocks: string[] } | null = null;
@@ -978,16 +1066,30 @@ export async function syncPull(request: SyncPull): Promise<SyncOutcome> {
       unresolved.blocks.push(...result.blocks);
     }
   }
-  if (unresolved) return needs('the conflict is not one of the two mechanical cases', worktree, unmerged, unresolved.blocks);
+  if (unresolved) {
+    // A conflict left in a checked-out branch would stop its owner's work; the temporary
+    // worktree stays, so the agent meets the conflict as git wrote it.
+    if (!isTemporary) undoMerge(worktree, before.stdout.trim(), git);
+    return needs('the conflict is not one of the two mechanical cases', isTemporary ? worktree : undefined, unmerged, unresolved.blocks);
+  }
 
   for (const file of resolved) writeFileSync(join(worktree, file.file), file.text);
   const added = git(['add', '--', ...resolved.map((file) => file.file)], worktree);
-  if (added.status !== 0) return needs(`git could not stage the resolved files: ${tailLines(added.stderr, 10)}`, worktree, unmerged);
+  if (added.status !== 0) {
+    if (!isTemporary) undoMerge(worktree, before.stdout.trim(), git);
+    return needs(`git could not stage the resolved files: ${tailLines(added.stderr, 10)}`, isTemporary ? worktree : undefined, unmerged);
+  }
   const committed = git(['commit', '--no-edit'], worktree);
-  if (committed.status !== 0) return needs(`the merge commit was refused: ${tailLines(`${committed.stdout}${committed.stderr}`, 20)}`, worktree, unmerged);
+  if (committed.status !== 0) {
+    if (!isTemporary) undoMerge(worktree, before.stdout.trim(), git);
+    return needs(`the merge commit was refused: ${tailLines(`${committed.stdout}${committed.stderr}`, 20)}`, isTemporary ? worktree : undefined, unmerged);
+  }
 
   const verified = request.verify(worktree, unmerged);
-  if (!verified.ok) return needs(`the tests failed after the conflict was resolved, so nothing was pushed:\n${verified.said}`, worktree, unmerged);
+  if (!verified.ok) {
+    if (!isTemporary) undoMerge(worktree, before.stdout.trim(), git);
+    return needs(`the tests failed after the conflict was resolved, so nothing was pushed:\n${verified.said}`, isTemporary ? worktree : undefined, unmerged);
+  }
   const pushed = await request.push(worktree, branch);
   if (!pushed.ok) return needs(`the push was refused: ${pushed.said}`, worktree, unmerged);
   if (isTemporary) removeTemporaryWorktree(root, worktree, git);
