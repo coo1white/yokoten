@@ -164,3 +164,28 @@ test('board stream: every kept item passes the mask, and no log means the doing 
   const none = readStream(makeStreamStore({}, (text) => text, () => null), '~/w', TREE, 'codex', '');
   assert.deepEqual(none, { source: 'doing', session: '', next: '', reset: true, more: false, items: [] });
 });
+
+// #694: a runner's plain text log streams as messages. Only the new lines on each read,
+// and a long line is cut like any other message.
+test('board stream: a plain log streams only its new lines, each cut when long', () => {
+  const file = writeLog('first line\nsecond line\n', 'runner.log');
+  const store = makeStreamStore({}, (text) => text, () => ({ source: 'plain', file, mtime: 0 }));
+  const first = readStream(store, '~/w', TREE, 'opencode', '');
+  assert.equal(first.source, 'plain');
+  assert.deepEqual(first.items.map((item) => [item.kind, item.tool, item.text]), [
+    ['say', undefined, 'first line'],
+    ['say', undefined, 'second line'],
+  ]);
+  assert.equal(first.next, `${first.session}:2`);
+  // Old lines are never read again, only what came after the cursor.
+  appendFileSync(file, 'third line\r\n');
+  const second = readStream(store, '~/w', TREE, 'opencode', first.next);
+  assert.deepEqual(second.items.map((item) => item.text), ['third line'], 'the carriage return is not a message');
+  assert.equal(second.reset, false);
+  // A line longer than a message is cut, with a note of how much was left out.
+  appendFileSync(file, `${'x'.repeat(9000)}\n`);
+  const third = readStream(store, '~/w', TREE, 'opencode', second.next);
+  assert.equal(third.items.length, 1);
+  assert.ok(third.items[0].text.endsWith('… (1000 more characters)'));
+  assert.equal(third.items[0].text.startsWith('x'.repeat(100)), true);
+});
