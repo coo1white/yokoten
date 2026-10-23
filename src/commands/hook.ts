@@ -230,7 +230,9 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   let doneWhen: { command: string; ok: boolean; output: string } | undefined;
   // A subagent runs in the worker's worktree only when the event's folder is that
   // worktree. Otherwise it shares the lead's folder (#614).
-  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : root) : folder;
+  // A broken `.git` still reads its own done-when, so run it in the desk it belongs to (#746).
+  const link = isWorker ? gitLinkAbove(folder) : null;
+  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : link?.top ?? root) : folder;
   if (isWorker && root) {
     const command = readDoneWhen(env, event.subagent ? ranIn : folder);
     if (command) {
@@ -537,7 +539,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (json) printJson(answerInvocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
-      return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
+      // When the call names no other folder, the root above is this folder's: one git call, not two (#821).
+      const sessionRoot = resolve(cwd, action.cwd ?? '.') === resolve(cwd) ? root : rootOf(cwd, env);
+      return teamMessages(cwd, env, sessionRoot).then((messages) => {
         if (messages) say(answerInvocation, CONTEXTS[agent](messages), answerInvocation.stdout);
         return finish(0);
       });
