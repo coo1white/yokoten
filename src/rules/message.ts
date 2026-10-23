@@ -98,9 +98,9 @@ export const RULES = {
     check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
   },
   'pipe-to-shell': {
-    rule: 'no piping a download into a shell',
+    rule: 'no piping a download into a shell or a program named by a variable',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+    check: 'the tool-call guard stops a pipeline that feeds a download into a shell, into `eval`, into a substitution that can run it, or into a program word that is not plain text, including a name that starts with `$`. A `$` argument of a plain program passes. Save the file first, read it, then run it',
   },
   'gh-token': {
     rule: "an agent does not see or send gh's token",
@@ -450,6 +450,18 @@ export const RULES = {
     rule: "Grok CLI runs yokoten's command guard in every repo",
     why: 'without it, a tag push, force push or skipped check by Grok CLI in a repo without yokoten is not stopped',
     check: "when ~/.grok is a folder, `doctor` compares the PreToolUse hook in ~/.grok/hooks/yokoten.json with what `yokoten install` writes (command, matcher, timeout, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
+  'opencode-hook': {
+    rule: "the project that uses OpenCode has yokoten's plugin",
+    why: "without the plugin, OpenCode's commands and edits in this project are not checked",
+    check: "`doctor` looks for `.opencode/` or `opencode.json`. It then reads `.opencode/plugins/yokoten.ts` and compares it with what `init` writes. A missing or old plugin is a note, not a missing step. A project with no OpenCode file is quiet",
+    docs: guide('works-with'),
+  },
+  'opencode-user-hook': {
+    rule: "OpenCode runs yokoten's command guard in every repo",
+    why: 'without it, a tag push, force push or skipped check by OpenCode in a repo without yokoten is not stopped',
+    check: "when ~/.config/opencode is a folder, `doctor` compares the plugin in its plugins folder with what `install` writes. A missing or old plugin is a note, not a missing step. `$XDG_CONFIG_HOME/opencode` counts when that variable is set",
     docs: guide('works-with'),
   },
   'core-rules': {

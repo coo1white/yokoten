@@ -1470,7 +1470,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
   const isTildeQuoted = QUOTED_TILDE.test(command);
-  // A download piped into a shell runs code nobody read (#560).
+  // A download piped into a shell, eval, or a `$` program runs code nobody read (#560, #734, #745).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
   const token = checkTokenUse(command, commands);
@@ -2683,7 +2683,7 @@ const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, t
 // A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
 const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574, #734, #745). */
+/** A pipeline that feeds a download into a shell, `eval`, or a program word that is not plain text runs code nobody read (#560, #574, #734, #745). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
