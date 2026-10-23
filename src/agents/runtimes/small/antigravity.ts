@@ -10,10 +10,10 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import type { Action } from '../../run/hook.ts';
-import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../desk/agent-env.ts';
+import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
+import type { Action } from '../../../run/hook.ts';
+import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../../hooks-file.ts';
+import type { RuntimeEnv } from '../../desk/agent-env.ts';
 
 // run_command takes `CommandLine` and `Cwd`; the three edit tools take `TargetFile`.
 const SHELL = 'run_command';
