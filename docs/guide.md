@@ -895,7 +895,7 @@ It puts three safe defaults in `.github/` too:
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
-| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text] [--no-open] [--share <name>]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. With `--share <name>` it also answers the name your private network gives this computer, over that network's HTTPS proxy. Leave it out and the board is this computer only. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1790,8 +1790,37 @@ The first visit uses `?token=` in that link.
 That visit sets an HttpOnly Secure cookie, then opens the page without the token.
 The cookie is SameSite=Strict.
 Later visits use the cookie.
-Only someone who can read the terminal can open the page.
+Without `--share`, only someone who can read the terminal can open the page.
 A wrong host is refused.
+
+#### The board on your phone
+
+The board is closed to other devices by default.
+It listens on this computer only, so a phone cannot reach it.
+
+To watch and answer from a phone, use a private network.
+Tailscale is one example.
+The network gives this computer a name, such as `machine.tailnet-name.ts.net`.
+Its HTTPS proxy reaches the board on this computer.
+
+1. Set up the private network's HTTPS proxy once, to `http://127.0.0.1:<port>`.
+   For Tailscale: `tailscale serve --bg --https=443 http://127.0.0.1:<port>`.
+2. Run `yokoten board --share machine.tailnet-name.ts.net`.
+
+Use the port the board prints.
+The printed phone link is `https://machine.tailnet-name.ts.net/?token=...`.
+Only devices on your private network can open it.
+The link token, the host check and the origin check still hold.
+No cloud relay is used, and no data leaves your devices.
+
+Your computer still runs the board.
+The proxy calls it on `127.0.0.1`, so no phone reaches the port directly.
+A phone answer is logged in `.yokoten-board.log`, like a desktop one.
+
+To turn it off, stop the board with Ctrl-C.
+Then run `yokoten board` without `--share`.
+The board is this computer only again.
+Remove the proxy setting in your private network too.
 
 Chrome and Edge can install the board as its own window.
 Use Install in the browser menu.

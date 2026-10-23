@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox } from '../../../repo/helpers.ts';
-import { boardHostName, boardPort, browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
+import { boardHostName, boardPort, boardShareName, browserCommand, runBoard, startBoardServer } from '../../../../src/commands/advice/board/server.ts';
 import { type BoardData, createBoardGitHub, nicknameId, nicknameOf } from '../../../../src/commands/advice/board/view.ts';
 import type { Invocation, Output } from '../../../../src/commands/shared.ts';
 import { type Gh, ghLaterIn } from '../../../../src/host/github/index.ts';
@@ -53,6 +53,16 @@ test('board --text: the entry, an agent that joins and leaves, and the usage err
   const outside = await sandbox.call(['board', '--text'], { cwd: sandbox.home });
   assert.equal(outside.status, 1, 'outside a repo it says so');
   assert.match(outside.stderr, /is not inside a git repo/);
+  // #623: --share takes a plain name and never joins --text. Both mistakes say so.
+  const noValue = await sandbox.call(['board', '--share']);
+  assert.equal(noValue.status, 1, '--share needs a value');
+  assert.match(noValue.stderr, /--share needs a value/);
+  const asUrl = await sandbox.call(['board', '--share', 'https://machine.example']);
+  assert.equal(asUrl.status, 1, 'a URL is not a private name');
+  assert.match(asUrl.stderr, /plain name your private network gives this computer/);
+  const withText = await sandbox.call(['board', '--text', '--share', 'machine.example']);
+  assert.equal(withText.status, 1, '--text stays on this computer');
+  assert.match(withText.stderr, /--text prints on this computer only/);
 });
 
 // #601: the pull requests come from `gh pr list`. A fake gh first on PATH answers; the real
@@ -115,6 +125,38 @@ function boardGet(target: string, headers: Record<string, string> = {}): Promise
       const rows = [`GET ${url.pathname}${url.search} HTTP/1.1`, `Host: ${headers.host ?? url.host}`, 'Connection: close'];
       for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() !== 'host') rows.push(`${key}: ${value}`);
       socket.write(`${rows.join('\r\n')}\r\n\r\n`);
+    });
+    const parts: Buffer[] = [];
+    socket.on('data', (chunk) => parts.push(chunk));
+    socket.on('end', () => {
+      const answer = Buffer.concat(parts);
+      const split = answer.indexOf('\r\n\r\n');
+      const [statusLine, ...rows] = answer.subarray(0, split).toString('utf8').split('\r\n');
+      const found: Record<string, string> = {};
+      for (const row of rows) {
+        const at = row.indexOf(':');
+        if (at > 0) found[row.slice(0, at).trim().toLowerCase()] = row.slice(at + 1).trim();
+      }
+      done({ status: Number(statusLine.split(' ')[1]), kind: found['content-type'] ?? '', headers: found, text: answer.subarray(split + 4).toString('utf8') });
+    });
+    socket.on('error', failed);
+  });
+}
+
+/** One change over a raw socket, as the page sends it: a form, with the Host and Origin headers. */
+function postBoardForm(target: string, body: string, headers: Record<string, string> = {}): Promise<{ status: number; kind: string; headers: Record<string, string>; text: string }> {
+  const url = new URL(target);
+  return new Promise((done, failed) => {
+    const socket = connect(Number(url.port), boardDial(url.hostname), () => {
+      const rows = [
+        `POST ${url.pathname}${url.search} HTTP/1.1`,
+        `Host: ${headers.host ?? url.host}`,
+        'Content-Type: application/x-www-form-urlencoded',
+        `Content-Length: ${Buffer.byteLength(body)}`,
+        'Connection: close',
+      ];
+      for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() !== 'host') rows.push(`${key}: ${value}`);
+      socket.write(`${rows.join('\r\n')}\r\n\r\n${body}`);
     });
     const parts: Buffer[] = [];
     socket.on('data', (chunk) => parts.push(chunk));
@@ -244,6 +286,67 @@ test('board server: a wrong Host gets a 403', async () => {
     }
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #623: off unless asked. The board listens on this computer only, so a phone cannot
+// reach it, and a request that carries a phone's Host still gets a 403.
+test('board share: a phone gets no answer when --share is off', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
+  try {
+    const address = server.address() as { address: string; port: number };
+    assert.equal(address.address, '127.0.0.1', 'the board listens on this computer only');
+    const cookie = await boardCookie(url);
+    for (const host of ['phone.example', `phone.example:${address.port}`, 'phone.example:443']) {
+      assert.equal((await boardGet(url, { host })).status, 403, `a phone Host on /: ${host}`);
+      assert.equal((await boardRead(url, 'data', { cookie, host })).status, 403, `a phone Host on /data: ${host}`);
+    }
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #623: with --share, the private name sees the page only with the link's token, and a
+// phone answer is logged like a desktop one. The origin check stays: an HTTPS page on
+// the private name may change things; any other origin may not.
+test('board share: the token and the Origin still hold over the private name', async () => {
+  const sandbox = makeSandbox();
+  const gh: Gh = () => '[]';
+  const { server, url, shareUrl } = await startBoardServer(sandbox.repo, sandbox.env, gh, { share: 'machine.tailnet-name.ts.net' });
+  try {
+    assert.match(shareUrl ?? '', /^https:\/\/machine\.tailnet-name\.ts\.net\/\?token=[0-9a-f]{32}$/, 'the phone link is HTTPS on the private name');
+    const base = url.split('?')[0];
+    const token = new URL(url).searchParams.get('token') ?? '';
+    const host = 'machine.tailnet-name.ts.net';
+    assert.equal((await boardGet(base, { host })).status, 403, '/ without the token over the private name');
+    assert.equal((await boardGet(`${base}data`, { host })).status, 403, '/data without the token over the private name');
+    assert.equal((await boardGet(`${base}?token=wrong`, { host })).status, 403, 'a wrong token over the private name');
+    const first = await boardGet(`${base}?token=${token}`, { host });
+    assert.equal(first.status, 303, first.text);
+    assert.equal((first.headers['set-cookie'] ?? '').toLowerCase().includes('domain='), false, 'the phone cookie stays on the private name');
+    const cookie = `yokoten-board=${/yokoten-board=([0-9a-f]{32})/.exec(first.headers['set-cookie'] ?? '')?.[1] ?? ''}`;
+    assert.equal((await boardGet(base, { host, cookie })).status, 200, 'the page with the cookie over the private name');
+    assert.equal((await boardGet(base, { host: `machine.tailnet-name.ts.net:${(server.address() as { port: number }).port}`, cookie })).status, 403, 'the private name with the inner port is not the phone address');
+    // An answer from the phone's page reaches the same handler and the same log.
+    const good = await postBoardForm(`${base}agents/limits`, 'maxAgents=3', { host, cookie, origin: 'https://machine.tailnet-name.ts.net' });
+    assert.equal(good.status, 200, good.text);
+    assert.match(readFileSync(join(sandbox.repo, '.yokoten-board.log'), 'utf8'), /limits maxAgents 3/);
+    assert.equal((await postBoardForm(`${base}agents/limits`, 'maxAgents=2', { host, cookie, origin: 'https://evil.example' })).status, 403, 'another Origin may not change things');
+    assert.equal((await postBoardForm(`${base}agents/limits`, 'maxAgents=2', { host, origin: 'https://machine.tailnet-name.ts.net' })).status, 403, 'the Origin alone is not a key');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #623: --share takes a plain private name. A scheme, a port, a loopback name or an
+// address would hide what the board opens, so each one is refused.
+test('board share: only a plain private network name is taken', () => {
+  assert.equal(boardShareName('machine.tailnet-name.ts.net'), 'machine.tailnet-name.ts.net');
+  assert.equal(boardShareName('Machine.Example.'), 'machine.example', 'letters go lower and the last dot goes');
+  for (const given of ['', '   ', 'localhost', 'board.localhost', '192.0.2.10', 'https://machine.example', 'machine.example:443', 'machine.example/path', '-machine.example', 'machine..example', 'machine example']) {
+    assert.equal(boardShareName(given), null, `refused: ${JSON.stringify(given)}`);
   }
 });
 
