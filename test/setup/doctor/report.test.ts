@@ -928,7 +928,7 @@ test('doctor: with "notNow" ci the default-branch lookup leaves out the Dependab
 // #453: full doctor in an empty repo started 31 child processes. git read the index three
 // times, and several config keys twice. Each git read now runs once per run, and the
 // config values come from one `git config --list`.
-test('doctor: full doctor in an empty repo starts each git read once, nine child processes in all (#453)', () => {
+test('doctor: full doctor in an empty repo starts each git read once, ten child processes in all (#453)', () => {
   const sandbox = makeSandbox();
   // As the command runs it: the environment is the process's own (src/commands/shared.ts).
   const saved = process.env.YOKOTEN_TEMP_DIRS;
@@ -953,7 +953,7 @@ test('doctor: full doctor in an empty repo starts each git read once, nine child
     else process.env.YOKOTEN_TEMP_DIRS = saved;
   }
   assert.deepEqual(runs.filter((run, i) => runs.indexOf(run) !== i), [], `a git read ran twice:\n${runs.join('\n')}`);
-  assert.equal(runs.length, 9, runs.join('\n'));
+  assert.equal(runs.length, 10, runs.join('\n'));
 });
 
 // ---- The sandbox step (#589): doctor names the one missing or too-wide sandbox. ----

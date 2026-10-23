@@ -2,7 +2,7 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -256,6 +256,43 @@ test('doctor: in a yokoten checkout, a plugin commit behind the default branch i
   install(first);
   sandbox.git('branch', '-q', '-m', 'main', 'trunk');
   assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, olderNote, 'no main ref');
+});
+
+test('doctor: counts merge commits whose time is not UTC, and prints one command that shows them (#760)', async () => {
+  const withMerge = (zone: string | null) => {
+    const sandbox = makeSandbox();
+    sandbox.write('one.md', 'one\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'one');
+    sandbox.git('checkout', '-qb', 'topic');
+    sandbox.write('two.md', 'two\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'two');
+    sandbox.git('checkout', '-q', 'main');
+    const extra = zone === null ? {} : { GIT_AUTHOR_DATE: `2026-10-18T09:00:00${zone}`, GIT_COMMITTER_DATE: `2026-10-18T09:00:00${zone}` };
+    const merge = spawnSync('git', ['merge', '--no-ff', '-q', '-m', 'merge topic', 'topic'], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra }, encoding: 'utf8' });
+    assert.equal(merge.status, 0, merge.stderr);
+    return sandbox;
+  };
+
+  // Positive control: one merge in another zone is counted, and the zone itself is not printed.
+  const zoned = withMerge('+0900');
+  const out = (await zoned.call(['doctor'])).stdout;
+  const line = out.split('\n').find((text) => text.includes('time-zone:'));
+  assert.ok(line, out);
+  assert.match(line, /^ {2}note {4}time-zone: 1 merge commit\(s\) among the last 200 commits on main carry an author or committer time zone other than UTC; see them with /);
+  assert.doesNotMatch(out, /\+0900/, 'the time zone value is never printed');
+  // The command doctor prints really shows the merge commit.
+  const command = /`(git log[^`]+)`/.exec(line)?.[1];
+  assert.ok(command, line);
+  if (process.platform !== 'win32') {
+    const shown = execFileSync('sh', ['-c', command], { cwd: zoned.repo, env: zoned.env, encoding: 'utf8' });
+    assert.match(shown, new RegExp(execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: zoned.repo, env: zoned.env, encoding: 'utf8' }).trim()));
+  }
+
+  // All UTC: no line at all.
+  const plain = withMerge(null);
+  assert.doesNotMatch((await plain.call(['doctor'])).stdout, /time-zone:/);
 });
 
 test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
