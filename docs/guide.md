@@ -131,9 +131,9 @@ hand. They never hold the stage. A self-hosted server's name is never printed: d
 it "this host". A Gitea adapter comes next (issue #505).
 
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
-`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, and the tier labels
-`tier A`, `tier B` and `tier C`. `init` shows which are missing, and `init --github --yes` adds
-them.
+`docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, `security`, and the
+tier labels `tier A`, `tier B` and `tier C`. `init` shows which are missing, and
+`init --github --yes` adds them.
 
 `review` in stage 4 reads the server the same way. It is done when the default branch's ruleset, or
 its branch protection, asks for at least one approving review. GitHub does not let you
