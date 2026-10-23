@@ -13,12 +13,11 @@ import { findTempDirs } from '../advice/unsaved.ts';
 import { compareVersions } from '../init.ts';
 import { machineStateFile, readMachineState, saveMachineState, writeFileAtomic } from '../install.ts';
 import { type Practice } from './checks.ts';
+import { type DiskSpace, formatSpace, HOST_DISK_FIX, HOST_DRIVE, hostDiskCache, type HostDiskCache, isFreshReading, isLowOnSpace } from './host-disk.ts';
 
-/** Free and total bytes of one filesystem. */
-export interface DiskSpace {
-  free: number;
-  size: number;
-}
+// The disk limit, the kept host reading and the fix live in host-disk.ts, which the guard
+// reads too (#401). They keep their names here, where doctor and its tests found them.
+export { type DiskSpace, WSL_DISK_GUIDE, HOST_DISK_FIX, type HostDiskCache, isLowOnSpace, formatSpace } from './host-disk.ts';
 
 /** What the machine notes read, so a test (and the self-test) can hand in a fake machine. */
 export interface MachineProbe {
@@ -76,21 +75,6 @@ const WSL_INTEROP_FILE = '/proc/sys/fs/binfmt_misc/WSLInterop';
 
 /** Where WSL keeps each distro's settings, its disk file's folder among them. */
 const LXSS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss';
-
-/**
- * Whether a disk is low on space. The default warns below 20 GB when that is also under
- * 10% of the disk. So a 250 GB drive with nothing free warns, and a 2 TB drive with
- * 150 GB free does not; a small disk is not warned at once. YOKOTEN_MIN_FREE_GB, when
- * set, is the one limit instead, in GB; 0 turns the warning off.
- */
-export function isLowOnSpace(space: DiskSpace, env: Env): boolean {
-  const limit = Number(env.YOKOTEN_MIN_FREE_GB);
-  if (env.YOKOTEN_MIN_FREE_GB?.trim() && Number.isFinite(limit) && limit >= 0) return space.free < limit * GB;
-  return space.free < 20 * GB && space.free < space.size / 10;
-}
-
-const formatGb = (bytes: number) => `${bytes < 10 * GB ? (bytes / GB).toFixed(1) : Math.round(bytes / GB)} GB`;
-const formatSpace = (space: DiskSpace) => `${formatGb(space.free)} free of ${formatGb(space.size)}`;
 
 /** Whether this Linux runs in WSL: WSL sets WSL_DISTRO_NAME, and the interop file is there. */
 export const isWsl = (env: Env, probe: MachineProbe): boolean => Boolean(env.WSL_DISTRO_NAME) || probe.readText(WSL_INTEROP_FILE) !== null;
@@ -168,34 +152,19 @@ export function readHostDisk(env: Env, probe: MachineProbe): HostDiskRead {
   }
 }
 
-/** The last reading of the Windows drive, kept so a session can repeat it without reg.exe. */
-export interface HostDiskCache {
-  free: number;
-  size: number;
-  /** When full doctor read it, in UTC. */
-  readAt: string;
-  distro: string;
-  version: number;
-}
-
 /** The last reading, or null when there is none or the file is broken. */
 export function readHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
   try {
-    const cache = readMachineState(machineStateFile(env), probe).hostDisk as HostDiskCache | undefined;
-    return cache && typeof cache.free === 'number' && typeof cache.size === 'number' && typeof cache.readAt === 'string' ? cache : null;
+    return hostDiskCache(readMachineState(machineStateFile(env), probe).hostDisk);
   } catch {
     return null;
   }
 }
 
-/** A kept reading older than this is not repeated: the drive may have changed since. */
-const MAX_READING_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
 /** The last reading when it is from the last 7 days, or null. */
 export function readFreshHostCache(env: Env, probe: MachineProbe): HostDiskCache | null {
   const cache = readHostCache(env, probe);
-  const age = cache ? probe.now().getTime() - Date.parse(cache.readAt) : Number.NaN;
-  return cache && Number.isFinite(age) && age >= 0 && age <= MAX_READING_AGE_MS ? cache : null;
+  return cache && isFreshReading(cache, probe.now()) ? cache : null;
 }
 
 /** Keep the last reading. A file that can't be written is left: a session then says nothing about the host. */
@@ -214,17 +183,7 @@ export function diskSpaceNote(where: string, space: DiskSpace, env: Env, fix: st
   return isLowOnSpace(space, env) ? finding('disk-space', `${where} has ${formatSpace(space)}`, fix) : null;
 }
 
-/** Microsoft's guide to a WSL disk file: how to compact it, and how to move it. */
-export const WSL_DISK_GUIDE = 'https://learn.microsoft.com/windows/wsl/disk-space';
 
-/**
- * The fix for a full Windows drive. A WSL 2 disk file only grows, so the fix points to
- * Microsoft's guide, never to a command: its sparse mode is marked unsafe (record 0012).
- */
-export const HOST_DISK_FIX =
-  `free some space on that drive in Windows. The VM's disk file only grows. Deleting files inside the VM frees nothing on the Windows drive. Back up your work to another drive first. Then free space on the Windows drive, or shrink or move the disk file: ${WSL_DISK_GUIDE}`;
-
-const HOST_DRIVE = 'the Windows drive that holds this Linux disk';
 
 /**
  * The disk notes: the disk that holds the repo, and in WSL the Windows drive under it.

@@ -17,10 +17,10 @@ on:
 # No job gets a permission it does not name.
 permissions: {}
 # A newer run cancels the one still going for the same pull request: only its newest
-# commit can merge. A push to main never cancels a run: every commit stays in history,
-# and a cancelled run leaves a ✗ on it (#660).
+# commit can merge. Every other event gets a group of its own, so a run on main is never
+# cancelled, waiting or running: every commit stays in history (#660, #798).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under

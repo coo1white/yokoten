@@ -72,6 +72,9 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 /** The mark's file name, in the worktree's own git folder. */
 export const WORKER_MARK = 'yokoten-worker';
 
+/** The file in a checkout's git folder that holds a worker's done-when command. */
+export const DONE_WHEN_FILE = 'yokoten-done-when';
+
 // ---- The worker list (#566) ----
 //
 // The mark in the git folder goes with the worktree: moving `.git` away takes it too.
@@ -265,9 +268,10 @@ const DOT_GIT_LIMIT = 4096;
 
 /**
  * What the `.git` at or above `folder` says, with no git process: `folder`, a main checkout's
- * git folder; `file`, the git folder a linked worktree's or a submodule's `.git` names (it may
- * be gone); `broken`, a `.git` that is no folder and no small readable file with a gitdir
- * line; null outside a checkout.
+ * git folder (it holds the `HEAD`, `objects` and `refs` git needs); `file`, the git folder a
+ * linked worktree's or a submodule's `.git` names (it may be gone); `broken`, a `.git` that is
+ * no folder and no small readable file with a gitdir line, a folder the guard cannot read, or
+ * a folder that kept the worker's own files but lost what git needs; null outside a checkout.
  */
 export type GitLink = { kind: 'folder' | 'file'; top: string; gitDir: string } | { kind: 'broken'; top: string } | null;
 
@@ -282,13 +286,55 @@ export function gitLinkAbove(folder: string): GitLink {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return { kind: 'broken', top: dir };
     }
     if (stats) {
-      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) return { kind: 'folder', top: dir, gitDir: dotGit };
-      const text = readSmallFile(dotGit);
-      const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
-      return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) {
+        const isGit = gitFolderState(dotGit);
+        if (isGit === 'yes') return { kind: 'folder', top: dir, gitDir: dotGit };
+        if (isGit === 'broken') return { kind: 'broken', top: dir };
+        // An empty `.git` is not a checkout: walk on past it (#746).
+      } else {
+        const text = readSmallFile(dotGit);
+        const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
+        return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      }
     }
     if (dirname(dir) === dir) return null;
   }
+}
+
+/**
+ * Whether a `.git` folder is one git would use. `broken` when the guard can't read it, or when
+ * the folder carries the worker's own files but git would not use it: a desk must not become
+ * its parent's checkout (#746). The caller then fails closed. No git process runs.
+ */
+function gitFolderState(gitDir: string): 'yes' | 'no' | 'broken' {
+  try {
+    if (isGitFolder(gitDir)) return 'yes';
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+  }
+  for (const name of [WORKER_MARK, DONE_WHEN_FILE]) {
+    try {
+      statSync(join(gitDir, name));
+      return 'broken';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+  }
+  return 'no';
+}
+
+/**
+ * Whether git itself would use this folder: `HEAD` a regular file (not a symlink) whose text is
+ * a `ref:` line or a commit sha, plus `objects` and `refs` folders. Git ignores anything less
+ * and walks up to the parent checkout, so the guard must too (#746). A reftable store is not
+ * checked: git still writes a `HEAD` line beside it, and no git here has `--ref-format`.
+ */
+function isGitFolder(gitDir: string): boolean {
+  const head = join(gitDir, 'HEAD');
+  if (!lstatSync(head).isFile()) return false;
+  const text = readSmallFile(head)?.trim() ?? '';
+  if (!/^ref:[ \t]*\S/.test(text) && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(text)) return false;
+  return statSync(join(gitDir, 'objects')).isDirectory() && statSync(join(gitDir, 'refs')).isDirectory();
 }
 
 function isFolder(path: string): boolean {
@@ -5067,6 +5113,77 @@ export function findProgramPlaces(words: string[]): { word: string; index: numbe
     }
   }
   return programs;
+}
+
+// ---- Heavy jobs (#401) ----
+//
+// A build, a test suite, a package install or a container build can fill a disk. When the
+// kept reading of the Windows drive under a WSL disk file is low, the hook asks the owner
+// before one of these starts. Only a program counts, as for a blocked command: a text that
+// merely mentions `npm test` is no heavy job, and a shell the guard cannot read names none.
+
+const PACKAGE_PROGRAMS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+const PACKAGE_INSTALLS = new Set(['install', 'i', 'ci', 'add', 'remove', 'rm', 'uninstall', 'update', 'up', 'upgrade', 'rebuild', 'link', 'dedupe', 'prune', 'pack']);
+const PACKAGE_RUNS = new Set(['run', 'run-script']);
+// A script whose name says it builds, tests or checks the project.
+const HEAVY_SCRIPTS = /(^|[:._-])(build|test|lint|check|typecheck|verify|ci)([:._-]|$)/i;
+// A program that is a heavy job on its own (`null`), or the subcommands that are one.
+const HEAVY_PROGRAMS: Record<string, ReadonlySet<string> | null> = {
+  make: null, ninja: null, bazel: null, cmake: null, meson: null, tsc: null,
+  jest: null, vitest: null, mocha: null, pytest: null, phpunit: null, rspec: null,
+  mvn: null, mvnw: null, gradle: null, gradlew: null, buildah: null,
+  cargo: new Set(['build', 'test', 'check', 'clippy', 'bench', 'install']),
+  go: new Set(['build', 'test', 'install', 'generate']),
+  dotnet: new Set(['build', 'test', 'restore', 'publish', 'pack']),
+  docker: new Set(['build', 'buildx', 'pull', 'run', 'compose']),
+  podman: new Set(['build', 'pull', 'run', 'compose']),
+  nerdctl: new Set(['build', 'pull', 'run', 'compose']),
+};
+// A version or help word asks nothing about the project.
+const PROBES = new Set(['--version', '-v', '-V', '--help', '-h']);
+
+/** The package manager's job when it installs or runs a build or test script, or null. */
+function packageJob(name: string, args: string[]): string | null {
+  const first = args.find((arg) => !arg.startsWith('-'));
+  if (first === undefined) return null;
+  if (PACKAGE_INSTALLS.has(first)) return `${name} ${first}`;
+  if (first === 'test' || first === 'build') return `${name} ${first}`;
+  if (name === 'npm' && first === 't') return 'npm test';
+  if (!PACKAGE_RUNS.has(first)) return null;
+  const script = args.slice(args.indexOf(first) + 1).find((arg) => !arg.startsWith('-'));
+  return script !== undefined && HEAVY_SCRIPTS.test(script) ? `${name} ${first} ${script}` : null;
+}
+
+/** The heavy job the program at `index` runs, as a person reads it, or null. */
+function heavyAt(words: string[], index: number): string | null {
+  const program = programName(words[index]);
+  const args = words.slice(index + 1);
+  if (program === 'node') return args.some((arg) => arg === '--test' || arg.startsWith('--test=')) ? 'node --test' : null;
+  if (PACKAGE_PROGRAMS.has(program)) return packageJob(program, args);
+  const subcommands = HEAVY_PROGRAMS[program];
+  if (subcommands === undefined) return null;
+  if (args[0] !== undefined && PROBES.has(args[0])) return null;
+  if (subcommands === null) return program;
+  const sub = args.find((arg) => !arg.startsWith('-'));
+  return sub !== undefined && subcommands.has(sub) ? `${program} ${sub}` : null;
+}
+
+/**
+ * The heavy job `command` starts, such as `npm test`, or null. It reads the command's
+ * programs, not its text, so `echo npm test` names none.
+ */
+export function findHeavyJob(command: string): string | null {
+  try {
+    for (const words of commandWords(command)) {
+      for (const place of findProgramPlaces(words)) {
+        const job = heavyAt(words, place.index);
+        if (job !== null) return job;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 // Adds the program of the command that starts at `index` to `programs`, after
