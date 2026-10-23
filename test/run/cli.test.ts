@@ -17,6 +17,7 @@ import {
   join,
 } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import {
   at,
   CLI,
@@ -35,6 +36,9 @@ import {
   editDistance,
   guardCommand,
   HELP_OPTIONS,
+  PLUGIN_COPY_GONE,
+  PLUGIN_GUARD_MISSING,
+  PLUGIN_SESSION_MISSING,
   runs,
   subcommand,
 } from '../../src/run/cli.ts';
@@ -290,8 +294,8 @@ test('help: a typo in a command or an option names the closest one; a far one li
 });
 
 // A guard that crashes, runs out of memory or is killed must refuse the call: the agents
-// run a call on any exit but 2 (#260). Each tool-call hook, as init, install and the plugin
-// write it, runs through sh with its runtime replaced by a script that ends one way.
+// run a call on any exit but 2 (#260). Each direct tool-call hook runs through sh, with its
+// runtime replaced by a script that ends one way. The plugin guard goes through runLaunch.
 test('hooks: a tool-call guard that fails refuses the call; the stop check does not (#260)', async () => {
   const sandbox = makeSandbox();
   // Codex and Gemini CLI are installed, so install writes their home hooks too.
@@ -311,6 +315,8 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   const plugin = (manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command as string).replaceAll(PLUGIN_ROOT, '$PLUGIN');
   const calls = [...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1), ...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool, plugin];
   assert.equal(calls.length, 7);
+  // The shell runs the six direct guards. The plugin guard is runLaunch, below.
+  const directCalls = calls.filter((command) => command !== plugin);
   // The project, the home and the plugin all sit under a path with a space.
   const base = join(sandbox.home, 'a b');
   const repo = join(base, 'my repo');
@@ -327,6 +333,14 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
     }
   };
   const env = { ...sandbox.env, HOME: home, CLAUDE_PROJECT_DIR: repo, GEMINI_PROJECT_DIR: repo, PLUGIN: pluginRoot };
+  // The plugin command runs bin/launch.mjs, which then runs yokoten.mjs (#706).
+  mkdirSync(join(pluginRoot, 'bin'), { recursive: true });
+  writeFileSync(join(pluginRoot, 'bin', 'launch.mjs'), readFileSync(join(dirname(CLI), 'launch.mjs')));
+  // The plugin guard is runLaunch with this temp home. A machine install stays outside this check (#706).
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const pluginBinary = join(pluginRoot, 'bin', 'yokoten.mjs');
+  const pluginRun = () => launch.runLaunch({ mode: 'tool', fallback: pluginBinary, args: ['hook', '--commands-only'], env, input: '{}', cwd: repo, accountHome: home });
+  const expectPlugin = (expected: unknown[]) => assert.deepEqual(pick(pluginRun()), expected, 'plugin');
   // Gemini CLI puts $GEMINI_PROJECT_DIR in the command shell-quoted itself, as shell-quote writes it.
   const quoted = `'${repo.replaceAll("'", "'\\''")}'`;
   // dash (Linux's /bin/sh) and bash each print a job line for a killed child; bash's holds
@@ -340,24 +354,36 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   const refused = (code: number) => `yokoten's guard failed (exit ${code}), so the command is refused; run \`yokoten doctor\`\n`;
   // A failure gives our one line on stderr and nothing else: node's own error is dropped.
   runtime("process.stderr.write('a trace with /a/path\\n'); process.exit(1);\n");
-  each(calls, [2, '', refused(1)]);
+  each(directCalls, [2, '', refused(1)]);
+  expectPlugin([2, '', refused(1)]);
   runtime("process.stderr.write('/a/path\\n'); process.kill(process.pid, 'SIGKILL');\n");
-  each(calls, [2, '', refused(137)]);
+  each(directCalls, [2, '', refused(137)]);
+  expectPlugin([2, '', refused(137)]);
   // A guard's own answer passes as it is, stdout and stderr byte for byte.
   runtime("process.stdout.write('{\"a\":1}\\n\\n'); process.stderr.write('note\\n\\n'); process.exit(0);\n");
-  each(calls, [0, '{"a":1}\n\n', 'note\n\n']);
+  each(directCalls, [0, '{"a":1}\n\n', 'note\n\n']);
+  expectPlugin([0, '{"a":1}\n\n', 'note\n\n']);
   runtime("process.stdout.write('{}'); process.stderr.write('no\\n'); process.exit(2);\n");
-  each(calls, [2, '{}', 'no\n']);
+  each(directCalls, [2, '{}', 'no\n']);
+  expectPlugin([2, '{}', 'no\n']);
   // A runaway read stops at the small heap and is refused, without swapping, and without
   // the heap trace V8 writes.
   runtime('const a = []; for (;;) a.push(new Array(1e6).fill(1));\n');
-  each([project.PreToolUse[0], plugin], [2, '', refused(134)]);
+  each([project.PreToolUse[0]], [2, '', refused(134)]);
+  expectPlugin([2, '', refused(134)]);
   // No node on the agent's PATH: one line, and the call goes on, so `yokoten doctor` can run.
   const noNode = join(base, 'no-node');
   mkdirSync(noNode);
   symlinkSync(spawnSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim(), join(noNode, 'git'));
   runtime('process.exit(0);\n');
-  for (const sh of shells) for (const command of calls) assert.deepEqual(pick(shell(command, sh, { PATH: noNode })), [1, '', `${MISSING_NODE}\n`], `${sh}: ${command}`);
+  for (const sh of shells) for (const command of directCalls) assert.deepEqual(pick(shell(command, sh, { PATH: noNode })), [1, '', `${MISSING_NODE}\n`], `${sh}: ${command}`);
+  // The plugin command is `node bin/launch.mjs`. With no node, the shell cannot print MISSING_NODE.
+  // Exit is not 2, so the call still goes on.
+  for (const sh of shells) {
+    const result = shell(plugin, sh, { PATH: noNode });
+    assert.notEqual(result.status, 0, sh);
+    assert.notEqual(result.status, 2, `${sh}: a missing node does not block every call`);
+  }
   // The stop check and the session doctor pass a failure on: exit 2 at stop would send the
   // agent back to work on a guard that cannot run.
   runtime('process.exit(1);\n');
@@ -369,6 +395,308 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
   const machineLine = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again\n';
   each([...project.PreToolUse, ...codex.PreToolUse.slice(-1), ...gemini.BeforeTool.slice(-1)], [1, '', `${MISSING_PROJECT}\n`]);
   each([...user.PreToolUse, ...codexUser.PreToolUse, ...geminiUser.BeforeTool], [1, '', machineLine]);
+});
+
+// The plugin hook reads installed_plugins.json on every call (#706). A path is used only
+// when it is a real file inside Claude's plugin cache. Anything else falls back to the
+// session copy, or refuses when that file is gone too. The checks live in bin/launch.mjs.
+test('plugin launcher: a safe cache copy runs, and any other path does not (#706)', async () => {
+  const sandbox = makeSandbox();
+  const home = sandbox.home;
+  const rootDir = join(sandbox.repo, 'plugin-root');
+  const rootBinary = join(rootDir, 'bin', 'yokoten.mjs');
+  const launchFile = join(dirname(CLI), 'launch.mjs');
+  const pluginsDir = join(home, '.claude', 'plugins');
+  const pluginsFile = join(pluginsDir, 'installed_plugins.json');
+  const cache = join(pluginsDir, 'cache', 'yokoten', 'yokoten', 'abc123');
+  const cacheBinary = join(cache, 'bin', 'yokoten.mjs');
+  const marker = join(sandbox.repo, 'marker');
+  const outside = join(sandbox.repo, 'placed', 'yokoten', 'yokoten', 'abc123');
+  const hooks = manifest('plugin.json').hooks as { PreToolUse: { hooks: { command: string }[] }[]; SessionStart: { hooks: { command: string }[] }[] };
+  const toolCommand = hooks.PreToolUse[0].hooks[0].command;
+  const sessionCommand = hooks.SessionStart[0].hooks[0].command;
+  const launchText = readFileSync(launchFile, 'utf8');
+  const launchLines = launchText.endsWith('\n') ? launchText.split('\n').length - 1 : launchText.split('\n').length;
+  assert.ok(launchLines < 150, `bin/launch.mjs is ${launchLines} lines`);
+  const script = (file: string, token: string) => {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `process.stdout.write(${JSON.stringify(token)} + ' ' + process.argv.slice(2).join(' '));\n`);
+  };
+  const writePlugins = (text: string) => {
+    mkdirSync(pluginsDir, { recursive: true });
+    writeFileSync(pluginsFile, text);
+  };
+  const install = (entry: unknown, id = 'yokoten@yokoten') => writePlugins(JSON.stringify({ plugins: { [id]: [entry] } }));
+  const reset = () => {
+    rmSync(join(home, '.claude'), { recursive: true, force: true });
+    rmSync(rootDir, { recursive: true, force: true });
+    rmSync(marker, { force: true });
+    rmSync(join(sandbox.repo, 'placed'), { recursive: true, force: true });
+    rmSync(join(sandbox.repo, 'linked'), { recursive: true, force: true });
+    rmSync(join(sandbox.repo, 'evil.mjs'), { force: true });
+    rmSync(join(sandbox.repo, 'fake-home'), { recursive: true, force: true });
+    rmSync(join(sandbox.repo, 'fake-marker'), { force: true });
+  };
+  // Resolver cases call runLaunch in this process (#475). The shell below is a child:
+  // only a shell runs the hook command.
+  const launch = await import(pathToFileURL(launchFile).href);
+  const run = (command: string) => {
+    const mode = command === sessionCommand ? 'session' : 'tool';
+    const yokotenArgs = mode === 'session' ? ['doctor', '--session'] : ['hook', '--commands-only'];
+    return launch.runLaunch({ mode, fallback: rootBinary, args: yokotenArgs, env: sandbox.env, input: '{}', cwd: sandbox.repo, accountHome: home });
+  };
+  const shell = (command: string, sh = '/bin/sh', extra: Record<string, string> = {}) => spawnSync(command, { shell: sh, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: rootDir, ...extra }, input: '{}', encoding: 'utf8', timeout: 15000 });
+  const withRoot = () => script(rootBinary, 'root');
+  const withCache = () => script(cacheBinary, 'cache');
+  const fakeHome = join(sandbox.repo, 'fake-home');
+  const fakeMarker = join(sandbox.repo, 'fake-marker');
+  const plantFake = () => {
+    const fakePlugins = join(fakeHome, '.claude', 'plugins');
+    const fakeCache = join(fakePlugins, 'cache', 'yokoten', 'yokoten', 'v1');
+    mkdirSync(join(fakeCache, 'bin'), { recursive: true });
+    writeFileSync(join(fakeCache, 'bin', 'yokoten.mjs'), `require('node:fs').writeFileSync(${JSON.stringify(fakeMarker)}, 'ran');\nprocess.stdout.write('fake hook --commands-only');\n`);
+    writeFileSync(join(fakePlugins, 'installed_plugins.json'), JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'user', installPath: fakeCache, version: 'v1' }] } }));
+  };
+
+  reset();
+  withRoot();
+  withCache();
+  install({ scope: 'user', installPath: cache, version: 'abc123', gitCommitSha: 'abc123' });
+  assert.deepEqual(pick(run(toolCommand)), [0, 'cache hook --commands-only', ''], 'safe install path');
+  assert.deepEqual(pick(run(sessionCommand)), [0, 'cache doctor --session', ''], 'safe session');
+
+  reset();
+  withRoot();
+  assert.deepEqual(pick(run(toolCommand)), [0, 'root hook --commands-only', ''], 'no install file');
+
+  reset();
+  withRoot();
+  withCache();
+  install({ scope: 'user', version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'cache hook --commands-only', 'version only');
+
+  reset();
+  withRoot();
+  const other = join(pluginsDir, 'cache', 'other', 'yokoten', 'abc123');
+  script(join(other, 'bin', 'yokoten.mjs'), 'other');
+  install({ scope: 'user', installPath: other, version: 'abc123' }, 'yokoten@other');
+  assert.equal(run(toolCommand).stdout, 'other hook --commands-only', 'marketplace from the id');
+
+  reset();
+  withRoot();
+  withCache();
+  script(join(outside, 'bin', 'yokoten.mjs'), 'outside');
+  writePlugins(JSON.stringify({ plugins: { 'yokoten@yokoten': [{ scope: 'project', installPath: outside, version: 'abc123' }, { scope: 'user', installPath: cache, version: 'abc123' }] } }));
+  assert.equal(run(toolCommand).stdout, 'cache hook --commands-only', 'user scope wins');
+
+  reset();
+  withRoot();
+  script(join(cache, 'bin', 'inner.mjs'), 'inner');
+  symlinkSync(join(cache, 'bin', 'inner.mjs'), cacheBinary);
+  install({ scope: 'user', installPath: cache, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'inner hook --commands-only', 'symlink that stays in the cache');
+
+  // A path outside the cache is not run. With a real version folder, that folder is used.
+  reset();
+  withRoot();
+  withCache();
+  script(join(outside, 'bin', 'yokoten.mjs'), 'outside');
+  install({ scope: 'user', installPath: outside, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'cache hook --commands-only', 'outside path yields to the version folder');
+  rmSync(cacheBinary);
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'outside path falls back');
+
+  reset();
+  withRoot();
+  const linked = join(sandbox.repo, 'linked');
+  script(join(linked, 'bin', 'yokoten.mjs'), 'linked');
+  mkdirSync(dirname(cache), { recursive: true });
+  symlinkSync(linked, cache);
+  install({ scope: 'user', installPath: cache, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'directory symlink leaves the cache');
+
+  reset();
+  withRoot();
+  mkdirSync(join(cache, 'bin'), { recursive: true });
+  const evil = join(sandbox.repo, 'evil.mjs');
+  writeFileSync(evil, "process.stdout.write('evil hook --commands-only');\n");
+  symlinkSync(evil, cacheBinary);
+  install({ scope: 'user', installPath: cache, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'file symlink leaves the cache');
+
+  reset();
+  withRoot();
+  script(join(pluginsDir, 'cache', 'yokoten', 'bin', 'yokoten.mjs'), 'escaped');
+  install({ scope: 'user', version: '..' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'version dotdot');
+  // Kept as text: path.join would remove the ".." before the launcher ever saw it.
+  install({ scope: 'user', installPath: `${cache}/../..`, version: '..' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'install path dotdot');
+
+  reset();
+  withRoot();
+  install({ scope: 'user', installPath: `${cache}"; touch ${marker}; echo "`, version: 'abc123' });
+  let result = run(toolCommand);
+  assert.equal(result.stdout, 'root hook --commands-only', 'quote in installPath');
+  assert.equal(existsSync(marker), false, 'a quote does not run');
+  install({ scope: 'user', installPath: `${cache}\n; touch ${marker}`, version: 'abc123' });
+  result = run(toolCommand);
+  assert.equal(result.stdout, 'root hook --commands-only', 'newline in installPath');
+  assert.equal(existsSync(marker), false, 'a newline does not run');
+
+  reset();
+  withRoot();
+  writePlugins(`{\ntouch ${marker}\n`);
+  assert.deepEqual(pick(run(toolCommand)), [0, 'root hook --commands-only', ''], 'broken json');
+  assert.equal(existsSync(marker), false, 'broken json does not run');
+
+  reset();
+  withRoot();
+  mkdirSync(cache, { recursive: true });
+  install({ scope: 'user', installPath: cache, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'missing mjs');
+
+  reset();
+  withRoot();
+  withCache();
+  install({ scope: 'project', installPath: cache, version: 'abc123', projectPath: sandbox.repo });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'project scope is not used');
+
+  reset();
+  withRoot();
+  install({ scope: 'user', installPath: 4, version: 4 });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'odd entry');
+
+  // A segment is a name. A colon or a Windows device name is refused (#706).
+  reset();
+  withRoot();
+  const badVersion = (version: string, label: string) => {
+    const folder = join(pluginsDir, 'cache', 'yokoten', 'yokoten', version);
+    script(join(folder, 'bin', 'yokoten.mjs'), 'bad');
+    install({ scope: 'user', installPath: folder, version });
+    assert.equal(run(toolCommand).stdout, 'root hook --commands-only', label);
+  };
+  badVersion('ab:c', 'colon in a segment');
+  badVersion('CON', 'device name CON');
+  badVersion('nul', 'device name nul');
+  badVersion('NUL.txt', 'device name with an extension');
+  badVersion('COM1', 'device name COM1');
+  badVersion('LPT9', 'device name LPT9');
+  badVersion('aux', 'device name aux');
+  badVersion('PRN', 'device name PRN');
+  badVersion('CON ', 'device name with a trailing space');
+  badVersion('CON.', 'device name with a trailing dot');
+  reset();
+  withRoot();
+  const conFolder = join(pluginsDir, 'cache', 'CON', 'yokoten', 'yokoten', 'abc123');
+  script(join(conFolder, 'bin', 'yokoten.mjs'), 'device');
+  install({ scope: 'user', installPath: conFolder, version: 'abc123' });
+  assert.equal(run(toolCommand).stdout, 'root hook --commands-only', 'CON segment inside the cache');
+
+  // HOME is not the plugin root. The account home still supplies the cache copy (#706).
+  reset();
+  withRoot();
+  withCache();
+  install({ scope: 'user', installPath: cache, version: 'abc123' });
+  plantFake();
+  const attacked = launch.runLaunch({ mode: 'tool', fallback: rootBinary, args: ['hook', '--commands-only'], env: { ...sandbox.env, HOME: fakeHome }, input: '{}', cwd: sandbox.repo, accountHome: home });
+  assert.equal(attacked.stdout, 'cache hook --commands-only', 'HOME is not the plugin root');
+  assert.equal(existsSync(fakeMarker), false, 'a fake HOME does not run');
+
+  reset();
+  script(join(outside, 'bin', 'yokoten.mjs'), 'outside');
+  install({ scope: 'user', installPath: outside, version: 'abc123' });
+  result = run(toolCommand);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [2, '', `${PLUGIN_GUARD_MISSING}\n`], 'no safe binary refuses');
+  assert.equal(result.stderr.includes(home), false, 'the refusal names no home');
+  assert.equal(result.stderr.includes('~'), false, 'the refusal names no home mark');
+  result = run(sessionCommand);
+  assert.deepEqual([result.status, result.stdout, result.stderr], [0, `${PLUGIN_SESSION_MISSING}\n`, ''], 'no safe binary still starts');
+  assert.equal(result.stdout.includes(home), false, 'the session line names no home');
+  assert.equal(result.stdout.includes('/'), false, 'the session line names no path');
+  assert.equal(result.stdout.includes('outside'), false, 'the outside copy did not run');
+
+  reset();
+  mkdirSync(dirname(rootBinary), { recursive: true });
+  writeFileSync(rootBinary, 'process.stderr.write("session-down\\n"); process.exit(1);\n');
+  assert.deepEqual(pick(run(sessionCommand)), [1, '', 'session-down\n'], 'a session failure is not a refusal');
+
+  // The hook command itself: a deleted plugin folder has no launcher, so it fails closed.
+  reset();
+  const gone = `${PLUGIN_COPY_GONE}\n`;
+  for (const sh of ['/bin/sh', '/bin/bash'].filter((name) => existsSync(name))) {
+    const tool = shell(toolCommand, sh);
+    assert.deepEqual([tool.status, tool.stdout, tool.stderr], [2, '', gone], `${sh}: deleted folder refuses`);
+    assert.equal(tool.stderr.includes(home), false, 'the restart line names no home');
+    const session = shell(sessionCommand, sh);
+    assert.deepEqual([session.status, session.stdout, session.stderr], [0, gone, ''], `${sh}: deleted folder still starts`);
+    assert.equal(session.stdout.includes('/'), false, 'the restart line names no path');
+  }
+  // The same command runs the file when the folder is still there.
+  withRoot();
+  writeFileSync(join(rootDir, 'bin', 'launch.mjs'), launchText);
+  plantFake();
+  const started = shell(toolCommand, '/bin/sh', { HOME: fakeHome });
+  // No readable account plugin: the session copy. An account install: that copy. Never the fake home.
+  assert.equal(existsSync(fakeMarker), false, 'the hook entry does not follow HOME');
+  assert.notEqual(started.stdout, 'fake hook --commands-only', 'the hook entry does not run the fake copy');
+  assert.equal(`${started.stdout}${started.stderr}`.includes('this plugin copy is gone'), false, 'the short command runs the launcher file');
+  assert.ok(started.status === 0 || started.status === 2, `status ${started.status}`);
+  // The plugin root is the account home. The text must not read HOME (#706).
+  assert.doesNotMatch(launchText, /env\.HOME|USERPROFILE/, 'the launcher does not read HOME');
+  assert.match(launchText, /userInfo\(\)\.homedir/, 'the account home comes from the password file');
+});
+
+// A spawn that sets `error`, or that has no exit status, did not run the guard (#706).
+test('plugin launcher: a spawn error, or no exit status, refuses the tool call (#706)', async () => {
+  const sandbox = makeSandbox();
+  const rootBinary = join(sandbox.repo, 'plugin-root', 'bin', 'yokoten.mjs');
+  mkdirSync(dirname(rootBinary), { recursive: true });
+  writeFileSync(rootBinary, "process.stdout.write('root hook --commands-only');\n");
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const refused = "yokoten's guard failed (exit 1), so the command is refused; run `yokoten doctor`\n";
+  const run = (child: { status: number | null; signal: null; error?: Error; stdout: Buffer; stderr: Buffer }) => launch.runLaunch({
+    mode: 'tool', fallback: rootBinary, args: ['hook', '--commands-only'], env: sandbox.env, input: '{}', cwd: sandbox.repo, accountHome: sandbox.home, spawn: () => child,
+  });
+  const error = Object.assign(new Error('spawn EPERM'), { code: 'EPERM' });
+  const bytes = { signal: null, stdout: Buffer.from('ran'), stderr: Buffer.from('') } as const;
+  assert.deepEqual(pick(run({ status: 0, error, ...bytes })), [2, '', refused], 'status 0 with a spawn error');
+  assert.deepEqual(pick(run({ status: null, ...bytes })), [2, '', refused], 'no exit status');
+  assert.deepEqual(pick(run({ status: 2, error, ...bytes, stderr: Buffer.from('no\n') })), [2, '', refused], 'status 2 with a spawn error');
+});
+
+// The session copy is checked like the cache copy: a symlink may not leave the plugin folder (#706).
+test('plugin launcher: a fallback symlink must stay inside the plugin folder (#706)', async () => {
+  const sandbox = makeSandbox();
+  const rootDir = join(sandbox.repo, 'plugin-root');
+  const rootBinary = join(rootDir, 'bin', 'yokoten.mjs');
+  const evil = join(sandbox.repo, 'evil.mjs');
+  mkdirSync(dirname(rootBinary), { recursive: true });
+  writeFileSync(evil, "process.stdout.write('evil hook --commands-only');\n");
+  symlinkSync(evil, rootBinary);
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const run = () => launch.runLaunch({
+    mode: 'tool', fallback: rootBinary, args: ['hook', '--commands-only'], env: sandbox.env, input: '{}', cwd: sandbox.repo, accountHome: sandbox.home,
+  });
+  const leaked = run();
+  assert.equal(leaked.stdout, '', 'a symlink out of the plugin folder does not run');
+  assert.equal(leaked.status, 2, 'no safe fallback refuses the call');
+  writeFileSync(join(rootDir, 'bin', 'inner.mjs'), "process.stdout.write('inner hook --commands-only');\n");
+  rmSync(rootBinary);
+  symlinkSync(join(rootDir, 'bin', 'inner.mjs'), rootBinary);
+  assert.deepEqual(pick(run()), [0, 'inner hook --commands-only', ''], 'a symlink inside the plugin folder runs');
+});
+
+// A Windows account cache is `C:\Users\...\cache\<marketplace>\yokoten\<version>` (#706).
+test('plugin launcher: a drive-letter cache path is safe, and a colon elsewhere is not (#706)', async () => {
+  const launch = await import(pathToFileURL(join(dirname(CLI), 'launch.mjs')).href);
+  const windowsPath = (...parts: string[]) => parts.join('\\');
+  const cache = windowsPath('C:', 'Users', 'account', '.claude', 'plugins', 'cache', 'yokoten', 'yokoten', 'abc123');
+  assert.equal(launch.isSafeFolder(cache, 'yokoten', 'abc123'), true, 'the account cache on a drive letter');
+  assert.equal(launch.isSafeFolder(cache.replaceAll('\\', '/'), 'yokoten', 'abc123'), true, 'the same cache with slashes');
+  assert.equal(launch.isSafeFolder(windowsPath('C:', 'Users', 'account', 'notes.txt'), 'yokoten', 'abc123'), false, 'a drive path that is not the cache');
+  assert.equal(launch.isSafeFolder(windowsPath('C:', 'Users', 'ac:count', '.claude', 'plugins', 'cache', 'yokoten', 'yokoten', 'abc123'), 'yokoten', 'abc123'), false, 'a colon in a later segment');
+  assert.equal(launch.isSafeFolder(windowsPath('C:', 'Users', 'account', '.claude', 'plugins', 'cache', 'yokoten', 'yokoten', 'ab:c'), 'yokoten', 'ab:c'), false, 'a colon in the version');
 });
 
 // #174: the pitch demo runs end to end, offline, in a temp folder it removes, and never
