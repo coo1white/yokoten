@@ -447,7 +447,7 @@ A desk is the worker's own clone, plus a fence around the agent.
 Child processes and pipes work.
 The desk runs the command the lead gives.
 It does not add flags of its own.
-A symlink on a desk path is refused.
+A symlink is refused on `.git`, `.git/config`, `.git/hooks`, `.git/yokoten-worker` and the state folders.
 On a team, the team folder is read-only, and only that agent's outbox is writable.
 
 | Field | What the agent gets |

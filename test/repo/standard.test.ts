@@ -4,7 +4,7 @@
 import './home.ts';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { longSentences } from '../../src/rules/pr.ts';
@@ -317,6 +317,43 @@ function holderPaths(): string[] {
   return paths;
 }
 
+/** Pages whose inline links this file resolves. The manifesto moved and kept old relative links. */
+const LINK_PAGES = [ENGLISH, CHINESE, 'docs/assets/manifesto.md'];
+
+/**
+ * Inline links whose file is missing. `from` is the Markdown file.
+ * An external link, or a link that is only an anchor, is skipped.
+ */
+function missingLinkTargets(page: string, from: string): string[] {
+  const missing: string[] = [];
+  for (const match of page.matchAll(/(?<!!)\[(?:[^\]]*)\]\(([^)\s]+)\)/g)) {
+    const raw = match[1];
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith('#')) continue;
+    const file = raw.split('#')[0];
+    if (file === '' || existsSync(resolve(dirname(from), file))) continue;
+    missing.push(raw);
+  }
+  return missing;
+}
+
+/** Paths a desk refuses when they are links. The desk root is resolved, not refused. */
+const DESK_LINK_PATHS = ['.git', '.git/config', '.git/hooks', '.git/yokoten-worker', 'state folder'];
+
+/** Paths in `paths` that a symlink-refusal line does not name. Other lines name none of them. */
+function unnamedLinkPaths(line: string, paths: string[]): string[] {
+  if (!/symlink|符号链接/.test(line) || !/refus|拒绝/.test(line)) return [...paths];
+  return paths.filter((path) => !line.includes(path));
+}
+
+/** The one symlink line in the section that starts with `heading`. */
+function symlinkLine(page: string, heading: string): string {
+  const section = shapeSections(page).find((part) => part.startsWith(heading));
+  if (!section) throw new Error(`no ${heading} section`);
+  const lines = section.split('\n').filter((line) => /symlink|符号链接/.test(line));
+  if (lines.length !== 1) throw new Error(`${heading} has ${lines.length} symlink lines`);
+  return lines[0];
+}
+
 /** The words in `words` that `page` does not name in backticks. */
 function findMissingWords(page: string, words: string[]): string[] {
   const spans = [...page.matchAll(/`([^`]*)`/g)].map((match) => match[1]);
@@ -445,4 +482,25 @@ test('standard: the event log is the first shape and the status file is its view
 
 test('standard: English sentences stay within 25 words', () => {
   assert.deepEqual(longSentences(read(ENGLISH)), []);
+});
+
+test('standard: a link to a missing file is caught', () => {
+  const page = 'The [guide](guide.md#works-with) and [the web](https://example.com/a).';
+  assert.deepEqual(missingLinkTargets(page, join(ROOT, 'docs/assets/manifesto.md')), ['guide.md#works-with']);
+});
+
+test('standard: links in the spec and the manifesto resolve', () => {
+  const missing = LINK_PAGES.flatMap((page) => missingLinkTargets(read(page), join(ROOT, page)).map((link) => `${page} -> ${link}`));
+  assert.deepEqual(missing, []);
+});
+
+test('standard: a wide desk symlink sentence is caught', () => {
+  assert.deepEqual(unnamedLinkPaths('A symlink on a desk path is refused.', DESK_LINK_PATHS), [...DESK_LINK_PATHS]);
+});
+
+test('standard: the desk symlink line names the paths the code refuses', () => {
+  const english = symlinkLine(read(ENGLISH), 'The desk');
+  const chinese = symlinkLine(read(CHINESE), '工位');
+  assert.deepEqual(unnamedLinkPaths(english, DESK_LINK_PATHS), []);
+  assert.deepEqual(unnamedLinkPaths(chinese, [...DESK_LINK_PATHS.slice(0, 4), '状态文件夹']), []);
 });
