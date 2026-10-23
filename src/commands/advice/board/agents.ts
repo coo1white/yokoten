@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { type Env } from '../../../rules/config.ts';
+import { type Env, loadConfig } from '../../../rules/config.ts';
 import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
 
 /** The repo's main folder. Every worktree shares it, and the lead's log path is kept there. */
@@ -185,6 +185,19 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
 }
 
 /**
+ * One total per vendor, or null when no vendor has a seat. Each role's count is added (#779).
+ */
+export function seatTotals(seats: Record<string, Record<string, number>>): Record<string, number> | null {
+  const totals: Record<string, number> = {};
+  for (const [vendor, roles] of Object.entries(seats)) {
+    let total = 0;
+    for (const count of Object.values(roles)) total += count;
+    totals[vendor] = (totals[vendor] ?? 0) + total;
+  }
+  return Object.keys(totals).length > 0 ? totals : null;
+}
+
+/**
  * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.
  * A vendor name is kept in lower case. A count that is not a whole number, or is negative, is skipped.
  */
@@ -206,8 +219,13 @@ export function parseBoardSeats(text: string): Record<string, number> | null {
   return seats;
 }
 
-/** The seats file in the common git folder, or null when it is missing or bad. */
+/**
+ * Seats per vendor (#779). `team.seats` in yokoten.json wins, and each role's count is added.
+ * With no seats there, `.git/yokoten-seats.json` is used. A bad file of either kind is ignored.
+ */
 export function readBoardSeats(root: string): Record<string, number> | null {
+  const fromConfig = seatTotals(loadConfig(root, { onProblem: () => undefined }).team.seats);
+  if (fromConfig) return fromConfig;
   const common = commonGitDir(root);
   if (!common) return null;
   try {

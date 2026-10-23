@@ -51,7 +51,7 @@ Object.assign(globalThis, {
 const agent = (fields: Partial<AgentView>): AgentView => ({
   key: '~/main', name: 'Ada', nickname: 'Calm Hopper', isMain: true, vendor: vendorOf('claude'), model: '', effort: '',
   role: 'lead', dot: 'working', task: '', title: 'The board', ref: null, doing: 'reading', checks: '', age: '',
-  updated: '2026-10-22T11:00:00Z', started: '2026-10-22T10:00:00Z', branch: '', ...fields,
+  updated: '2026-10-22T11:00:00Z', started: '2026-10-22T10:00:00Z', branch: '', isLive: true, ...fields,
 });
 
 function makeState(data: PageData): PageState {

@@ -878,6 +878,7 @@ AGENTS.md 里，它就只是个愿望。把这些程序写进 `yokoten.json`，�
 | `areas` | 一串单词 | 任何小写单词都行 |
 | `translations` | `{ "fail": true }` | `false` |
 | `commands` | `{ "block": { "<程序>": "<原因>" } }` | 不拦任何程序 |
+| `team` | `{ "seats": { "grok": { "engineer": 6 } } }`：厂商，然后角色，然后 0 或更大的整数 | 没有席位 |
 
 yokoten 拿这张表统一检查每一项：
 
@@ -1403,6 +1404,12 @@ Chrome 和 Edge 可以把看板安装成自己的窗口。
 
 页面有两栏。顶栏的铃铛是「等你处理」，就在 Live 旁边。
 左栏按角色列出 agent。点一个，中间就显示它。手机宽度下，负责人那一栏会藏起来，左栏还在。
+左栏只列出正在工作或正在等待的 agent。
+做完的、或已经安静的 desk，归到已清除的列表。
+页脚每个厂商一行。没有设置席位时，这一行数看板上的 agent。
+在 yokoten.json 的 `team.seats` 里写席位：厂商，角色，然后个数。
+设了席位后，页脚显示正在工作的个数，以及席位个数。
+15 分钟没有写入的 desk 不计入这个数。
 每家 vendor 只用一个名字：Claude、Grok、Muse、DeepSeek。
 Codex 用 DeepSeek 模型时，也显示为 DeepSeek。
 中间像聊天一样，实时显示选中的 agent 自己的会话。它说的话是正文。每个工具是下面的一行短字。

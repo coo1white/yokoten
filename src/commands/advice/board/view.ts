@@ -348,7 +348,7 @@ export interface BoardData {
   desk: LeadDesk;
   /** When the data was read. */
   updated: string;
-  /** Seats per vendor, or null when `.git/yokoten-seats.json` is missing or bad. */
+  /** Seats per vendor from `team.seats`, or the git seats file, or null when neither is set (#779). */
   seats?: Record<string, number> | null;
 }
 
