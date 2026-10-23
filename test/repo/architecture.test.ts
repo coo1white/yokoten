@@ -207,13 +207,17 @@ test('action.yml: check --issue on issues; a notice, not check --pr, on pull_req
 
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
 // reached for a build-era habit (AGENTS.md, "This project").
-// One exception: bin/yokoten.mjs, the entry the agent hooks run. A .ts entry makes Node load
-// its type stripper before the compile cache is on, on every hook call (record 0013).
+// Two exceptions, both plain JavaScript the hooks start directly. bin/yokoten.mjs is the
+// entry the agent hooks run: a .ts entry makes Node load its type stripper before the
+// compile cache is on, on every hook call (record 0013). bin/launch.mjs is the Claude
+// Code plugin hook (#706): the hook command stays one short line, and the resolver
+// lives in that file, so a refusal does not print a long program.
 const ENTRY = 'bin/yokoten.mjs';
-const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
+const LAUNCH = 'bin/launch.mjs';
+const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && p !== LAUNCH && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
 
 test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)', () => {
-  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
+  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY, LAUNCH]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
