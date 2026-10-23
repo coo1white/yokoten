@@ -2,12 +2,13 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   CLI,
+  makeTempDir,
   makeSandbox,
   runChild,
 } from '../repo/helpers.ts';
@@ -27,6 +28,7 @@ import {
   judge,
   noteRefused,
   readDoneWhen,
+  readStatusResult,
   readStatusText,
   readStopFields,
   refusedMarkerPath,
@@ -75,6 +77,24 @@ test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#5
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, options)?.id, 'lead-only');
   assert.equal(judge({ paths: ['.worktrees/571-x/src/a.ts'], worker: false }, options), null, 'other files pass');
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+});
+
+// #674: a worker outside a desk can't write a team folder: nothing else fences it there.
+test('hook: a worker edit inside <repo>.team/ is refused; the lead and other folders pass (#674)', () => {
+  const sandbox = makeSandbox();
+  const team = `${sandbox.repo}.team`;
+  const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
+  for (const path of [join(team, 'outbox', 'g1.jsonl'), join(team, 'agents', 'g1.json'), join(team, 'lead', 'read.json'), `../${basename(sandbox.repo)}.team/outbox/lead.jsonl`]) {
+    assert.equal(judge({ paths: [path], worker: false }, options)?.id, 'lead-only', path);
+  }
+  assert.equal(judge({ paths: [join(team, 'outbox', 'g1.jsonl')], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+  assert.equal(judge({ paths: ['src/.team.ts'], worker: false }, options), null);
+  assert.equal(judge({ paths: ['notes.team'], worker: false }, options), null, 'a file named .team is not a team folder');
+  // A folder that only ends in .team, with no checkout of that name next to it, is not a team folder.
+  const work = makeTempDir('work-');
+  for (const path of [join(work, 'acme.team', 'repo', 'src', 'a.ts'), join(work, 'acme.team', 'outbox', 'x.jsonl')]) {
+    assert.equal(judge({ paths: [path], worker: false }, options), null, path);
+  }
 });
 
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.
@@ -291,6 +311,10 @@ test('writeAgentChecks: keeps other fields, skips a link, and sets checks and th
   assert.equal(lstatSync(path).isSymbolicLink(), true);
   assert.equal(lines.length, 1);
   unlinkSync(path);
+  lines.length = 0;
+  writeAgentChecks(sandbox.repo, 'passing', new Date('2026-10-22T10:45:00.000Z'), warn);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'passing', updated: '2026-10-22T10:45:00Z' });
+  assert.deepEqual(lines, [], 'a missing file is created without a warning');
   writeFileSync(path, `${JSON.stringify({ name: 'worker-1', role: 'engineer', doing: 'the task' })}\n`);
   writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T10:00:00.123Z'), warn);
   const status = JSON.parse(readFileSync(path, 'utf8')) as { name: string; role: string; doing: string; checks: string; updated: string };
@@ -307,6 +331,35 @@ test('writeAgentChecks: keeps other fields, skips a link, and sets checks and th
   writeAgentChecks(sandbox.repo, 'passing', new Date('2026-10-22T12:00:00.000Z'), () => {});
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'passing', updated: '2026-10-22T12:00:00Z' });
   assert.deepEqual(readdirSync(sandbox.repo).filter((name) => name.endsWith('.tmp')), []);
+});
+
+test('writeAgentChecks: an oversized status file stays byte for byte unchanged and warns (#642)', () => {
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, AGENT_STATUS_FILE);
+  const fields = `${JSON.stringify({ name: 'worker-1', role: 'engineer', doing: 'the task' })}\n`;
+  const text = fields + ' '.repeat(STATUS_TEXT_LIMIT + 1 - Buffer.byteLength(fields));
+  assert.equal(Buffer.byteLength(text), STATUS_TEXT_LIMIT + 1);
+  writeFileSync(path, text);
+  const lines: string[] = [];
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'), (line) => lines.push(line));
+  assert.deepEqual(readFileSync(path), Buffer.from(text), 'the refused file is unchanged');
+  assert.deepEqual(lines, [`yokoten: ${AGENT_STATUS_FILE} is too large, so it was left unchanged.\n`]);
+});
+
+test('writeAgentChecks: an unreadable status file stays unchanged and warns (#642)', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'no unreadable file for root or on Windows' }, () => {
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, AGENT_STATUS_FILE);
+  const text = `${JSON.stringify({ name: 'worker-1', role: 'engineer' })}\n`;
+  writeFileSync(path, text);
+  chmodSync(path, 0o000);
+  const lines: string[] = [];
+  try {
+    writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'), (line) => lines.push(line));
+  } finally {
+    chmodSync(path, 0o600);
+  }
+  assert.equal(readFileSync(path, 'utf8'), text, 'the refused file is unchanged');
+  assert.deepEqual(lines, [`yokoten: ${AGENT_STATUS_FILE} cannot be read, so it was left unchanged.\n`]);
 });
 
 test('refused marker: the same worker stays recent for 5 minutes (#614)', () => {
@@ -386,6 +439,20 @@ test('done-when: a timeout ends when a program left the process group (#614)', {
   }
 });
 
+// (...) & stays in the shell's group. A normal exit must stop it before the late write (#641).
+test('done-when: a passing check stops a background writer (#641)', { skip: process.platform === 'win32' && 'the kill uses a POSIX process group', timeout: 5000 }, async () => {
+  const sandbox = makeSandbox();
+  const started = join(sandbox.repo, 'writer-started');
+  const late = join(sandbox.repo, 'writer-late');
+  const command = `(touch ${JSON.stringify(started)}; sleep 0.4; touch ${JSON.stringify(late)}) & while [ ! -f ${JSON.stringify(started)} ]; do :; done; exit 0`;
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 5000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  assert.equal(existsSync(started), true, 'the writer started');
+  await delay(800);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
 // The shell exits 0. setsid keeps the pipes. The check must pass before the timeout.
 test('done-when: an exited shell passes even when a program keeps the pipes open (#614)', { skip: (process.platform === 'win32' || runChild('sh', ['-c', 'command -v setsid']).status !== 0) && 'setsid is missing', timeout: 5000 }, async () => {
   const sandbox = makeSandbox();
@@ -429,24 +496,27 @@ test('readStatusText: an unchanged file is read, and a swap at open time is not 
   const swapped = join(sandbox.repo, 'other.json');
   writeFileSync(path, '{"name":"kept"}\n');
   writeFileSync(swapped, '{"name":"other"}\n');
+  assert.deepEqual(readStatusResult(path), { text: '{"name":"kept"}\n' }, 'an unchanged file returns its text');
   assert.equal(readStatusText(path), '{"name":"kept"}\n', 'an unchanged file returns its text');
   let openFlags = 0;
-  assert.equal(
-    readStatusText(path, (_, flags) => {
-      openFlags = flags;
-      return openSync(swapped, flags);
-    }),
-    null,
-    'the file at open time is not the file at list time',
-  );
+  const swappedResult = readStatusResult(path, (_, flags) => {
+    openFlags = flags;
+    return openSync(swapped, flags);
+  });
+  assert.deepEqual(swappedResult, { refused: 'changed while it was read' }, 'a swap at open time is refused');
+  assert.equal(readStatusText(path, (_, flags) => openSync(swapped, flags)), null);
   const nonblock = constants.O_NONBLOCK ?? 0;
   assert.equal(openFlags & nonblock, nonblock, 'the open does not wait on a pipe');
   writeFileSync(path, 'x'.repeat(STATUS_TEXT_LIMIT));
-  assert.equal(readStatusText(path)?.length, STATUS_TEXT_LIMIT, 'a file at the size cap is read');
+  const atCap = readStatusResult(path);
+  assert.ok('text' in atCap);
+  assert.equal(atCap.text.length, STATUS_TEXT_LIMIT, 'a file at the size cap is read');
   writeFileSync(path, 'y'.repeat(STATUS_TEXT_LIMIT + 1));
+  assert.deepEqual(readStatusResult(path), { refused: 'too large' }, 'a file over the size cap is refused');
   assert.equal(readStatusText(path), null, 'a file over the size cap is not read');
   if (existsSync('/dev/zero')) {
     const openedAt = Date.now();
+    assert.deepEqual(readStatusResult(path, () => openSync('/dev/zero', constants.O_RDONLY)), { refused: 'changed while it was read' }, 'a device opened in place of the file is refused');
     assert.equal(readStatusText(path, () => openSync('/dev/zero', constants.O_RDONLY)), null, 'a device opened in place of the file is not read');
     assert.ok(Date.now() - openedAt < 1000, 'a device is refused before it is read');
   }

@@ -319,15 +319,26 @@ function readSmallFile(path: string): string | null {
 
 /**
  * Why the checkout at or above `folder` makes a session a worker: `mark`, its git folder
- * holds the mark or its path is on the worker list (#566); `broken`, its `.git` or the
- * git folder it names can't be read, so the guard fails closed; null, it does not (a main
- * checkout, an unmarked worktree, no checkout). `env` finds the worker list; without a
+ * holds the mark (a worktree's, or a marked clone's own `.git`, #672) or its path is on the
+ * worker list (#566); `broken`, its `.git` or the git folder it names can't be read, so the
+ * guard fails closed; null, it does not (an unmarked main checkout or worktree, no checkout). `env` finds the worker list; without a
  * home folder there is no list, and only the mark counts.
  */
 export function workerMarkAt(folder: string, env: Env = {}): 'mark' | 'broken' | null {
   const link = gitLinkAbove(folder);
-  if (link === null || link.kind === 'folder') return listedWorker(folder, env) ? 'mark' : null;
+  if (link === null) return listedWorker(folder, env) ? 'mark' : null;
   if (link.kind === 'broken') return 'broken';
+  if (link.kind === 'folder') {
+    // A plain clone the lead marked, such as a desk (#672): the mark is in its own `.git`.
+    // Muse Code drops YOKOTEN_ROLE from its hooks, so there this file alone makes a worker.
+    try {
+      statSync(join(link.gitDir, WORKER_MARK));
+      return 'mark';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+    return listedWorker(folder, env) ? 'mark' : null;
+  }
   try {
     statSync(join(link.gitDir, WORKER_MARK));
     return 'mark';
@@ -375,6 +386,9 @@ export function markNote(folders: string[], env: Env = {}): string {
     const main = link?.kind === 'file' ? mainCheckout(link.gitDir) : null;
     const lead = main ? `the lead works in the main checkout, ${main}` : 'the lead works in the main checkout';
     if (why === 'broken') return `yokoten treats this session as a worker because the .git link in ${link?.top ?? folder} can't be read; ${lead}`;
+    if (link?.kind === 'folder' && existsSync(join(link.gitDir, WORKER_MARK))) {
+      return `this clone (${link.top}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; the lead works outside it`;
+    }
     if (link?.kind === 'file') return `this worktree (${link?.top ?? folder}) carries the worker mark, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
     return `this folder (${folder}) is on the worker list, so every agent in it is a worker whatever YOKOTEN_ROLE says; ${lead}`;
   }
@@ -496,6 +510,8 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
   const finds: { starts: string[]; args: string[] }[] = [];
   const gitFolders: { path: string; written: string }[] = [];
   const home = homeOf(env);
+  // A find's start folders: the find loop below decides whether it reaches a git folder.
+  const findStarts = new Set<string>();
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
@@ -512,6 +528,7 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
       if (found) {
         finds.push(found);
         targets.push(...found.starts);
+        for (const start of found.starts) findStarts.add(start);
       }
     }
     if (isGit(program)) {
@@ -546,19 +563,27 @@ function checkWorkerWrites(words: string[], { folder, near = folder, command, en
       if (held.some((dir) => dir === full || dir.startsWith(inside))) return markFinding(`this command changes files under ${start}, which holds a git folder, where the worker mark is kept`);
     }
   }
-  for (const target of targets) {
-    const refusal = configTargetRefusal(target, context);
+  for (const written of targets) {
+    const refusal = configTargetRefusal(written, context);
     if (refusal) return refusal;
-    if (mayBeGitPath(target)) return markFinding(`this command changes ${target}, which may be a .git folder or the worker mark`);
+    if (mayBeGitPath(written)) return markFinding(`this command changes ${written}, which may be a .git folder or the worker mark`);
+    // `$PWD` and `~+` are the folder the command runs in, `~` and `$HOME` the home folder (#672).
+    const target = folder === null ? written : withHomeRead(written.replace(/^(\$PWD|\$\{PWD\})(?=[\\/]|$)/, folder), home, folder);
     if (/[$`]/.test(target)) {
-      if (namesGitDir(command)) return markFinding(`this command changes ${target}, a path yokoten can't read, and names a git folder`);
+      if (namesGitDir(command)) return markFinding(`this command changes ${written}, a path yokoten can't read, and names a git folder`);
       continue;
     }
     if (folder === null && !isAbsolute(target)) continue;
     dirs ??= folder === null ? [] : protectedGitDirs(folder);
     if (!dirs.length) continue;
     const full = realPath(resolve(folder ?? '/', target));
-    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${target}, which is inside a git folder, where the worker mark is kept`);
+    if (dirs.some((dir) => full === dir || full.startsWith(dir + sep))) return markFinding(`this command changes ${written}, which is inside a git folder, where the worker mark is kept`);
+    // A folder that holds the git folder: removing or replacing it drops the mark (#672).
+    if (findStarts.has(written)) continue;
+    const top = gitLinkAbove(folder ?? '/');
+    const held = [...dirs, ...(top ? [realPath(join(top.top, '.git'))] : [])];
+    const inside = full.endsWith(sep) ? full : full + sep;
+    if (held.some((dir) => dir.startsWith(inside))) return markFinding(`this command changes ${written}, which holds a git folder, where the worker mark is kept`);
   }
   return null;
 }
@@ -1195,6 +1220,28 @@ export function checkWorkerMarkEdit(path: string, folder?: string, env: Env = {}
   return null;
 }
 
+/**
+ * A worker's edit inside a team folder (#674): `<repo>.team/{agents,outbox,lead}`, next to a
+ * checkout named `<repo>`. Outside a desk nothing else fences it, and an edit there would
+ * speak for another agent. A desk's agent sends with `yokoten msg send`. Any other folder
+ * whose name ends in `.team` is not a team folder.
+ */
+export function checkTeamEdit(path: string): Finding | null {
+  for (const form of new Set([resolve(path), realPath(path)])) {
+    const parts = form.split(sep);
+    for (let at = 1; at + 1 < parts.length; at++) {
+      const name = parts[at];
+      if (!name.toLowerCase().endsWith('.team') || name.length <= '.team'.length || !TEAM_PARTS.has(parts[at + 1].toLowerCase())) continue;
+      const checkout = [...parts.slice(0, at), name.slice(0, -'.team'.length), '.git'].join(sep) || sep;
+      if (existsSync(checkout)) return finding('lead-only', 'this edit is inside a team folder (<repo>.team), where the agents\' messages and the roster are kept', 'send with `yokoten msg send <to> <text>` from a desk, or report to the lead');
+    }
+  }
+  return null;
+}
+
+// The parts of a team folder (agents/desk/team/team.ts).
+const TEAM_PARTS = new Set(['agents', 'outbox', 'lead']);
+
 // Cancelling a run, an alias, and a command the host did not ship (#650). The host adapter
 // owns the command names, the routes and the finding text. Both roles hear it before the
 // worker's own send rule: the fix is to ask the owner, and the lead cannot do it either.
@@ -1204,6 +1251,10 @@ export interface HostCommands {
   hostRunRemoval(words: string[]): Finding | undefined;
   hostAlias(words: string[]): Finding | undefined;
   hostHiddenCommand(words: string[]): Finding | undefined;
+  /** A gh command that prints its token (#668). */
+  hostTokenReveal(words: string[]): Finding | undefined;
+  /** A gh command that turns a workflow off (#668). */
+  hostWorkflowOff(words: string[]): Finding | undefined;
 }
 
 /** The host adapter's checks, once it has loaded. Until then a `gh` command is refused, never let through. */
@@ -1229,6 +1280,14 @@ function hostAlias(words: string[]): Finding | null {
 
 function hostHiddenCommand(words: string[]): Finding | null {
   return hostCommands?.hostHiddenCommand(words) ?? null;
+}
+
+function hostTokenReveal(words: string[]): Finding | null {
+  return hostCommands?.hostTokenReveal(words) ?? null;
+}
+
+function hostWorkflowOff(words: string[]): Finding | null {
+  return hostCommands?.hostWorkflowOff(words) ?? null;
 }
 
 // ---- What a worker sends (#555) ----
@@ -1285,7 +1344,11 @@ function checkWorkerUnmark(words: string[]): Finding | null {
     if (cli === -1) continue;
     const plain = plainArgs(withoutShellRedirects(words, cli + 1));
     if (plain[0] === 'worker' && plain[1] === 'unmark') {
-      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review');
+      return finding('worker-mark', '`yokoten worker unmark` clears a worker mark, and only the lead unmarks a worktree', 'commit in your worktree and report; the lead unmarks after review, from its own checkout');
+    }
+    // A worker that marks the lead's checkout makes the lead a worker too (#672).
+    if (plain[0] === 'worker' && plain[1] === 'mark') {
+      return finding('worker-mark', '`yokoten worker mark` sets a worker mark, and only the lead marks a worktree or a clone', 'commit in your worktree and report; the lead marks checkouts, from its own');
     }
   }
   return null;
@@ -1402,6 +1465,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // A download piped into a shell runs code nobody read (#560).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
+  const token = checkTokenUse(command, commands);
+  if (token) return token;
   // Rules that refuse any form of a setting or a write (#361, #664). They answer after the
   // rest, which name the case more exactly; the first one found is kept.
   let later: Finding | null = null;
@@ -1415,12 +1480,13 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       hostRunRemoval(words) ??
       hostAlias(words) ??
       hostHiddenCommand(words) ??
+      hostWorkflowOff(words) ??
       // A worker hears its own rule first: what it may not send, its own unmark, and the git folder (#555, #566).
       (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerSends(words) ?? checkWorkerUnmark(words) ?? checkWorkerWrites(words, { folder: postCwd, near: nearCwd, command, env })) : null) ??
       // An alias runs another command under a new name: refused, not parsed (#560).
       // For a worker the worker rule already answers, with its own id.
       checkShellAlias(words, env) ??
-      // Removing the .git folder throws away every commit (#560). For a worker the
+      // Removing the .git folder throws away every commit (#560, #573). For a worker the
       // mark rule above already answers, with its own id.
       checkRemoveGit(words) ??
       checkHooksEnvironment(words) ??
@@ -1600,17 +1666,67 @@ function checkShellAlias(words: string[], env: Env): Finding | null {
 const REMOVE_PROGRAMS = new Set(['rm', 'rmdir', 'unlink', 'shred']);
 const REMOVE_GIT_FIX = 'delete only the files you mean (a tracked file with `git rm <path>`); to start over, clone the repo again';
 
-/** `rm` and friends on a path that can be `.git`. For a worker the mark rule answers first. */
+/**
+ * Whether a find's tests can select a `.git` entry (#573). The name and path tests are
+ * mayReachGitFolder's, including a join (`-o`, `!`) that can turn a test around. A find
+ * that names nothing does not (`find dist -delete`). Every `-regex` counts: the guard
+ * cannot prove one safe.
+ */
+function findNamesDotGit(args: string[]): boolean {
+  if (args.some((arg) => arg === '-regex' || arg === '-iregex')) return true;
+  if (!args.some((arg) => FIND_NAME_TESTS.has(arg) || FIND_PATH_TESTS.has(arg))) return false;
+  return mayReachGitFolder(args);
+}
+
+/** A find that deletes an entry its tests can select as `.git`. `-fprint` only writes a list. */
+function findDeletesDotGit(args: string[]): boolean {
+  return findNamesDotGit(args) && (args.includes('-delete') || findActionRemoves(args));
+}
+
+/** Where a find action's command ends: the next action, `;`, or `{} +`. */
+function actionEnd(args: string[], index: number): number {
+  let end = index;
+  while (end < args.length && !FIND_ACTIONS.has(args[end]) && args[end] !== ';' && !(args[end] === '+' && args[end - 1] === '{}')) end++;
+  return end;
+}
+
+/** Whether these words run `rm`, `rmdir`, `unlink` or `shred`. */
+function commandRemoves(words: string[]): boolean {
+  return findPrograms(words).some((program) => REMOVE_PROGRAMS.has(programName(program)));
+}
+
+/**
+ * Whether a find action runs `rm`, `rmdir`, `unlink` or `shred`. A launcher, an
+ * assignment, `env -S` and a shell string count. `command -v` runs nothing.
+ */
+function findActionRemoves(args: string[]): boolean {
+  for (let index = 0; index < args.length; index++) {
+    if (!FIND_ACTIONS.has(args[index])) continue;
+    const action = args.slice(index + 1, actionEnd(args, index + 1));
+    if (commandRemoves(action)) return true;
+    const at = runnerAt(action);
+    if (at !== -1 && commandWords(runString(action, at)).some(commandRemoves)) return true;
+  }
+  return false;
+}
+
+/** `rm` and friends on a path that can be `.git`, and a find that deletes one (#560, #573). For a worker the mark rule answers first. */
 function checkRemoveGit(words: string[]): Finding | null {
   let from = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
     if (at === -1) continue;
     from = at + 1;
-    if (!REMOVE_PROGRAMS.has(programName(program))) continue;
-    const target = plainArgs(withoutShellRedirects(words, at + 1)).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
-    if (target !== undefined) {
-      return finding('remove-git', `\`${programName(program)}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+    const name = programName(program);
+    const args = withoutShellRedirects(words, at + 1);
+    if (REMOVE_PROGRAMS.has(name)) {
+      const target = plainArgs(args).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
+      if (target !== undefined) {
+        return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+      }
+    }
+    if (name === 'find' && findDeletesDotGit(args)) {
+      return finding('remove-git', '`find` can delete the .git folder, which holds the repo history', REMOVE_GIT_FIX);
     }
   }
   return null;
@@ -1657,9 +1773,10 @@ function isDefaultBranch(name: string, dir: string | null, env: Env): boolean {
 }
 
 const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
-const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget']);
+// A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
+const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read. */
+/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1668,15 +1785,71 @@ function checkPipeToShell(command: string): Finding | null {
     // linear time. A shell in the first segment has nothing before it, so it passes.
     let downloader: string | undefined;
     for (const segment of segments) {
-      const programs = commandWords(segment).flatMap(findPrograms).map(programName);
-      const shell = programs[0] ?? '';
-      if ((shell === 'powershell' || isShell(shell)) && downloader !== undefined) {
+      const commands = commandWords(segment);
+      const programs = commands.flatMap(findPrograms).map(programName);
+      const shell = findPipeShell(programs, commands);
+      if (shell !== undefined && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
-      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program));
+      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program.toLowerCase()));
     }
   }
   return null;
+}
+
+/** The program that would run this segment, when that program is a shell. Case is folded here only (#574). */
+function findPipeShell(programs: string[], commands: string[][]): string | undefined {
+  const first = programs[0];
+  if (first !== undefined && isPipeShell(first)) return first;
+  // A nested `$(sudo -s)` belongs to the outer program. That program reads the pipe.
+  for (const words of outerCommands(commands)) {
+    const shell = findShellRunner(words);
+    if (shell !== undefined) return shell;
+  }
+  return undefined;
+}
+
+/** The segment's own commands. A list whose text sits in one word of another list belongs to that command. */
+function outerCommands(commands: string[][]): string[][] {
+  spend(commands.length);
+  return commands.filter((words, index) => {
+    const text = words.join(' ');
+    return text !== '' && !commands.some((other, otherIndex) => otherIndex !== index && other.some((word) => word.includes(text)));
+  });
+}
+
+/** Whether `name` is a shell. `powershell` stays beside `isShell`, which names `pwsh` (#574). */
+function isPipeShell(name: string): boolean {
+  const folded = name.toLowerCase();
+  return folded === 'powershell' || isShell(folded);
+}
+
+/**
+ * `sudo -s`, `sudo -i` or `doas -s` reads stdin as a shell when no program follows.
+ * The flag meaning is `RUNNERS`. A later program is that program, so `sudo tee` passes.
+ */
+function findShellRunner(words: string[]): string | undefined {
+  spend(words.length);
+  let index = skipPrefix(words, 0);
+  while (index < words.length) {
+    if (HEADS.has(words[index])) return undefined;
+    const name = programName(words[index]);
+    const folded = name.toLowerCase();
+    if (!Object.hasOwn(LAUNCHERS, folded)) return undefined;
+    const launcher = LAUNCHERS[folded];
+    const shellFlag = folded === 'sudo' || folded === 'doas' ? RUNNERS[folded] : null;
+    index++;
+    let readsShell = false;
+    while (index < words.length && words[index].startsWith('-')) {
+      if (shellFlag !== null && shellFlag.test(words[index])) readsShell = true;
+      index += launcher.options.includes(words[index]) ? 2 : 1;
+    }
+    index += launcher.operands ?? 0;
+    // A redirect names a file. `sudo -s > saved` still reads the pipe as a shell.
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (readsShell && index >= words.length) return name;
+  }
+  return undefined;
 }
 
 /** The command's pipelines: cut at ; && || and line ends, outside quotes and groups. */
@@ -3908,6 +4081,57 @@ function xargsCommand(words: string[]): string | null {
   return words.slice(index).join(' ');
 }
 
+/** Whether a delimiter word is a null: a real null, or printf's `\0`, `\000` or `\x00`. */
+const isNullDelimiter = (text: string) => text === '\0' || /^\\0{1,3}$/.test(text) || /^\\x00$/i.test(text);
+
+/** Whether xargs splits its input on a null: `-0`, `--null`, `-d '\0'`, or a short cluster that holds `0` (`-r0`). */
+function xargsUsesNull(words: string[]): boolean {
+  let index = words.findIndex((word) => programName(word) === 'xargs');
+  if (index === -1) return false;
+  for (index++; index < words.length && /^--?[^-]/.test(words[index]); ) {
+    const word = words[index];
+    if (word === '--null') return true;
+    if (word === '--delimiter' || word.startsWith('--delimiter=')) {
+      const inline = word.startsWith('--delimiter=');
+      const delim = inline ? word.slice('--delimiter='.length) : (words[index + 1] ?? '');
+      if (isNullDelimiter(delim)) return true;
+      index += inline ? 1 : 2;
+      continue;
+    }
+    if (word.startsWith('--')) {
+      index += LAUNCHERS.xargs.options.includes(word) ? 2 : 1;
+      continue;
+    }
+    let valued = false;
+    for (let letter = 1; letter < word.length; letter++) {
+      if (word[letter] === '0') return true;
+      if (word[letter] === 'd') {
+        const rest = word.slice(letter + 1);
+        if (isNullDelimiter(rest || (words[index + 1] ?? ''))) return true;
+        valued = rest === '';
+        break;
+      }
+      // A valued short option takes the rest of the word (`-s0` is -s 0, not -0).
+      if (LAUNCHERS.xargs.options.includes(`-${word[letter]}`)) {
+        valued = letter === word.length - 1;
+        break;
+      }
+    }
+    index += valued || LAUNCHERS.xargs.options.includes(word) ? 2 : 1;
+  }
+  return false;
+}
+
+// printf leaves a null as `\0`, `\000` or `\x00`. A later shell read swallows the
+// backslash (`\0` becomes `0`), so xargs -0 would not see the word in front of it.
+const PRINTF_NULL = /\\(?:0{1,3}(?![0-7])|x00(?![0-9A-Fa-f]))/gi;
+
+/** The text xargs reads, as words. `xargs -0` also splits on a null (#573). */
+function xargsInput(words: string[], text: string): string {
+  const split = xargsUsesNull(words) ? text.replace(PRINTF_NULL, ' ').replace(/\0/g, ' ') : text;
+  return split.replace(/\s+/g, ' ');
+}
+
 // What a command prints, as the command it pipes into reads it: for printf, its format
 // filled in (see printfText); for any other, its words after the program, as echo prints
 // them, with each \n a line end. Over-reading is fine: `cat x` "prints" x.
@@ -4181,7 +4405,7 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       if (reads) for (const body of carried) nested(body);
       // `{ echo push --force; } | xargs git`: xargs hands the bodies to its program as words.
       const handed = reads ? null : xargsCommand(words);
-      if (handed !== null) nested(`${handed} ${carried.join(' ').replace(/\s+/g, ' ')}`);
+      if (handed !== null) nested(`${handed} ${xargsInput(words, carried.join(' '))}`);
       if (reads || handed !== null || !pipe) carried = [];
     }
     if (closed) {
@@ -4227,12 +4451,14 @@ function read(text: string, start: number, closer: string, depth: number, out: s
     // All of them in one group: in a group piped to a shell, every line is read as commands.
     if (substitutions.length > 0 && (at !== -1 || isSource(words))) nested(`{ ${substitutions.join('\n')}\n} | bash`);
     // `echo push | xargs git`: xargs hands what comes in to its program as words.
+    // `xargs -0` also splits on a null, which printf writes as `\0` (#573).
     const handed = piped ? xargsCommand(words) : null;
-    if (piped && handed !== null) nested(`${handed} ${printedText(piped).replace(/\s+/g, ' ')}`);
+    if (piped && handed !== null) nested(`${handed} ${xargsInput(words, printedText(piped))}`);
     // `cat <(x) | bash`, `echo "$(x)" | xargs git`: the command before the pipe may print
     // what x prints. In a group piped on, each line x prints reaches the reader.
     if (pipedSubstitutions.length > 0 && (at !== -1 || handed !== null)) {
-      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : `xargs ${handed}`}`);
+      const xargs = xargsUsesNull(words) ? `xargs -0 ${handed}` : `xargs ${handed}`;
+      nested(`{ ${pipedSubstitutions.join('\n')}\n} | ${at !== -1 ? 'bash' : xargs}`);
     }
     if (pipe && piped !== null && passesOn(words)) {
       // `echo x | tee f | bash`: tee hands on what echo printed. Its own `$(x)` and `<(x)`
@@ -4574,7 +4800,7 @@ function bodies(text: string, index: number, docs: Heredoc[], { line, pipes, gro
     // `xargs git <<EOF`: the body's words are the program's words.
     if (!handedTo.has(doc.cmd)) handedTo.set(doc.cmd, xargsCommand(line[doc.cmd] ?? []));
     const handed = handedTo.get(doc.cmd) ?? null;
-    if (handed !== null) out.push(...commandWords(`${handed} ${body.replace(/\s+/g, ' ')}`, depth + 1));
+    if (handed !== null) out.push(...commandWords(`${handed} ${xargsInput(line[doc.cmd] ?? [], body)}`, depth + 1));
     const last = ends[doc.cmd] ?? doc.cmd;
     const isOpenPipe = last > doc.cmd && line[last].length === 0;
     const isRead = doc.group ? doc.group.reads : feedsShell(line[doc.cmd] ?? []);
@@ -4647,4 +4873,105 @@ function rough(text: string): string[][] {
     .split(/[;|&()\r\n]+/)
     .map((s) => s.trim().split(/\s+/).filter(Boolean))
     .filter((words) => words.length > 0);
+}
+
+// gh's token can do all that the guard stops in gh: with it, curl or a script calls the host
+// itself (#659, #668). No agent needs to see it, since gh and `yokoten bot` use it without
+// showing it. So, for every agent, the guard refuses the plain ways to print or send it:
+// gh's own commands that print it, a gh alias (which can run them under another name), the
+// token's variables, git's and the system's credential stores, and settings that make the
+// bot's gh or git run another program in the bot's environment, which holds the token.
+// It reads characters, not code: a script written and then run, or one that reads gh's
+// files itself, gets past (guide: What it doesn't do).
+
+const TOKEN_FIX = 'run gh itself, or `yokoten bot -- gh …`, which use the token without showing it; `gh auth status` says whether gh is signed in';
+// The names, with a way around a refusal that only mentions one.
+const NAME_FIX = `${TOKEN_FIX}. To write the name in a post, put the text in a body file; to search for it, leave out the \`$\` (\`rg GH_TOKEN\`)`;
+const BOT_FIX = 'run the bot\'s gh or git with no settings in front and no `-c`; a pager, an editor or a credential helper would run in the bot\'s environment, which holds its token';
+
+const TOKEN_NAMES = 'GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN';
+// `$GH_TOKEN`, `${GH_TOKEN}`, `${GH_TOKEN:-x}`, `${#GH_TOKEN}`, `${!GH_TOKEN}`, in any quotes.
+const TOKEN_VARIABLE = new RegExp(String.raw`\$\{?[#!]?(?:${TOKEN_NAMES})(?!\w)`);
+// PowerShell's `$env:GH_TOKEN` and cmd's `%GH_TOKEN%`. Windows names ignore case.
+const WINDOWS_VARIABLE = new RegExp(String.raw`\$env:(?:${TOKEN_NAMES})(?!\w)|%(?:${TOKEN_NAMES})%`, 'i');
+const TOKEN_NAME = new RegExp(String.raw`(?<!\w)(?:${TOKEN_NAMES})(?!\w)`);
+// Programs that run the code they are given, or print a variable by name: `process.env.GH_TOKEN`
+// in `node -e` reads the token. A shell is left out: the guard reads `bash -c` text as commands.
+const READS_ENV = /^(python[\d.]*|node|nodejs|deno|bun|tsx|ts-node|perl|ruby|php|lua|osascript|pwsh|powershell|printenv|awk|gawk|mawk|jq|Rscript|tclsh|java)$/;
+// Git prints the Authorization header in a trace only when this is turned off.
+const TRACE_UNREDACTED = /(?<!\w)GIT_TRACE_REDACT=(?!["']?(?:1|true|yes|on)(?:["'\s;&|)]|$))/i;
+// Git settings in the environment: they reach the bot's git, which keeps the variables it is given.
+const GIT_CONFIG_VARIABLE = /(?<!\w)GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS|GLOBAL|SYSTEM)=/;
+// The files gh and git keep a login in, as plain text.
+const CREDENTIAL_FILE = /(?:^|[\\/])(?:\.git-credentials|gh[\\/]hosts\.ya?ml)$/;
+const shows = (what: string, fix = TOKEN_FIX) => finding('gh-token', what, fix);
+
+/** The keys git's `-c key=value` and `--config-env key=VAR` set before git's command, in lower case. */
+function gitSettings(args: string[]): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (!word.startsWith('-')) break;
+    let setting: string | undefined;
+    if (word === '-c' || word === '--config-env') setting = args[++index];
+    else if (word.startsWith('--config-env=')) setting = word.slice('--config-env='.length);
+    else if (word.startsWith('-c')) setting = word.slice(2);
+    else if (GIT_VALUE_OPTIONS.has(word)) index++;
+    if (setting !== undefined) keys.push(setting.split('=')[0].toLowerCase());
+  }
+  return keys;
+}
+
+/** Where the bot's command starts in the words (`yokoten bot -- git …`), or -1. */
+const botAt = (words: string[]) => {
+  const at = words.findIndex((word, index) => word === 'bot' && words[index + 1] === '--');
+  return at === -1 ? -1 : at + 2;
+};
+
+/** For every agent: a command that shows gh's token, or lets a program take it, or null. */
+function checkTokenUse(command: string, commands: string[][]): Finding | null {
+  if (TOKEN_VARIABLE.test(command) || WINDOWS_VARIABLE.test(command)) {
+    return shows("the command expands gh's token from the environment, so it can reach the host around the guard", NAME_FIX);
+  }
+  if (TRACE_UNREDACTED.test(command)) return shows('GIT_TRACE_REDACT turned off makes a git trace print the token git sends');
+  const bot = commands.some((words) => botAt(words) !== -1);
+  if (bot && GIT_CONFIG_VARIABLE.test(command)) return shows('git settings in the environment reach the bot\'s git, and can run a program where the bot\'s token is', BOT_FIX);
+  for (const raw of commands) {
+    // A here-string is read as a command of its own: `bash <<< 'gh auth token'`.
+    const words = raw[0] === '<<<' ? raw.slice(1) : raw;
+    const names = words.map(programName);
+    const runner = names.find((name) => READS_ENV.test(name));
+    if (runner && words.some((word) => TOKEN_NAME.test(word))) return shows(`\`${runner}\` is given the name of gh's token, so it can read the token and reach the host around the guard`, NAME_FIX);
+    if (words.some((word) => CREDENTIAL_FILE.test(word))) return shows('the command names a file where gh or git keeps a login as plain text');
+    const reached = checkCredentialStores(words, names) ?? checkTokenGit(words) ?? hostTokenReveal(words);
+    if (reached) return reached;
+  }
+  return null;
+}
+
+/** The system's password stores and git's credential helpers, asked for a password. */
+function checkCredentialStores(words: string[], names: string[]): Finding | null {
+  const at = (name: string) => names.indexOf(name);
+  const security = at('security');
+  if (security !== -1 && /^find-(internet|generic)-password$/.test(words[security + 1] ?? '') && words.some((word) => /^-[a-zA-Z]*[wg]$/.test(word))) {
+    return shows('`security find-…-password -w` prints a password from the keychain, where gh may keep its token');
+  }
+  const secretTool = at('secret-tool');
+  if (secretTool !== -1 && words[secretTool + 1] === 'lookup') return shows('`secret-tool lookup` prints a password from the keyring, where gh may keep its token');
+  if (names.some((name) => name.startsWith('git-credential')) && words.includes('get')) return shows('a git credential helper with `get` prints the password it keeps, which may be gh\'s token');
+  return null;
+}
+
+/** git: a credential read, a credential helper set with `-c`, and any setting given to the bot's git. */
+function checkTokenGit(words: string[]): Finding | null {
+  const at = words.findIndex(isGit);
+  if (at === -1) return null;
+  const args = withoutShellRedirects(words, at + 1);
+  const keys = gitSettings(args);
+  if (at === botAt(words) && keys.length) return shows(`\`-c ${keys[0]}\` on the bot's git can run a program where the bot's token is`, BOT_FIX);
+  if (keys.some((key) => key.startsWith('credential.'))) return shows('a credential helper set with `-c` runs a program that gets git\'s login');
+  const [sub, action] = plainArgs(args, [...GIT_VALUE_OPTIONS]);
+  if (sub === 'credential' && action === 'fill') return shows("`git credential fill` prints the password git keeps for a host, which is gh's token when gh signs git in");
+  if (sub?.startsWith('credential-') && args.includes('get')) return shows(`\`git ${sub} get\` prints the password it keeps, which may be gh's token`);
+  return null;
 }

@@ -22,6 +22,7 @@ import * as dsh from '../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import { isFolder } from '../agents/folder-trust.ts';
 import { type Problem, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check/inspect.ts';
@@ -29,7 +30,7 @@ import { AGENT_STATUS_FILE } from '../run/hook.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { WORKTREES_DIR } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
-import { systemHome } from '../rules/privacy.ts';
+import { homeOf, systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
 import { readOriginUrl } from './plan.ts';
 import { writeTestsJob } from './advice/tests-job.ts';
@@ -110,6 +111,43 @@ function sandboxLines(root: string): { ok: boolean; lines: string[] } {
 const ORG_LOOKUP_MS = 5000;
 
 /**
+ * Whether Copilot CLI looks used on this machine. Its home is `$COPILOT_HOME` when that
+ * is set, and `~/.copilot` otherwise: the same folder its trust store lives in (#654).
+ */
+function hasCopilotHome(env: Env): boolean {
+  const user = homeOf(env);
+  const home = env.COPILOT_HOME || (user ? join(user, '.copilot') : '');
+  return isFolder(home);
+}
+
+/** A trust step, or a DeepSeek bridge command. Printed only when that agent is installed (#654). */
+function isTrustStep(line: string): boolean {
+  return line.startsWith('GitHub Copilot CLI runs the hooks')
+    || line.startsWith('to trust this folder in Copilot CLI')
+    || line.startsWith('Codex runs the hooks')
+    || line.startsWith('to trust them in Codex')
+    || line.startsWith('Muse Code runs the hooks')
+    || line.startsWith('Grok CLI runs the hooks')
+    || line.includes('dsh plugin --profile')
+    || line.includes('dsh <profile> --patch');
+}
+
+/**
+ * Drop trust steps when `show` is false: the agent is not installed here. `omitted` is
+ * true when a step was dropped, so the report can name the guide once. Hook lines stay.
+ */
+function keepInstalledSteps(lines: string[], show: boolean): { lines: string[]; omitted: boolean } {
+  if (show) return { lines, omitted: false };
+  let omitted = false;
+  const kept = lines.filter((line) => {
+    if (!isTrustStep(line)) return true;
+    omitted = true;
+    return false;
+  });
+  return { lines: kept, omitted };
+}
+
+/**
  * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
  * skipped (#248, #254). `gh` asks GitHub two things: whether the remote owner is an
  * organization, and whether the repo is private (#377). `noCi` keeps CI off: see `keepCiOff`.
@@ -184,7 +222,6 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
       `to trust this folder in Copilot CLI: ${copilot.TRUST_STEP}`,
     ];
   });
-  report.push(...claudeHooks.lines);
   // Codex, Gemini CLI, Antigravity CLI, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
   // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
@@ -230,10 +267,33 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
   const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
-  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
+  // Trust steps print only for an agent installed on this machine (#654). The hook files
+  // above are still written. Gemini CLI and Antigravity CLI have no trust step. One line
+  // names the guide when any step was left out.
+  let omittedTrustStep = false;
+  const showSteps = (lines: string[], show: boolean): string[] => {
+    const kept = keepInstalledSteps(lines, show);
+    if (kept.omitted) omittedTrustStep = true;
+    return kept.lines;
+  };
+  report.push(...showSteps(claudeHooks.lines, hasCopilotHome(env)));
+  report.push(
+    ...showSteps(codexHooks.lines, codex.hasUserDir(env)),
+    ...geminiHooks.lines,
+    ...antigravityHooks.lines,
+    ...showSteps(museHooks.lines, muse.hasUserDir(env)),
+    // On Windows, initLines has no bridge command. The Windows line stays either way.
+    ...showSteps(dshHooks.lines, dsh.profilesWithBridge(env) !== null),
+    ...showSteps(grokHooks.lines, grok.hasUserDir(env)),
+  );
+  if (omittedTrustStep) report.push('other agents: see the guide');
   const sandboxes = sandboxLines(root);
   report.push(...sandboxes.lines);
-  report.push(...setCommitCheck(root, cli, hooks, blocks, env));
+  // Point git at the hooks last, so the files exist first. That call's first line leads
+  // the report. Its other lines stay at the end (#654).
+  const [hookLine, ...hookNotes] = setCommitCheck(root, cli, hooks, blocks, env);
+  report.unshift(hookLine);
+  report.push(...hookNotes);
   return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok, lines: report };
 }
 
@@ -1223,7 +1283,8 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: str
     execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, env, stdio: 'pipe' });
     // The answers kept so far name the old value.
     forgetGitReads();
-    return ['set git core.hooksPath to .githooks (the commit check)', ...note, ...dead];
+    // init moves this line to the start of the report (#654).
+    return ['git hook: on (the commit check runs from .githooks)', ...note, ...dead];
   }
   const { hooksPath } = hooks;
   const fileOf = (hook: CommitHook) => (hooksPath ? hookFile(root, hooksPath, hook) : `.husky/${hook}`);

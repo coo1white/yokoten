@@ -38,6 +38,102 @@ const PATTERNS: { kind: string; re: RegExp }[] = [
   { kind: 'Meta key', re: token('LLM_[0-9]{6,}_[A-Za-z0-9_\\-]{20,}') },
 ];
 
+// A literal every match of a pattern contains. One pass over a line finds these anchors,
+// and only the patterns they name run their regex. The last index is the PEM header.
+const PRIVATE_KEY_PATTERN = PATTERNS.length;
+const PRIVATE_KEY_MASK = 1 << PRIVATE_KEY_PATTERN;
+
+const anchorsFor = (pattern: number, ...texts: string[]): [number, string][] => texts.map((text) => [pattern, text]);
+const ANCHORS: [number, string][] = [
+  ...anchorsFor(0, 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'),
+  ...anchorsFor(1, 'github_pat_'),
+  ...anchorsFor(2, 'npm_'),
+  ...anchorsFor(3, 'AKIA', 'ASIA'),
+  ...anchorsFor(4, 'xoxa-', 'xoxb-', 'xoxp-', 'xoxr-', 'xoxs-'),
+  ...anchorsFor(5, 'sk_live_', 'rk_live_'),
+  ...anchorsFor(6, 'AIza'),
+  ...anchorsFor(7, 'sk-ant-'),
+  ...anchorsFor(8, 'sk-proj-', 'sk-svcacct-', 'sk-admin-'),
+  ...anchorsFor(9, 'sk-'),
+  ...anchorsFor(10, 'LLM_'),
+  ...anchorsFor(PRIVATE_KEY_PATTERN, 'PRIVATE KEY'),
+];
+
+type AnchorNode = { next: Map<number, number>; fail: number; mask: number };
+type AnchorMatcher = { transitions: Uint16Array; masks: Uint32Array };
+const ANCHOR_ALPHABET = 128;
+
+/** A trie with failure links, so one read finds every anchor that ends in a line. */
+function makeAnchorMatcher(): AnchorMatcher {
+  const nodes: AnchorNode[] = [{ next: new Map(), fail: 0, mask: 0 }];
+  for (const [pattern, text] of ANCHORS) {
+    let node = 0;
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      let child = nodes[node].next.get(code);
+      if (child === undefined) {
+        child = nodes.length;
+        nodes[node].next.set(code, child);
+        nodes.push({ next: new Map(), fail: 0, mask: 0 });
+      }
+      node = child;
+    }
+    nodes[node].mask |= 1 << pattern;
+  }
+
+  const queue = [...nodes[0].next.values()];
+  for (let index = 0; index < queue.length; index++) {
+    const parent = queue[index];
+    for (const [code, child] of nodes[parent].next) {
+      let fail = nodes[parent].fail;
+      while (fail !== 0 && !nodes[fail].next.has(code)) fail = nodes[fail].fail;
+      const fallback = nodes[fail].next.get(code);
+      nodes[child].fail = fallback === undefined || fallback === child ? 0 : fallback;
+      nodes[child].mask |= nodes[nodes[child].fail].mask;
+      queue.push(child);
+    }
+  }
+
+  const transitions = new Uint16Array(nodes.length * ANCHOR_ALPHABET);
+  const masks = new Uint32Array(nodes.length);
+  for (let node = 0; node < nodes.length; node++) masks[node] = nodes[node].mask;
+  for (const parent of [0, ...queue]) {
+    for (let code = 0; code < ANCHOR_ALPHABET; code++) {
+      const child = nodes[parent].next.get(code);
+      transitions[parent * ANCHOR_ALPHABET + code] = child ?? (parent === 0 ? 0 : transitions[nodes[parent].fail * ANCHOR_ALPHABET + code]);
+    }
+  }
+  return { transitions, masks };
+}
+
+const ANCHOR_MATCHER = makeAnchorMatcher();
+
+/** The patterns whose anchors occur in a line, as one bit per pattern. */
+function findCandidateMask(line: string): number {
+  let mask = 0;
+  let node = 0;
+  for (let index = 0; index < line.length; index++) {
+    const code = line.charCodeAt(index);
+    node = code < ANCHOR_ALPHABET ? ANCHOR_MATCHER.transitions[node * ANCHOR_ALPHABET + code] : 0;
+    mask |= ANCHOR_MATCHER.masks[node];
+  }
+  return mask;
+}
+
+/** The fixed patterns a line may match, and whether it has the literal in a PEM header. */
+export interface SecretCandidates {
+  patterns: number[];
+  hasPrivateKey: boolean;
+}
+
+/** The patterns a line may match, found in one anchor pass; for tests and diagnostics. */
+export function findSecretCandidates(line: string): SecretCandidates {
+  const mask = findCandidateMask(line);
+  const patterns: number[] = [];
+  for (let index = 0; index < PATTERNS.length; index++) if ((mask & (1 << index)) !== 0) patterns.push(index);
+  return { patterns, hasPrivateKey: (mask & PRIVATE_KEY_MASK) !== 0 };
+}
+
 /** What a check found on one line: the words for its kind, how sure the check is, and where it is. */
 export interface SecretHit {
   line: number;
@@ -149,7 +245,10 @@ export function findSecretHits(lines: string[], { allow = [], env = {} }: { allo
   const fromEnvironment = findEnvironmentValues(env);
   lines.forEach((line, lineIndex) => {
     const onLine: SecretHit[] = [];
-    for (const { kind, re } of PATTERNS) {
+    const candidates = findCandidateMask(line);
+    for (let index = 0; index < PATTERNS.length; index++) {
+      if ((candidates & (1 << index)) === 0) continue;
+      const { kind, re } = PATTERNS[index];
       for (const match of line.matchAll(re)) {
         const hit = match[0];
         if (PLACEHOLDER.test(hit) || allow.includes(hit)) continue;
@@ -157,11 +256,13 @@ export function findSecretHits(lines: string[], { allow = [], env = {} }: { allo
         onLine.push({ line: lineIndex, kind, grade: 'sure', start, end: start + hit.length });
       }
     }
-    const pem = PEM.exec(line);
-    const next = lines[lineIndex + 1]?.trim() ? lines[lineIndex + 1] : (lines[lineIndex + 2] ?? '');
-    if (pem && !allow.includes(pem[0]) && (PEM_INLINE.test(line) || PEM_BODY.test(next))) {
-      const start = pem.index;
-      onLine.push({ line: lineIndex, kind: 'private key', grade: 'sure', start, end: start + pem[0].length });
+    if ((candidates & PRIVATE_KEY_MASK) !== 0) {
+      const pem = PEM.exec(line);
+      const next = lines[lineIndex + 1]?.trim() ? lines[lineIndex + 1] : (lines[lineIndex + 2] ?? '');
+      if (pem && !allow.includes(pem[0]) && (PEM_INLINE.test(line) || PEM_BODY.test(next))) {
+        const start = pem.index;
+        onLine.push({ line: lineIndex, kind: 'private key', grade: 'sure', start, end: start + pem[0].length });
+      }
     }
     for (const value of fromEnvironment) {
       if (allow.includes(value)) continue;
@@ -274,13 +375,17 @@ export function makeSecretHider(): (text: string) => string {
     text
       .split(/(?<=\n)/)
       .map((line) => {
-        if (!isInKey && (PEM_INLINE.test(line) || (PEM.test(line) && line.trim().startsWith('-----BEGIN')))) isInKey = true;
+        const candidates = isInKey ? 0 : findCandidateMask(line);
+        if ((candidates & PRIVATE_KEY_MASK) !== 0 && (PEM_INLINE.test(line) || (PEM.test(line) && line.trim().startsWith('-----BEGIN')))) isInKey = true;
         if (isInKey) {
           if (/-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/.test(line)) isInKey = false;
           return line.replace(/[^\r\n]+/, SECRET);
         }
         let out = line;
-        for (const { re } of PATTERNS) out = out.replace(re, (hit) => (PLACEHOLDER.test(hit) ? hit : SECRET));
+        for (let index = 0; index < PATTERNS.length; index++) {
+          if ((candidates & (1 << index)) === 0) continue;
+          out = out.replace(PATTERNS[index].re, (hit) => (PLACEHOLDER.test(hit) ? hit : SECRET));
+        }
         return out;
       })
       .join('');

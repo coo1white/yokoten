@@ -1,7 +1,7 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/antigravity.ts';
 import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
@@ -70,6 +70,16 @@ const RELEASE_FIXES: Record<string, string> = {
   muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
   'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
   grok: releaseFix(approve('grok')),
+};
+
+// The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
+// team messages arrive there (#674). The others get them at the end of a turn (Stop).
+const CONTEXTS: Record<string, (text: string) => string> = { 'claude-code': claudeCode.formatContext, grok: grok.formatContext };
+
+/** The unread team messages for the agent in `folder`, wrapped as data; '' when none (#674). */
+const teamMessages = async (folder: string, env: Env, root: string | null): Promise<string> => {
+  const { deliveryFor } = await import('../agents/desk/team/deliver.ts');
+  return deliveryFor(folder, env, root);
 };
 
 // The runtimes whose hook can change a command before it runs (#390). In the others the
@@ -169,6 +179,15 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   }
   const folder = event.cwd ?? invocation.cwd;
   const folders = [folder, invocation.cwd];
+  const key = doneTryKey(event.sessionId, folder);
+  // Team messages (#674) come after the checks, never in their place. A turn sent back only
+  // to read messages does not count as sent back: the next stop is checked in full.
+  const messagesKey = `${key}-messages`;
+  // Messages send a turn on at most once in a row, so a chatty sender can't keep an agent from stopping.
+  const afterMessages = event.active && wasRefusedRecently(folder, messagesKey);
+  if (afterMessages) event = { ...event, active: false };
+  clearRefusedMarker(folder, messagesKey);
+  const takeMessages = async (): Promise<string> => (event?.subagent ? '' : teamMessages(invocation.cwd, env, rootOf(invocation.cwd, env)));
   // SubagentStop fires for every subagent. Its own type decides. The parent session's
   // role does not: a reviewer started by a worker is not checked (#614).
   const isWorker = event.subagent ? event.worker : event.worker || workerRole(env, folders) !== null;
@@ -212,7 +231,6 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
     }
   }
   const failed = findings.length > 0 || doneWhen?.ok === false;
-  const key = doneTryKey(event.sessionId, folder);
   if (!failed) {
     if (isWorker) {
       forgetDoneTries(env, key);
@@ -220,13 +238,21 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
       recordChecks(invocation, folder, 'passing');
     }
     if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
+    // The checks pass: unread messages send the turn on once, and the next stop is checked again.
+    const messages = event.active || afterMessages ? '' : await takeMessages();
+    if (messages) {
+      noteRefused(folder, messagesKey);
+      if (json) printJson(invocation, { blocked: true, stop: false, findings, messages: true });
+      print(invocation, [messages], invocation.stderr);
+      return 2;
+    }
     if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}) });
     return 0;
   }
   if (!isWorker) {
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
     print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
-    return 2;
+    return withMessages(invocation, 2, await takeMessages());
   }
   const bumped = bumpDoneTries(env, key);
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
@@ -234,10 +260,16 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   if (bumped === null) {
     if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder);
     noteRefused(folder, key);
-    return refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false);
+    return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
   }
   if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder);
-  return refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true);
+  return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
+}
+
+/** A refusal at the end of a turn, with the unread team messages after it (#674). */
+function withMessages(invocation: Invocation, code: number, messages: string): number {
+  if (messages) print(invocation, [messages], invocation.stderr);
+  return code;
 }
 
 /**
@@ -399,6 +431,13 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+    if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
+      // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
+      return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
+        if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
+        return 0;
+      });
+    }
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
     const reason = `yokoten: ${formatFinding(found)}`;
@@ -429,8 +468,10 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
  * The board calls this for the worktree it makes or reuses, so runtimes that drop
  * YOKOTEN_ROLE still run as workers. Returns the worktree root, or the plain reason.
  */
-export function markWorktree(cwd: string, dir: string, env: Env): { top: string } | { fail: string } {
+export function markWorktree(cwd: string, dir: string, callerEnv: Env): { top: string; kind: 'worktree' | 'clone' } | { fail: string } {
   const folder = resolve(cwd, dir);
+  // Git reads the folder from the caller's GIT_DIR before the path: dropped, so the mark goes where `dir` is (#672).
+  const env = withoutGitPlace(callerEnv);
   let isFolder = false;
   try {
     isFolder = statSync(folder).isDirectory();
@@ -444,12 +485,24 @@ export function markWorktree(cwd: string, dir: string, env: Env): { top: string 
     return { fail: formatFinding(notRepoFinding(folder)) };
   }
   const [top, gitDir, common, superproject] = answer;
-  if (realPath(gitDir) === realPath(resolve(folder, common ?? ''))) {
+  const kind = realPath(gitDir) === realPath(resolve(folder, common ?? '')) ? 'clone' : 'worktree';
+  if (kind === 'clone') {
     if (superproject) return { fail: `${top} is a submodule's checkout, not a worktree. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.` };
-    return { fail: `${top} is the main checkout, the lead's. Mark a worktree: \`git worktree add <dir> -b <branch>\`, then \`yokoten worker mark <dir>\`.` };
+    // A plain clone is a worker's desk (#672), unless the lead works in it: the session runs
+    // there, or worktrees hang off it. Those are the main checkout, never marked.
+    const here = realPath(cwd);
+    const base = realPath(top);
+    const isLeadHere = here === base || here.startsWith(base + sep);
+    if (isLeadHere || hasLinkedWorktrees(folder, env)) return { fail: `${top} is the main checkout, the lead's. Mark a worktree (\`git worktree add <dir> -b <branch>\`) or a clone of its own (\`git clone <repo> <dir>\`), then \`yokoten worker mark <dir>\`.` };
+    // The lead marks a clone from its own checkout, so that checkout is never the one marked.
+    if (leadCheckout(cwd, env) === null) return { fail: `run \`yokoten worker mark ${dir}\` from your own checkout, the lead's: yokoten then knows that ${top} is not it.` };
   }
+  // Git and the guard must name the same git folder, or the mark lands where the guard never looks.
+  const link = gitLinkAbove(folder);
+  if (link === null || link.kind === 'broken' || realPath(link.gitDir) !== realPath(gitDir)) return { fail: `git names ${gitDir} as the git folder of ${top}, but its .git does not. Nothing is marked.` };
   try {
-    writeFileSync(join(gitDir, WORKER_MARK), "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n");
+    const note = kind === 'clone' ? "A worker's clone: yokoten's guard treats every agent here as a worker. Removing the clone removes this mark.\n" : "A worker's worktree: yokoten's guard treats every agent here as a worker. `git worktree remove` removes this mark.\n";
+    writeFileSync(join(gitDir, WORKER_MARK), note);
   } catch (error) {
     return { fail: `can't write the mark in ${gitDir} (${(error as NodeJS.ErrnoException).code ?? 'error'}). Check that the lead can write there, then run it again.` };
   }
@@ -458,9 +511,33 @@ export function markWorktree(cwd: string, dir: string, env: Env): { top: string 
   } catch (error) {
     return { fail: `the mark is written in ${gitDir}, but the worker list can't be written (${(error as Error).message.split('\n')[0]}). Clear it with \`yokoten worker unmark ${top}\` once the list is writable, then mark again.` };
   }
-  // The guard finds the mark without git; check that it does here.
-  if (workerMarkAt(folder, env) !== 'mark') return { fail: `the mark is written in ${gitDir}, but the guard can't find it from ${top}.` };
-  return { top };
+  // The guard finds the mark without git; check that it finds the file itself, not the list.
+  if (!existsSync(join(link.gitDir, WORKER_MARK)) || workerMarkAt(folder, env) !== 'mark') return { fail: `the mark is written in ${gitDir}, but the guard can't find it from ${top}.` };
+  return { top, kind };
+}
+
+// The names that point git at another git folder or work tree than the folder it runs in.
+const GIT_PLACE = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'];
+const withoutGitPlace = (env: Env): Env => Object.fromEntries(Object.entries(env).filter(([name]) => !GIT_PLACE.includes(name)));
+
+// The top of the checkout the lead runs in, or null outside one.
+function leadCheckout(cwd: string, env: Env): string | null {
+  try {
+    return readGit(cwd, ['rev-parse', '--show-toplevel'], { env }).toString('utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// Whether other worktrees hang off the checkout at `folder`: then it is a main checkout.
+function hasLinkedWorktrees(folder: string, env: Env): boolean {
+  try {
+    const list = readGit(folder, ['worktree', 'list', '--porcelain'], { env }).toString('utf8');
+    return list.split('\n').filter((line) => line.startsWith('worktree ')).length > 1;
+  } catch {
+    // Git can't list them: the guard can't tell, so the checkout stays the lead's.
+    return true;
+  }
 }
 
 export function runWorker(invocation: Invocation): number | Promise<number> {
@@ -474,9 +551,13 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
     return 1;
   };
   if (action === 'unmark') return runUnmark(invocation, dir, fail);
+  if (workerRole(invocation.env, [invocation.cwd]) !== null) {
+    return fail(`only the lead marks a worktree or a clone: this session is a worker. ${LEAD_OUTSIDE}`);
+  }
   const marked = markWorktree(invocation.cwd, dir, invocation.env);
   if ('fail' in marked) return fail(marked.fail);
-  print(invocation, [`yokoten worker: marked the worktree at ${marked.top}. The guard now treats every agent there as a worker. \`git worktree remove ${marked.top}\` removes the mark. \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
+  const removes = marked.kind === 'clone' ? 'Removing the clone removes the mark.' : `\`git worktree remove ${marked.top}\` removes the mark.`;
+  print(invocation, [`yokoten worker: marked the ${marked.kind} at ${marked.top}. The guard now treats every agent there as a worker. ${removes} \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
   return 0;
 }
 
@@ -511,15 +592,18 @@ async function runEnv(invocation: Invocation, runtime: string | undefined): Prom
  * It drops the worktree's path from the worker list, and the mark file when `.git` still
  * names it. Given a folder with no `.git` (moved away), it still clears by path.
  */
+// Where the lead runs `worker mark` and `worker unmark`: inside a marked checkout, every session is a worker.
+const LEAD_OUTSIDE = "A worker commits in its own checkout and reports. The lead runs this from its own checkout, outside the marked one.";
+
 function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => number): number {
   if (workerRole(invocation.env, [invocation.cwd]) !== null) {
-    return fail('only the lead unmarks a worktree: this session is a worker. Commit in your worktree and report; the lead unmarks after review.');
+    return fail(`only the lead unmarks a worktree: this session is a worker. ${LEAD_OUTSIDE}`);
   }
   const folder = resolve(invocation.cwd, dir);
   let top = folder;
   let gitDir: string | undefined;
   try {
-    const answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir'], { env: invocation.env }).toString('utf8').trim().split('\n');
+    const answer = readGit(folder, ['rev-parse', '--show-toplevel', '--absolute-git-dir'], { env: withoutGitPlace(invocation.env) }).toString('utf8').trim().split('\n');
     if (answer[0]) top = answer[0];
     gitDir = answer[1];
   } catch {
@@ -541,7 +625,7 @@ function runUnmark(invocation: Invocation, dir: string, fail: (line: string) => 
  */
 export async function runDesk(invocation: Invocation): Promise<number> {
   // Inside a Linux desk, its first program: the bridge to the proxy, then the agent.
-  if (invocation.args[0] === '--bridge') return (await import('../agents/desk/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
+  if (invocation.args[0] === '--bridge') return (await import('../agents/desk/network/bridge.ts')).runBridge(invocation.args.slice(1), invocation.stderr);
   const end = invocation.args.indexOf('--');
   const options = parse('desk', end === -1 ? invocation.args : invocation.args.slice(0, end));
   if (typeof options === 'string') return usage(invocation, options);
@@ -553,11 +637,17 @@ export async function runDesk(invocation: Invocation): Promise<number> {
     return 1;
   };
   if (workerRole(invocation.env, [invocation.cwd]) !== null) return fail('only the lead starts a desk: this session is a worker.');
-  const [{ planDesk }, { chooseBackend, startDesk }, { paths }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts')]);
+  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team, { teamFolderFor, teamName }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/who.ts'), import('../agents/desk/team/team.ts')]);
   const backend = chooseBackend(process.platform, invocation.env);
   if (typeof backend === 'string') return fail(backend);
   const list = (name: string) => (options.values[name] ?? '').split(',').map((word) => word.trim()).filter(Boolean);
   const installed = paths(invocation.env);
+  // The team of the lead's project (#674): next to its main checkout. The agent's name is
+  // --name, or the desk folder's made into a name; a folder name that can't be one joins no team.
+  const main = team.leadCheckout(invocation.cwd, invocation.env);
+  const asked = options.values['--name'];
+  const name = asked ?? teamName(basename(resolve(invocation.cwd, folder)));
+  if (typeof main === 'string' && name === null) print(invocation, ['yokoten desk: the folder\'s name can\'t be a name on the team, so this desk joins none. Name it with --name to join.'], invocation.stderr);
   let plan: ReturnType<typeof planDesk>;
   try {
     plan = planDesk({
@@ -569,6 +659,8 @@ export async function runDesk(invocation: Invocation): Promise<number> {
       extraHosts: list('--host'),
       runtimes: [installed.runtime],
       marks: options.flags.has('--marks') ? installed.marks : undefined,
+      team: typeof main === 'string' && name !== null ? { folder: teamFolderFor(main), name } : undefined,
+      markDesk: (desk) => markWorktree(invocation.cwd, desk, invocation.env),
     });
   } catch (error) {
     return fail((error as Error).message);

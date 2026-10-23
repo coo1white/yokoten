@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
@@ -211,8 +211,9 @@ export function windowsTreeKillArgs(pid: number): string[] {
 
 /**
  * Stop `pid` and the programs it started: the process group on POSIX, the tree on Windows.
- * Call it while the shell is still running. `spawnSync`'s own timeout kills `cmd.exe` first,
- * and `taskkill /T` then finds no tree (#614).
+ * On POSIX the group remains after the shell exits, so a kill then still stops what it
+ * left behind (#641). On Windows, `taskkill /T` finds the tree only while the shell is
+ * still running. `spawnSync`'s timeout kills `cmd.exe` first, and the tree would stay (#614).
  */
 function killCommandTree(pid: number): void {
   try {
@@ -308,35 +309,62 @@ export function isSameFile(listed: { dev: number; ino: number }, opened: { dev: 
 }
 
 /**
- * The text of a regular file, or null. A link is not opened. The open does not wait
- * on a pipe. The open file is checked before any byte is read. It must be the same
- * file the list saw, and it must be under the size cap. Windows has no `O_NOFOLLOW`,
- * so that check compares `dev` and `ino`. `openFile` opens the path. A test passes
- * one that opens another file.
+ * Why a status file was not read. The words are plain, for the warning on stderr.
  */
-export function readStatusText(path: string, openFile: (file: string, flags: number) => number = openSync): string | null {
+export type StatusRefusal = 'too large' | 'cannot be read' | 'changed while it was read';
+
+/** The text of a status file, or the reason it was refused. */
+export type StatusReadResult = { text: string } | { refused: StatusRefusal };
+
+/**
+ * Read a regular status file, or say why it was refused. A link is not opened. The
+ * open does not wait on a pipe. The open file is checked before any byte is read. It
+ * must be the same file the list saw, and it must be under the size cap. Windows has
+ * no `O_NOFOLLOW`, so that check compares `dev` and `ino`. `openFile` opens the path.
+ * A test passes one that opens another file.
+ */
+export function readStatusResult(path: string, openFile: (file: string, flags: number) => number = openSync): StatusReadResult {
   let listed: { dev: number; ino: number };
   try {
     const before = lstatSync(path);
-    if (!before.isFile()) return null;
+    if (!before.isFile()) return { refused: 'cannot be read' };
     listed = { dev: before.dev, ino: before.ino };
   } catch {
-    return null;
+    return { refused: 'cannot be read' };
   }
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
   let fd: number | undefined;
   try {
-    fd = openFile(path, flags);
+    try {
+      fd = openFile(path, flags);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return { refused: code === 'ENOENT' || code === 'ELOOP' ? 'changed while it was read' : 'cannot be read' };
+    }
     const opened = fstatSync(fd);
-    if (!opened.isFile() || !isSameFile(listed, opened) || opened.size > STATUS_TEXT_LIMIT) return null;
+    if (!opened.isFile() || !isSameFile(listed, opened)) return { refused: 'changed while it was read' };
+    if (opened.size > STATUS_TEXT_LIMIT) return { refused: 'too large' };
     const buffer = Buffer.alloc(opened.size);
     const count = readSync(fd, buffer, 0, opened.size, 0);
-    return buffer.toString('utf8', 0, count);
+    if (count !== opened.size) return { refused: 'changed while it was read' };
+    return { text: buffer.toString('utf8', 0, count) };
   } catch {
-    return null;
+    return { refused: 'cannot be read' };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** The text of a regular status file, or null when it was refused. */
+export function readStatusText(path: string, openFile: (file: string, flags: number) => number = openSync): string | null {
+  const result = readStatusResult(path, openFile);
+  return 'text' in result ? result.text : null;
+}
+
+/** One warning line for a refused status file. It never contains the file's text. */
+function statusRefusalLine(reason: StatusRefusal): string {
+  const phrase = reason === 'too large' ? 'is too large' : reason;
+  return `yokoten: ${AGENT_STATUS_FILE} ${phrase}, so it was left unchanged.\n`;
 }
 
 function parseStatus(text: string | null): Record<string, unknown> {
@@ -352,7 +380,9 @@ function parseStatus(text: string | null): Record<string, unknown> {
 
 /**
  * Record `checks` in `.yokoten-agent.json` at `folder`. Other fields stay. `updated` is UTC.
- * A link, or any other non-file, is left unchanged and named on `warn` in one line.
+ * A refused status file is left unchanged and named on `warn` in one line. That
+ * includes a link or other non-file, a file over the size cap, a file that cannot be
+ * read, and a file that changed while it was read.
  * The bytes go to a temp file in the same folder and are renamed over the path, so a
  * link that appears in between is replaced and never followed. A file that cannot be
  * written does not crash the hook.
@@ -366,9 +396,17 @@ export function writeAgentChecks(folder: string, checks: 'failing' | 'passing', 
       warn(`yokoten: ${AGENT_STATUS_FILE} is not a regular file, so it was left unchanged.\n`);
       return;
     }
-    status = parseStatus(readStatusText(path));
+    const result = readStatusResult(path);
+    if ('refused' in result) {
+      warn(statusRefusalLine(result.refused));
+      return;
+    }
+    status = parseStatus(result.text);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      warn(statusRefusalLine('cannot be read'));
+      return;
+    }
   }
   status.checks = checks;
   status.updated = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -396,8 +434,9 @@ export function shortenOutput(text: string, env: Env = {}): string {
  * The command is started with `spawn`, and a timer in this process stops it. That timer
  * runs while the shell is still alive. On Windows it calls `taskkill /F /T /PID` then.
  * `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree would stay (#614).
- * When the shell exits, the check ends on that result. A short wait collects the last
- * output, then the pipes are dropped. A program that left the group cannot hold the
+ * When the shell exits, programs still in its group are stopped the same way. The check
+ * ends on the shell's own result. A short wait collects the last output, then the pipes
+ * are dropped. A program that left the group is not stopped, and it cannot hold the
  * check open. The result is given once.
  */
 export function runDoneWhen(
@@ -422,7 +461,7 @@ export function runDoneWhen(
     };
     let child: ChildProcess;
     try {
-      // A new process group on POSIX, so the timeout can stop the programs the shell started.
+      // A new process group on POSIX, so a timeout or a normal exit can stop what the shell started.
       // Windows stays in this process's tree: `taskkill /T` follows the parent, not a group.
       child = spawn(command, {
         shell: doneWhenShell(),
@@ -477,6 +516,14 @@ export function runDoneWhen(
       if (settled || timedOut) return;
       if (timer) clearTimeout(timer);
       timer = undefined;
+      // The shell has exited. Stop programs still in its group. A program that
+      // called setsid is in another group, so this does not reach it (#641).
+      try {
+        if (child.pid) killTree(child.pid);
+      } catch {
+        // The tree kill can throw. The check still ends on the shell's status.
+      }
+      if (settled) return;
       grace = setTimeout(() => {
         try {
           dropPipes();
@@ -540,11 +587,12 @@ export function judge(
     if (reason) return reason;
   }
   // A worker's edit inside a git folder may change the worker mark (#555), in any repo;
+  // one inside a team folder may speak for another agent (#674);
   // one inside yokoten's config folder may change the worker list (#591).
   if (env.YOKOTEN_ROLE === 'worker') {
     const folder = resolve(action.cwd ?? root ?? cwd);
     for (const p of action.paths) {
-      const reason = checkWorkerMarkEdit(resolve(folder, p), folder, env);
+      const reason = checkWorkerMarkEdit(resolve(folder, p), folder, env) ?? checkTeamEdit(resolve(folder, p));
       if (reason) return reason;
     }
   }
