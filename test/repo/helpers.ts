@@ -46,6 +46,7 @@ import {
   ROAD,
 } from '../../src/setup/road.ts';
 import type { MachineProbe } from '../../src/setup/doctor/machine.ts';
+import { lineHash } from '../../src/host/sigstore/record.ts';
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'yokoten.ts');
 
@@ -83,6 +84,47 @@ after(removeParent);
 process.on('exit', removeParent);
 
 /** A new empty folder in the system temp folder, removed when the test that made it ends. */
+/**
+ * A small event log for the anchor tests (#768): one start line per time, chained from 64
+ * zeros, with the issue set to the line's number. `lines` lets a test change one line
+ * after the chain was made, which is the tamper the check must see.
+ */
+export function makeEventLog(times: string[]): { text: string; lines: string[]; hashes: string[] } {
+  let previous = '0'.repeat(64);
+  const hashes: string[] = [];
+  const lines = times.map((time, index) => {
+    const nanos = String(BigInt(Date.parse(time)) * 1000000n);
+    const line = JSON.stringify({
+      resourceLogs: [
+        {
+          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'yokoten' } }] },
+          scopeLogs: [
+            {
+              scope: { name: 'yokoten' },
+              logRecords: [
+                {
+                  timeUnixNano: nanos,
+                  observedTimeUnixNano: nanos,
+                  eventName: 'yokoten.agent.start',
+                  attributes: [
+                    { key: 'gen_ai.agent.name', value: { stringValue: 'desk' } },
+                    { key: 'yokoten.issue', value: { stringValue: String(index + 1) } },
+                    { key: 'yokoten.event.previous_hash', value: { stringValue: previous } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    hashes.push(lineHash(line));
+    previous = hashes[hashes.length - 1];
+    return line;
+  });
+  return { text: lines.join('\n') + '\n', lines, hashes };
+}
+
 export function makeTempDir(prefix = 'yokoten-'): string {
   if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
   const path = mkdtempSync(join(tempParent, prefix));

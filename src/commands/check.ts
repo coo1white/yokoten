@@ -10,18 +10,21 @@
 // touched by `off`, `on` or install.
 
 import { randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 
+import { checkAnchors } from '../host/sigstore/anchor.ts';
+import { findAnchor, workflowIdentity } from '../host/sigstore/rekor.ts';
+import { readEventLog } from '../host/sigstore/record.ts';
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
 import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
-import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
+import { finding, type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
-import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
+import { addedIgnores, type AllowEntry, hideHome, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
@@ -31,7 +34,7 @@ const GH_TIMEOUT_MS = 15000;
 export async function runCheck(invocation: Invocation): Promise<number> {
   const options = parse('check', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
-  const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
+  const modes = ['--staged', '--history', '--pr', '--issue', '--anchor'].filter((m) => options.flags.has(m));
   if (modes.length > 1) return usage(invocation, `${modes.join(' and ')} can't be used together`);
   const mode = modes[0]?.slice(2) ?? 'tree';
   // A number goes with --pr only (#377): that pull request, read through gh.
@@ -41,11 +44,11 @@ export async function runCheck(invocation: Invocation): Promise<number> {
   const root = requireRoot(invocation, invocation.cwd, json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
   if (!root) return 1;
   const config = loadConfig(root);
-  const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
+  const name = `yokoten check${['pr', 'issue', 'anchor'].includes(mode) ? ` --${mode}` : ''}`;
   const notes: Finding[] = [];
   let problems: Finding[];
   try {
-    problems = await runMode(invocation, mode, root, config, notes, { name, json, number });
+    problems = await runMode(invocation, mode, root, config, notes, { name, json, number, values: options.values });
   } catch (err) {
     // A git read the check depends on gave no answer (#403): one finding, and the check fails.
     if (!(err instanceof GitReadError)) throw err;
@@ -70,13 +73,62 @@ function unstageLines(root: string, env: Invocation['env'], mode: string, proble
   }
 }
 
+/** The repo whose anchor workflow signed the entries: --repo, GITHUB_REPOSITORY, or origin. */
+function anchorRepo(root: string, env: Invocation['env'], given?: string): string | undefined {
+  const named = given ?? env.GITHUB_REPOSITORY;
+  if (named) return /^[\w.-]+\/[\w.-]+$/.test(named) ? named : undefined;
+  try {
+    const url = readGit(root, ['config', '--get', 'remote.origin.url'], { env }).toString('utf8').trim().replace(/\.git$/, '');
+    const found = url.match(/github\.com[:/]([\w.-]+)\/([\w.-]+)$/);
+    return found ? `${found[1]}/${found[2]}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The event log: `--log`, or `.git/yokoten/events.jsonl` under the common git folder. */
+function eventLogPath(root: string, env: Invocation['env'], given?: string): string {
+  if (given) return resolve(root, given);
+  const common = readGit(root, ['rev-parse', '--git-common-dir'], { env }).toString('utf8').trim();
+  return resolve(root, common, 'yokoten', 'events.jsonl');
+}
+
+/**
+ * `check --anchor`: each past UTC day of the event log against its Rekor entry. Only the
+ * day's 64 hex characters go out; no line, path or name leaves the machine (#768).
+ */
+async function runAnchor(invocation: Invocation, root: string, notes: Finding[], values: Record<string, string>): Promise<Finding[]> {
+  const { env } = invocation;
+  let logPath: string;
+  try {
+    logPath = eventLogPath(root, env, values['--log']);
+  } catch {
+    return [finding('anchor', 'git cannot name the event log for this repo', 'run the check inside the repo, or pass --log path')];
+  }
+  if (!existsSync(logPath)) {
+    return [finding('anchor', `there is no event log to check (${hideHome(logPath, env)} is not there)`, 'the hooks and runners write it; there is nothing to anchor before the first event')];
+  }
+  const repo = anchorRepo(root, env, values['--repo']);
+  if (!repo) return [finding('anchor', 'the repo whose workflow signed the anchors is not known', 'pass --repo owner/name, or set GITHUB_REPOSITORY')];
+  const log = readEventLog(readFileSync(logPath, 'utf8'));
+  const report = await checkAnchors(log, {
+    today: new Date().toISOString().slice(0, 10),
+    lookup: (hash) => findAnchor(hash, { api: env.YOKOTEN_REKOR_API, identity: workflowIdentity(repo) }),
+  });
+  notes.push(...report.notes);
+  return report.problems;
+}
+
 /** Returned by `runMode` when there is nothing to check; it has already said so. */
 const SKIPPED: Finding[] = [];
 
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
-async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Promise<Finding[]> {
+async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number, values }: { name: string; json: boolean; number?: string; values: Record<string, string> }): Promise<Finding[]> {
   const { env } = invocation;
   let problems: Finding[];
+  if (mode === 'anchor') {
+    return runAnchor(invocation, root, notes, values);
+  }
   if (mode === 'issue') {
     const issue = readIssue(env);
     if (!issue) {

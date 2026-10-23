@@ -1,0 +1,67 @@
+# Anchor the event log's daily hash in Sigstore's Rekor (#768, record 0029).
+#
+# A machine at the end of a UTC day sends one number here: the SHA-256 of the event log's
+# last line, 64 lowercase hex characters. This workflow signs that number in keyless mode,
+# with the workflow's own OIDC identity, and logs it in Rekor. No key is kept, and no line
+# of the log, path or name leaves the machine: the input is the hash and nothing else.
+#
+# A schedule can't read a laptop's log, so the daily job on each machine dispatches this
+# workflow (`gh workflow run anchor.yml -f hash=...`). `yokoten check --anchor` then finds
+# each past day's hash in Rekor and checks who signed it.
+name: anchor
+on:
+  workflow_dispatch:
+    inputs:
+      hash:
+        description: "The SHA-256 of the event log's last line: 64 lowercase hex characters"
+        required: true
+        type: string
+# No job gets a permission it does not name.
+permissions: {}
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Fulcio checks this workflow's OIDC token before it gives a certificate.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse anything but 64 lowercase hex characters
+        env:
+          HASH: ${{ inputs.hash }}
+        run: |
+          case "$HASH" in
+            *[!0-9a-f]*|'')
+              echo "::error::The anchor must be 64 lowercase hex characters, and nothing else."
+              exit 1
+              ;;
+          esac
+          if [ "${#HASH}" -ne 64 ]; then
+            echo "::error::The anchor must be 64 lowercase hex characters; this one is ${#HASH}."
+            exit 1
+          fi
+      - name: Put only the hash in a file, with no newline
+        env:
+          HASH: ${{ inputs.hash }}
+        run: printf '%s' "$HASH" > "$RUNNER_TEMP/anchor.txt"
+      - name: Install cosign, which signs with this workflow's identity
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+      - name: Sign keyless and upload the entry to Rekor
+        run: |
+          "$(go env GOPATH)/bin/cosign" sign-blob --yes --tlog-upload=true \
+            --bundle "$RUNNER_TEMP/anchor.bundle" "$RUNNER_TEMP/anchor.txt"
+          "$(go env GOPATH)/bin/cosign" verify-blob --bundle "$RUNNER_TEMP/anchor.bundle" \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/anchor.yml@${{ github.ref }}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$RUNNER_TEMP/anchor.txt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: anchor
+          path: |
+            ${{ runner.temp }}/anchor.txt
+            ${{ runner.temp }}/anchor.bundle
+          if-no-files-found: error

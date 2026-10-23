@@ -280,6 +280,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...unsavedNotes(UNSAVED_CONTROL, { home: undefined, now: 1 }));
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
 
+  // The event log's daily anchor check (#768): one finding of each shape, so the rule is reached.
+  found.push(finding('anchor', '2026-10-20 no longer matches its anchor: Rekor holds no entry for this hash', 'restore the line the chain names, or keep this log and start a new one'));
+
   const known = new Set(ids());
   for (const f of found) {
     const text = formatFinding(f);
