@@ -148,6 +148,48 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
 }
 
+/** One open pull request the sync may update: its number, its branch, and the base branch. */
+export interface OpenPull {
+  number: number;
+  branch: string;
+  base: string;
+  isFork: boolean;
+}
+
+/** The most open pull requests `pr sync` reads: enough for one team's open work. */
+const OPEN_PULL_LIMIT = 100;
+
+/** Why gh could not list the open pull requests, in words a beginner can act on. */
+function openPullsFailed(err: unknown): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+  const reason = unread(err).unread;
+  return `gh can't list the open pull requests (${reason}): check the network and \`gh auth login\``;
+}
+
+/**
+ * The open pull requests of `repo`, read through gh (#432): the ones whose branches the
+ * sync can update. A pull request from a fork is kept and marked, since its branch is not
+ * on origin. A row without a number or branch is skipped. Or why the list can't be read.
+ */
+export function readOpenPulls(gh: Gh, repo: string): OpenPull[] | string {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PULL_LIMIT), '--json', 'number,headRefName,baseRefName,isCrossRepository']));
+  } catch (err) {
+    return openPullsFailed(err);
+  }
+  if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+  const pulls: OpenPull[] = [];
+  for (const row of rows) {
+    if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number < 1) continue;
+    const branch = asText(row.headRefName);
+    const base = asText(row.baseRefName);
+    if (!branch || !base) continue;
+    pulls.push({ number: row.number, branch, base, isFork: row.isCrossRepository === true });
+  }
+  return pulls;
+}
+
 /**
  * The author login as the CI event names it. gh names an app `app/<name>`, where the event
  * has `<name>[bot]`; the rules match the event's form, such as dependabot[bot].

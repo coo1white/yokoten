@@ -890,6 +890,7 @@ It puts three safe defaults in `.github/` too:
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
+| `pr sync` | Brings each open pull request up to date with its base branch after a merge. It merges the base in, resolves only two mechanical conflicts (both sides added a whole block, or both changed the same import list), runs typecheck and the tests of the touched files, then pushes as the bot. Anything else stops with the files, the hunks and a dispatch brief. It never force-pushes, rebases or resolves on GitHub. Run it after every merge. See [Managing agents like a team](#managing-agents-like-a-team) |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
@@ -1649,6 +1650,17 @@ The tier label is `tier A`, `tier B` or `tier C` (`tier: B` also counts). It mus
 the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
+
+### Keeping pull requests up to date
+
+Every merge to `main` leaves the other open pull requests behind. A conflict waits for
+nobody, so the lead runs `yokoten pr sync` after every merge. It merges `main` into each
+open branch and pushes as the bot. It resolves only two mechanical conflicts: two added
+blocks at one spot, and two changed import lists. Anything else stops with the files and
+the hunks, and the lead hands them to a worker with the dispatch brief.
+
+The owner never resolves a conflict on GitHub. The web editor would commit as the
+owner, and the bot must be the one that pushes. Related: issue #320, the merge train.
 
 ### The desk
 

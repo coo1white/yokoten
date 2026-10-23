@@ -4,6 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -847,4 +848,25 @@ test('marks: the count names both files when the setting adds one (#656)', async
   assert.equal(counts.status, 0, counts.stderr);
   assert.match(counts.stdout, /^yokoten marks: 2 in ~\/\.config\/yokoten\/private-marks and the file YOKOTEN_PRIVATE_MARKS names \(the values are never shown\)$/m);
   assert.ok(!VALUES.test(counts.stdout + counts.stderr));
+});
+
+// #432: `pr sync` lists the open pull requests first. With none, it needs no bot and no
+// network, and says so in one line. The merge itself is tested in test/run/check.test.ts.
+test('pr sync: no open pull requests is one line, and no bot is needed (#432)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), '#!/usr/bin/env node\nprocess.stdout.write("[]")\n');
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten pr sync: no open pull requests$/m);
+});
+
+test('pr sync: a missing action is a usage error, not a silent no-op (#432)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['pr']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /give the action: `yokoten pr sync`/);
 });
