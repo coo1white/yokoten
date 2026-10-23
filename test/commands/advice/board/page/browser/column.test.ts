@@ -31,6 +31,7 @@ class FakeNode {
     this.children.push(...nodes);
   }
   hidden = false;
+  scrollTop = 0;
   replaceChildren(...nodes: Array<FakeNode | null | undefined>): void {
     this.children = nodes.filter((node): node is FakeNode => node != null);
   }
@@ -101,7 +102,9 @@ test('board column: the bell carries the desk, for a phone', () => {
   };
   const state = makeState(data);
   state.isNeedsOpen = true;
+  menu.scrollTop = 120;
   fillNeeds(state, data);
+  assert.equal(menu.scrollTop, 120, 'a refresh keeps the list where the owner scrolled');
   const phone = menu.children.find((node) => node.getAttribute('class') === 'phone-desk');
   assert.ok(phone, 'the desk sits in the bell');
   assert.match(phone.textContent, /Ship the board\?/);

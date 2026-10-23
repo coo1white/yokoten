@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
-import { homeIn, homeOf, loadMarks, machineAllowed, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
+import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
 import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
@@ -363,6 +363,45 @@ function readDefaultBranch(root: string, env: Env): string | null {
     }
   }
   return null;
+}
+
+/** How many commits on the default branch doctor reads for its time zone count (#760). */
+export const HISTORY_DEPTH = 200;
+
+/** The default branch as a person names it, in the order doctor reads it: `origin/HEAD`, else `origin/main`, else `main`. */
+const DEFAULT_BRANCH_NAMES = ['origin/HEAD', 'origin/main', 'main'];
+
+/**
+ * The revision arguments for the last `HISTORY_DEPTH` commits on each default-branch name.
+ * `--ignore-missing` drops a ref that is not here, and a `~` depth past a short history.
+ * One `git log` takes them all, so doctor starts one git process, not two (#453).
+ */
+function historyWindow(): string[] {
+  return [...DEFAULT_BRANCH_NAMES, '--not', ...DEFAULT_BRANCH_NAMES.map((name) => `${name}~${HISTORY_DEPTH}`)];
+}
+
+/**
+ * A note when a merge commit among the last `HISTORY_DEPTH` commits on the default branch
+ * carries an author or committer time zone other than UTC (#760). One `git log` reads them
+ * all, against the same refs and window the note prints, so the count and the command agree
+ * (#775). The zone is never printed, and neither is a name or email. Null when every merge is
+ * UTC, or git can't answer.
+ */
+export function mergeTimeZones(root: string, env: Env): Finding | null {
+  let text = '';
+  try {
+    text = execFileSync('git', ['log', '--first-parent', '--merges', '--ignore-missing', '--format=%H%x00%ad|%cd', '--date=format:%z', ...historyWindow()], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: 1 << 26 }).trim();
+  } catch {
+    return null;
+  }
+  const count = text.split('\n').filter((line) => {
+    if (line === '') return false;
+    const [, zones = ''] = line.split('\0');
+    const [author = '', committer = ''] = zones.split('|');
+    return notUtc(` ${author}`) || notUtc(` ${committer}`);
+  }).length;
+  if (!count) return null;
+  return finding('time-zone', `${count} merge commit(s) among the last ${HISTORY_DEPTH} commits on the default branch carry an author or committer time zone other than UTC`, `see them with \`git log --first-parent --merges --ignore-missing --date=format:%z --format='%h %ad %cd' ${historyWindow().join(' ')}\`; each line ends with its zone, and +0000 is UTC; leave history as it is, and merge through the bot so new merges stay UTC`);
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
