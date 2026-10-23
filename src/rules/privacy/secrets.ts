@@ -3,8 +3,8 @@
 // token's real prefix, charset and length, so ordinary words and ids are not caught.
 // A hit names the kind of secret, never the secret: the output may land in a CI log.
 
-import type { Env } from './config.ts';
-import { noteWork, type FindingGrade } from './message.ts';
+import type { Env } from '../config.ts';
+import { noteWork, type FindingGrade } from '../message.ts';
 
 /** What `yokoten redact` writes in place of a secret (#390). */
 export const SECRET = '<secret>';
