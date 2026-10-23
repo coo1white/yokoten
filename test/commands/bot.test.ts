@@ -288,7 +288,7 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     assert.equal(sandbox.git('rev-parse', 'origin/topic').stdout.trim(), sandbox.git('rev-parse', 'HEAD').stdout.trim(), 'fetched');
     await refused(['gh', 'pr', 'edit', 'https://github.com/me/repo/pull/5', '--body-file', join(sandbox.home, 'body.md')], noKit, /kit/);
     const viewed = readFileSync(views, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-    assert.deepEqual(viewed, [5, 'https://github.com/me/repo/pull/5'].map((n) => ({ args: ['pr', 'view', String(n), '--json', 'headRefName,baseRefName'], token: 'ghs_test' })));
+    assert.deepEqual(viewed, [5, 'https://github.com/me/repo/pull/5'].map((n) => ({ args: ['pr', 'view', String(n), '--json', 'headRefName,baseRefName,labels'], token: 'ghs_test' })));
 
     // (c) A good body passes, and gh gets the command and the body unchanged.
     writeFileSync(join(sandbox.home, 'body.md'), good);
@@ -415,7 +415,7 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
     const lists0 = read(lists).length;
     const others: string[][] = [
       ['gh', 'pr', 'list'],
-      ['gh', 'pr', 'edit', '5', '-t', 'feat: a'],
+      ['gh', 'pr', 'edit', '5', '--add-label', 'bug'],
       ['gh', 'pr', 'create', '-R', 'other/repo', '-t', 'feat: a', '--body', body('B')],
       ['gh', 'pr', 'create', '--fill'],
     ];
@@ -425,6 +425,65 @@ test('bot: a new pull request gets its type and tier labels; a contradicting one
       assert.deepEqual(read(log).at(-1)?.args, command.slice(1), command.join(' '));
     }
     assert.equal(read(lists).length, lists0, 'no label list');
+  } finally {
+    server.close();
+  }
+});
+
+// #422: `gh pr edit` keeps the type and tier labels right. A new title adds its type, a
+// new body moves the tier label and removes the old one, and a label the caller gives is
+// kept. A fake gh and a local API server stand in for GitHub.
+test('bot: an edit adds its title type and moves the tier label (#422)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', JSON.stringify({ areas: ['host'] }));
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  const log = join(sandbox.home, 'gh.log');
+  const views = join(sandbox.home, 'views.log');
+  const repoLabels = join(sandbox.home, 'labels.json');
+  const pullLabels = join(sandbox.home, 'pull-labels.json');
+  mkdirSync(bin);
+  // The fake gh says the pull request has `bug` and `tier A`, and answers `label list` from labels.json.
+  writeFileSync(join(bin, 'gh'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `if (args[0] === "pr" && args[1] === "view") { fs.appendFileSync(${JSON.stringify(views)}, JSON.stringify(args) + "\\n"); process.stdout.write(fs.readFileSync(${JSON.stringify(pullLabels)}, "utf8")); process.exit(0); }`,
+    `if (args[0] === "label") { process.stdout.write(fs.readFileSync(${JSON.stringify(repoLabels)}, "utf8")); process.exit(0); }`,
+    `fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, input: fs.readFileSync(0, "utf8") }) + "\\n");`,
+  ].join('\n'));
+  chmodSync(join(bin, 'gh'), 0o755);
+  writeFileSync(repoLabels, JSON.stringify(['bug', 'feat', 'docs', 'tier A', 'tier B'].map((name) => ({ name }))));
+  writeFileSync(pullLabels, JSON.stringify({ labels: [{ name: 'bug' }, { name: 'tier A' }] }));
+  const lines = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
+  const server = createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(req.method === 'GET' ? { id: 77 } : { token: 'ghs_test' }));
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
+  const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
+  const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n`;
+  try {
+    const cases: [command: string[], stderr: string, args: string[]][] = [
+      // A new title adds its type, by the name the repo has.
+      [['gh', 'pr', 'edit', '5', '-t', 'feat(host): a'], '', ['--add-label', 'feat']],
+      // A new body moves the tier label from `tier A` to `tier B`.
+      [['gh', 'pr', 'edit', '--body', body('B')], note, ['--add-label', 'tier B', '--remove-label', 'tier A']],
+      // A tier label the caller gives is kept, and the old one still goes.
+      [['gh', 'pr', 'edit', '--body', body('B'), '--add-label', 'tier B'], note, ['--remove-label', 'tier A']],
+    ];
+    for (const [command, stderr, args] of cases) {
+      const r = await run(command);
+      assert.deepEqual([r.status, r.stderr], [0, stderr], command.join(' '));
+      assert.deepEqual(lines(log).at(-1), { args: [...command.slice(1), ...args], input: '' }, command.join(' '));
+    }
+    assert.deepEqual(lines(views), [
+      ['pr', 'view', '--json', 'labels'],
+      ['pr', 'view', '--json', 'labels'],
+    ]);
   } finally {
     server.close();
   }
