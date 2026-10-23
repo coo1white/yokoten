@@ -1,4 +1,4 @@
-# 0027 Linear scans are judged by the work they count
+# 0032 Linear scans are judged by the work they count
 
 Status: accepted
 Date: 2026-10-23 (UTC)
