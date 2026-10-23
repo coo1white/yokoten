@@ -1,7 +1,8 @@
-// `yokoten init` writes the `tests` job for the project's language (#550): the setup
-// action pinned to a commit, the install step, and the runner from the language table in
-// test-commands.ts. It asks first, as install's writes do (record 0014), and says how to
-// undo it. doctor stays read-only: it reads a project and advises, never writes.
+// `yokoten init` writes the `tests` job for the project's language (#550, #653): the setup
+// action pinned to a commit, the install step, and the runner. Node uses `npm test` when
+// no earlier language matches and package.json has a real test script. It asks first, as
+// install's writes do (record 0014), and says how to undo it. doctor stays read-only: it
+// reads a project and advises, never writes.
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,10 +25,19 @@ export interface TestsJob {
   install: string;
 }
 
+/** The Node line `action.yml` sets up when a project names no version of its own. */
+const KIT_NODE = '^22.23.4';
+/** The command the Node tests job runs. The script body stays in package.json. */
+const NODE_RUNNER = 'npm test';
+/** `engines.node` may name a range. Anything else is not a version we can copy. */
+const ENGINES_NODE = /^[0-9A-Za-z.^~<>=* |]+$/;
+/** One version on the first line of `.nvmrc` or `.node-version`, with one leading `v` dropped. */
+const VERSION_LINE = /^v?(\d+\.\d+(?:\.\d+)?)$/;
+
 /**
- * The six languages init writes a job for, in the order test-commands.ts names them.
- * Each pin was read from its action's release tag; Dependabot keeps the commit and the
- * version comment current, as with the kit's own pins.
+ * Languages `yokoten init` can write a job for. The first six follow the order in
+ * test-commands.ts. Node.js is last, and only when none of those six is found.
+ * The Node pin is the same commit as action.yml.
  */
 export const TESTS_JOBS: TestsJob[] = [
   { language: 'Go', action: 'actions/setup-go', version: 'v7.0.0', commit: 'b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', input: 'go-version', inputValue: 'stable', install: 'go mod download' },
@@ -36,6 +46,7 @@ export const TESTS_JOBS: TestsJob[] = [
   { language: '.NET', action: 'actions/setup-dotnet', version: 'v6.0.0', commit: 'a98b56852c35b8e3190ac28c8c2271da59106c68', input: 'dotnet-version', inputValue: '10.x', install: 'dotnet restore' },
   { language: 'Ruby', action: 'ruby/setup-ruby', version: 'v1.332.0', commit: 'b1da4809b005e0178fe08a1d57317bffc00b7b4c', input: 'ruby-version', inputValue: '3.4', install: 'bundle install' },
   { language: 'PHP', action: 'shivammathur/setup-php', version: '2.40.0', commit: 'eb7c497e18156a6bbabfef1d3a82760b9eda3962', input: 'php-version', inputValue: '8.4', install: 'composer install' },
+  { language: 'Node.js', action: 'actions/setup-node', version: 'v7.1.0', commit: '949feb2413d6458794dcd2491c4babbbce0c15c1', input: 'node-version', inputValue: KIT_NODE, install: 'npm ci' },
 ];
 
 /** The pinned checkout step copied from the project's workflow. `note` is its version comment, or empty. */
@@ -165,19 +176,87 @@ const checkoutOf = (contents: string): CheckoutStep | null => {
 const isYes = (answer: string | null): boolean => answer !== null && /^\s*(y|yes)?\s*$/i.test(answer);
 
 const WORKFLOW = '.github/workflows/yokoten.yml';
+/** A remote action pinned to a full commit. A tag or a branch can move, so neither counts. */
+const isCommitPin = (uses: string) => /^[^@\s]+@[0-9a-f]{40}$/.test(uses);
+
+/** The first line of a version file, or '' when the file is missing or the line is not a version. */
+const versionFile = (root: string, name: string): string => VERSION_LINE.exec(readText(join(root, name)).split(/\r?\n/, 1)[0] ?? '')?.[1] ?? '';
+
+/**
+ * The `node-version` for setup-node: `engines.node`, else `.nvmrc`, else `.node-version`,
+ * else the kit default.
+ */
+export const nodeVersion = (root: string): string => {
+  try {
+    const node = JSON.parse(readText(join(root, 'package.json')) || 'null')?.engines?.node;
+    if (typeof node === 'string' && node.length <= 40 && ENGINES_NODE.test(node)) return node;
+  } catch {
+    // package.json is not JSON. A version file can still name one.
+  }
+  return versionFile(root, '.nvmrc') || versionFile(root, '.node-version') || KIT_NODE;
+};
+
+/** Node's version quoted, so `>=` and `22.10` stay text. The other jobs keep plain values. */
+const quotedNodeJob = (job: TestsJob): TestsJob => (job.language === 'Node.js' ? { ...job, inputValue: JSON.stringify(job.inputValue) } : job);
+
+const withNodeVersion = (job: TestsJob, root: string): TestsJob => (job.language === 'Node.js' ? { ...job, inputValue: nodeVersion(root) } : job);
+
+/** The job init would write, or null when no covered language matches and there is no real test script. */
+const pickedJob = (root: string): { job: TestsJob; runner: string } | null => {
+  const found = testLanguages(root).find((named) => TESTS_JOBS.some((job) => job.language === named.language));
+  if (found) {
+    const job = TESTS_JOBS.find((named) => named.language === found.language);
+    if (!job) return null;
+    return { job: withNodeVersion(job, root), runner: job.language === 'Node.js' ? NODE_RUNNER : found.runner };
+  }
+  if (!testScript(root)) return null;
+  const job = TESTS_JOBS.find((named) => named.language === 'Node.js');
+  return job ? { job: withNodeVersion(job, root), runner: NODE_RUNNER } : null;
+};
+
+/**
+ * One flow line for the Node tests job, copied from the workflow's pinned checkout.
+ * Null when that pin is missing. The caller decides that the project is a Node project.
+ */
+export const nodeTestsLine = (root: string): string | null => {
+  let contents = '';
+  try {
+    contents = readFileSync(join(root, WORKFLOW), 'utf8');
+  } catch {
+    return null;
+  }
+  const checkout = checkoutOf(contents);
+  if (!checkout || !isCommitPin(checkout.uses)) return null;
+  const job = TESTS_JOBS.find((named) => named.language === 'Node.js');
+  if (!job) return null;
+  const version = JSON.stringify(nodeVersion(root));
+  const setup = `${job.action}@${job.commit}`;
+  return `tests: {runs-on: ubuntu-latest, timeout-minutes: 10, steps: [{uses: ${checkout.uses}, with: {persist-credentials: false}}, {uses: ${setup}, with: {"${job.input}": ${version}}}, {run: ${job.install}}, {run: ${NODE_RUNNER}}]}`;
+};
+
+/**
+ * The fix doctor shows for a Node project with a test script. Null when a language in
+ * TESTS_JOBS comes first, or when there is no real test script. The line has no newline.
+ */
+export const nodeTestsFix = (root: string): string | null => {
+  const picked = pickedJob(root);
+  if (!picked || picked.job.language !== 'Node.js') return null;
+  const line = nodeTestsLine(root);
+  if (line) return `in ${WORKFLOW}, paste this under \`jobs:\`, then add \`tests\` to the \`needs\` list of \`ci\`: \`${line}\``;
+  return `in ${WORKFLOW}, the checkout step is not pinned. Pin it, then run \`yokoten init\``;
+};
 
 /**
  * Write the `tests` job for the project's language into its workflow. Quiet (no lines)
- * when no covered language is found. With `ask` (a terminal), it asks once before it
- * writes; without, it only says what it would do and how to add the job by hand. It
- * never overwrites: a workflow that already runs the tests, or has a `tests` job of its
- * own, is kept. It copies the checkout step of the other jobs, and only when pinned.
+ * when no covered language is found and package.json has no real test script. With `ask`
+ * (a terminal), it asks once before it writes; without, it only says what it would do.
+ * It never overwrites: a workflow that already runs the tests, or has a `tests` job of
+ * its own, is kept. It copies the checkout step of the other jobs, and only when pinned.
  */
 export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string[] {
-  const found = testLanguages(root).find((named) => TESTS_JOBS.some((job) => job.language === named.language));
-  if (!found) return [];
-  const job = TESTS_JOBS.find((named) => named.language === found.language);
-  if (!job) return [];
+  const picked = pickedJob(root);
+  if (!picked) return [];
+  const { job, runner } = picked;
   let contents: string;
   try {
     contents = readFileSync(join(root, WORKFLOW), 'utf8');
@@ -188,9 +267,9 @@ export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string
   if (/^  tests:[ \t]*(?:#.*)?$/m.test(contents)) return [`kept ${WORKFLOW} (it has a tests job of its own)`];
   const checkout = checkoutOf(contents);
   if (!checkout) return [`left ${WORKFLOW} unchanged: it has no checkout step to copy; add the tests job under \`jobs:\` by hand, and add \`tests\` to the \`needs\` list of \`ci\``];
-  if (!/^[^@\s]+@[0-9a-f]{40}$/.test(checkout.uses))
+  if (!isCommitPin(checkout.uses))
     return [`left ${WORKFLOW} unchanged: its checkout step is not pinned to a commit (${checkout.uses}); pin it first, then run \`yokoten init\` again`];
-  const jobText = testsJobText(job, found.runner, checkout);
+  const jobText = testsJobText(quotedNodeJob(job), runner, checkout);
   const bad = unpinnedUses(jobText);
   if (bad.length) return [`did not write the tests job: ${bad.join(', ')} is not pinned to a commit`];
   const needs = addTestsNeeds(contents);
@@ -198,8 +277,8 @@ export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string
   if (next === null) return [`left ${WORKFLOW} unchanged: add the tests job under \`jobs:\` by hand, and add \`tests\` to the \`needs\` list of \`ci\``];
   if (ask && isYes(ask(`Add a tests job for ${job.language} to ${WORKFLOW}? [Y/n]`))) {
     writeFileSync(join(root, WORKFLOW), next);
-    return [`wrote the tests job for ${job.language} in ${WORKFLOW} (it runs \`${found.runner}\`); to undo, remove the \`tests\` job and remove \`tests\` from the \`needs\` list of \`ci\``];
+    return [`wrote the tests job for ${job.language} in ${WORKFLOW} (it runs \`${runner}\`); to undo, remove the \`tests\` job and remove \`tests\` from the \`needs\` list of \`ci\``];
   }
   if (ask) return [`left ${WORKFLOW} unchanged; to add the job later, run \`yokoten init\` on a terminal`];
-  return [`would add a tests job for ${job.language} to ${WORKFLOW} (it runs \`${found.runner}\`); run \`yokoten init\` on a terminal to be asked, or add the job by hand and add \`tests\` to the \`needs\` list of \`ci\``];
+  return [`would add a tests job for ${job.language} to ${WORKFLOW} (it runs \`${runner}\`); run \`yokoten init\` on a terminal to be asked, or add the job by hand and add \`tests\` to the \`needs\` list of \`ci\``];
 }

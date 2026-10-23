@@ -1,4 +1,4 @@
-// Tests for src/setup/advice/tests-job.ts: init writes the tests job for six languages (#550).
+// Tests for src/setup/advice/tests-job.ts: init writes the tests job (#550, #653).
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
@@ -9,7 +9,7 @@ import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import { init } from '../../../src/setup/init.ts';
 import { ROAD } from '../../../src/setup/road.ts';
 import { testLanguages } from '../../../src/setup/advice/test-commands.ts';
-import { addTestsNeeds, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
+import { addTestsNeeds, nodeVersion, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
 
 const WORKFLOW = '.github/workflows/yokoten.yml';
 
@@ -39,7 +39,7 @@ const workflowFile = (needs = 'needs: [changes, check]') =>
   ['name: yokoten', 'on:', '  pull_request:', 'jobs:', '  changes:', '    runs-on: ubuntu-latest', '    steps:', `      - uses: ${CHECKOUT}`, '        with:', '          persist-credentials: false', '  # The one required check.', '  ci:', '    if: always()', `    ${needs}`, '    runs-on: ubuntu-latest', '    steps:', '      - run: echo ci', ''].join('\n');
 
 test('tests-job: each job pins its setup action, and runs the install step and the table runner (#550)', () => {
-  assert.deepEqual(TESTS_JOBS.map((job) => job.language), ['Go', 'Python', 'Rust', '.NET', 'Ruby', 'PHP']);
+  assert.deepEqual(TESTS_JOBS.map((job) => job.language), ['Go', 'Python', 'Rust', '.NET', 'Ruby', 'PHP', 'Node.js']);
   for (const shape of SHAPES) {
     const dir = project(shape.files);
     const runner = testLanguages(dir).find((named) => named.language === shape.language)?.runner;
@@ -129,7 +129,93 @@ test('tests-job: the first covered language wins, and other stacks stay quiet (#
   const mixed = project({ 'go.mod': 'module example.com/demo\n', 'pyproject.toml': '[project]\nname = "demo"\n', [WORKFLOW]: workflowFile() });
   assert.match(writeTestsJob(mixed, { ask: () => 'y' }).join('\n'), /wrote the tests job for Go/);
   const node = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }) });
-  assert.deepEqual(writeTestsJob(node, { ask: () => 'y' }), [], 'no covered language: quiet');
+  assert.ok(writeTestsJob(node, { ask: () => 'y' }).join('\n').includes(`no ${WORKFLOW}`), 'a Node project still needs the workflow file');
+});
+
+test('tests-job: a Node project with a test script gets a pinned job that runs npm test (#653)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  assert.equal(node.action, 'actions/setup-node');
+  assert.equal(node.version, 'v7.1.0');
+  assert.equal(node.commit, '949feb2413d6458794dcd2491c4babbbce0c15c1');
+  assert.equal(node.input, 'node-version');
+  assert.equal(node.inputValue, '^22.23.4');
+  assert.equal(node.install, 'npm ci');
+  const dir = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), [WORKFLOW]: workflowFile() });
+  const asked: string[] = [];
+  const lines = writeTestsJob(dir, { ask: (question) => (asked.push(question), 'y') });
+  assert.deepEqual(asked, [`Add a tests job for Node.js to ${WORKFLOW}? [Y/n]`]);
+  assert.match(lines.join('\n'), /wrote the tests job for Node\.js in .* \(it runs `npm test`\)/);
+  const after = readFileSync(join(dir, WORKFLOW), 'utf8');
+  assert.ok(after.includes(`- uses: ${node.action}@${node.commit} # ${node.version}`));
+  assert.match(after, /node-version: "\^22\.23\.4"/);
+  assert.ok(after.includes('- run: npm ci') && after.includes('- run: npm test'));
+  assert.equal(after.includes('vitest run'), false, 'the job runs npm test');
+  assert.deepEqual(unpinnedUses(after), []);
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  assert.equal(tests.check(dir, {}, undefined), true, 'the tests step is done');
+  const silent = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), [WORKFLOW]: workflowFile() });
+  const how = writeTestsJob(silent);
+  assert.equal(readFileSync(join(silent, WORKFLOW), 'utf8'), workflowFile(), 'no terminal writes nothing');
+  assert.match(how.join('\n'), /would add a tests job for Node\.js/);
+  const engines = project({
+    'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, engines: { node: '>=22.23.4' } }),
+    [WORKFLOW]: workflowFile(),
+  });
+  writeTestsJob(engines, { ask: () => 'y' });
+  assert.match(readFileSync(join(engines, WORKFLOW), 'utf8'), /node-version: ">=22\.23\.4"/);
+  const fromFile = project({
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    '.nvmrc': 'v22.14.0\n',
+    [WORKFLOW]: workflowFile(),
+  });
+  writeTestsJob(fromFile, { ask: () => 'y' });
+  const written = readFileSync(join(fromFile, WORKFLOW), 'utf8');
+  assert.match(written, /node-version: "22\.14\.0"/);
+  assert.equal(written.includes('v22.14.0'), false, 'one leading v is stripped');
+  const loose = project({
+    'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
+    [WORKFLOW]: workflowFile().replace(CHECKOUT, 'actions/checkout@v7.0.1'),
+  });
+  assert.match(writeTestsJob(loose, { ask: () => 'y' }).join('\n'), /not pinned to a commit \(actions\/checkout@v7\.0\.1\)/);
+  assert.equal(readFileSync(join(loose, WORKFLOW), 'utf8').includes('setup-node'), false, 'an unpinned checkout is left unchanged');
+});
+
+test('tests-job: Go wins over a Node test script, and a placeholder or a workspaces root stays quiet (#653)', () => {
+  const mixed = project({
+    'go.mod': 'module example.com/demo\n',
+    'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
+    [WORKFLOW]: workflowFile(),
+  });
+  assert.match(writeTestsJob(mixed, { ask: () => 'y' }).join('\n'), /wrote the tests job for Go/);
+  const text = readFileSync(join(mixed, WORKFLOW), 'utf8');
+  assert.ok(text.includes('- run: go test') && text.includes('go-version: stable'));
+  assert.equal(text.includes('setup-node'), false);
+  const placeholder = project({
+    'package.json': JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }),
+    [WORKFLOW]: workflowFile(),
+  });
+  assert.deepEqual(writeTestsJob(placeholder, { ask: () => 'y' }), []);
+  const workspaces = project({ 'package.json': JSON.stringify({ workspaces: ['packages/*'] }), [WORKFLOW]: workflowFile() });
+  assert.deepEqual(writeTestsJob(workspaces, { ask: () => 'y' }), []);
+});
+
+test('tests-job: node-version comes from engines, then a version file, then the kit default (#653)', () => {
+  const version = (files: Record<string, string>) => nodeVersion(project(files));
+  const forty = `>=${'1'.repeat(38)}`;
+  assert.equal(forty.length, 40);
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: '>=22.23.4' } }), '.nvmrc': 'v20.11.1\n' }), '>=22.23.4');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: forty } }) }), forty, '40 characters still counts');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: '1'.repeat(41) } }), '.nvmrc': 'v20.11.1\n' }), '20.11.1', '41 characters does not count');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: 'lts/*' } }), '.nvmrc': '20.11.1\n' }), '20.11.1');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: 22 } }), '.node-version': '24.11.1\n' }), '24.11.1');
+  assert.equal(version({ '.nvmrc': 'v22.14.0\n' }), '22.14.0');
+  assert.equal(version({ '.nvmrc': '22.14\n' }), '22.14');
+  assert.equal(version({ '.nvmrc': 'latest\n', '.node-version': 'v24.11.1\n' }), '24.11.1');
+  assert.equal(version({ '.node-version': 'v24.11.1\n' }), '24.11.1');
+  assert.equal(version({}), '^22.23.4');
+  assert.equal(version({ 'package.json': '{' }), '^22.23.4');
 });
 
 test('tests-job: init asks and writes the job on a yes (#550)', () => {

@@ -32,6 +32,7 @@ import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, h
 import { gitConfig } from '../run/check.ts';
 import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
+import { nodeTestsFix } from './advice/tests-job.ts';
 import { commands, FALLBACK_RUNNERS, orList, runLines, runsTests, scriptedRuns, testLanguages } from './advice/test-commands.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -286,12 +287,13 @@ const noTests = (root: string) => {
   return describeNoTestRun(root);
 };
 /**
- * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
- * The job is one line of YAML, so the session start can show it. The command is `npm test`
- * when package.json has a test script, the workspaces command in a workspaces repo, else a
- * placeholder for the user's own.
+ * The fix for the tests step (#501, #653). The job stays one line, so a session start
+ * can show it. A Node project with a test script gets real YAML. Another project gets
+ * a placeholder for its own command.
  */
 const testsFix = (root: string) => {
+  const node = nodeTestsFix(root);
+  if (node) return node;
   const file = '.github/workflows/yokoten.yml';
   const isNode = testScript(root) !== '' || isWorkspaces(root);
   const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
