@@ -16,15 +16,21 @@ import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts
 import { checkChanged, readGit } from '../run/check.ts';
 import {
   type Action,
+  type Anchor,
   bumpDoneTries,
+  bumpRepeat,
   canKeepStatus,
   changeAgentStatus,
   clearDoneTries,
   clearRefusedMarker,
+  clearRepeats,
+  commandShape,
   describeAction,
   DONE_TRY_LIMIT,
   doneTryKey,
   findStatusCheckout,
+  listAnchors,
+  recordAnchor,
   registerDesk,
   type Guard,
   guardDeadline,
@@ -33,7 +39,10 @@ import {
   noteRefused,
   readDoneWhen,
   type Repo,
+  repeatStopFinding,
+  REPEAT_STOP_LIMIT,
   runDoneWhen,
+  sessionIdOf,
   startFields,
   STATUS_EVERY_MS,
   type StopEvent,
@@ -240,21 +249,30 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   }
   const failed = findings.length > 0 || doneWhen?.ok === false;
   if (!failed) {
+    let anchor: Anchor | null = null;
     if (isWorker) {
       forgetDoneTries(env, key);
       clearRefusedMarker(folder, key);
       recordChecks(invocation, folder, 'passing', agent);
+      // The tests pass: a clean tree becomes an anchor, and the worker hears to commit one.
+      const passing = doneWhen?.ok === true ? doneWhen.command : 'the changed-file check';
+      anchor = root ? recordAnchor(ranIn, { ...env, YOKOTEN_ROLE: 'worker' }, passing) : null;
+      if (!json) {
+        print(invocation, [anchor
+          ? `yokoten: tests pass. Anchor ${anchor.commit.slice(0, 12)} saved; go back with: git switch -c try-2 ${anchor.commit}`
+          : 'yokoten: tests pass. Make a checkpoint commit now; that commit is your anchor. If you get lost, go back with: git switch -c try-2 <anchor>'], invocation.stderr);
+      }
     } else noteLeadStop(folder, agent);
     if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
     // The checks pass: unread messages send the turn on once, and the next stop is checked again.
     const messages = event.active || afterMessages ? '' : await takeMessages();
     if (messages) {
       noteRefused(folder, messagesKey);
-      if (json) printJson(invocation, { blocked: true, stop: false, findings, messages: true });
+      if (json) printJson(invocation, { blocked: true, stop: false, findings, messages: true, ...(anchor ? { anchor } : {}) });
       print(invocation, [messages], invocation.stderr);
       return 2;
     }
-    if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}) });
+    if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}), ...(anchor ? { anchor } : {}) });
     return 0;
   }
   if (!isWorker) {
@@ -459,6 +477,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
+  // The circuit breaker (#711): one count for the session, one shape for this step.
+  const sessionKey = doneTryKey(sessionIdOf(input), cwd);
+  const shape = commandShape(action.command, action.paths);
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
     let found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;
@@ -471,12 +492,18 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
         // Written as it is: hiding the home folder would change the command.
         else invocation.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
         noteToolCall(cwd, agent, action, role !== null || action.worker, null);
+        clearRepeats(env, sessionKey);
         return 0;
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    // The third same refusal becomes a stop message; any success starts the count again (#711).
+    if (found) {
+      const repeats = bumpRepeat(env, sessionKey, found.id, shape);
+      if (repeats !== null && repeats >= REPEAT_STOP_LIMIT) found = repeatStopFinding();
+    } else clearRepeats(env, sessionKey);
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
@@ -586,6 +613,37 @@ function hasLinkedWorktrees(folder: string, env: Env): boolean {
     // Git can't list them: the guard can't tell, so the checkout stays the lead's.
     return true;
   }
+}
+
+/**
+ * `anchor`: list the checkpoints a worker's passing checks recorded (#711). An anchor is
+ * a commit, so going back is `git switch -c <new> <anchor>`: nothing is reset or deleted.
+ */
+export function runAnchor(invocation: Invocation): number {
+  const options = parse('anchor', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  if (options.positional.length) return usage(invocation, 'anchor takes no arguments');
+  const root = rootOf(invocation.cwd, invocation.env);
+  if (!root) {
+    print(invocation, [formatFinding(notRepoFinding(invocation.cwd))], invocation.stderr);
+    return 1;
+  }
+  const anchors = listAnchors(invocation.cwd);
+  if (options.flags.has('--json')) {
+    printJson(invocation, { anchors });
+    return 0;
+  }
+  if (!anchors.length) {
+    print(invocation, ['yokoten anchor: no anchors yet. A worker records one when its checks pass and its tree is clean.']);
+    return 0;
+  }
+  const lines = [`yokoten anchor: ${anchors.length} checkpoint${anchors.length === 1 ? '' : 's'}, newest first.`];
+  for (const anchor of anchors) {
+    lines.push(`  ${anchor.commit.slice(0, 12)} ${anchor.at} ${anchor.check}`);
+  }
+  lines.push(`Go back without losing anything: git switch -c try-2 <commit>`);
+  print(invocation, lines);
+  return 0;
 }
 
 export function runWorker(invocation: Invocation): number | Promise<number> {

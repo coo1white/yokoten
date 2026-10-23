@@ -18,8 +18,16 @@ import { SECRET } from '../../src/rules/secrets.ts';
 import {
   AGENT_STATUS_FILE,
   bumpDoneTries,
+  bumpRepeat,
   clearDoneTries,
   clearRefusedMarker,
+  clearRepeats,
+  commandShape,
+  isWorkingTreeClean,
+  listAnchors,
+  recordAnchor,
+  repeatStopFinding,
+  REPEAT_STOP_LIMIT,
   DONE_TRY_LIMIT,
   doneTryKey,
   doneWhenShell,
@@ -70,6 +78,77 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   result = await sandbox.call(['hook', '--commands-only'], { input: tool({ file_path: 'CLAUDE.md' }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 0);
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
+});
+
+// #711: the third same refusal is a stop message, and a success starts the count again.
+test('hook: the third same refusal becomes a stop message; a success resets it (#711)', async () => {
+  const sandbox = makeSandbox();
+  const call = (command: string) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, session_id: 'session-711', tool_input: { command } }) });
+  let result = await call('git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
+  result = await call('git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
+  result = await call('git push --tags');
+  assert.equal(result.status, 2, 'the third is still refused, with the stop message');
+  assert.match(result.stderr, /three times/);
+  assert.match(result.stderr, /go back to your last anchor or write your report/);
+  // A call that succeeds starts the count again: the next refusal is a plain one.
+  assert.equal((await call('git status')).status, 0);
+  result = await call('git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
+  assert.doesNotMatch(result.stderr, /three times/);
+});
+
+// #711: the counters are per session and shape, and clearing one forgets it.
+test('hook: repeat counts are kept per session and reset on success (#711)', () => {
+  const env = { HOME: makeTempDir('yokoten-repeat-') };
+  assert.equal(REPEAT_STOP_LIMIT, 3);
+  assert.equal(commandShape('git push --tags'), 'git push');
+  assert.equal(commandShape('GIT_DIR=/x git push origin main'), 'git push');
+  assert.equal(commandShape(undefined, ['src/a.ts']), 'an edit of *.ts');
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 1);
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 2);
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 3);
+  assert.equal(bumpRepeat(env, 'session-b', 'release', 'git push'), 1, 'another session has its own count');
+  clearRepeats(env, 'session-a');
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 1);
+  assert.match(repeatStopFinding().fix, /last anchor or write your report/);
+});
+
+// #711: an anchor is a commit whose checks passed; going back is a new branch from it.
+test('anchor: lists commits, and going back keeps every commit (#711)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', '# demo\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-q', '-m', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  assert.equal(isWorkingTreeClean(sandbox.repo, sandbox.env), true);
+  const first = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
+  assert.equal(first?.commit, base);
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-q', '-m', 'work');
+  const work = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const second = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
+  assert.equal(second?.commit, work);
+  assert.equal(recordAnchor(sandbox.repo, sandbox.env, 'node --test'), null, 'the same commit is one anchor');
+  sandbox.write('src/dirty.ts', 'export const dirty = 1;\n');
+  assert.equal(recordAnchor(sandbox.repo, sandbox.env, 'node --test'), null, 'a dirty tree is not an anchor');
+  assert.deepEqual(listAnchors(sandbox.repo).map((anchor) => anchor.commit), [work, base]);
+  // Going back is a new branch: the later commit is still there.
+  sandbox.git('switch', '-c', 'try-2', base);
+  assert.equal(sandbox.git('rev-parse', 'try-2').stdout.trim(), base);
+  assert.equal(sandbox.git('cat-file', '-e', work).status, 0, 'the later commit is not lost');
+  assert.deepEqual(listAnchors(sandbox.repo).map((anchor) => anchor.commit), [work, base]);
+  // `yokoten anchor` lists them with the non-destructive way back.
+  const listed = await sandbox.call(['anchor']);
+  assert.equal(listed.status, 0);
+  assert.match(listed.stdout, /2 checkpoints/);
+  assert.match(listed.stdout, /git switch -c try-2/);
+  assert.match(listed.stdout, new RegExp(base.slice(0, 12)));
 });
 
 test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#571)', () => {

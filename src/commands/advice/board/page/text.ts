@@ -39,7 +39,8 @@ function formatBoardWaiting(row: BoardWaiting): string {
 
 /** One started run as plain words, the same data the page shows. */
 function formatBoardRun(run: BoardRun): string {
-  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${run.status}${run.worktree ? ` in ${run.worktree}` : ''}`;
+  const status = run.stoppedBy === 'time limit' ? 'stopped by the time limit' : run.status;
+  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${status}${run.worktree ? ` in ${run.worktree}` : ''}`;
 }
 
 /**
