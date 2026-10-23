@@ -12,7 +12,7 @@ import { SECRET_CONTROL } from '../../rules/secrets.ts';
 import { judge } from '../../run/hook.ts';
 import { readToolCall, sandboxProblem as claudeSandboxProblem } from '../../agents/runtimes/claude-code.ts';
 import { addProjectPlugin } from '../../agents/runtimes/small/opencode.ts';
-import { openCodePluginNote } from './checks.ts';
+import { missingHookFindings, openCodePluginNote } from './checks.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import * as grok from '../../agents/runtimes/grok.ts';
@@ -35,6 +35,9 @@ export function selfTest(): string[] {
   if (scanText(POSITIVE_CONTROL, { file: 'control' }).length < 2) failed.push('privacy check');
   if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
+  const missedHooks = missingHookFindings([{ kind: 'desk', path: 'desk', hooksPath: '' }], (path) => path);
+  const setHooks = missingHookFindings([{ kind: 'worktree', path: 'wt', hooksPath: '.githooks' }], (path) => path);
+  if (missedHooks.length !== 1 || !missedHooks[0].what.startsWith('desk ') || setHooks.length !== 0) failed.push('desk hooks check');
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
   if (checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS).length !== 2) failed.push('build output check');
   if (!isUnsavedControlCaught()) failed.push('unsaved work check');

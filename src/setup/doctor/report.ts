@@ -7,13 +7,13 @@ import { check } from '../../run/check.ts';
 import { countNotes, waitingLine } from '../../run/learn.ts';
 import { type Gh, readServer, type ServerSettings, type Unread } from '../../host/github/index.ts';
 import { type Host, hostOf, isNoAdapter, noAdapter } from '../../host/hosts.ts';
-import { readUnsaved, unsavedNotes } from '../advice/unsaved.ts';
+import { readUnsaved, showPath, unsavedNotes } from '../advice/unsaved.ts';
 import { VERSION } from '../files.ts';
 import { isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, hookPlaces, launcherCheck, machineChecks, missingHookFindings, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -282,6 +282,8 @@ function doctorRun(
   const next = where.next ? stepFinding(where.next, root, env, { server, config, elsewhere }) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
+  // A desk clone or a linked worktree with no core.hooksPath skips the commit check (#789).
+  const hookNotes = missingHookFindings(hookPlaces(root, env), (path) => showPath(path, root, env.HOME));
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
@@ -310,6 +312,7 @@ function doctorRun(
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
     const unsaved = sessionUnsaved(root, env);
     if (unsaved.lines.length) blocks.push(unsaved.lines);
+    if (hookNotes.length) blocks.push(hookNotes.map((note) => `yokoten: ${stepText(note)}.`));
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       blocks.push([`yokoten: ${formatFinding(core.finding)}`]);
@@ -324,7 +327,7 @@ function doctorRun(
     const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
-    const notes = [...unsaved.notes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
+    const notes = [...unsaved.notes, ...hookNotes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
@@ -412,6 +415,9 @@ function doctorRun(
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
   notes.push(...checkNotes);
+  // A desk or a linked worktree with no commit hook (#789). Not unsaved work: the clone is there, the check is not.
+  for (const note of hookNotes) lines.push(`  note    ${note.id}: ${stepText(note)}`);
+  notes.push(...hookNotes);
   const unsavedFound = unsaved ? unsavedNotes(unsaved, { home: env.HOME }) : [];
   lines.push('unsaved work (only on this machine):');
   if (!unsaved) lines.push("  note    can't read this repo with git, so doctor can't tell what is only here");

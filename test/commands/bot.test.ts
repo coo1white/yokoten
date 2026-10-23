@@ -23,6 +23,7 @@ import { test } from 'node:test';
 import {
   CLI,
   makeSandbox,
+  runChild,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
 
@@ -1486,5 +1487,65 @@ test('bot: an empty body passes, from --body or --body-file (#609)', async () =>
     assert.deepEqual(ran().at(-1), { args: ['pr', 'comment', '5', '--body-file', bodyFile], input: '' });
   } finally {
     server.close();
+  }
+});
+
+// #789: the commit hook never runs in a clone with no core.hooksPath, so the bot holds
+// the line. A +0700 author or committer time is refused and nothing is pushed. UTC passes,
+// including a UTC commit on top of a zoned commit the remote already has.
+test('bot: a push of a +0700 commit is refused and nothing is pushed; a UTC branch is pushed (#789)', async () => {
+  const sandbox = makeSandbox();
+  const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+  mkdirSync(origin, { recursive: true });
+  sandbox.git('init', '-q', '--bare', origin);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.git('commit', '--allow-empty', '-qm', 'base');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('checkout', '-qb', 'zoned');
+  sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned');
+  // This desk cannot listen on a port. The bot and this test share a process, so fetch
+  // stands in for GitHub and nothing is bound.
+  const requests: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url, init) => {
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    const body = (init?.method ?? 'GET') === 'GET' ? { id: 77 } : { token: 'ghs_test' };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const key = join(sandbox.home, 'bot.pem');
+    writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+    const extra = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: 'http://127.0.0.1' };
+    const push = (branch: string) => sandbox.call(['bot', '--', 'git', 'push', '-u', 'origin', branch], { extra });
+    const remoteTip = (branch: string) => sandbox.git('rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`).stdout.trim();
+    const refused = await push('zoned');
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /nothing was pushed/);
+    assert.match(refused.stderr, /TZ=UTC git commit --amend --date=/);
+    assert.match(refused.stderr, /rebase that re-dates/);
+    assert.doesNotMatch(refused.stderr, /\+0700/, 'the offset is never printed');
+    assert.equal(remoteTip('zoned'), '', 'the zoned branch was not pushed');
+    assert.deepEqual(requests, [], 'no token was asked for');
+    sandbox.git('checkout', '-qb', 'clean', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc');
+    const passed = await push('clean');
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.equal(remoteTip('clean'), sandbox.git('rev-parse', 'clean').stdout.trim(), 'the UTC branch was pushed');
+    sandbox.git('push', '-q', 'origin', 'zoned');
+    sandbox.git('checkout', '-q', 'zoned');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc on top');
+    const onTop = await push('zoned');
+    assert.equal(onTop.status, 0, onTop.stderr);
+    assert.equal(remoteTip('zoned'), sandbox.git('rev-parse', 'zoned').stdout.trim(), 'a UTC commit on top of an old zoned commit is pushed');
+    const committer = runChild('git', ['commit', '--allow-empty', '-qm', 'committer zone'], { cwd: sandbox.repo, env: { ...sandbox.env, GIT_COMMITTER_DATE: '2026-10-23T12:00:00+0700' } });
+    assert.equal(committer.status, 0, committer.stderr);
+    const tipBefore = remoteTip('zoned');
+    const committerPush = await push('zoned');
+    assert.equal(committerPush.status, 1, committerPush.stderr);
+    assert.match(committerPush.stderr, /nothing was pushed/);
+    assert.doesNotMatch(committerPush.stderr, /\+0700/);
+    assert.equal(remoteTip('zoned'), tipBefore, 'a committer time that is not UTC is not pushed');
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

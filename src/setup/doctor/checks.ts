@@ -2,10 +2,12 @@
 // the launcher, and the wording of a command. Practice is shared with the other parts.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
+import { gitConfig } from '../../run/check.ts';
+import { commonGitDir, DESK_FILE, DESK_LIST_FILE } from '../../run/hook.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
 import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
@@ -449,5 +451,83 @@ export function commandWording(env: Env): ((text: string) => string) | null {
   if (!isNpx && (!existsSync(runtime) || isOnPath(env, runtime))) return null;
   if (isNpx && isOnPath(env, runtime)) return null;
   return (text) => text.replace(/(?<!\\)`yokoten((?: [^`]*)?)`/g, '`npx yokoten$1`');
+}
+
+/** A desk clone or a linked worktree, and the core.hooksPath git would use there ('' when unset). */
+export interface HookPlace {
+  kind: 'desk' | 'worktree';
+  path: string;
+  hooksPath: string;
+}
+
+const realPath = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+/** The desk clones `yokoten desk` listed for this repo. A missing clone is skipped. */
+function readDeskPaths(root: string): string[] {
+  const common = commonGitDir(root);
+  if (!common) return [];
+  let text = '';
+  try {
+    text = readFileSync(join(common, DESK_LIST_FILE), 'utf8');
+  } catch {
+    return [];
+  }
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((path) => path && existsSync(join(path, '.git')));
+}
+
+/** Every worktree path `git worktree list` names, or just `root` when git can't answer. */
+function readWorktreePaths(root: string, env: Env): string[] {
+  try {
+    const text = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return text
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length));
+  } catch {
+    return [root];
+  }
+}
+
+/** Whether `path` is a linked worktree (its `.git` is a file) or a desk clone. A main checkout is neither. */
+function placeKind(path: string, desks: Set<string>): HookPlace['kind'] | 'main' {
+  try {
+    if (statSync(join(path, '.git')).isFile()) return 'worktree';
+  } catch {
+    return 'main';
+  }
+  if (desks.has(path) || existsSync(join(path, '.git', DESK_FILE))) return 'desk';
+  return 'main';
+}
+
+/**
+ * Desks and linked worktrees of this repo whose commit hook may be off (#789).
+ * A main checkout is left to the commit-check step. A path git can't read is skipped.
+ */
+export function hookPlaces(root: string, env: Env): HookPlace[] {
+  const desks = new Set(readDeskPaths(root).map(realPath));
+  const paths = new Set([realPath(root), ...readWorktreePaths(root, env).map(realPath), ...desks]);
+  const places: HookPlace[] = [];
+  for (const path of paths) {
+    const kind = placeKind(path, desks);
+    if (kind === 'main') continue;
+    places.push({ kind, path, hooksPath: gitConfig(path, 'core.hooksPath', env) });
+  }
+  return places;
+}
+
+/** A finding for each desk or worktree with no core.hooksPath. `show` hides the home folder. */
+export function missingHookFindings(places: HookPlace[], show: (path: string) => string): Finding[] {
+  return places
+    .filter((place) => place.hooksPath === '')
+    .map((place) => finding('hooks-path', `${place.kind} ${show(place.path)} has no core.hooksPath, so a commit there skips the commit check`, `in that ${place.kind}, run \`yokoten init\`, which sets core.hooksPath`));
 }
 
