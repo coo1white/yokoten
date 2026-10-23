@@ -216,6 +216,25 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'mcp',
+    summary: 'start the project MCP server and check its tools for every agent client',
+    usage: '[dir] [--command "<command>"] [--json]',
+    text: [
+      'Starts each stdio server in .mcp.json, .vscode/mcp.json or mcp.json and calls tools/list.',
+      'It checks each tool schema for Claude, Gemini and OpenAI strict mode, the tool and',
+      'property names, all four annotations, the count under 40, and an outputSchema result',
+      'that carries both structuredContent and text. It also reports any non-JSON-RPC line on',
+      'stdout, and warns when a Windows config needs cmd /c for npx or a .cmd file.',
+      'Use --command to check a server that has no config entry.',
+    ],
+    options: [
+      { name: '--command', value: 'command', text: 'start this command instead of a config entry, such as "node server.ts"' },
+      { name: '--json', text: 'the findings as JSON on stdout' },
+    ],
+    argument: 'dir',
+    example: 'yokoten mcp',
+  },
+  {
     name: 'redact',
     summary: 'command output with your name, emails, logins and private hosts hidden',
     usage: '',

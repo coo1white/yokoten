@@ -887,6 +887,7 @@ It puts three safe defaults in `.github/` too:
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
+| `mcp [dir] [--command "<command>"] [--json]` | Starts each stdio server in `.mcp.json`, `.vscode/mcp.json` or `mcp.json` and checks its tools for every client: schema, names, annotations, count, result shape and stray stdout. `--command` checks a server with no config entry; `--json` prints the findings. A Windows warning does not fail it. See [Shipping an MCP server](#shipping-an-mcp-server-that-works-in-every-agent) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
@@ -1502,6 +1503,104 @@ Environment variables:
 | `YOKOTEN_PR_LIVE=1` | `check --pr` reads the pull request's title, body, labels and milestone as they are now, with `GITHUB_TOKEN`, not from the event file. It fails when it can't read them. The kit's `pr.yml` sets it |
 | `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
 
+
+## Shipping an MCP server that works in every agent
+
+An MCP server is one program that many agents start. Each agent reads the tool list a
+little differently. A schema that one agent accepts can make another drop the tool, with
+no message to the user.
+
+`yokoten mcp` starts your server over stdio and reads its tool list. It reports each
+trap with a what, a why and a fix. Run it before a release, and in CI beside your tests.
+
+```sh
+yokoten mcp
+yokoten mcp --json
+yokoten mcp --command "node src/server.ts"
+```
+
+It reads `.mcp.json`, `.vscode/mcp.json` and `mcp.json` from the project root. It starts
+each stdio server, calls `initialize`, then `tools/list`. It stops each server when it is
+done. A server over HTTP is named and skipped: this check starts only stdio servers.
+
+### What it checks
+
+| Trap | What the check looks for | Fix |
+|---|---|---|
+| A schema Claude rejects | A root `anyOf`, `oneOf` or `allOf` | Put the branches under one property of a root object |
+| A schema Gemini rejects | A `$ref` or `$defs`, a list of types, or an array with no `items` | Inline the schema, use one type, and add `items` |
+| OpenAI strict mode | A property that is not in `required` | Add every property to `required` |
+| A dropped property | A property name outside `[A-Za-z0-9_.-]`, or longer than 64 | Rename it |
+| A dropped tool | A tool name longer than 64 | Shorten it |
+| A tool the client never shows | 40 tools or more | Merge tools, or keep 39 or fewer |
+| A tool the client cannot gate | A missing `readOnlyHint`, `destructiveHint`, `idempotentHint` or `openWorldHint` | Set all four, each as `true` or `false` |
+| An empty answer in Cursor | A tool with `outputSchema` that returns only `structuredContent` | Return a text content item too |
+| A broken session | A stdout line that is not JSON-RPC, is not UTF-8, or ends with CRLF | Write logs to stderr, write UTF-8, and end each line with LF |
+| A server that never starts on Windows | A config command such as `npx` or `bar.cmd` | Start it through `cmd /c` |
+| A server that does not answer | No reply to `initialize` or `tools/list` | Run it by hand, and fix what stderr says |
+
+The check reports the tool count, the total size of the tool definitions, and the longest
+description. A large tool list costs every client context on every turn. Keep each tool
+small, and keep its description short.
+
+### The outputSchema rule
+
+A tool may declare `outputSchema`. Clients that understand it read `structuredContent`.
+Other clients read only the text content. A result with just one of the two looks empty
+somewhere.
+
+Return both:
+
+```json
+{
+  "structuredContent": { "reply": "ok" },
+  "content": [{ "type": "text", "text": "ok" }]
+}
+```
+
+`yokoten mcp` calls a tool only when it is safe to try: the tool sets
+`readOnlyHint: true`, declares an `outputSchema`, and requires no argument. Other tools
+are left alone. The check says how many it read.
+
+### Windows
+
+Windows cannot start `npx` or a `.cmd` file the way a Unix shell can. A config entry
+that names one needs `cmd`:
+
+```json
+{
+  "mcpServers": {
+    "demo": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "demo-mcp"]
+    }
+  }
+}
+```
+
+The check warns about such an entry. A warning never fails the check: the same project
+may run on a machine that is not Windows.
+
+### stdout is for JSON-RPC only
+
+The client reads stdout as a stream of JSON-RPC messages. One log line, one progress bar,
+or one carriage return breaks the session for every client.
+
+- Write logs to stderr.
+- Write one JSON-RPC message per line.
+- End each line with a line feed, not CRLF.
+- Write UTF-8 only. A Windows code page such as cp1252 corrupts a name.
+
+### In CI
+
+Add the check after your tests:
+
+```sh
+yokoten mcp --json
+```
+
+It exits 1 when a tool breaks a rule. It exits 0 when the server is clean or the project
+has no MCP config. A Windows warning is reported and does not change the exit code.
 
 ## The core rules
 
