@@ -594,9 +594,9 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'tag-bypass': {
-    rule: 'the v* tag ruleset\'s bypass list names Repository admin, and not a bot (core rule 3)',
+    rule: 'the v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and names no bot (core rule 3)',
     why: 'the owner must be able to push a release tag, and no agent must be able to',
-    check: `${SERVER_CHECK}: the active tag ruleset on v* names Repository admin in its bypass list, and no GitHub App`,
+    check: `${SERVER_CHECK}: the active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and no GitHub App`,
     docs: guide('the-core-rules'),
   },
   'release-reviewer': {
@@ -605,9 +605,9 @@ export const RULES = {
     check: `${SERVER_CHECK}: the release environment has a required reviewer`,
   },
   'release-tag-rule': {
-    rule: 'the release environment deploys only from v* tags',
-    why: 'a branch rule named v* matches no tag, so a branch could still publish',
-    check: `${SERVER_CHECK}: the release environment has a deployment rule of type tag named v*`,
+    rule: 'the release environment deploys only from v* tags, and not from a branch named v*',
+    why: 'a branch rule named v* matches no tag, and with both rules a branch named v* can still publish',
+    check: `${SERVER_CHECK}: the release environment has a deployment rule of type tag named v*, and no branch rule named v*`,
   },
   'security-switches': {
     rule: 'secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on',

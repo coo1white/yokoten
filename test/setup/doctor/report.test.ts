@@ -96,15 +96,28 @@ test('road: the server steps are stage 5, and pass a repo with every setting on 
 test('road: each server step catches its setting off, and says what and the fix (#7)', () => {
   const each: [string, Record<string, unknown>, RegExp][] = [
     ['protection', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { allowed_merge_methods: ['squash'] } }] }, /no rule for no force push, no deletion; no CI check must pass before a merge; code owner review is not required/],
-    ['protection', { [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] } }, /^no active tag ruleset on v\*/],
+    ['protection', {
+      // Ruleset 7 blocks deletion only, and 8 blocks creation with a bypass: tag-rules fails, tag-bypass passes.
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }], bypass_actors: [] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+    }, /^no active tag ruleset on v\*/],
     ['merge-settings', { [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), delete_branch_on_merge: false } }, /^merged branches are not deleted$/],
     ['merge-settings', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['squash', 'rebase'] } }, ...(GOOD[`repos/${REPO}/rules/branches/main`] as object[]).slice(1)] }, /not only by squash/],
     ['security-settings', { [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false } }, /^private vulnerability reporting is off$/],
     ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [] } }, /bypass list does not name Repository admin/],
     ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] } }, /bypass list names the bot/],
+    // A bypass on another v* ruleset, one that does not block tag creation, is no way to push a tag (#537).
+    ['tag-bypass', {
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'required_signatures' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+    }, /bypass list does not name Repository admin/],
     ['release-reviewer', { [`repos/${REPO}/environments/release`]: { protection_rules: [] } }, /^the release environment has no required reviewer/],
     ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [] } }, /^the release environment has no tag rule for v\*$/],
     ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'branch' }] } }, /v\* rule is a branch rule/],
+    // A tag rule and a branch rule named v* together let a branch deploy (#537).
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'tag' }, { id: 2, name: 'v*', type: 'branch' }] } }, /also accepts a branch named v\*/],
   ];
   for (const [key, change, what] of each) {
     const server = readServer(serverGh({ ...GOOD, ...change }).gh, REPO);
@@ -129,8 +142,16 @@ test('doctor: the tag bypass and the release environment each show one line with
   const cases: [string, Record<string, unknown>, RegExp][] = [
     ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [] } }, /Repository admin/],
     ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [{ actor_id: 9, actor_type: 'Integration' }] } }, /names the bot/],
+    // A bypass on another v* ruleset, one that does not block tag creation, leaves the owner unable to push a tag (#537).
+    ['tag-bypass', {
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'required_signatures' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+    }, /Repository admin/],
     ['release-reviewer', { [`repos/${REPO}/environments/release`]: { protection_rules: [] } }, /no required reviewer/],
     ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'branch' }] } }, /branch rule/],
+    // A tag rule with a branch rule named v* lets a branch deploy (#537).
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'tag' }, { id: 2, name: 'v*', type: 'branch' }] } }, /also accepts a branch named v\*/],
   ];
   for (const [key, change, what] of cases) {
     const line = lineOf({ ...GOOD, ...change }, key);

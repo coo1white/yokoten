@@ -59,6 +59,9 @@ export interface ServerSettings {
 type Rule = { type?: string; parameters?: Record<string, unknown> };
 type Ruleset = { id?: number; target?: string; enforcement?: string; conditions?: { ref_name?: { include?: string[] } }; rules?: Rule[]; bypass_actors?: { actor_id?: number; actor_type?: string }[] };
 
+/** The id GitHub gives the built-in "Repository admin" role in a ruleset's bypass list (#537). */
+const REPOSITORY_ADMIN_ROLE_ID = 5;
+
 /** The server settings of `repo` ("owner/name"), or why gh can't read the repo at all. */
 export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   const api = <T>(path: string): T => JSON.parse(gh(['api', path]) || 'null') as T;
@@ -120,8 +123,11 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     return targetsV(s) && ['creation', 'update', 'deletion'].every((t) => types.has(t));
   });
   // The owner pushes a release tag through the bypass list; a bot on it can push one too.
+  // A bypass only helps on the ruleset that blocks the push: a bypass on another v* ruleset,
+  // with no creation rule, leaves the owner unable to push a tag (#537).
+  const blocksCreation = (s: Ruleset) => (s.rules ?? []).some((r) => r.type === 'creation');
   const tagBypass = 'unread' in tagRules ? tagRules : {
-    admin: tagRules.some((s) => targetsV(s) && (s.bypass_actors ?? []).some((a) => a.actor_type === 'RepositoryRole' && a.actor_id === 5)),
+    admin: tagRules.some((s) => targetsV(s) && blocksCreation(s) && (s.bypass_actors ?? []).some((a) => a.actor_type === 'RepositoryRole' && a.actor_id === REPOSITORY_ADMIN_ROLE_ID)),
     bot: tagRules.some((s) => targetsV(s) && (s.bypass_actors ?? []).some((a) => a.actor_type === 'Integration')),
   };
 

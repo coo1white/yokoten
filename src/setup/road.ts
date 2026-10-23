@@ -395,9 +395,9 @@ export interface ServerCheck {
 }
 
 const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default branch';
-const TAG_BYPASS_FIX = 'in Settings, Rules, Rulesets, edit the v* tag ruleset, and add Repository admin to its bypass list and remove any bot';
+const TAG_BYPASS_FIX = 'in Settings, Rules, Rulesets, edit the v* tag ruleset that blocks tag creation, and add Repository admin to its bypass list and remove any bot';
 const RELEASE_REVIEWER_FIX = 'in Settings, Environments, create "release" if it is missing, then turn on "Required reviewers" and add yourself';
-const RELEASE_TAG_RULE_FIX = 'in Settings, Environments, release, under "Deployment branches and tags", choose "Selected branches and tags", then add a Tag rule named v*';
+const RELEASE_TAG_RULE_FIX = 'in Settings, Environments, release, under "Deployment branches and tags", choose "Selected branches and tags", then add a Tag rule named v* and remove any Branch rule named v*';
 
 /**
  * Each server setting, judged. `settings` is what the host adapter read, or why it could not.
@@ -426,10 +426,13 @@ export function serverChecks(settings: ServerSettings | Unread, { isCiOff: isOff
     : 'the v* tag ruleset\'s bypass list does not name Repository admin, so you cannot push a release tag';
   const release = settings.release;
   const reviewerOk = 'unread' in release ? release : release.reviewer;
-  const tagRuleOk = 'unread' in release ? release : release.tagRule;
-  const tagRuleWhat = 'unread' in release ? '' : release.branchRule
-    ? 'the release environment\'s v* rule is a branch rule, so it never matches a tag'
-    : 'the release environment has no tag rule for v*';
+  // A tag rule alone is not the lock: with a branch rule named v* too, a branch can deploy (#537).
+  const tagRuleOk = 'unread' in release ? release : release.tagRule && !release.branchRule;
+  const tagRuleWhat = 'unread' in release ? '' : release.tagRule
+    ? 'the release environment also accepts a branch named v*, so a branch can deploy'
+    : release.branchRule
+      ? 'the release environment\'s v* rule is a branch rule, so it never matches a tag'
+      : 'the release environment has no tag rule for v*';
   const checks = [
     judge('main-rules', rules ? !lacking.length : branch as Unread, `the default branch (${settings.defaultBranch}) has no rule for ${lacking.join(', ')}`, `${RULESET}, or add one, and turn those rules on`),
     ...(isOff ? [] : [judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`)]),
@@ -984,7 +987,7 @@ export const ROAD: Step[] = [
     fix: TAG_BYPASS_FIX,
     byHand: 'the v* tag ruleset lets you, and no bot, create, move or delete a release tag',
     why: 'a tag that nobody can push blocks a release, and a bot on the list can push one',
-    how: 'through the code host\'s API, in full doctor only: the active v* tag ruleset\'s bypass list names Repository admin and no bot',
+    how: 'through the code host\'s API, in full doctor only: the active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and no bot',
   }),
   serverStep('release-reviewer', {
     lacking: 'the release environment has no required reviewer',
@@ -996,9 +999,9 @@ export const ROAD: Step[] = [
   serverStep('release-tag-rule', {
     lacking: 'the release environment does not deploy only from v* tags',
     fix: RELEASE_TAG_RULE_FIX,
-    byHand: 'the release environment deploys only from v* tags',
-    why: 'a branch rule named v* matches no tag, so the publish job could run from a branch',
-    how: 'through the code host\'s API, in full doctor only: the release environment has a deployment rule of type tag named v*',
+    byHand: 'the release environment deploys only from v* tags, and not from a branch named v*',
+    why: 'a branch rule named v* matches no tag, and with both rules a branch named v* can still publish',
+    how: 'through the code host\'s API, in full doctor only: the release environment has a deployment rule of type tag named v*, and no branch rule named v*',
   }),
 ];
 
