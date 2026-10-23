@@ -1660,6 +1660,38 @@ the `tier:` line in the body. Each missing or wrong label gets its own message.
 
 Server setup, step by step: [`docs/server.md`](server.md).
 
+### Review bots you will see on pull requests
+
+A review bot reads a pull request after you open it. It posts comments on the pull
+request page. You may see a walkthrough of the change, a risk level, a list of
+pre-merge checks, and a suggested fix. Some bots can push that fix.
+
+Two kinds exist:
+
+- **Commercial.** The bot is closed source. The company runs it, and your code goes to
+  the company's servers. Many are free for public repos and paid for private ones.
+- **Open source.** You run the bot yourself, with your own model API key. You pay the
+  model vendor for the tokens it uses, and the code stays on your machine.
+
+Prices, licences and data handling change. This guide names no bot as a recommendation.
+Read the bot's own page before you turn it on. A bot's comment usually links to it.
+
+yokoten works before the pull request, on your machine:
+
+- the guard stops a risky command, a secret or a private detail;
+- the `inspect` skill reviews the change in your agent session, at no extra cost;
+- the checks and the merge rules stop a merge or release you did not approve.
+
+A review bot works after the pull request. The two fit together. The bot sees the
+pull request; yokoten sees the session that wrote it.
+
+You do not need a review bot to start. yokoten's own review is enough. Add a bot when
+your team wants a second reader on the pull request page. `doctor` never asks you to
+add one: it names yokoten's own next step.
+
+yokoten's findings on the pull request page come from its own checks only. It does not
+repeat another bot's findings or review the code a second time (#91).
+
 ### The desk
 
 A desk is a fenced place for one worker, the same for every vendor (#637). The lead starts
