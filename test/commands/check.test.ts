@@ -874,13 +874,15 @@ function healthGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<strin
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
-const answers = ${JSON.stringify(answers)};
-const call = process.argv.slice(2).join(' ');
-appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
-const key = Object.keys(answers).find((one) => call === one || call.startsWith(one + ' '));
-if (key === undefined) process.exit(1);
-console.log(answers[key]);
+// A dynamic import works whether Node loads this file as CommonJS or as an ES module.
+import('node:fs').then(({ appendFileSync }) => {
+  const answers = ${JSON.stringify(answers)};
+  const call = process.argv.slice(2).join(' ');
+  appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+  const key = Object.keys(answers).find((one) => call === one || call.startsWith(one + ' '));
+  if (key === undefined) process.exit(1);
+  console.log(answers[key]);
+});
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);
