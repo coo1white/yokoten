@@ -20,10 +20,12 @@
 //
 // This file turns a request into a `DeskPlan`: plain lists of paths, hosts and names. A
 // backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
-// seatbelt.ts on macOS. Native Windows has no backend; WSL2 is the way there (#669).
+// seatbelt.ts on macOS. Native Windows has no backend yet (#669), but its plan is built
+// here: no case in a path, every profile folder and other drive hidden, and a command
+// found with PATHEXT. Those rules stay testable on every system.
 
 import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Env } from '../../rules/config.ts';
 import { homeIn } from '../../rules/privacy.ts';
@@ -108,8 +110,22 @@ export interface DeskRequest {
 const OWN_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 export const OWN_RUNTIME = ['bin', 'src', 'kit', 'dist', 'package.json'].map((part) => join(OWN_ROOT, part));
 
-/** Whether `path` is `folder` or inside it. */
-export const isInside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
+/** Windows, and the names its plan needs: the drive letters to hide and the folder of the profiles. */
+const WINDOWS_PLATFORM: NodeJS.Platform = 'win32';
+const WINDOWS_DRIVES = 'CDEFGHIJKLMNOPQRSTUVWXYZ';
+const WINDOWS_PROFILES = 'Users';
+
+/**
+ * Whether `path` is `folder` or inside it. Windows names folders without case, so the
+ * comparison there ignores case; a system that keeps case compares it as written.
+ */
+export const isInside = (path: string, folder: string, platform: NodeJS.Platform = process.platform): boolean => {
+  const { sep: separator } = platform === 'win32' ? win32 : posix;
+  const same = platform === 'win32' ? path.toLowerCase() === folder.toLowerCase() : path === folder;
+  const prefix = folder.endsWith(separator) ? folder : folder + separator;
+  if (platform === 'win32') return same || path.toLowerCase().startsWith(prefix.toLowerCase());
+  return same || path.startsWith(prefix);
+};
 
 /** The real path, or the path itself when it is not there. */
 function realOr(path: string): string {
@@ -130,16 +146,27 @@ function isLink(path: string): boolean {
 }
 
 /** The file a command name runs, found on PATH like a shell would, or null. */
-export function findProgram(name: string, path: string | undefined): string | null {
-  if (name.includes('/')) return existsSync(name) ? resolve(name) : null;
+export function findProgram(name: string, path: string | undefined, extensions: readonly string[] = ['']): string | null {
+  if (name.includes('/') || name.includes('\\')) return existsSync(name) ? resolve(name) : null;
   for (const folder of (path ?? '').split(delimiter)) {
     if (!isAbsolute(folder)) continue;
-    const file = join(folder, name);
-    try {
-      if (statSync(file).isFile()) return file;
-    } catch {}
+    for (const extension of extensions) {
+      const file = join(folder, name + extension);
+      try {
+        if (statSync(file).isFile()) return file;
+      } catch {}
+    }
   }
   return null;
+}
+
+/**
+ * The extensions a system tries after a command name. Windows reads PATHEXT (`.CMD` and
+ * `.EXE` are the usual ones); every other system runs the name as it is.
+ */
+export function programExtensions(platform: NodeJS.Platform, env: Env): string[] {
+  if (platform !== 'win32') return [''];
+  return ['', ...(env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map((extension) => extension.trim()).filter(Boolean)];
 }
 
 /**
@@ -162,11 +189,25 @@ export function programFolders(file: string): string[] {
 /**
  * The folders that are never shown: every home, other drives and mounts, and the desk's
  * parent folder. On Linux also /run, which holds sockets to the host: on WSL2 the one that
- * starts Windows programs outside any fence, the session bus, and Docker's.
+ * starts Windows programs outside any fence, the session bus, and Docker's. On Windows the
+ * parent of the home folder (`C:\Users`) hides every other profile, and any other drive
+ * root is hidden like /Volumes on macOS. The desk's own drive stays walkable: a hidden
+ * drive root would be too wide to show the system folders again.
  */
-export function hiddenFolders(platform: NodeJS.Platform, home: string, desk: string): string[] {
+export function hiddenFolders(platform: NodeJS.Platform, home: string, desk: string, exists: (path: string) => boolean = existsSync): string[] {
+  if (platform === WINDOWS_PLATFORM) {
+    const profileFolder = win32.dirname(home);
+    const roots = [home, win32.dirname(desk)];
+    if (win32.basename(profileFolder).toLowerCase() === WINDOWS_PROFILES.toLowerCase()) roots.push(profileFolder);
+    const ownDrive = win32.parse(desk).root.toLowerCase();
+    for (const letter of WINDOWS_DRIVES) {
+      const root = `${letter}:\\`;
+      if (root.toLowerCase() !== ownDrive) roots.push(root);
+    }
+    return [...new Set(roots.filter((folder) => exists(folder)))];
+  }
   const roots = platform === 'darwin' ? ['/Users', '/Volumes'] : ['/home', '/root', '/mnt', '/media', '/run'];
-  return [...new Set([...roots, home, dirname(desk)])].filter((folder) => existsSync(folder));
+  return [...new Set([...roots, home, dirname(desk)])].filter((folder) => exists(folder));
 }
 
 /** Throw when `path` is a link or not of the kind wanted: a worker could point it at the lead's files. */
@@ -214,6 +255,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
   if (!runtime) throw new Error(`a desk starts ${Object.keys(DESK_RUNTIMES).join(', ')}; not "${request.runtime}". DeepSeek runs through codex.`);
   if (!request.command.length) throw new Error('no agent command after --');
   const { env } = request;
+  const platform = request.platform ?? process.platform;
   const home = realOr(homeIn(env));
   const desk = realOr(resolve(request.desk));
   if (!existsSync(join(desk, '.git'))) throw new Error(`${desk} is not a git clone. Make the desk with \`git clone <repo> <folder>\`.`);
@@ -221,10 +263,10 @@ export function planDesk(request: DeskRequest): DeskPlan {
   requireReal(join(desk, '.git'), 'folder');
   // The lead's own state is hidden too, where it lives outside the home folder.
   const leadState = runtime.leadState(env).map(realOr).filter((path) => existsSync(path));
-  const hidden = [...new Set([...hiddenFolders(request.platform ?? process.platform, home, desk), ...leadState.filter((path) => statSync(path).isDirectory())])];
+  const hidden = [...new Set([...hiddenFolders(platform, home, desk), ...leadState.filter((path) => statSync(path).isDirectory())])];
   // A path the agent may see must not open a whole hidden folder, or the desk itself.
-  const isTooWide = (path: string) => hidden.some((folder) => isInside(folder, path)) || isInside(desk, path) || path === '/';
-  const program = findProgram(request.command[0], env.PATH);
+  const isTooWide = (path: string) => hidden.some((folder) => isInside(folder, path, platform)) || isInside(desk, path, platform);
+  const program = findProgram(request.command[0], env.PATH, programExtensions(platform, env));
   if (!program) throw new Error(`can't find ${request.command[0]} on PATH`);
   const node = dirname(dirname(realOr(process.execPath)));
   const wanted = [node, ...programFolders(program), ...(runtime.programParts?.(env) ?? []), ...OWN_RUNTIME, ...(request.runtimes ?? []), join(home, '.gitconfig'), join(home, '.config', 'git')];
@@ -232,7 +274,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
   const readable: string[] = [];
   // Nothing of the lead's state but the program parts the runtime names.
   const parts = (runtime.programParts?.(env) ?? []).map(realOr);
-  const isLeadState = (path: string) => leadState.some((folder) => isInside(path, folder) || isInside(folder, path)) && !parts.some((part) => isInside(path, part));
+  const isLeadState = (path: string) => leadState.some((folder) => isInside(path, folder, platform) || isInside(folder, path, platform)) && !parts.some((part) => isInside(path, part, platform));
   for (const path of wanted.map(realOr)) {
     if (!existsSync(path) || isTooWide(path) || isLeadState(path) || readable.includes(path)) continue;
     readable.push(path);
@@ -264,7 +306,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
   rmSync(join(desk, '.git', DESK_FILE), { force: true });
   if (request.team) {
     const folder = realOr(resolve(request.team.folder));
-    if (isTooWide(folder) || isInside(desk, folder) || isInside(folder, desk)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
+    if (isTooWide(folder) || isInside(desk, folder, platform) || isInside(folder, desk, platform)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
     const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: modelOf(request.command), desk });
     if (!readable.includes(team.readable)) readable.push(team.readable);
     writable.push(team.writable);

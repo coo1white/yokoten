@@ -35,8 +35,8 @@ export interface StreamItem {
   time: string;
 }
 
-/** The runtimes whose session log the board reads. */
-export type StreamSource = 'claude' | 'muse' | 'grok' | 'codex';
+/** The runtimes whose session log the board reads, and `plain`, a runner's own text log. */
+export type StreamSource = 'claude' | 'muse' | 'grok' | 'codex' | 'plain';
 
 /** A vendor's own tool name as one common name. The first match wins. */
 export function commonTool(name: string): ToolName {
