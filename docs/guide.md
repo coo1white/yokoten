@@ -1879,7 +1879,7 @@ It only shows; to talk to an agent, use its own terminal for now.
 `yokoten board --text` prints the same in plain text.
 
 Each agent's tokens show under the agents, in **Use and cost**.
-The board reads the session logs the agents already write: Claude Code and Muse Code.
+The board reads the last 7 days of session logs the agents already write: Claude Code and Muse Code.
 It sends nothing anywhere, and it keeps no message text.
 Each row is one agent, model and day: input, cached and output tokens.
 The price is the vendor's list price in `src/commands/advice/board/feed/read/prices.ts`.

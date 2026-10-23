@@ -66,7 +66,7 @@ function formatUsage(usage: BoardUsage): string[] {
   const total = totalOf(usage.cells);
   const all = formatUsageAmount(total.input, total.cached, total.output, costWords(total, usage.cells.every((cell) => cell.isLocal)));
   return [
-    `Usage${usage.filter ? ` (${usage.filter})` : ''} (estimates from local session logs; nothing leaves this machine):`,
+    `Usage${usage.filter ? ` (${usage.filter})` : ''} (estimates from the last 7 days of local session logs; nothing leaves this machine):`,
     ...rows,
     `- Total: ${all}`,
     ...(usage.partial.length ? ['Partial:', ...usage.partial.map((note) => `- ${note}.`)] : []),

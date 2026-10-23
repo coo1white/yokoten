@@ -108,7 +108,7 @@ test('board text: the usage view says tokens and an API price in plain words', (
     },
   };
   const text = renderBoardText(board).join('\n');
-  assert.match(text, /Usage \(estimates from local session logs; nothing leaves this machine\):/);
+  assert.match(text, /Usage \(estimates from the last 7 days of local session logs; nothing leaves this machine\):/);
   assert.match(text, /- Claude Ada \[engineer\] · claude-opus-5-5 · 2026-10-22: 2,000,000 in, 1,000,000 cached, 100,000 out: about \$39.00 if paid by API/);
   assert.match(text, /- Total: 2,000,000 in, 1,000,000 cached, 100,000 out: about \$39.00 if paid by API/);
   assert.match(text, /Partial:\n- mystery-9: no price in the table\./);

@@ -280,6 +280,11 @@ export function collectUsage(sources: readonly UsageSource[], env: Env, now: num
     let counted = 0;
     for (const log of treeLogs) {
       if (log.source !== 'claude' && log.source !== 'muse') continue;
+      try {
+        if (statSync(log.file).size > SCAN_BYTES) partial.add(`${agent}: its log is longer than the part the board reads`);
+      } catch {
+        // The file left between the listing and the read: its turns are skipped below.
+      }
       const fallbackDay = dayOf(new Date(log.mtime).toISOString());
       for (const turn of turnsOf(log.file, log.source)) {
         if (!turn.input && !turn.cached && !turn.output) continue;
