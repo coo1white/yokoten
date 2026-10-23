@@ -48,14 +48,19 @@ jobs:
         env:
           HASH: ${{ inputs.hash }}
         run: printf '%s' "$HASH" > "$RUNNER_TEMP/anchor.txt"
+      # The version is pinned, and Go checks its checksum against the public sum database.
       - name: Install cosign, which signs with this workflow's identity
-        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3
+        run: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.5.3 # zizmor: ignore[adhoc-packages]
       - name: Sign keyless and upload the entry to Rekor
+        # The identity is built here, not in the script: no workflow value is pasted into
+        # the shell, where a branch name could carry a command.
+        env:
+          IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/anchor.yml@${{ github.ref }}
         run: |
           "$(go env GOPATH)/bin/cosign" sign-blob --yes --tlog-upload=true \
             --bundle "$RUNNER_TEMP/anchor.bundle" "$RUNNER_TEMP/anchor.txt"
           "$(go env GOPATH)/bin/cosign" verify-blob --bundle "$RUNNER_TEMP/anchor.bundle" \
-            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/anchor.yml@${{ github.ref }}" \
+            --certificate-identity "$IDENTITY" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$RUNNER_TEMP/anchor.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -37,7 +37,7 @@ export const anchoredDigest = (hash: string): string => createHash('sha256').upd
 
 /** What one check needs: the API, the identity expected, and a fetch for tests. */
 export interface RekorOptions {
-  /** The API's base URL; `YOKOTEN_REKOR_API` overrides it, and a test points it at its server. */
+  /** The API's base URL; a test points it at its own server. */
   api?: string;
   /** The certificate URI that must have signed the anchor. */
   identity: string;
@@ -166,6 +166,8 @@ function verifyEntry(body: string, publicKeyPem: string, hash: string, options: 
  * anchored more than once, and the first entry a workflow signed is the answer.
  */
 export async function findAnchor(hash: string, options: RekorOptions): Promise<RekorFind> {
+  // Only the one shape an anchor has leaves the machine: 64 lowercase hex characters.
+  if (!/^[0-9a-f]{64}$/.test(hash)) return { problem: 'the day has no 64-character lowercase hex hash to look up' };
   const api = (options.api ?? REKOR_API).replace(/\/$/, '');
   const call = options.fetch ?? fetch;
   let index: { status: number; text: string };

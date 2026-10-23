@@ -10,7 +10,7 @@
 // touched by `off`, `on` or install.
 
 import { randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { checkAnchors } from '../host/sigstore/anchor.ts';
@@ -105,15 +105,19 @@ async function runAnchor(invocation: Invocation, root: string, notes: Finding[],
   } catch {
     return [finding('anchor', 'git cannot name the event log for this repo', 'run the check inside the repo, or pass --log path')];
   }
-  if (!existsSync(logPath)) {
+  let text: string;
+  try {
+    // Read once, with no check first: another process may remove the log between the two.
+    text = readFileSync(logPath, 'utf8');
+  } catch {
     return [finding('anchor', `there is no event log to check (${hideHome(logPath, env)} is not there)`, 'the hooks and runners write it; there is nothing to anchor before the first event')];
   }
   const repo = anchorRepo(root, env, values['--repo']);
   if (!repo) return [finding('anchor', 'the repo whose workflow signed the anchors is not known', 'pass --repo owner/name, or set GITHUB_REPOSITORY')];
-  const log = readEventLog(readFileSync(logPath, 'utf8'));
+  const log = readEventLog(text);
   const report = await checkAnchors(log, {
     today: new Date().toISOString().slice(0, 10),
-    lookup: (hash) => findAnchor(hash, { api: env.YOKOTEN_REKOR_API, identity: workflowIdentity(repo) }),
+    lookup: (hash) => findAnchor(hash, { identity: workflowIdentity(repo) }),
   });
   notes.push(...report.notes);
   return report.problems;
