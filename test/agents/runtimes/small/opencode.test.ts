@@ -7,25 +7,44 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { guardCommand } from '../../../../src/run/cli.ts';
-import { GUARD_FAILED, PLUGIN_FILE, addUserPlugin, formatDenial, hasUserDir, pluginSource, projectPluginState, readToolCall, userPluginFile, userPluginState } from '../../../../src/agents/runtimes/small/opencode.ts';
+import { GUARD_FAILED, PLUGIN_FILE, UNREADABLE_CALL, addUserPlugin, formatDenial, hasUserDir, pluginSource, projectPluginState, readToolCall, userPluginFile, userPluginState } from '../../../../src/agents/runtimes/small/opencode.ts';
 import { agentHooks, userAgentHooks } from '../../../../src/setup/doctor/index.ts';
 import { USER_CLI, USER_MISSING } from '../../../../src/setup/install.ts';
 import { CLI, makeSandbox } from '../../../repo/helpers.ts';
 
 const worker = { YOKOTEN_ROLE: 'worker' };
 
-/** Run the generated plugin in a child, the way OpenCode would load it. */
-const runPlugin = (repo: string, env: Record<string, string | undefined>, source: string, call: { tool: string; args: Record<string, unknown> }) => {
+/** A fake `@opencode/plugin`, so the emitted plugin can load outside OpenCode. */
+const writeHost = (repo: string, source: string): string => {
+  const folder = join(repo, 'node_modules', '@opencode', 'plugin');
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, 'package.json'), '{"type":"module","main":"./index.js","exports":{".":"./index.js"}}\n');
+  writeFileSync(join(folder, 'index.js'), 'export const Plugin = { define(value) { return value; } };\n');
   const plugin = join(repo, 'plugin.mjs');
-  const runner = join(repo, 'runner.mjs');
   writeFileSync(plugin, source);
+  return plugin;
+};
+
+const runChild = (repo: string, env: Record<string, string | undefined>, runner: string, plugin: string, payload: string) =>
+  spawnSync(process.execPath, [runner, plugin, payload, repo], {
+    cwd: repo,
+    env: { ...env, YOKOTEN_ROLE: 'worker' },
+    encoding: 'utf8',
+    timeout: 90000,
+  });
+
+/** Run the OpenCode 1 hook: server()['tool.execute.before']. */
+const runPlugin = (repo: string, env: Record<string, string | undefined>, source: string, call: { tool: string; args: Record<string, unknown> }) => {
+  const plugin = writeHost(repo, source);
+  const runner = join(repo, 'runner.mjs');
   writeFileSync(
     runner,
     [
       "import { pathToFileURL } from 'node:url';",
       'const plugin = await import(pathToFileURL(process.argv[2]).href);',
       'const call = JSON.parse(process.argv[3]);',
-      'const hooks = await plugin.Yokoten({ directory: process.argv[4] });',
+      'const loaded = plugin.default;',
+      'const hooks = await loaded.server({ directory: process.argv[4] });',
       'try {',
       "  await hooks['tool.execute.before']({ tool: call.tool }, { args: call.args });",
       "  console.log('ALLOWED');",
@@ -36,8 +55,67 @@ const runPlugin = (repo: string, env: Record<string, string | undefined>, source
       '',
     ].join('\n'),
   );
-  return spawnSync(process.execPath, [runner, plugin, JSON.stringify(call), repo], { cwd: repo, env: { ...env, YOKOTEN_ROLE: 'worker' }, encoding: 'utf8' });
+  return runChild(repo, env, runner, plugin, JSON.stringify(call));
 };
+
+/**
+ * Run setup against a fake ctx. Each hook() returns a promise that never settles, so a
+ * setup that waits on it does not return. Steps then call the recorded handlers.
+ */
+const runSetup = (repo: string, env: Record<string, string | undefined>, source: string, steps: { label: string; hook: string; event: Record<string, unknown> }[]) => {
+  const plugin = writeHost(repo, source);
+  const runner = join(repo, 'setup-runner.mjs');
+  writeFileSync(
+    runner,
+    [
+      "import { writeSync } from 'node:fs';",
+      "import { pathToFileURL } from 'node:url';",
+      'const plugin = await import(pathToFileURL(process.argv[2]).href);',
+      'const steps = JSON.parse(process.argv[3]);',
+      'const loaded = plugin.default;',
+      'const handlers = new Map();',
+      'const seen = [];',
+      'const pending = new Promise(() => {});',
+      'const register = (kind) => (name, fn) => {',
+      "  seen.push(kind + ':' + name);",
+      "  handlers.set(kind + ':' + name, fn);",
+      '  return pending;',
+      '};',
+      'const ctx = {',
+      '  directory: process.argv[4],',
+      '  permission: { hook: register("permission") },',
+      '  shell: { hook: register("shell") },',
+      '  tool: { hook: register("tool") },',
+      '};',
+      'let setupResult;',
+      'try {',
+      '  setupResult = loaded.setup(ctx);',
+      '} catch (err) {',
+      '  console.error(err instanceof Error ? err.stack : String(err));',
+      '  process.exit(1);',
+      '}',
+      "writeSync(1, 'SETUP_RETURNED\\n');",
+      'const results = [];',
+      'for (const step of steps) {',
+      '  const event = step.event;',
+      "  let thrown = '';",
+      '  try {',
+      "    const handler = handlers.get(step.hook);",
+      "    if (typeof handler !== 'function') throw new Error('missing ' + step.hook);",
+      '    await handler(event);',
+      '  } catch (err) {',
+      '    thrown = err instanceof Error ? err.message : String(err);',
+      '  }',
+      '  results.push({ label: step.label, effect: event.effect ?? null, message: event.message ?? null, thrown });',
+      '}',
+      'console.log(JSON.stringify({ id: loaded.id, seen, setupIsPromise: setupResult instanceof Promise, results }));',
+      '',
+    ].join('\n'),
+  );
+  return runChild(repo, env, runner, plugin, JSON.stringify(steps));
+};
+
+const allow = (action: string, extra: Record<string, unknown> = {}) => ({ action, resources: [], metadata: {}, effect: 'allow', message: '', ...extra });
 
 test('hook --agent opencode: a force push and a .git edit match Claude Code; ls passes', async () => {
   const sandbox = makeSandbox();
@@ -84,7 +162,7 @@ test('hook --agent opencode: a force push and a .git edit match Claude Code; ls 
   assert.equal(listed.stdout.trim(), 'ALLOWED');
 });
 
-test('OpenCode readToolCall: shell and bash by command, write edit and patch by filePath; a read is neither', () => {
+test('OpenCode readToolCall: v1 tools, and an evaluate event read from resources then metadata', () => {
   assert.deepEqual(readToolCall({ tool: 'shell', args: { command: 'ls' }, directory: '/work' }), { command: 'ls', paths: [], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ tool: 'bash', args: { command: 'pwd' } }), { command: 'pwd', paths: [], cwd: undefined, worker: false });
   for (const tool of ['write', 'edit', 'patch']) {
@@ -94,6 +172,121 @@ test('OpenCode readToolCall: shell and bash by command, write edit and patch by 
   for (const input of [null, 'x', [], { tool: 'shell', args: [] }]) {
     assert.deepEqual(readToolCall(input), { command: undefined, paths: [], cwd: undefined, worker: false });
   }
+
+  const push = 'git push --force origin main';
+  assert.deepEqual(readToolCall({ action: 'bash', resources: [push], directory: '/work' }), { command: push, paths: [], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ action: 'Shell', resources: ['git', 'push', '--force', 'origin', 'main'] }), { command: push, paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ action: 'bash', resources: [], metadata: { command: 'pwd' } }), { command: 'pwd', paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ action: 'bash', metadata: { input: 'pwd' } }), { command: 'pwd', paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ action: 'bash', metadata: { input: { command: 'pwd' } } }), { command: 'pwd', paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ action: 'edit', resources: ['a.ts', 'b.ts'], directory: '/work' }), { command: undefined, paths: ['a.ts', 'b.ts'], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ action: 'write', resources: [], metadata: { input: { filePath: '.git/config' } }, directory: '/work' }), {
+    command: undefined,
+    paths: ['.git/config'],
+    cwd: '/work',
+    worker: false,
+  });
+  assert.deepEqual(readToolCall({ action: 'edit', resources: [push], directory: '/work' }), { command: push, paths: [push], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ action: 'read', resources: ['.git/config'], directory: '/work' }), { command: undefined, paths: [], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ action: 'custom', resources: ['.git/config'], directory: '/work' }), { command: '.git/config', paths: ['.git/config'], cwd: '/work', worker: false });
+  assert.deepEqual(readToolCall({ action: 'custom', metadata: {} }), { command: undefined, paths: [], cwd: undefined, worker: false });
+  assert.deepEqual(readToolCall({ action: 'bash', resources: [] }), { command: undefined, paths: [], cwd: undefined, worker: false });
+
+  const source = pluginSource('true');
+  assert.match(source, /import \{ Plugin \} from '@opencode\/plugin'/);
+  assert.match(source, /Plugin\.define\(\{/);
+  assert.match(source, /id: 'yokoten'/);
+  assert.match(source, /permission\.hook\('evaluate'/);
+  assert.match(source, /shell\.hook\('create\.before'/);
+  assert.match(source, /'tool\.execute\.before'/);
+  assert.equal(source.includes('await'), false);
+  assert.equal(source.includes('tool.hook'), false);
+});
+
+test("OpenCode 2 setup: a force push is denied, ls stays allowed, a failing guard denies", async () => {
+  const sandbox = makeSandbox();
+  const push = 'git push --force origin main';
+  const plain = await sandbox.call(['hook', '--agent', 'opencode'], {
+    input: JSON.stringify({ action: 'bash', resources: [push], directory: sandbox.repo }),
+    extra: worker,
+  });
+  assert.equal(plain.status, 2, plain.stderr);
+  const reason = plain.stderr.trim();
+  const edited = await sandbox.call(['hook', '--agent', 'opencode'], {
+    input: JSON.stringify({ action: 'edit', resources: ['.git/config'], directory: sandbox.repo }),
+    extra: worker,
+  });
+  assert.equal(edited.status, 2, edited.stderr);
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const ran = runSetup(sandbox.repo, sandbox.env, source, [
+    { label: 'push', hook: 'permission:evaluate', event: allow('bash', { resources: [push] }) },
+    { label: 'meta', hook: 'permission:evaluate', event: allow('shell', { metadata: { command: push } }) },
+    { label: 'input', hook: 'permission:evaluate', event: allow('bash', { metadata: { input: push }, effect: 'ask' }) },
+    { label: 'nested', hook: 'permission:evaluate', event: allow('bash', { metadata: { input: { command: push } } }) },
+    { label: 'argv', hook: 'permission:evaluate', event: allow('shell', { resources: ['git', 'push', '--force', 'origin', 'main'] }) },
+    { label: 'ls', hook: 'permission:evaluate', event: allow('bash', { resources: ['ls'] }) },
+    { label: 'ask', hook: 'permission:evaluate', event: allow('shell', { resources: ['ls'], effect: 'ask' }) },
+    { label: 'edit', hook: 'permission:evaluate', event: allow('edit', { resources: ['.git/config'] }) },
+    { label: 'mislabeled', hook: 'permission:evaluate', event: allow('write', { resources: [push] }) },
+    { label: 'read', hook: 'permission:evaluate', event: allow('read', { resources: ['.git/config'] }) },
+    { label: 'opaque', hook: 'permission:evaluate', event: allow('custom') },
+    { label: 'empty-shell', hook: 'permission:evaluate', event: allow('bash') },
+    { label: 'shell-push', hook: 'shell:create.before', event: { command: push, cwd: sandbox.repo, env: {} } },
+    { label: 'shell-ls', hook: 'shell:create.before', event: { command: 'ls', cwd: sandbox.repo } },
+    { label: 'shell-empty', hook: 'shell:create.before', event: { cwd: sandbox.repo } },
+  ]);
+  assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+  assert.match(ran.stdout, /SETUP_RETURNED/);
+  const line = ran.stdout.split('\n').find((item) => item.startsWith('{'));
+  assert.ok(line, ran.stdout);
+  const body = JSON.parse(line) as { id: string; seen: string[]; setupIsPromise: boolean; results: { label: string; effect: string | null; message: string | null; thrown: string }[] };
+  assert.equal(body.id, 'yokoten');
+  assert.equal(body.setupIsPromise, false);
+  assert.deepEqual(body.seen, ['permission:evaluate', 'shell:create.before']);
+  const step = (label: string) => {
+    const found = body.results.find((item) => item.label === label);
+    assert.ok(found, label);
+    return found;
+  };
+  for (const label of ['push', 'meta', 'input', 'nested', 'argv', 'mislabeled']) {
+    const item = step(label);
+    assert.equal(item.effect, 'deny', label);
+    assert.equal(item.message, reason, label);
+    assert.equal(item.thrown, '', label);
+  }
+  const listed = step('ls');
+  assert.equal(listed.effect, 'allow');
+  assert.equal(listed.message, '');
+  const asked = step('ask');
+  assert.equal(asked.effect, 'ask');
+  assert.equal(asked.message, '');
+  const edit = step('edit');
+  assert.equal(edit.effect, 'deny');
+  assert.equal(edit.message, edited.stderr.trim());
+  const reading = step('read');
+  assert.equal(reading.effect, 'allow');
+  assert.equal(reading.message, '');
+  for (const label of ['opaque', 'empty-shell']) {
+    const item = step(label);
+    assert.equal(item.effect, 'deny', label);
+    assert.equal(item.message, UNREADABLE_CALL, label);
+  }
+  const shellPush = step('shell-push');
+  assert.equal(shellPush.thrown, reason);
+  assert.equal(step('shell-ls').thrown, '');
+  assert.equal(step('shell-empty').thrown, UNREADABLE_CALL);
+
+  const fail = join(sandbox.repo, 'fail.mjs');
+  writeFileSync(fail, 'process.exit(1);\n');
+  const crashed = runSetup(sandbox.repo, sandbox.env, pluginSource(guardCommand(`"${fail}"`, 'ignored', 'missing runtime', { isToolCall: true })), [
+    { label: 'fail', hook: 'permission:evaluate', event: allow('bash', { resources: ['ls'] }) },
+  ]);
+  assert.equal(crashed.status, 0, crashed.stderr);
+  const failedLine = crashed.stdout.split('\n').find((item) => item.startsWith('{'));
+  assert.ok(failedLine, crashed.stdout);
+  const failed = JSON.parse(failedLine) as { results: { effect: string; message: string }[] };
+  assert.equal(failed.results[0]?.effect, 'deny');
+  assert.match(failed.results[0]?.message ?? '', /guard failed/);
 });
 
 test('the OpenCode plugin refuses the call when the guard fails or times out', () => {
