@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, formatFinding } from '../../rules/message.ts';
 import { homeOf } from '../../rules/privacy.ts';
@@ -14,7 +14,7 @@ import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
 import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
-import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STATE_FILE } from './lessons.ts';
+import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STAGE_FILE, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
 
@@ -342,12 +342,16 @@ function doctorRun(
   // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
   const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
   const state = readState(stateFile);
+  // The road's stage has its own file, so the lessons state keeps its shape (#514). A broken
+  // or missing file has no stage: the first run has nothing to compare with.
+  const stageFile = stateFile ? join(dirname(stateFile), STAGE_FILE) : null;
+  const savedStage = readState(stageFile).lastStage;
+  const lastStage = typeof savedStage === 'number' && Number.isInteger(savedStage) && savedStage > 0 ? savedStage : null;
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
   // A stage that moved by more than one since the last full doctor says which stages it
   // passed, and why they count as done, in one line (#514). The first run has no stage to
   // compare with, and a move of one is the usual next step, so neither says anything.
-  if (where.stage !== null && typeof state.lastStage === 'number' && where.stage - state.lastStage >= 2) {
-    const lastStage = state.lastStage;
+  if (where.stage !== null && lastStage !== null && where.stage - lastStage >= 2) {
     const passed = Array.from({ length: where.stage - lastStage - 1 }, (_, i) => lastStage + i + 1);
     lines.push(`stages ${stageListText(passed)} are done too: their steps were already in place, or can't be checked yet`);
   }
@@ -411,12 +415,9 @@ function doctorRun(
     notes.push(note);
   }
   const nextWorkflows = [...seenWorkflows, ...workflows.flatMap((w) => (w.seen === undefined ? [] : [w.seen]))];
+  if (nextSeen.length > seenLessons.length || nextWorkflows.length > seenWorkflows.length) saveState(stateFile, { ...state, seenLessons: nextSeen, ...(nextWorkflows.length ? { seenWorkflows: nextWorkflows } : {}) });
   // The road's stage is kept even when the road is done: a jump back down is no jump up.
-  const nextStage = where.stage ?? state.lastStage;
-  const isStageKept = nextStage !== undefined && nextStage !== state.lastStage;
-  if (nextSeen.length > seenLessons.length || nextWorkflows.length > seenWorkflows.length || isStageKept) {
-    saveState(stateFile, { ...state, seenLessons: nextSeen, ...(nextStage === undefined ? {} : { lastStage: nextStage }), ...(nextWorkflows.length ? { seenWorkflows: nextWorkflows } : {}) });
-  }
+  if (where.stage !== null && where.stage !== lastStage) saveState(stageFile, { lastStage: where.stage });
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const checkNotes: Finding[] = [];

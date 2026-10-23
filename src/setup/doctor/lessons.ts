@@ -123,6 +123,12 @@ export function seenAfter(seen: string[], lessons: LessonCheck[]): string[] {
 /** Where the state file is, in the git folder that all worktrees of a clone share. */
 export const STATE_FILE = 'yokoten/state.json';
 
+/**
+ * Where the road's stage at the last full doctor is kept (#514). It has its own file so the
+ * lessons state keeps its shape: a project that saves no lesson still records its stage.
+ */
+export const STAGE_FILE = 'yokoten/stage.json';
+
 /** What the state file holds. Keys this version does not know are kept as they are. */
 export interface DoctorState {
   /** The ids of the kit's lessons that full doctor already ran in this clone (#172). */
@@ -131,8 +137,6 @@ export interface DoctorState {
   sessionLessons?: string[];
   /** The kit workflows with the project's changes that full doctor already noted, as "file kit-hash" (#456). */
   seenWorkflows?: string[];
-  /** The stage full doctor saw at its last run, so it can say which stages a jump passed (#514). */
-  lastStage?: number;
   [key: string]: unknown;
 }
 
@@ -152,14 +156,12 @@ export function readState(file: string | null): DoctorState {
   try {
     const state: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (!state || typeof state !== 'object' || Array.isArray(state)) return {};
-    const { seenLessons, sessionLessons, seenWorkflows, lastStage, ...rest } = state as DoctorState;
+    const { seenLessons, sessionLessons, seenWorkflows, ...rest } = state as DoctorState;
     const ids = (list: unknown) => (Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null);
     const seen = ids(seenLessons);
     const ran = ids(sessionLessons);
     const workflows = ids(seenWorkflows);
-    // A stage is a position from 1; anything else is a broken file, treated as missing.
-    const stage = typeof lastStage === 'number' && Number.isInteger(lastStage) && lastStage > 0 ? lastStage : null;
-    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}), ...(workflows ? { seenWorkflows: workflows } : {}), ...(stage === null ? {} : { lastStage: stage }) };
+    return { ...rest, ...(seen ? { seenLessons: seen } : {}), ...(ran ? { sessionLessons: ran } : {}), ...(workflows ? { seenWorkflows: workflows } : {}) };
   } catch {
     return {};
   }
