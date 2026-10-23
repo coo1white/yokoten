@@ -29,33 +29,25 @@ yokoten 是程序，不是 AI。
 
 ## 它做什么
 
-五项保护默认就开着，每个人都一样，不用设置。
-agent 不能做这五件事：
+yokoten 保护五样东西：你的工作、你的秘密、你的发布、你运行的代码，还有这道保护本身。
 
-1. **弄丢你的工作。** 不能强推，不能硬重置，也不能删掉 `.git` 或历史。
-2. **泄露秘密。** 提交或发出去的内容里，不能有密钥、令牌、邮箱或主目录路径。
-3. **替你发布。** 不能打 tag，不能发版，不能发包，也不能把仓库改成公开。什么时候发布，只有你决定。
-4. **运行没看过的网上代码。** 不能把下载的内容直接送进 shell。
-5. **拆掉这道保护。** 不能关掉 CI、钩子或规则。只有你能打开对规则的修改。
+其中一部分现在已经开着。守卫会拦住强推、删除 `.git`、推标签、发包、把下载的内容直接送进 shell，以及跳过提交检查。
+提交检查会拦住提交里的秘密。项目要先运行 `yokoten init`。
+五项保护里剩下的，会在 v0.1.1 到来。
 
 守卫是看不见的：你什么都不打，它也在工作。
 有几条命令是给你用的，比如 `yokoten install` 和 `yokoten doctor`。
-团队命令还没来，会在 v0.1.2。
-这一版里还没有。
-到时候你可以从命令行添加、查看、修改、删除 agent、任务和机器。
+团队命令计划在 v0.1.2（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。
 
-这项保护先在 Claude Code 和 Muse 里测过。
-OpenCode 配 DeepSeek、Codex、Grok、Gemini 已经写进代码，正在测试。
-还不能说每个 agent 都做好了。
+yokoten 用同一套规则守着九个 AI 写代码 agent：Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI 和 OpenCode。
+其中七个做了端到端验证。Gemini CLI 和 OpenCode 已经写进代码，但还没有做端到端运行。
 
 yokoten 拦住一件事时，不写代码的人也能照着做。
-它会说出拦住了什么、为什么、一句可以告诉 AI 的话、一条你自己可以运行的命令，然后是规则。
+它会说出拦住了什么、为什么、该怎么做，然后给出指南的链接。
 
 ```
-yokoten 拦住了这件事：创建标签 v1.2.0。
-为什么：标签会发布一个版本，什么时候发布只有你决定。
-告诉 AI：「这个版本我自己来发布。」
-或者你自己运行：git tag v1.2.0
+yokoten: git push origin v1.2.0 pushes a release tag. Only the owner decides when to release. If the owner asked for this, they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 claude` (or your agent's command); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## 安装
@@ -81,15 +73,14 @@ agent 试着强推。yokoten 拦住它，说清原因，给出改法。然后 `d
 
 ## 接下来
 
-团队命令会在 v0.1.2 到来。
+团队命令计划在 v0.1.2（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。
 你将可以从命令行添加、查看、修改、删除 agent、任务和机器。
 团队页面只是预览。
 它不在 0.1 的发布里。
 
 ## 能配合什么
 
-**Agent。** 先在 Claude Code 和 Muse 里测过。
-OpenCode 配 DeepSeek、Codex、Grok、Gemini 已经写进代码，正在测试。
+**Agent。** yokoten 用同一套规则守着九个 AI 写代码 agent：Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI 和 OpenCode。其中七个做了端到端验证。Gemini CLI 和 OpenCode 已经写进代码，但还没有做端到端运行。
 [agent 表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)写着每一种是怎么测的。
 
 **语言。** 项目用什么语言都可以。守卫、隐私和密钥检查、CI，还有 issue 和 PR 检查，在各种语言里都一样。`doctor` 能找到测试命令的，有 JavaScript 和 TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart，以及任何有 `make test` 的项目。其中 Go、Python、Rust、.NET、Ruby 和 PHP，`init` 会替你写好跑测试的 CI 任务。
@@ -115,7 +106,7 @@ OpenCode 配 DeepSeek、Codex、Grok、Gemini 已经写进代码，正在测试�
 |---|---|---|
 | 1 | **守卫**：agent 做危险操作之前就被拦下 | ✅ 已完成 |
 | 2 | **带路**：`doctor` 带新手走完五关；agent 起草老项目怎样接入 yokoten | 🚧 正在做 |
-| 3 | **团队命令**：从命令行添加、查看、修改、删除 agent、任务和机器 | 🚧 将在 v0.1.2 到来；团队页面只是预览，不在 0.1 的发布里 |
+| 3 | **团队命令**：从命令行添加、查看、修改、删除 agent、任务和机器 | 🚧 计划在 v0.1.2（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）；团队页面只是预览，不在 0.1 的发布里 |
 | 4 | **完整的循环**：从一份短说明，到开发、测试、审查、发版和维护 | 以后 |
 | 5 | **横展**：一个项目学到的教训变成一条检查，再送到所有项目 | 目标 |
 

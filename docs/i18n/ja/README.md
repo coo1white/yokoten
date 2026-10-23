@@ -27,37 +27,27 @@ yokoten はプログラムです。AI ではありません。
 
 </div>
 
-<sub>このページは英語版からの翻訳です。不自然な表現や誤りに気づいたら、issue や pull request で教えてください。</sub>
-
 ## 何をするか
 
-五つの保護が、設定なしで、誰にでも最初から有効です。
-エージェントには、次の五つができません。
+yokoten は五つを守ります。あなたの作業、秘密、公開、実行するコード、そしてこの保護そのものです。
 
-1. **作業を失わせること。** force push も、hard reset も、`.git` や履歴の削除もできません。
-2. **秘密を漏らすこと。** コミットや投稿に、鍵、トークン、メールアドレス、ホームのパスを入れられません。
-3. **あなたに代わって公開すること。** タグ、リリース、パッケージの公開と、リポジトリの公開はできません。いつ公開するかは、あなただけが決めます。
-4. **ネットのコードを、読まずに実行すること。** ダウンロードをシェルへ流し込めません。
-5. **この保護を外すこと。** CI、フック、ルールを止められません。ルールの変更を開くのは、あなただけです。
+その一部は、いまから有効です。番人は force push、`.git` の削除、タグの push、パッケージの公開、ダウンロードをシェルへ流し込むこと、コミットチェックの省略を止めます。
+コミットチェックはコミットに含まれる秘密を止めます。プロジェクトで `yokoten init` を先に実行する必要があります。
+五つの保護の残りは、v0.1.1 で来ます。
 
 番人は目に見えません。何も入力しなくても働きます。
 人が打つコマンドはわずかです。例えば `yokoten install` と `yokoten doctor` です。
-チーム用のコマンドは次です。v0.1.2 で来ます。
-このリリースにはありません。
-コマンドラインから、エージェント、タスク、マシンを追加、一覧、変更、削除できるようになります。
+チーム用のコマンドは v0.1.2 を予定しています（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。
 
-保護を最初に試したのは Claude Code と Muse です。
-OpenCode（DeepSeek）、Codex、Grok、Gemini はコードにあり、いま試しています。
-すべてのエージェントが終わったとは、まだ言えません。
+yokoten は九つの AI コーディングエージェントを同じルールで守ります。Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI、OpenCode です。
+そのうち七つはエンドツーエンドで検証済みです。Gemini CLI と OpenCode はコードにありますが、エンドツーエンドではまだ実行していません。
 
 yokoten が止めたとき、コードを書かない人でも、その答えで動けます。
-止めたこと、理由、AI に伝える一文、自分で実行するコマンド、それからルールが分かります。
+止めたこと、理由、どうすればよいかを伝え、ガイドへのリンクを示します。
 
 ```
-yokoten はこれを止めました: タグ v1.2.0 の作成。
-理由: タグはリリースを公開します。いつ公開するかは、あなただけが決めます。
-AI に伝えてください: 「このリリースは自分で公開します。」
-または自分で実行: git tag v1.2.0
+yokoten: git push origin v1.2.0 pushes a release tag. Only the owner decides when to release. If the owner asked for this, they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 claude` (or your agent's command); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
 ## インストール
@@ -83,15 +73,14 @@ Claude Code ではプラグインも使えます。`/plugin marketplace add yoko
 
 ## この次
 
-チーム用のコマンドは v0.1.2 で来ます。
+チーム用のコマンドは v0.1.2 を予定しています（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。
 コマンドラインから、エージェント、タスク、マシンを追加、一覧、変更、削除できるようになります。
 チームのページはプレビューです。
 0.1 のリリースには入っていません。
 
 ## 対応しているもの
 
-**エージェント。** 最初に試したのは Claude Code と Muse です。
-OpenCode（DeepSeek）、Codex、Grok、Gemini はコードにあり、いま試しています。
+**エージェント。** yokoten は九つの AI コーディングエージェントを同じルールで守ります。Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI、OpenCode です。そのうち七つはエンドツーエンドで検証済みです。Gemini CLI と OpenCode はコードにありますが、エンドツーエンドではまだ実行していません。
 [エージェント表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)に、それぞれの試し方が書いてあります。
 
 **言語。** プロジェクトの言語は問いません。番人、個人情報と秘密情報のチェック、CI、issue とプルリクエストのチェックは、どの言語でも同じように動きます。`doctor` は、JavaScript と TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart、そして `make test` があるプロジェクトについて、テストのコマンドを見つけます。Go、Python、Rust、.NET、Ruby、PHP では、`init` がテストを走らせる CI のジョブを書きます。
@@ -117,7 +106,7 @@ OpenCode（DeepSeek）、Codex、Grok、Gemini はコードにあり、いま試
 |---|---|---|
 | 1 | **番人**：危険な操作の前に、エージェントを止めます | ✅ 完了 |
 | 2 | **道案内**：`doctor` が初心者を五つの関所で案内します。エージェントが、古いプロジェクトへの入れ方を下書きします | 🚧 いま |
-| 3 | **チームのコマンド**：コマンドラインからエージェント、タスク、マシンを追加、一覧、変更、削除します | 🚧 v0.1.2 で来ます。チームのページはプレビューで、0.1 のリリースには入りません |
+| 3 | **チームのコマンド**：コマンドラインからエージェント、タスク、マシンを追加、一覧、変更、削除します | 🚧 v0.1.2 を予定しています（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。チームのページはプレビューで、0.1 のリリースには入りません |
 | 4 | **開発サイクル全体**：短い仕様から、開発、テスト、レビュー、リリース、保守まで | あとで |
 | 5 | **横展**：一つのプロジェクトの教訓がチェックになり、そのチェックがすべてのプロジェクトに広がります | 目標 |
 
