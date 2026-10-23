@@ -80,6 +80,44 @@ export function hostRunRemoval(words: string[]): Finding | undefined {
   return undefined;
 }
 
+// ---- Repository and organization settings (#825) ----
+//
+// Protection 3 of record 0034: an agent does not make a repo public or change the server's
+// lock. `gh repo edit` is refused by its own rule; the same change through `gh api` was not,
+// so this reads the route. A read passes. A comment, a label or a review stays allowed.
+
+const SETTINGS_FIX = 'ask the owner, who changes repository and organization settings in the browser';
+const ORG = 'orgs/[^/]+';
+// A repo setting: the repo itself (visibility, default branch, deletion), its branch
+// protection, its rulesets, and the groups that change what checks run or who reaches the
+// code. Any other repo write (a comment, a label, a review, a merge) is one the bot needs.
+const SETTINGS_ROUTES = [
+  new RegExp(`^${REPO}$`, 'i'),
+  new RegExp(`^${REPO}/branches/.+/protection(?:/.*)?$`, 'i'),
+  new RegExp(`^${REPO}/rulesets(?:/.*)?$`, 'i'),
+  new RegExp(`^${REPO}/(?:actions/permissions(?:/.*)?|interaction-limits|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|transfer)$`, 'i'),
+  // An organization and everything under it: its settings, membership, teams and rulesets
+  // are the owner's, and the bot has no write there.
+  new RegExp(`^${ORG}(?:/.*)?$`, 'i'),
+];
+
+/** A `gh api` call that writes to repository or organization settings, or undefined when it is not one or is a read (#825). */
+export function hostSettingsWrite(words: string[]): Finding | undefined {
+  const at = ghIndex(words, findProgramPlaces(words));
+  if (at === -1) return undefined;
+  const args = withoutShellRedirects(words, at + 1);
+  const plain = plainArgs(args, ['-R', '--repo', '--hostname']);
+  if (plain[0] !== 'api') return undefined;
+  const call = readApi(args.slice(args.indexOf('api') + 1));
+  // A short-option cluster is refused before this check, by hostRunRemoval.
+  if (call.cluster) return undefined;
+  // No method and a field or `--input`: gh sends POST. A named GET is a read, even with fields.
+  const method = call.method || (call.hasFields ? 'POST' : 'GET');
+  if (method === 'GET') return undefined;
+  if (!SETTINGS_ROUTES.some((route) => route.test(call.path))) return undefined;
+  return finding('repo-settings', 'this `gh api` call changes repository or organization settings', SETTINGS_FIX);
+}
+
 const GH_ALIAS_FIX = 'ask the owner to add the alias by hand';
 
 /** `gh alias set` and `gh alias import` hide any later command under a new name, for both roles (#650). */
@@ -265,6 +303,7 @@ const GUARD_SAMPLES: { command: string; name: string }[] = [
   { command: 'gh extension install o/gh-x', name: 'gh command guard' },
   { command: 'gh extension exec demo', name: 'gh command guard' },
   { command: 'gh extension browse', name: 'gh command guard' },
+  { command: 'gh api -X PATCH repos/o/r -f visibility=public', name: 'settings guard' },
 ];
 
 /** The names of the samples `check` did not catch. A finding counts as a catch. Each name is listed once. */
@@ -281,4 +320,4 @@ export function hostGuardMisses(check: (command: string) => unknown): string[] {
 }
 
 useHostApi({ read: readApi, clusterFinding: apiClusterFinding, values: () => API_VALUES });
-useHostCommands({ hostRunRemoval, hostAlias, hostHiddenCommand, hostTokenReveal, hostWorkflowOff });
+useHostCommands({ hostRunRemoval, hostSettingsWrite, hostAlias, hostHiddenCommand, hostTokenReveal, hostWorkflowOff });

@@ -113,6 +113,12 @@ export const RULES = {
     why: 'a workflow that is off runs no checks, on any pull request, until someone turns it on again',
     check: 'the tool-call guard stops `gh workflow disable` for every agent; only the owner turns a workflow off',
   },
+  'repo-settings': {
+    rule: 'only the owner changes repository and organization settings',
+    why: 'the server settings are the lock: visibility, the default branch, branch protection and rulesets hold even when a hook is off',
+    check: 'the tool-call guard stops a `gh api` call that writes (a method other than GET, or a `-f`, `-F` or `--input` field) to a repository or organization settings endpoint: the repo itself, its branch protection, its rulesets, Actions permissions, security switches, an organization and its settings. Reads pass, and the writes the bot needs stay: comments, labels and reviews (#825)',
+    docs: guide('the-core-rules'),
+  },
   'run-remove': {
     rule: 'no agent cancels or deletes an Actions run',
     why: 'a cancelled run turns a check red and blocks the merge, and a deleted log is evidence gone',

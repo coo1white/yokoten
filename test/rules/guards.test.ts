@@ -4017,7 +4017,7 @@ test('guard: a worker command with a part the guard cannot read, or a shell mode
 });
 
 test('useHostCommands: a second, different registration is refused (#650)', () => {
-  assert.throws(() => useHostCommands({ hostRunRemoval: () => undefined, hostAlias: () => undefined, hostHiddenCommand: () => undefined, hostTokenReveal: () => undefined, hostWorkflowOff: () => undefined }), /already registered/);
+  assert.throws(() => useHostCommands({ hostRunRemoval: () => undefined, hostSettingsWrite: () => undefined, hostAlias: () => undefined, hostHiddenCommand: () => undefined, hostTokenReveal: () => undefined, hostWorkflowOff: () => undefined }), /already registered/);
 });
 
 test('checkCommand: without the host rules loaded, a gh command is refused, not let through (#650)', () => {
