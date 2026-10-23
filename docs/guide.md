@@ -46,6 +46,10 @@ In Claude Code you can use the plugin instead. Use the plugin or `npx`, not both
 [The Claude Code plugin](#the-claude-code-plugin). To install from a clone, see
 [Install from a clone](#install-from-a-clone).
 
+**Skills alone guard nothing.** `npx skills add yokoten-labs/yokoten` copies the skills
+only, and a skill is advice to the agent. Run `npx yokoten install`, or use the plugin,
+to turn the guard on.
+
 ### What a refusal looks like
 
 An agent tries a plain force push. The guard stops it before it runs:
@@ -187,6 +191,10 @@ agent needs. The DeepSeek Harness bridge and the DeepSeek model setup are in the
 then run with no network and no global install. `init` adds only; a file that is already
 there is kept and named.
 
+Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copies the
+skills only. A skill is advice to the agent; the guard is what stops a command. So skills
+alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -205,9 +213,23 @@ The plugin is this repo, and it uses the same files that `install` copies.
 | `/yokoten:init`, `/yokoten:doctor` and `/yokoten:update` | `kit/plugin/skills/` |
 | The SessionStart `doctor` hook and the command guard | `.claude-plugin/plugin.json` |
 
-The plugin works in Claude Code only. Use the plugin or `install`, not both: with both,
-the guard and the session doctor run twice and every skill shows up twice. To move from
-`install` to the plugin, run `yokoten uninstall`.
+The guard runs in every folder, so it keeps to the command rules. One exception: an edit
+inside a yokoten repo (one with `yokoten.json`) gets that repo's file rules, wherever the
+session started.
+
+Claude Code runs the plugin's `.ts` files with `node`, because the plugin folder is not
+under `node_modules`. To update, open `/plugin`, select yokoten on **Installed**, and
+choose **Update now**; `claude plugin update yokoten@yokoten` does the same. The next
+tool call runs the updated guard. A session with the old hook command needs one restart,
+and if the old folder is gone the tool call asks for it. When the plugin is older than
+the `doctor` you run, `doctor` says so.
+
+The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
+names the file, and you make it.
+
+Use the plugin or `install`, not both: with both, the guard and the session doctor run
+twice and every skill shows up twice, and `doctor` says so. To move from `install` to the
+plugin, run `yokoten uninstall`; it keeps `~/.config/yokoten`.
 
 ### Install with npx
 
@@ -562,13 +584,23 @@ to undo:
 | Tier | Kind of change | Who reviews |
 |------|----------------|-------------|
 | C | Docs, wording, styles | The lead |
-| B | Normal code, with tests | The lead |
-| A | Hard to undo: secrets, data, install, releases, owned files | The owner |
+| B | Normal code, with tests | Another vendor's agent reviews, then the lead approves |
+| A | Hard to undo: owned files, or a change that makes a rule looser | The owner |
 
-`.github/CODEOWNERS` lists the owned files. `check --pr` fails a pull request that
-changes one unless its first line is `tier: A`. The author can raise a tier, never lower
-it. An approval is for one commit, and `yokoten bot` refuses a tier A merge without a
-code-owner Approve on the head. Server setup: [docs/server.md](server.md).
+In yokoten's own repo, `.github/CODEOWNERS` lists the owned files: the core rules,
+CODEOWNERS, CI that publishes or holds a secret, the bot token, guard config and
+`package.json`. [Record 0037](records/0037-owner-reviews-only-what-loosens.md) says why
+that list is short. In a new project, `init` writes one for the lead-only paths.
+
+`check --pr` ties the two together. A pull request that changes an owned file fails
+unless its first line is `tier: A`, and the paths set the lowest tier. The author can
+raise a tier, never lower it. The check reads CODEOWNERS from the base branch, so a pull
+request can't edit the file to lower its own tier.
+
+An approval is for one commit and must come from a code owner of the changed files.
+`yokoten bot` refuses a tier A merge whose newest code-owner review is not an Approve on
+the head. A pull request also needs one type label and one tier label that matches its
+`tier:` line. Server setup: [docs/server.md](server.md).
 
 ### The desk
 

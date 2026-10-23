@@ -167,6 +167,9 @@ DeepSeek 模型设置，在 [README](README.md) 里。
 `init` 把运行时复制到项目的 `.yokoten/`。请提交它：钩子和 CI 之后就不需要网络，也不需要全局安装。
 `init` 只添加；已经存在的文件保留并说明。
 
+**只装技能是没有守卫的。** `npx skills add yokoten-labs/yokoten` 只复制技能，而技能只是给
+agent 的说明。要跑 `npx yokoten install`，或者用插件，守卫才会打开。
+
 ### Claude Code 插件
 
 在 Claude Code 会话里：
@@ -185,8 +188,20 @@ DeepSeek 模型设置，在 [README](README.md) 里。
 | `/yokoten:init`、`/yokoten:doctor`、`/yokoten:update` | `kit/plugin/skills/` |
 | 会话开始的 `doctor` 钩子和命令守卫 | `.claude-plugin/plugin.json` |
 
-插件只在 Claude Code 里工作。插件和 `install` 选一个，不要都装：都装的话，守卫和会话里的
-doctor 会跑两次，每个技能也会出现两次。要从 `install` 换成插件，先运行 `yokoten uninstall`。
+守卫在哪个文件夹都会跑，所以只管命令。有一个例外：文件要是在一个装了 yokoten 的仓库里
+（有 `yokoten.json`），不管会话从哪个文件夹开，都按那个仓库管文件的规则来查。
+
+Claude Code 用 `node` 直接跑插件里的 `.ts` 文件，因为插件不放在 `node_modules` 下面。
+想更新，就打开 `/plugin`，在 **Installed** 里选 yokoten，点 **Update now**；
+`claude plugin update yokoten@yokoten` 也一样。下一次工具调用会跑更新后的守卫。
+还带着旧 hook 命令的会话要重启一次；旧的文件夹要是没了，这次工具调用会提示你重启。
+插件比跑 `doctor` 的这份 yokoten 旧时，`doctor` 会提醒你。
+
+插件只在 Claude Code 里工作。它不会帮你建私有词表文件：`doctor` 告诉你文件在哪，你自己建。
+
+插件和 `install` 二选一，不要都装：都装的话，守卫和会话开头的 doctor 会跑两遍，每个技能
+也会出现两次，`doctor` 会提醒你。要从 `install` 换成插件，就跑 `yokoten uninstall`，
+它写的东西会删掉，`~/.config/yokoten` 留着。
 
 ### 用 npx 装
 
@@ -508,13 +523,21 @@ worktree 里，带 `YOKOTEN_ROLE=worker`。它们改代码、回报；从不 pus
 | Tier | 改动类型 | 谁来审 |
 |------|----------------|----------|
 | C | 文档、措辞、样式 | lead |
-| B | 普通代码，带测试 | lead |
-| A | 难撤回：秘密、数据、安装、发布、owned 文件 | owner |
+| B | 普通代码，带测试 | 另一家厂商的 agent 审，lead 批准 |
+| A | 难撤回：owned 文件，或让规则变松的改动 | owner |
 
-`.github/CODEOWNERS` 列出 owned 文件。改了其中一个的 pull request，第一行不是 `tier: A`
-时 `check --pr` 会失败。作者可以调高 tier，不能调低。一次批准只对一个 commit，
-`yokoten bot` 会拒绝在 head 上没有 code owner Approve 的 tier A 合并。
-服务器设置见 [docs/server.md](../../server.md)。
+在 yokoten 自己的仓库里，`.github/CODEOWNERS` 列出 owned 文件：核心规则、CODEOWNERS、
+会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置，以及 `package.json`。为什么这么短，
+见[记录 0037](../../records/0037-owner-reviews-only-what-loosens.md)。新项目跑 `init` 时，
+会按只许 lead 改的路径写好一份。
+
+`check --pr` 把两件事接起来。PR 改到 owned 文件，第一行不是 `tier: A`，检查就不通过；
+改了哪些路径，决定 tier 最低是多少。作者可以调高 tier，不能调低。检查读的是目标分支上的
+CODEOWNERS，所以 PR 改不了这个文件来给自己降级。
+
+一次批准只对一个 commit，而且要来自改动文件的 code owner。`yokoten bot` 会拒绝最新一条
+code owner 审查不是 head 上 Approve 的 tier A 合并。一个 PR 还要有一个类型标签和一个
+tier 标签，跟正文的 `tier:` 行一致。服务器怎么设置，见 [docs/server.md](../../server.md)。
 
 ### 工位
 
