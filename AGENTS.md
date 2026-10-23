@@ -13,8 +13,8 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 
 ## Roles
 
-- **The owner** decides what is built and when it ships. Only the owner approves pull
-  requests, creates release tags, and changes repo settings.
+- **The owner** decides what is built and when it ships. Only the owner approves tier A
+  pull requests, creates release tags, and changes repo settings.
 - **The lead** is the session the owner talks to. It plans, splits the work, reviews,
   commits and opens pull requests (as the bot, never as the owner).
 - **A worker** is a session the lead starts for one task, in its own worktree, with
@@ -92,8 +92,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   Only the npm package is built: `npm pack` emits `dist/` (git-ignored), because Node
   does not strip types under `node_modules` (record 0008). So only syntax it can erase
   (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports
-  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`, except
-  `bin/yokoten.mjs`, the hook entry that turns on the compile cache first (record 0013)
+  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`, except two
+  plain JavaScript entries the hooks start directly: `bin/yokoten.mjs`, which turns on the
+  compile cache first (record 0013), and `bin/launch.mjs`, the Claude Code plugin hook that
+  picks a safe plugin copy (#706)
   (`test/repo/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
   hook.
 - **Layers.** `src/` has six, lowest first; a module imports only from its own
