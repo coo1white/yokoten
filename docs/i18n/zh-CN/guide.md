@@ -451,6 +451,10 @@ Codex 0.163.0 已经不接受 `wire_api = "chat"`。它会提示找不到 `deeps
 下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
 Windows 上请用 Git Bash。
 
+也有人只装了技能：`npx skills add yokoten-labs/yokoten` 只复制技能。技能只是给 agent 的
+说明，真正拦住命令的是守卫。所以只装技能等于没有守卫：要跑 `npx yokoten install`，或者用插件，
+守卫才会打开。
+
 ### 用 Claude Code 插件装
 
 在 Claude Code 里输入：
@@ -480,7 +484,7 @@ Windows 上请用 Git Bash。
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
 在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
-`claude plugin update yokoten@yokoten` 也一样，跑完要重启 Claude Code。插件要是比跑 `doctor`
+`claude plugin update yokoten@yokoten` 也一样。下一次工具调用会跑更新后的守卫。还带着旧 hook 命令的会话需要重启一次。会话还在跑的时候，要是旧的插件文件夹被删掉了，这次工具调用会被拒绝，并提示你重启。插件要是比跑 `doctor`
 的这份 yokoten 旧，`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
@@ -1256,10 +1260,11 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 | tier | 什么样的改动 | 谁来审 |
 |------|--------------|--------|
 | C | 日常小改：文档、措辞、样式 | lead 审 |
-| B | 普通改动：其他代码，带测试 | lead 审 |
-| A | 改错了很难收回：密钥、数据、安装、发版、CODEOWNERS 里的文件 | 主人审 |
+| B | 普通改动：其他代码，带测试 | 另一家厂商的 agent 审，lead 批准 |
+| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审 |
 
-`.github/CODEOWNERS` 只列出改错了很难收回的文件：规则、kit、agent 配置、CI、记录。
+在 yokoten 自己的仓库里，`.github/CODEOWNERS` 只列出改错了很难收回的文件：核心规则、CODEOWNERS、
+会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和 `package.json`（记录 0037）。
 不是每个文件都列。新项目跑 `init` 时，会按只许 lead 改的路径写好一份。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
 就会请主人来审。
 
