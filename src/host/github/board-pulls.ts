@@ -1,13 +1,17 @@
 // The pull requests for `yokoten board` (#601), read through `gh pr list`, so it uses
-// the owner's own sign-in and holds no token. Open, merged and closed, newest first.
-// Read only.
+// the owner's own sign-in and holds no token. The open ones, then the last few merged,
+// then the last few closed. Read only. Closed rows let Needs you drop a finished item.
 
 import { readLabelTier } from '../../rules/pr.ts';
 import { terminalText } from '../../run/learn.ts';
-import { asText, type Gh, isObject, labelNames } from './planning.ts';
+import { asText, type Gh, type GhLater, isObject, labelNames } from './planning.ts';
 
-/** The most pull requests the board reads: enough for one team's open and recent work. */
+/** The most open pull requests the board reads: enough for one team's open work. */
 const BOARD_PULL_LIMIT = 30;
+/** The most merged pull requests the board reads, for "Merged today". */
+const BOARD_MERGED_LIMIT = 10;
+/** The most closed pull requests the board reads, so a closed one can leave Needs you. */
+const BOARD_CLOSED_LIMIT = 10;
 
 /** One pull request on the board: its number, title, branch, and each stage. */
 export interface BoardPull {
@@ -23,6 +27,8 @@ export interface BoardPull {
   tier: '' | 'A' | 'B' | 'C';
   /** The review: approved, changes asked, waiting for the owner, or none asked. */
   review: 'approved' | 'changes' | 'waiting' | 'none';
+  /** True when an Approve is on the head commit. An Approve on an older commit stays false. */
+  isApprovedOnHead: boolean;
   /** When it merged, as gh gives it, or '' when it has not. */
   mergedAt: string;
 }
@@ -84,10 +90,85 @@ function pullTier(labels: string[]): BoardPull['tier'] {
   return tier === 'A' || tier === 'B' || tier === 'C' ? tier : '';
 }
 
+/** The review word from gh's reviewDecision. */
+function reviewOf(decision: string): BoardPull['review'] {
+  if (decision === 'APPROVED') return 'approved';
+  if (decision === 'CHANGES_REQUESTED') return 'changes';
+  if (decision === 'REVIEW_REQUIRED') return 'waiting';
+  return 'none';
+}
+
+/**
+ * The verdict on one review comment, or ''. Only a short line counts, such as
+ * "PR #7: request changes". A mention inside a paragraph does not.
+ */
+function verdictOf(body: string): '' | 'changes' | 'approve' {
+  const lines = body.split('\n').map((line) => line.replace(/[*_`]/g, '').trim()).filter(Boolean).slice(0, 8);
+  for (const line of lines) {
+    if (line.length > 80) continue;
+    const text = line.replace(/^pr\s*#\d+\s*:\s*/i, '').trim();
+    if (/^request changes\b/i.test(text)) return 'changes';
+    if (/^approv(?:e|ed)\b/i.test(text)) return 'approve';
+  }
+  return '';
+}
+
+/** The objects in a gh list. A connection with `nodes` counts too. */
+function noteList(value: unknown): Record<string, unknown>[] {
+  const list = Array.isArray(value) ? value : isObject(value) && Array.isArray(value.nodes) ? value.nodes : [];
+  return list.filter(isObject);
+}
+
+/** The verdict GitHub stored on a review, or '' when the state is only a comment. */
+function stateVerdict(state: string): '' | 'changes' | 'approve' {
+  if (state === 'APPROVED') return 'approve';
+  if (state === 'CHANGES_REQUESTED') return 'changes';
+  return '';
+}
+
+/**
+ * The newest review verdict, from comments and reviews. A review's own state counts,
+ * so a later APPROVED review clears an older request-changes comment. Empty when none names one.
+ */
+function latestVerdict(row: Record<string, unknown>): '' | 'changes' | 'approve' {
+  const notes: { at: number; order: number; verdict: 'changes' | 'approve' }[] = [];
+  const take = (value: unknown, useState: boolean) => {
+    for (const item of noteList(value)) {
+      const verdict = (useState ? stateVerdict(asText(item.state)) : '') || verdictOf(asText(item.body));
+      if (!verdict) continue;
+      const at = Date.parse(asText(item.createdAt) || asText(item.submittedAt));
+      notes.push({ at: Number.isNaN(at) ? 0 : at, order: notes.length, verdict });
+    }
+  };
+  take(row.comments, false);
+  take(row.reviews, true);
+  take(row.latestReviews, true);
+  notes.sort((left, right) => left.at - right.at || left.order - right.order);
+  return notes.at(-1)?.verdict ?? '';
+}
+
+/**
+ * True when an Approve sits on the head commit. GitHub can still say APPROVED after
+ * new commits. Without a matching commit, the Approve does not count.
+ */
+function approvedOnHead(row: Record<string, unknown>, review: BoardPull['review']): boolean {
+  if (review !== 'approved') return false;
+  const head = asText(row.headRefOid);
+  if (!head) return false;
+  const reviews = Array.isArray(row.latestReviews) ? row.latestReviews : [];
+  return reviews.some((item) => {
+    if (!isObject(item) || asText(item.state) !== 'APPROVED') return false;
+    const commit = item.commit;
+    return isObject(commit) && asText(commit.oid) === head;
+  });
+}
+
 /** One row of `gh pr list --json` as a board pull, or null when it has no number. */
 function parseBoardPull(row: unknown): BoardPull | null {
   if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number <= 0) return null;
-  const review = asText(row.reviewDecision);
+  let review = reviewOf(asText(row.reviewDecision));
+  // A comment can ask for changes while GitHub still says the review is waiting.
+  if (review !== 'changes' && latestVerdict(row) === 'changes') review = 'changes';
   return {
     number: row.number,
     title: asText(row.title),
@@ -97,26 +178,73 @@ function parseBoardPull(row: unknown): BoardPull | null {
     checks: rollupState(row.statusCheckRollup),
     tier: pullTier(labelNames(row.labels)),
     mergedAt: asText(row.mergedAt),
-    review: review === 'APPROVED' ? 'approved' : review === 'CHANGES_REQUESTED' ? 'changes' : review === 'REVIEW_REQUIRED' ? 'waiting' : 'none',
+    review,
+    isApprovedOnHead: approvedOnHead(row, review),
   };
 }
 
-/** The pull requests of `repo` ("owner/name"), or the reason gh can't read them. */
+/**
+ * The gh queries of the board (#688): the open pull requests with their checks, then the
+ * last few merged and the last few closed, without checks. Checks are the slow part.
+ * The head commit and the latest reviews say whether an Approve is still current.
+ */
+function boardPullQueries(repo: string): string[][] {
+  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,reviews,comments,isDraft,statusCheckRollup,labels,url,mergedAt';
+  const quietJson = 'number,title,headRefName,state,url,mergedAt';
+  return [
+    ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_PULL_LIMIT), '--json', openJson],
+    ['pr', 'list', '--repo', repo, '--state', 'merged', '--limit', String(BOARD_MERGED_LIMIT), '--json', quietJson],
+    ['pr', 'list', '--repo', repo, '--state', 'closed', '--limit', String(BOARD_CLOSED_LIMIT), '--json', quietJson],
+  ];
+}
+
+/** Why gh could not list the pull requests, in words a beginner can act on. */
+function boardPullsFailed(err: unknown): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+  const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
+  return `gh can't list the pull requests${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the repo`;
+}
+
+/**
+ * The pull requests from gh's answers: open and draft from the first, merged from the
+ * second, closed from the third, each number once. Or why the answers are no list.
+ */
+function boardPullsOf(answers: string[]): BoardPull[] | string {
+  const wanted: BoardPull['stage'][][] = [['open', 'draft'], ['merged'], ['closed']];
+  const found: BoardPull[] = [];
+  for (const [at, text] of answers.entries()) {
+    let rows: unknown;
+    try {
+      rows = JSON.parse(text);
+    } catch {
+      return 'gh gave no pull request list: run it again';
+    }
+    if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+    for (const pull of rows.map(parseBoardPull)) {
+      if (pull && wanted[at].includes(pull.stage) && !found.some((seen) => seen.number === pull.number)) found.push(pull);
+    }
+  }
+  return found;
+}
+
+/** The open and recently merged pull requests of `repo` ("owner/name"), or the reason gh can't read them. */
 export function readBoardPulls(gh: Gh, repo: string): BoardPull[] | string {
-  let text: string;
+  let answers: string[];
   try {
-    text = gh(['pr', 'list', '--repo', repo, '--state', 'all', '--limit', String(BOARD_PULL_LIMIT), '--json', 'number,title,headRefName,state,reviewDecision,isDraft,statusCheckRollup,labels,url,mergedAt']);
+    answers = boardPullQueries(repo).map((args) => gh(args));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
-    const reason = terminalText(String((err as { stderr?: string }).stderr || '').split('\n')[0].trim());
-    return `gh can't list the pull requests${reason ? ` (${reason})` : ''}: run \`gh auth login\`, and check the repo`;
+    return boardPullsFailed(err);
   }
-  let pulls: unknown;
+  return boardPullsOf(answers);
+}
+
+/** readBoardPulls without blocking (#688): both queries run at once, and `signal` stops them. */
+export async function readBoardPullsLater(gh: GhLater, repo: string, signal?: AbortSignal): Promise<BoardPull[] | string> {
+  let answers: string[];
   try {
-    pulls = JSON.parse(text);
-  } catch {
-    return 'gh gave no pull request list: run it again';
+    answers = await Promise.all(boardPullQueries(repo).map(async (args) => gh(args, signal)));
+  } catch (err) {
+    return boardPullsFailed(err);
   }
-  if (!Array.isArray(pulls)) return 'gh gave no pull request list: run it again';
-  return pulls.map(parseBoardPull).filter((pull): pull is BoardPull => pull !== null);
+  return boardPullsOf(answers);
 }

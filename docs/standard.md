@@ -177,8 +177,8 @@ Who reads. The board page, and `/data` through `feedsJson`.
 How yokoten checks it. `recordFeed` compares the last view with the new one.
 Version 1. The event has no version field.
 
-Code: [src/commands/advice/board/feed.ts](../src/commands/advice/board/feed.ts) and [src/commands/advice/board/page/script.ts](../src/commands/advice/board/page/script.ts).
-Tests: [test/commands/advice/board/feed.test.ts](../test/commands/advice/board/feed.test.ts) and [test/commands/advice/board/page/script.test.ts](../test/commands/advice/board/page/script.test.ts).
+Code: [src/commands/advice/board/feed/steps.ts](../src/commands/advice/board/feed/steps.ts) and [src/commands/advice/board/page/browser/script.ts](../src/commands/advice/board/page/browser/script.ts).
+Tests: [test/commands/advice/board/feed/steps.test.ts](../test/commands/advice/board/feed/steps.test.ts) and [test/commands/advice/board/page/browser/script.test.ts](../test/commands/advice/board/page/browser/script.test.ts).
 
 ## A tool call
 
@@ -283,6 +283,7 @@ The board skips a file that is not a JSON object.
 | `worktree` | the agent | text |
 | `doing` | the agent | text |
 | `updated` | the agent, and the stop hook | text. The hook writes UTC time with no milliseconds, such as `2026-10-23T00:00:00Z`. |
+| `started` | the agent | text, the same form as `updated`: when this work started. The board falls back to the file's birth time, then to `updated`. |
 | `role` | the agent | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. Any other word, including `worker`, becomes empty. |
 | `state` | the agent | `working`, `waiting` or `done` |
 | `checks` | the stop hook | `passing` or `failing` |
@@ -295,9 +296,9 @@ The board row also keeps `kind` and `why`.
 The dot beside an agent is `working`, `waiting`, `failing`, `idle` or `done`.
 `done` and `waiting` come from `state`.
 `failing` comes from `checks`.
-Any other `updated` time within `30 minutes` shows `working`.
+Any other `updated` time within `15 minutes` shows `working`.
 A missing or invalid `updated` time shows `idle`.
-Quiet for `30 minutes` shows `idle` only when `state` is not `done` or `waiting`, and `checks` is not `failing`.
+Quiet for `15 minutes` shows `idle` only when `state` is not `done` or `waiting`, and `checks` is not `failing`.
 These dot rules are what the board does today.
 The dot does not read `alive` or `outcome` yet.
 

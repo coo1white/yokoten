@@ -1,19 +1,30 @@
-// The board's agents (#601, #603): one status file per worktree, and the worktrees git lists.
-// An agent joins by writing the file at its worktree's root, and leaves by removing it.
+// The board's agents (#601, #603): one status file per worktree, and the worktrees git lists,
+// with the desks `yokoten desk` started (#685). An agent joins by writing the file at its
+// worktree's root, and leaves by removing it. The hooks write it for every vendor (#685).
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { type Env } from '../../../rules/config.ts';
+import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
+
+/** The repo's main folder. Every worktree shares it, and the lead's log path is kept there. */
+export function boardHome(root: string): string {
+  const common = commonGitDir(root);
+  return common && basename(common) === '.git' ? dirname(common) : root;
+}
 
 /** How long the board waits for `gh pr list` or `git worktree list`, at most. */
 export const BOARD_READ_TIMEOUT_MS = 15000;
 /** An agent's status file, at its worktree's root. One file per worktree. */
 export const BOARD_AGENT_FILE = '.yokoten-agent.json';
+/** Seats per vendor, in the common git folder. The owner writes it by hand (#698). */
+export const BOARD_SEATS_FILE = 'yokoten-seats.json';
+/** Keys a seats file must not set. A bad file is ignored, not trusted. */
+const SEAT_SKIP = new Set(['__proto__', 'constructor', 'prototype']);
 
-/** What an agent does in its team: plans, builds, reviews, verifies, or helps. */
-export type BoardRole = '' | 'lead' | 'engineer' | 'reviewer' | 'verifier' | 'helper';
-const ROLES: readonly BoardRole[] = ['lead', 'engineer', 'reviewer', 'verifier', 'helper'];
+/** The role text a status file wrote. The page groups it by the work the word names. */
+export type BoardRole = string;
 
 /** One agent on the board, from its status file. The guide shows the open format. */
 export interface BoardAgent {
@@ -27,6 +38,8 @@ export interface BoardAgent {
   doing: string;
   /** When the agent last wrote, as filed, or '' when unknown. */
   updated: string;
+  /** When this work started, as filed, or '' when the file does not say. */
+  started: string;
   role: BoardRole;
   /** What the agent says of itself: still working, waiting for the owner, or done. */
   state: '' | 'working' | 'waiting' | 'done';
@@ -65,7 +78,8 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     worktree: fieldText(fields, 'worktree'),
     doing: fieldText(fields, 'doing'),
     updated: fieldText(fields, 'updated'),
-    role: pickWord(fields, 'role', ROLES),
+    started: fieldText(fields, 'started'),
+    role: fieldText(fields, 'role').trim(),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),
   };
@@ -114,8 +128,45 @@ export interface BoardWorktree {
   branch: string;
 }
 
-/** `git worktree list --porcelain -z` as worktrees, or why git can't read them. */
+/** `git worktree list --porcelain -z` as worktrees, then the desks, or why git can't read them. */
 export function readBoardWorktrees(root: string, env: Env): BoardWorktree[] | string {
+  const trees = readGitWorktrees(root, env);
+  if (typeof trees === 'string') return trees;
+  const seen = new Set(trees.map((tree) => tree.path));
+  return [...trees, ...readBoardDesks(root).filter((desk) => !seen.has(desk.path))];
+}
+
+/**
+ * The desks `yokoten desk` started from this repo (#685): plain clones, so `git worktree
+ * list` misses them. Their paths are on a list in the repo's git folder. A desk that is
+ * gone, or is no clone, is skipped. The branch comes from its HEAD, with no git process.
+ */
+export function readBoardDesks(root: string): BoardWorktree[] {
+  const common = commonGitDir(root);
+  if (!common) return [];
+  let text: string;
+  try {
+    text = readFileSync(join(common, DESK_LIST_FILE), 'utf8');
+  } catch {
+    return [];
+  }
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((path) => path && existsSync(join(path, '.git')))
+    .map((path) => {
+      let head = '';
+      try {
+        head = readFileSync(join(path, '.git', 'HEAD'), 'utf8').trim();
+      } catch {
+        // No HEAD to read: the branch stays blank.
+      }
+      return { path, branch: head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : '' };
+    });
+}
+
+/** `git worktree list --porcelain -z` as worktrees, or why git can't read them. */
+function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
   let text: string;
   try {
     text = execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: BOARD_READ_TIMEOUT_MS });
@@ -131,4 +182,37 @@ export function readBoardWorktrees(root: string, env: Env): BoardWorktree[] | st
       return { path: value('worktree'), branch: value('branch').replace(/^refs\/heads\//, '') };
     })
     .filter((worktree) => worktree.path !== '');
+}
+
+/**
+ * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.
+ * A vendor name is kept in lower case. A count that is not a whole number, or is negative, is skipped.
+ */
+export function parseBoardSeats(text: string): Record<string, number> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const seats: Record<string, number> = {};
+  for (const [name, count] of Object.entries(value)) {
+    const key = name.trim().toLowerCase();
+    if (!key || SEAT_SKIP.has(key)) continue;
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) continue;
+    seats[key] = count;
+  }
+  return seats;
+}
+
+/** The seats file in the common git folder, or null when it is missing or bad. */
+export function readBoardSeats(root: string): Record<string, number> | null {
+  const common = commonGitDir(root);
+  if (!common) return null;
+  try {
+    return parseBoardSeats(readFileSync(join(common, BOARD_SEATS_FILE), 'utf8'));
+  } catch {
+    return null;
+  }
 }

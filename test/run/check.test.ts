@@ -28,6 +28,7 @@ import {
   makeTranslatedRepo,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
+import { useRealHome } from '../../src/rules/privacy.ts';
 import {
   assumeEmptyFolder,
   batchBlobs,
@@ -110,6 +111,65 @@ test('check --staged: a default marks file it can not read fails closed, whateve
     assert.ok(!/mycity|otherword/i.test(r.stdout + r.stderr));
   } finally {
     chmodSync(own, 0o600);
+  }
+});
+
+test('check --staged: a readable real-home marks file is used when the default file is missing (#739)', async () => {
+  const sandbox = makeSandbox();
+  const real = makeTempDir();
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'mycity\n');
+  sandbox.write('src/a.md', 'I live in MyCity\n');
+  sandbox.git('add', '.');
+  const restore = useRealHome(() => real);
+  try {
+    const found = await sandbox.call(['check', '--staged']);
+    assert.notEqual(found.status, 0, 'the real home marks apply');
+    assert.match(found.stderr, /src\/a\.md:1: matches a word you added to your private marks/);
+    assert.ok(!/mycity/i.test(found.stdout + found.stderr));
+  } finally {
+    restore();
+  }
+});
+
+test('check --staged: no HOME still uses a readable real-home marks file (#739)', async () => {
+  const sandbox = makeSandbox();
+  const real = makeTempDir();
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'mycity\n');
+  sandbox.write('src/a.md', 'I live in MyCity\n');
+  sandbox.git('add', '.');
+  const restore = useRealHome(() => real);
+  try {
+    for (const extra of [{ HOME: '' }, { HOME: '', YOKOTEN_ROLE: 'worker' }] as Record<string, string>[]) {
+      const found = await sandbox.call(['check', '--staged'], { extra });
+      assert.notEqual(found.status, 0, 'the real home marks apply');
+      assert.match(found.stderr, /src\/a\.md:1: matches a word you added to your private marks/);
+      assert.ok(!/mycity/i.test(found.stdout + found.stderr));
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('check --staged: a missing default marks file fails closed when the real home has one it cannot read (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async () => {
+  const sandbox = makeSandbox();
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'mycity\n');
+  chmodSync(hidden, 0o000);
+  sandbox.write('src/a.md', 'I live in MyCity\n');
+  sandbox.git('add', '.');
+  const restore = useRealHome(() => real);
+  try {
+    const r = await sandbox.call(['check', '--staged']);
+    assert.notEqual(r.status, 0, 'fails closed');
+    assert.match(r.stderr, /cannot be read/);
+    assert.ok(!/mycity/i.test(r.stdout + r.stderr));
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
   }
 });
 
