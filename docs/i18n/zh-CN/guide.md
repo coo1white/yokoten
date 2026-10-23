@@ -1350,7 +1350,9 @@ git diff main refs/desks/42
 - **macOS**：用系统自带的 `sandbox-exec`，每个工位现写一份规则。规则从「全部不许」开始，只放开工位
   要用的读、写、Mach 服务和代理端口，挡住 `open`、`osascript`、Launch Services 和 Apple 事件。
   还没在 Mac 上跑过：请在 Mac 上跑一次 `node --test test/agents/desk/start.test.ts`，检查这套规矩。
-- **原生 Windows**：还没有工位（#669）。请在 WSL2 里用 yokoten。原生 Windows 上只有守卫在把关。
+- **原生 Windows**：实验性功能，还没做好（#669）。它需要受限令牌（restricted token）辅助程序、
+  工位上的 ACL 和防火墙规则，并且 #637 的契约测试要在真实的 Windows 11 上通过，才能启动 worker。
+  在那之前，请在 WSL2 里用 yokoten，Linux 工位在那里可用。原生 Windows 上只有守卫在把关。
 
 ### agent 之间发消息
 
