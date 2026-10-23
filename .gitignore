@@ -5,6 +5,8 @@ dist/
 *.tgz
 # Worker worktrees, one folder per issue (#571).
 .worktrees/
+# The installer files scripts/packaging.ts writes (#435).
+packaging/out/
 # One agent's live status for `yokoten board`, at its worktree's root. Never committed.
 .yokoten-agent.json
 # The board's start and stop log, at the repo root. Never committed.
