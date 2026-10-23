@@ -46,8 +46,10 @@ Files: <where to look first>
 Out of scope: <what not to change>
 Fix task: yes|no   (yes = make the existing test pass; never change the test)
 Your way: if you see a better way to reach the goal, say so or take it, and say why.
+Anchor: after each test you touch passes, commit. That commit is your anchor.
+Resume: if the worktree already has commits, read them first and continue from the last one.
 Stuck: if the task can't be done, or the brief looks wrong, stop and say so in the report.
-       That is a good report, not a failure.
+       That is a good report, not a failure. Stop after the same step fails 3 times.
 Report: what you changed, the commands you ran with their output, what you are unsure of.
 ```
 
@@ -90,7 +92,8 @@ never changes lead-only files (the guard stops it).
 1. Read the report, then read the diff. A report is a claim; the diff is the fact.
 2. Run the "done when" command yourself.
 3. Review with the `inspect` skill. If the worker says it is stuck, read why first.
-   The task or the brief may be what needs to change.
+   The task or the brief may be what needs to change. The last commit it made is the
+   anchor; start the next run in the same worktree so it resumes from there.
 4. Push the branch and open the pull request as the bot, with `Closes #<n>`:
    `yokoten bot -- git push -u origin <branch>`, then `yokoten bot -- gh pr create`.
    Never with the owner's login. Run them from the main checkout: in the marked worktree
