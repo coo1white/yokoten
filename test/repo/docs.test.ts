@@ -276,11 +276,12 @@ function scaled(source: string, name: string, factor: 'kib' | 'minutes'): string
 /** Every word the open standard has to name, taken from the code. */
 function collectWords(): string[] {
   const hook = read('src/run/hook.ts');
-  const feed = read('src/commands/advice/board/feed.ts');
+  const feed = read('src/commands/advice/board/feed/steps.ts');
   const agents = read('src/commands/advice/board/agents.ts');
-  const controls = read('src/commands/advice/board/controls.ts');
+  // The attention box and its link live in two files since the board split (#693).
+  const controls = read('src/commands/advice/board/controls.ts') + read('src/commands/advice/board/waiting.ts');
   const view = read('src/commands/advice/board/view.ts');
-  const script = read('src/commands/advice/board/page/script.ts');
+  const script = read('src/commands/advice/board/page/browser/script.ts');
   const pr = read('src/rules/pr.ts');
   const desk = read('src/agents/desk/desk.ts');
   const env = read('src/agents/desk/agent-env.ts');
@@ -318,7 +319,7 @@ function collectWords(): string[] {
   if (!limit) throw new Error('attention length changed');
   words.push(limit[1]);
   words.push(...typeWords(view, 'AgentDot'));
-  words.push(scaled(view, 'WORKING_WINDOW_MS', 'minutes'));
+  words.push(scaled(view, 'LIVE_WINDOW_MS', 'minutes'));
 
   words.push(...interfaceWords(pr, 'MadeWithAgent'), ...interfaceWords(pr, 'MadeWithRoles'));
   const role = /const role = \/\^\(([^)]+)\)/.exec(pr);
@@ -392,10 +393,10 @@ function findingIds(body: string): string[] {
 /** Code and test paths the spec has to link. */
 function holderPaths(): string[] {
   const paths = [
-    'src/commands/advice/board/feed.ts',
-    'test/commands/advice/board/feed.test.ts',
-    'src/commands/advice/board/page/script.ts',
-    'test/commands/advice/board/page/script.test.ts',
+    'src/commands/advice/board/feed/steps.ts',
+    'test/commands/advice/board/feed/steps.test.ts',
+    'src/commands/advice/board/page/browser/script.ts',
+    'test/commands/advice/board/page/browser/script.test.ts',
     'src/run/hook.ts',
     'test/run/hook.test.ts',
     'src/commands/hook.ts',
