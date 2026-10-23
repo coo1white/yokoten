@@ -1529,6 +1529,26 @@ export function releaseFix(start?: string): string {
 }
 const release = (what: string) => finding('release', what, releaseFix());
 
+// `git tag` alone, `git tag -l` and `git tag --contains` only read. Deleting a local tag
+// (`-d`) and verifying one (`-v`) publish nothing. Every other `git tag` writes a tag,
+// which the owner alone creates (record 0028): `git push --follow-tags` would publish it.
+const TAG_READ_FLAGS = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify']);
+const TAG_READ_OPTIONS = ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format', '--column'];
+const TAG_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--trailer']);
+const isTagRead = (arg: string) => TAG_READ_FLAGS.has(arg) || /^-n\d*$/.test(arg) || TAG_READ_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`));
+const TAG_WRITE_OPTIONS = new Set(['--annotate', '--sign', '--force']);
+
+function createsTag(args: string[]): boolean {
+  if (args.some(isTagRead)) return false;
+  const isWriteFlag = args.some((arg) => TAG_WRITE_OPTIONS.has(arg) || /^-[a-zA-Z]*[asf]/.test(arg));
+  let hasName = false;
+  for (let index = 0; index < args.length; index++) {
+    if (TAG_VALUE_OPTIONS.has(args[index])) index++;
+    else if (!args[index].startsWith('-')) hasName = true;
+  }
+  return hasName || isWriteFlag;
+}
+
 const MOVERS = new Set(['cd', 'pushd', 'popd']);
 function movesRepo(words: string[]): boolean {
   // The options of an env or sudo are read once: an env word among them (`-/env`) would
@@ -1621,6 +1641,10 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const pushed = findPushedDeletes(withoutShellRedirects(words, argsAt));
     const gone = pushed?.find((name) => isDefaultBranch(name, directory, env));
     if (gone !== undefined) return deleteBranchFinding(`\`git push\` deletes the default branch \`${gone}\` on the remote`);
+  }
+  if (sub === 'tag' && !env.YOKOTEN_RELEASE_APPROVAL) {
+    const tagArgs = withoutShellRedirects(words, argsAt);
+    if (createsTag(tagArgs)) return release(`git tag ${tagArgs.join(' ')} creates a tag`);
   }
   if (sub === 'branch') {
     const names = findDeletedBranches(withoutShellRedirects(words, argsAt));

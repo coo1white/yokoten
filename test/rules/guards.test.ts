@@ -181,6 +181,24 @@ test('release: the refusal names the whole push, remote included (#557)', () => 
   assert.equal(checkCommand('git push v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push v1.2.0 pushes a release tag');
 });
 
+test('release: creating a local tag is the owner\'s too, not only pushing it (#812)', () => {
+  for (const command of [
+    'git tag v1.2.3',
+    'git tag -a v1.2.3 -m "release 1.2.3"',
+    'git tag -s v1.2.3 -m "release 1.2.3"',
+    'git tag -f v1.2.3',
+    'git tag v1.2.3 HEAD~1',
+    'git -C ../other tag v1.2.3',
+  ]) blocked(command);
+  // Listing, and changing a tag that already exists, publish nothing.
+  allowed('git tag');
+  allowed('git tag -l');
+  allowed('git tag --contains HEAD');
+  allowed('git tag -n v1');
+  allowed('git tag -d old-tag');
+  allowed('git tag v1.2.3', { YOKOTEN_RELEASE_APPROVAL: '1' });
+});
+
 test('release: the owner\'s approval lets it through', () => {
   const env = { YOKOTEN_RELEASE_APPROVAL: '1' };
   allowed('git push --tags', env);
