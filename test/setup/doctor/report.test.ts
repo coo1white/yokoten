@@ -150,7 +150,7 @@ test('doctor: reads the server of a GitHub origin into the road; a step not done
   // No origin remote at all: say so, in one line for every step that reads the server (#208, #502).
   const cant = result.lines.filter((l) => /can't check/.test(l));
   assert.equal(cant.length, 1, cant.join('\n'));
-  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; run `git remote add origin <url>`/m);
+  assert.match(text(), /^ {4}can't check [a-z, -]*protection[a-z, -]*: there is no origin remote yet, so doctor can't read the server; make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again/m);
   assert.ok(!/can't check.*can't check/.test(text()), 'no line says "can\'t check" twice');
   assert.equal(result.report.steps?.find((s) => s.id === 'protection')?.mark, "can't check", 'the data still has each step');
   assert.ok(result.lines.some((l) => /secret scanning with push protection/.test(l)), 'the by-hand list when nothing is read');
@@ -459,9 +459,9 @@ test('doctor --session: "not now" skips a step, by the names yokoten.json alread
   const next = async () => (await sandbox.call(['doctor', '--session'])).stdout.split('\n')[0];
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'our rules live in the wiki for now' } }));
   assert.match(await next(), /stage 1 of 5, safety net\. Next: no tool-call guard/);
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e' } }));
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', remote: 'no remote yet' } }));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run/, 'a stage with every step not now is passed');
-  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', ci: 'no remote yet', issues: 'f' } }));
+  sandbox.write('yokoten.json', JSON.stringify({ notNow: { rules: 'a', 'tool-hook': 'b', 'commit-check': 'c', runtime: 'd', tests: 'e', remote: 'no remote yet', ci: 'no remote yet', issues: 'f' } }));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: no issue templates and no pull request template/);
   const full = (await sandbox.call(['doctor'])).stdout;
   assert.match(full, /^ +not now +ci \(Scorecard: CI-Tests\): no remote yet$/m, 'the full map shows the reason');
@@ -483,6 +483,11 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', as
   // Stage 1 done, stage 2 not: init without its CI workflow.
   assert.equal((await sandbox.call(['init'])).status, 0);
   sandbox.withTests();
+  // The remote comes first (#655): make the repo, add it as origin, and push.
+  assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: there is no origin remote/);
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   rmSync(join(sandbox.repo, '.github', 'workflows', 'yokoten.yml'));
   assert.match(await next(), /stage 2 of 5, issues and pull requests\. Next: CI does not run `yokoten check`/, 'the pull request check alone is not the CI check');
   sandbox.write('TODO.md', '- one\n');
@@ -551,7 +556,7 @@ test('doctor: exits 0 on a set-up project with steps to do, and 1 on a problem (
   assert.equal((await sandbox.call(['init'])).status, 0);
   // The doctor calls here are real children: the exit code 0 and 1 come through the entry point.
   let result = sandbox.run(['doctor']);
-  assert.match(result.stdout, /\n +next +codeowners[^]*\n +to do +bot/, 'later steps are left');
+  assert.match(result.stdout, /\n +next +remote[^]*\n +to do +codeowners/, 'later steps are left');
   assert.equal(result.status, 0, result.stdout);
   assert.equal(JSON.parse((await sandbox.call(['doctor', '--json'])).stdout).ok, true);
   // A problem: a private mark in the tree.
@@ -575,7 +580,7 @@ test('doctor: lists the work only on this machine; a session hears at most three
   assert.match((await sandbox.call(['doctor'], { extra })).stdout, /^unsaved work \(only on this machine\):\n {2}note {4}uncommitted-changes: \. has 1 uncommitted file, the oldest changed 1 minute ago; /m);
   const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
   utimesSync(join(sandbox.repo, 'a.txt'), old, old);
-  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git -C . add -A && git -C . commit`; once the repo has a remote, push it.', UNSAVED_OFFER]);
+  assert.deepEqual((await session()).slice(3), ['yokoten: . has 1 uncommitted file, the oldest changed 2 days ago; commit them: `git add -A && git commit -m "chore: save work"`; once the repo has a remote, push it.', UNSAVED_OFFER]);
   const json = JSON.parse((await sandbox.call(['doctor', '--session', '--json'], { extra })).stdout);
   assert.deepEqual(json.notes.map((n: { id: string }) => n.id), ['uncommitted-changes']);
   assert.equal(json.ok, true, 'a note never fails doctor');
@@ -633,7 +638,7 @@ test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; neve
   const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
   // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
-  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo']);
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it writes ~/.config/yokoten/mailmap and sets `git config --global mailmap.file ~/.config/yokoten/mailmap`, so git prints a private address in place of your email']);
   execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
   // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).

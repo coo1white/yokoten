@@ -600,11 +600,16 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     const where = show(worktree.path);
     const since = age === null ? '' : `, the oldest changed ${showAge(age)} ago`;
     const place = placeOf(worktree);
-    notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}${place ? `, and is ${place}` : ''}`, `commit them: ${code(`git -C ${where} add -A && git -C ${where} commit`)}${hasNoRemote ? `; ${pushLater}` : ', then push'}`));
+    // The first commit after init carries .yokoten/, a copy of yokoten: say so, so the file count is expected.
+    const hasRuntime = files.some((file) => file === '.yokoten' || file.startsWith('.yokoten/'));
+    const at = where === '.' ? 'git' : `git -C ${where}`;
+    const message = hasRuntime ? 'chore: add yokoten' : 'chore: save work';
+    const runtime = hasRuntime ? '; .yokoten/ is a copy of yokoten (about 90 files), and committing it is the point' : '';
+    notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}${place ? `, and is ${place}` : ''}`, `commit them: ${code(`${at} add -A && ${at} commit -m "${message}"`)}${runtime}${hasNoRemote ? `; ${pushLater}` : ', then push'}`));
   }
   // A branch exists once there is a commit. A read that stopped early may not have read the remotes.
   if (!facts.remotes.length && facts.branches.length && !facts.isPartial) {
-    notes.push(finding('unpushed-commits', 'this repo has no remote, so every commit is still only on this machine', `add a remote first: ${code('git remote add origin <url>')}; then push: ${code('git push -u origin --all')}`));
+    notes.push(finding('unpushed-commits', 'this repo has no remote, so every commit is still only on this machine', `make the repo on your code host, add it as origin: ${code('git remote add origin <url>')}; then push: ${code('git push -u origin --all')}`));
   } else {
     for (const branch of facts.branches) {
       if (!isBranchAtRisk(branch, facts)) continue;

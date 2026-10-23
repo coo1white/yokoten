@@ -274,7 +274,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   const notes: Practice[] = [];
   if (output !== 'stop' && usesOtherAgent(env, root)) notes.push(practice('private-output', 'private-output', false, UNFILTERED, OUTPUT_STOP));
   const mailmap = mailmapState(env);
-  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', 'run `yokoten install`; it sets a git mailmap outside every repo'));
+  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', `run \`yokoten install\`; it writes ${MAILMAP_SETTING} and sets \`git config --global mailmap.file ${MAILMAP_SETTING}\`, so git prints a private address in place of your email`));
   if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
   let marks: string[] = [];
   try {

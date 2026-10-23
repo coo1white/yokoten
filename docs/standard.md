@@ -285,6 +285,7 @@ The board skips a file that is not a JSON object.
 | `task` | the agent | text |
 | `worktree` | the agent | text |
 | `doing` | the agent | text |
+| `log` | the agent | text. An absolute path to a plain text log inside the worktree or a runtime's log folder. The board reads it when it finds no session log. |
 | `updated` | the agent, and the stop hook | text. The hook writes UTC time with no milliseconds, such as `2026-10-23T00:00:00Z`. |
 | `started` | the agent | text, the same form as `updated`: when this work started. The board falls back to the file's birth time, then to `updated`. |
 | `context_used` | the agent | a number: tokens used in its context. The board reads it as `contextUsed`. Missing means unknown. |

@@ -16,7 +16,7 @@ import { type AgentView, collectBoard, collectBoardWith, dotOf, issueNumbersOf, 
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
-const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', role: '', state: '', checks: '', contextUsed: null, contextLimit: null, background: [] };
+const AGENT: BoardAgent = { name: 'a', vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', log: '', updated: '', started: '', role: '', state: '', checks: '', contextUsed: null, contextLimit: null, background: [] };
 const PULL: BoardPull = { number: 1, title: 't', branch: 'b', url: '', stage: 'open', checks: 'pass', tier: 'B', review: 'none', isApprovedOnHead: false, mergedAt: '' };
 
 // #603: the dot says what the owner needs to know. The agent's own word wins, then its

@@ -56,6 +56,8 @@ export interface BoardAgent {
   /** When this work started, as filed, or '' when the file does not say. */
   started: string;
   role: BoardRole;
+  /** Where the runner writes a plain text log, or ''. The board reads it when no session log is found. */
+  log: string;
   /** What the agent says of itself: still working, waiting for the owner, or done. */
   state: '' | 'working' | 'waiting' | 'done';
   /** The project's checks at its last stop, written by the stop hook (#614). */
@@ -136,6 +138,7 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     updated: fieldText(fields, 'updated'),
     started: fieldText(fields, 'started'),
     role: fieldText(fields, 'role').trim(),
+    log: fieldText(fields, 'log'),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),
     contextUsed: fieldCount(fields, 'context_used'),
