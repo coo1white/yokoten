@@ -13,7 +13,7 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
-import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
+import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
 
 /** What an agent is about to do, in no runtime's terms. */
 export interface Action {

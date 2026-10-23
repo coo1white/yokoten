@@ -14,7 +14,7 @@ import {
   stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { SECRET } from '../../src/rules/secrets.ts';
+import { SECRET } from '../../src/rules/privacy/secrets.ts';
 import {
   AGENT_STATUS_FILE,
   bumpDoneTries,
