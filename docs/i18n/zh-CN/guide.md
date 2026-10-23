@@ -1270,7 +1270,7 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 
 ### 区域 lead 在自己区域里批准
 
-记录 [0026](records/0026-the-owner-is-the-board.md) 把非硬线路径的锁从你的 code owner
+记录 [0026](../../records/0026-the-owner-is-the-board.md) 把非硬线路径的锁从你的 code owner
 审查移到 yokoten 的合并检查。区域 lead 用 GitHub 审查来批准。审查正文的最后一行写明 lead、
 它的厂商和模型：
 
