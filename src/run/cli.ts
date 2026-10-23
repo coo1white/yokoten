@@ -329,8 +329,8 @@ export const COMMANDS: Command[] = [
       'gets only your login file. Your home, other projects and agent state are hidden.',
       "Commands have no network; only the agent's API hosts pass the proxy, for any command inside.",
       '.git/config and .git/hooks stay read-only. YOKOTEN_ROLE=worker and TZ=UTC; tokens stay out.',
-      'Agents: claude-code, codex (DeepSeek too), grok, muse. Linux and WSL2 use bwrap; macOS',
-      'uses sandbox-exec; native Windows is not built yet. Run the commit check outside until #665.',
+      'Agents: claude-code, codex (DeepSeek too), grok, muse, opencode. Linux and WSL2 use',
+      'bwrap; macOS uses sandbox-exec; native Windows is not built yet. Run the commit check outside until #665.',
       'The agent joins the team of the project you run it from, by the desk folder\'s name or --name: see `yokoten msg`.',
     ],
     options: [

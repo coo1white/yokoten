@@ -1689,6 +1689,7 @@ next start. Remove the state folder with the desk.
 | Codex, and DeepSeek through Codex | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`, `api.deepseek.com` | `codex exec --sandbox danger-full-access "<brief>"` |
 | Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<brief>"` |
 | Muse Code | `muse` | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<brief>"` |
+| OpenCode | `opencode` | `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` | `opencode.db` (the login rows only) | `opencode.ai`, `api.opencode.ai`, `models.opencode.ai` | `opencode run --standalone "<brief>"` |
 
 - **Claude Code** renews a login at `platform.claude.com`. A token from `claude setup-token`
   in `CLAUDE_CODE_OAUTH_TOKEN`, or an API key, needs no renewal and passes in as a login.
@@ -1697,12 +1698,17 @@ next start. Remove the state folder with the desk.
   desk is the fence instead. Your `config.toml` stays out: give a provider with `-c` on the
   command. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`.
 - **Grok**: turn off `--sandbox` inside the desk if it stops a commit or a test.
+- **OpenCode**: run it with `--standalone` inside the desk, so it starts a private server
+  instead of using the one on your machine. Its login lives in `opencode.db`, not in a
+  file called `auth.json`; the desk copies the login rows and leaves your sessions behind.
+  The server talks to itself on loopback, so the desk sets `NO_PROXY` for
+  `127.0.0.1,localhost,::1`.
 - **More hosts**: `--host <host>` lets the agent reach another API host on port 443.
   Separate several with commas.
 - **More files**: `--read <path>` shows another path, read-only. A path that would open
   your home, a hidden folder or your own agent state is refused.
 
-**The proxy.** Each of the four agents names `HTTPS_PROXY` in its program, and the desk sets
+**The proxy.** Each agent names `HTTPS_PROXY` in its program, and the desk sets
 `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` in both cases. It also sets
 `NODE_USE_ENV_PROXY=1`, so Node's own `fetch` uses the proxy too. The proxy takes `CONNECT`
 only, to a listed host, and never reads the traffic. It keeps at most 64 tunnels open, and

@@ -31,13 +31,14 @@
 // Exit 2 denies with stderr. Exit 0 and exit 1 let the call go on.
 // A crash, a signal or a timeout denies.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
 import { homeIn, homeOf } from '../../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
 import type { Action } from '../../../run/hook.ts';
 import type { RuntimeEnv } from '../../desk/agent-env.ts';
+import type { RuntimeDesk } from '../../desk/desk.ts';
 import { isFolder } from '../../folder-trust.ts';
 import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../../hooks-file.ts';
 
@@ -435,3 +436,104 @@ export const addUserPlugin = (env: Env, cli: string, missing: string): Added => 
 
 /** The names this runtime's agent gets on top of the shared ones. OpenCode's login name was not in the docs. */
 export const AGENT_ENV: RuntimeEnv = { login: [], config: [] };
+
+/** OpenCode 2's data folder: `$XDG_DATA_HOME/opencode`, or `~/.local/share/opencode`. */
+const dataDir = (env: Env): string => join(env.XDG_DATA_HOME || join(homeIn(env), '.local', 'share'), 'opencode');
+
+/** OpenCode 2's state folder: `$XDG_STATE_HOME/opencode`, or `~/.local/state/opencode`. */
+const stateDir = (env: Env): string => join(env.XDG_STATE_HOME || join(homeIn(env), '.local', 'state'), 'opencode');
+
+/** OpenCode 2's cache folder: `$XDG_CACHE_HOME/opencode`, or `~/.cache/opencode`. */
+const cacheDir = (env: Env): string => join(env.XDG_CACHE_HOME || join(homeIn(env), '.cache'), 'opencode');
+
+/** The database OpenCode 2 keeps its login in. `OPENCODE_DB` moves it. */
+const loginFile = (env: Env): string => env.OPENCODE_DB || join(dataDir(env), 'opencode.db');
+
+/**
+ * The tables in OpenCode 2's database that hold a login (probed on 2.1.2). Every other
+ * row, sessions and prompts above all, stays out of the desk.
+ */
+const LOGIN_TABLES = new Set(['account', 'account_state', 'control_account', 'credential', 'kv', 'migration']);
+
+/** A SQL string: a single quote is doubled, so a path can't end the text. */
+const sqlText = (text: string): string => `'${text.replace(/'/g, "''")}'`;
+
+/** Refuse a link where the login copy writes: a worker could point it at the lead's data. */
+function requireRealFolders(path: string): void {
+  for (const folder of [dirname(dirname(path)), dirname(path)]) {
+    const entry = lstatSync(folder);
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error(`${folder} is a link or not a folder. Remove it, then run the desk again.`);
+  }
+}
+
+/** Whether `path` is a link, even one that points nowhere. */
+function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy OpenCode's login from its database, and nothing else. The copy is a clean snapshot
+ * (VACUUM INTO), then every table but the login's is emptied and the file is vacuumed
+ * again, so no session text is left in a page the worker could read.
+ */
+function copyLoginDatabase(from: string, to: string): void {
+  mkdirSync(dirname(to), { recursive: true });
+  requireRealFolders(to);
+  rmSync(to, { force: true });
+  rmSync(`${to}-wal`, { force: true });
+  rmSync(`${to}-shm`, { force: true });
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
+  const lead = new DatabaseSync(from, { readOnly: true });
+  try {
+    lead.exec(`VACUUM INTO ${sqlText(to)}`);
+  } finally {
+    lead.close();
+  }
+  const desk = new DatabaseSync(to);
+  try {
+    desk.exec('PRAGMA foreign_keys = OFF');
+    const tables = desk.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+    for (const { name } of tables) {
+      if (LOGIN_TABLES.has(name)) continue;
+      desk.exec(`DELETE FROM "${name.replace(/"/g, '""')}"`);
+    }
+    desk.exec('VACUUM');
+  } finally {
+    desk.close();
+  }
+}
+
+/**
+ * What a desk (#770) gives OpenCode. Its data, state and config folders point into the
+ * desk's own state folder, and only the login rows of `opencode.db` come along. Hosts:
+ * the site, the Go plan's API, and the model list. NO_PROXY lets its `--standalone`
+ * server talk to itself on loopback (desk.ts, proxyEnv).
+ */
+export const DESK: RuntimeDesk = {
+  leadState: (env) => [dataDir(env), stateDir(env), configDir(env), cacheDir(env)],
+  login: () => [],
+  loginCopy: (env, state) => {
+    const from = loginFile(env);
+    if (!existsSync(from)) return;
+    const to = join(state, 'data', 'opencode', 'opencode.db');
+    mkdirSync(dirname(to), { recursive: true });
+    requireRealFolders(to);
+    // A worker could leave a link at the login file itself. Remove the link, never follow it.
+    if (isLink(to)) rmSync(to, { force: true });
+    else if (existsSync(to) && statSync(to).mtimeMs >= statSync(from).mtimeMs) return;
+    copyLoginDatabase(from, to);
+  },
+  stateEnv: (state) => ({
+    XDG_DATA_HOME: join(state, 'data'),
+    XDG_STATE_HOME: join(state, 'state'),
+    XDG_CONFIG_HOME: join(state, 'config'),
+    OPENCODE_DB: join(state, 'data', 'opencode', 'opencode.db'),
+  }),
+  programParts: (env) => [join(homeIn(env), '.opencode')],
+  hosts: ['opencode.ai', 'api.opencode.ai', 'models.opencode.ai'],
+  loopback: true,
+};

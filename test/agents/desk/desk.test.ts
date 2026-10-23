@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programExtensions, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
@@ -112,6 +113,48 @@ test('planDesk: the desk and its own state writable, a token dropped, role and t
   assert.equal(workerMarkAt(desk, {}), 'mark');
 });
 
+test('planDesk: the OpenCode desk keeps its XDG folders and only the login rows in its state (#770)', () => {
+  const { projects, desk } = makeDesk();
+  const xdg = realpathSync(makeTempDir('xdg-'));
+  const data = join(xdg, 'data');
+  mkdirSync(join(data, 'opencode'), { recursive: true });
+  const lead = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
+  lead.exec('CREATE TABLE credential (id text PRIMARY KEY, value text); CREATE TABLE session_v2 (id text PRIMARY KEY, text text);');
+  lead.exec("INSERT INTO credential VALUES ('c1', 'the login'); INSERT INTO session_v2 VALUES ('s1', 'a private prompt');");
+  lead.close();
+  const plan = planDesk({ runtime: 'opencode', desk, command: ['node', 'x.js'], env: { ...env(), XDG_DATA_HOME: data }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) });
+  const state = join(`${desk}.state`, 'opencode');
+  assert.equal(plan.env.XDG_DATA_HOME, join(state, 'data'));
+  assert.equal(plan.env.XDG_STATE_HOME, join(state, 'state'));
+  assert.equal(plan.env.XDG_CONFIG_HOME, join(state, 'config'));
+  assert.equal(plan.env.OPENCODE_DB, join(state, 'data', 'opencode', 'opencode.db'));
+  assert.deepEqual(plan.hosts, ['opencode.ai', 'api.opencode.ai', 'models.opencode.ai']);
+  assert.equal(plan.loopback, true, 'its private server talks on loopback');
+  assert.ok(plan.hidden.includes(join(data, 'opencode')), "the lead's OpenCode data is hidden");
+  const copied = new DatabaseSync(join(state, 'data', 'opencode', 'opencode.db'), { readOnly: true });
+  try {
+    assert.equal(copied.prepare('SELECT value FROM credential').get()?.value, 'the login');
+    assert.equal(copied.prepare('SELECT count(*) AS count FROM session_v2').get()?.count, 0, 'no session text comes along');
+  } finally {
+    copied.close();
+  }
+});
+
+test('planDesk: the OpenCode login copy never follows a link out of the desk state (#770)', () => {
+  const { projects, desk } = makeDesk();
+  const xdg = realpathSync(makeTempDir('xdg-'));
+  const data = join(xdg, 'data');
+  mkdirSync(join(data, 'opencode'), { recursive: true });
+  writeFileSync(join(data, 'opencode', 'opencode.db'), 'not a database');
+  const state = join(`${desk}.state`, 'opencode');
+  mkdirSync(state, { recursive: true });
+  symlinkSync(data, join(state, 'data'));
+  assert.throws(
+    () => planDesk({ runtime: 'opencode', desk, command: ['node'], env: { ...env(), XDG_DATA_HOME: data }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) }),
+    /is a link or not a folder/,
+  );
+});
+
 test('planDesk: a desk that cannot be marked does not start, with the plain reason (#672)', () => {
   const { projects, desk } = makeDesk();
   // From inside the desk the lead would mark its own checkout: markWorktree refuses, and so does the desk.
@@ -182,7 +225,8 @@ test('proxyEnv: every proxy name in both cases, and Node told to read them', () 
   const names = proxyEnv('http://127.0.0.1:3128');
   for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) assert.equal(names[name], 'http://127.0.0.1:3128');
   assert.equal(names.NODE_USE_ENV_PROXY, '1');
-  assert.equal(names.NO_PROXY, '');
+  assert.equal(names.NO_PROXY, '127.0.0.1,localhost,::1');
+  assert.equal(names.no_proxy, names.NO_PROXY);
 });
 
 test('planDesk: on a team, the team folder read-only, only the own outbox writable, the desk file locked (#674)', () => {

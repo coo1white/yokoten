@@ -109,6 +109,14 @@ export function seatbeltProfile(plan: DeskPlan, port: number, scratch: string): 
     ...(plan.locked.length ? [`(deny file-write* ${subpaths(plan.locked)})`] : []),
     '; 5. No network but the proxy on this machine.',
     `(allow network-outbound (remote ip "localhost:${port}"))`,
+    // OpenCode 2's private server picks a loopback port at start, so the port is not known
+    // here. It may listen and connect only on loopback; no host outside this machine.
+    ...(plan.loopback ? [
+      '; A private server on a loopback port (OpenCode 2 --standalone).',
+      '(allow network-bind (local ip "localhost:*"))',
+      '(allow network-inbound (local ip "localhost:*"))',
+      '(allow network-outbound (remote ip "localhost:*"))',
+    ] : []),
   ];
   return `${lines.join('\n')}\n`;
 }

@@ -43,6 +43,12 @@ test('bwrapArgs: the system read-only, its own network, hidden folders read-only
   assert.deepEqual(args.slice(-3), ['--chdir', PLAN.desk, '--']);
 });
 
+test('bwrapArgs: an OpenCode desk mounts its three XDG folders writable (#770)', () => {
+  const state = ['/work/projects/desk.state/opencode/data', '/work/projects/desk.state/opencode/state', '/work/projects/desk.state/opencode/config'];
+  const text = bwrapArgs({ ...PLAN, state }, '/tmp/scratch/proxy.sock').join(' ');
+  for (const path of state) assert.ok(text.includes(`--bind ${path} ${path}`), path);
+});
+
 test('BWRAP.fence: the bridge starts first, then the agent, with the proxy names set', () => {
   const fenced = BWRAP.fence(PLAN, '/tmp/scratch/proxy.sock', '/tmp/scratch');
   assert.equal(fenced.file, 'bwrap');
@@ -51,5 +57,6 @@ test('BWRAP.fence: the bridge starts first, then the agent, with the proxy names
   assert.deepEqual(fenced.args.slice(start + 2, start + 4), ['desk', '--bridge']);
   assert.deepEqual(fenced.args.slice(start + 4), [INSIDE_SOCKET, String(INSIDE_PORT), '--', ...PLAN.command]);
   assert.equal(fenced.env.HTTPS_PROXY, `http://127.0.0.1:${INSIDE_PORT}`);
+  assert.equal(fenced.env.NO_PROXY, '127.0.0.1,localhost,::1');
   assert.equal(fenced.env.YOKOTEN_ROLE, 'worker');
 });

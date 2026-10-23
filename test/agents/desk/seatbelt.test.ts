@@ -53,6 +53,25 @@ test('seatbeltProfile: starts from deny default and allows only what the contrac
   assert.ok(!/\(allow mach-lookup\)|global-name "com\.apple\.coreservices/.test(profile), 'no open Mach lookup, no Launch Services');
 });
 
+test('seatbeltProfile: an OpenCode desk writes in all three XDG folders (#770)', () => {
+  const state = ['/Users/someone/projects/desk.state/opencode/data', '/Users/someone/projects/desk.state/opencode/state', '/Users/someone/projects/desk.state/opencode/config'];
+  const profile = seatbeltProfile({ ...PLAN, state }, 3128, '/private/var/folders/xy/scratch');
+  const writes = profile.split('\n').find((line) => line.startsWith('(allow file-write* (subpath')) ?? '';
+  const reads = profile.split('\n').find((line) => line.startsWith('(allow file-read* ')) ?? '';
+  for (const path of state) {
+    assert.ok(writes.includes(`(subpath "${path}")`), `${path} is writable`);
+    assert.ok(reads.includes(`(subpath "${path}")`), `${path} is readable`);
+  }
+});
+
+test('seatbeltProfile: an OpenCode desk may listen on, and reach, a loopback port (#770)', () => {
+  const profile = seatbeltProfile({ ...PLAN, loopback: true }, 3128, '/private/var/folders/xy/scratch');
+  assert.match(profile, /\(allow network-bind \(local ip "localhost:\*"\)\)/);
+  assert.match(profile, /\(allow network-inbound \(local ip "localhost:\*"\)\)/);
+  assert.match(profile, /\(allow network-outbound \(remote ip "localhost:\*"\)\)/);
+  assert.doesNotMatch(seatbeltProfile(PLAN, 3128, '/private/var/folders/xy/scratch'), /localhost:\*/);
+});
+
 test('seatbeltProfile: dyld may list the root folder and use /dev/dtracehelper, nothing more', () => {
   const profile = seatbeltProfile(PLAN, 3128, '/private/var/folders/xy/scratch');
   assert.match(profile, /^\(allow file-read-data \(literal "\/"\)\)$/m);
@@ -85,6 +104,7 @@ test('SEATBELT.fence: sandbox-exec with the written profile, the proxy names and
   assert.deepEqual(fenced.args, ['-f', join(scratch, 'desk.sb'), ...PLAN.command]);
   assert.equal(readFileSync(join(scratch, 'desk.sb'), 'utf8'), seatbeltProfile(PLAN, 49152, scratch));
   assert.equal(fenced.env.HTTPS_PROXY, 'http://127.0.0.1:49152');
+  assert.equal(fenced.env.NO_PROXY, '127.0.0.1,localhost,::1');
   assert.equal(fenced.env.TMPDIR, join(scratch, 'tmp'));
   assert.equal(SEATBELT.proxyAddress(scratch), 0);
 });
