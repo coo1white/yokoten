@@ -1836,6 +1836,14 @@ The page has two columns. Needs you is a bell in the header, next to Live.
   With no log, you see the agent's `doing` steps.
   Pick the lead and the middle is the 24-hour timeline.
 
+The bottom bar counts free agent seats.
+Each vendor shows its working agents and its free seats.
+Write `.git/yokoten-seats.json` in the main folder, as a JSON object of vendor to seat count.
+For example, `{"claude": 2, "grok": 4}` gives Claude two seats and Grok four.
+A runtime name works too, such as `claude-code`.
+A vendor with no working agents holds all its seats.
+Without the file, the bar counts idle agents instead.
+
 The bell's badge is grey at zero and orange when something needs you.
 A click opens the list under the bell.
 Each row says what it is, which pull request or issue, and how old.
