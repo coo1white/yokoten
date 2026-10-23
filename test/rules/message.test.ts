@@ -222,8 +222,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));
   add(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, { ...fullMachine, now: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) })?.finding);
-  // The Codex, Gemini CLI, Grok CLI, Muse Code and OpenCode user hooks: only once their folders exist.
+  // The user hooks of Codex, Gemini CLI, Antigravity CLI, Copilot CLI, Grok CLI, Muse Code and OpenCode: only once their folders exist.
   for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
+  mkdirSync(join(dir, '.gemini', 'config'));
   mkdirSync(join(dir, '.config', 'muse'), { recursive: true });
   mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
   // A project that uses OpenCode without the plugin (#767).
