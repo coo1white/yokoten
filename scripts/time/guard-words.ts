@@ -41,19 +41,23 @@ const pad = (value: string | number, width: number) => String(value).padStart(wi
 const row = (name: string, first: number, second: number, unit: string) => `${name.padEnd(34)} ${pad(first.toFixed(4), 10)} ${pad(second.toFixed(4), 9)} ${unit}\n`;
 
 // ---- Start-up: what a hook pays before its check runs ----
-const startUp = (entry: string): number[] => {
+// The child's program is the same fixed text for both runs; the module to load, if any,
+// arrives as an argument. So no value is spliced into code (#329).
+const startUpCode = ['const moduleUrl = process.argv[1];', 'if (moduleUrl) await import(moduleUrl);'].join('\n');
+const startUp = (moduleUrl?: string): number[] => {
   const times: number[] = [];
   for (let round = 0; round < runs; round++) {
     const start = performance.now();
-    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', entry], { encoding: 'utf8' });
+    const args = ['--input-type=module', '--eval', startUpCode, ...(moduleUrl ? [moduleUrl] : [])];
+    const child = spawnSync(process.execPath, args, { encoding: 'utf8' });
     if (child.status !== 0) throw new Error(`start-up failed: ${child.stderr}`);
     times.push(performance.now() - start);
   }
   return times;
 };
-const bare = startUp('0');
+const bare = startUp();
 const guardUrl = pathToFileURL(join(ROOT, 'src/rules/guards.ts')).href;
-const loaded = startUp(`await import(${JSON.stringify(guardUrl)});`);
+const loaded = startUp(guardUrl);
 
 process.stdout.write(`yokoten guard words: ${options.label}, ${runs} runs, Node ${process.version}, ${process.platform} ${process.arch}\n\n`);
 process.stdout.write(`start-up, one process each, wall ms   p50        max\n`);
