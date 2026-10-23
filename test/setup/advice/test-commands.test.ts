@@ -274,6 +274,56 @@ test('test commands: Surefire names and a .NET test attribute count as tests (#5
   missing({ 'App.csproj': '<Project/>\n', 'obj/Debug/Generated.cs': '[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
 });
 
+test('test commands: a Kotlin Test prefix counts, and a quoted .NET attribute does not (#576)', () => {
+  const found = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [{ language, runner }], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
+  };
+  const missing = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  };
+
+  // Gradle runs Test*.kt from src/test the way Surefire runs Test*.java. The suffix
+  // rule already accepts FooTest.kt. A name that only starts with Test must too.
+  found({ 'build.gradle.kts': '', 'src/test/kotlin/TestFoo.kt': '' }, 'Gradle', 'gradle test');
+  found({ 'pom.xml': '<project/>\n', 'src/test/kotlin/TestFoo.kt': '' }, 'Maven', 'mvn test');
+  missing({ 'build.gradle.kts': '', 'src/main/kotlin/TestFoo.kt': '' }, 'Gradle', 'gradle test');
+  missing({ 'build.gradle.kts': '', 'src/test/kotlin/Helper.kt': '' }, 'Gradle', 'gradle test');
+
+  // dotnet test does not run an attribute that lives in a comment or a string.
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = "[Fact]"; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '// [Fact]\npublic class Calculator {}\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '/* [Fact] */\npublic class Calculator {}\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = @"[Fact]"; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = $"[Fact]"; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = "say \\"[Fact]\\"";\n }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = @"say ""[Fact]"""; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = """\n[Fact]\n"""; }\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': '// [<Fact>]\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': '(* [<Fact>] *)\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': '(* outer (* still *) [<Fact>] *)\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': 'let note = "[<Fact>]"\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': 'let note = """[<Fact>]"""\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.vbproj': '', 'tests/Calculator.vb': "' <Fact>\nPublic Class Calculator\nEnd Class\n" }, '.NET', 'dotnet test');
+  missing({ 'Lib.vbproj': '', 'tests/Calculator.vb': 'Public Class Calculator\n    Dim note = "<Fact>"\nEnd Class\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.vbproj': '', 'tests/Calculator.vb': 'Dim x = 1 Rem <Fact>\nPublic Class Calculator\nEnd Class\n' }, '.NET', 'dotnet test');
+
+  // A real attribute still counts beside a comment or a string that names one.
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '// [Fact]\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'string note = "[Theory]";\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '[Fact(Skip = "see [Theory]")]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'string note = $"keep { "[Fact]" }";\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'string note = "/*";\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'Lib.vbproj': '', 'tests/Calculator.vb': "Rem <Fact>\n<Fact>\nPublic Sub Adds()\nEnd Sub\n" }, '.NET', 'dotnet test');
+});
+
 test('test commands: a pubspec.yaml with many blank lines is read in linear time (#546)', () => {
   const pubspec = `name: app\n${'\n'.repeat(200_000)}x`;
   const started = performance.now();

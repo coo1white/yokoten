@@ -204,17 +204,18 @@ const hasTestFile = (scan: TestScan, isTest: (name: string) => boolean) => scan.
  * with Test(s) after a word of its own, so `contest` and `latest` do not count.
  */
 const isSuffixTest = (name: string) => /(?:^|[._-]|\p{Ll})Tests?\.[^.]+$/u.test(name);
+/** Extensions of a `Test*` file under `src/test`: Java, and Kotlin on the JVM. */
+const JVM_TEST_EXTENSION = /\.(?:java|kt)$/;
 /**
- * A Java or JVM test file Maven Surefire or the Gradle `test` task runs by name.
- * `*Test`, `*Tests`, `*TestCase` and `*IT.java` count wherever they sit. A name that
- * only starts with `Test` (`TestFoo.java`, `Testing.java`) counts under `src/test`,
- * the source root those runners read. `src/main/java/TestUtils.java` is production
- * code (#576).
+ * A Java or JVM test file Maven Surefire or the Gradle test task runs by name.
+ * `*Test`, `*Tests`, `*TestCase.java` and `*IT.java` count wherever they sit.
+ * A `Test` prefix (`TestFoo.java`, `TestFoo.kt`) counts under `src/test` only.
+ * `src/main` stays production code, so `TestUtils.java` there does not count (#576).
  */
 const isJavaBuildTest = (path: string): boolean => {
   const name = baseName(path);
   if (isSuffixTest(name) || name.endsWith('IT.java') || name.endsWith('TestCase.java')) return true;
-  return name.endsWith('.java') && name.startsWith('Test') && /(?:^|\/)src\/test\//.test(path);
+  return name.startsWith('Test') && JVM_TEST_EXTENSION.test(name) && /(?:^|\/)src\/test\//.test(path);
 };
 /**
  * The attribute names the .NET test runners find: xUnit, NUnit and MSTest.
@@ -228,12 +229,219 @@ const CSHARP_TEST_ATTRIBUTE = new RegExp(String.raw`\[<?${DOTNET_ATTRIBUTE_NAME}
 const VB_TEST_ATTRIBUTE = new RegExp(`<${DOTNET_ATTRIBUTE_NAME}`);
 /** A .NET source file. `bin/` and `obj/` are build output, not a test the project keeps. */
 const isDotnetSource = (path: string): boolean => /\.(?:cs|fs|vb)$/.test(path) && !/(?:^|\/)(?:bin|obj)\//.test(path);
-/** Whether the scan holds a .NET test attribute (`[Fact]`, `[Test]`, `[TestMethod]`, and the F# and VB forms). */
+
+// Comments and string text are not attributes. The scan drops them first, the way the
+// C#, F# and VB compilers skip them, then the attribute check reads what remains (#576).
+
+/** C#, F# or VB. */
+type DotnetKind = 'cs' | 'fs' | 'vb';
+/** Code kept from one stretch of source, and where to read on from. */
+interface DotnetWalk {
+  code: string;
+  at: number;
+}
+/**
+ * How one string is read. `doubles` means `""` is one quote.
+ * `backslash` means a backslash escapes the next character.
+ * `endOnNewline` means a newline ends the string.
+ */
+interface StringMode {
+  closer: string;
+  dollars: number;
+  doubles: boolean;
+  backslash: boolean;
+  endOnNewline: boolean;
+}
+
+/** Code with comments and string text removed, so an attribute in either does not count. */
+const dotnetCode = (text: string, source: DotnetKind): string => scanDotnet(text, 0, 0, source).code;
+
+/** Whether `Rem` at `at` is a VB comment: a whole word after a space, a colon or a new line. */
+const isVbRem = (text: string, at: number): boolean => {
+  if (!/^rem(?![A-Za-z0-9_])/i.test(text.slice(at, at + 4))) return false;
+  const before = at === 0 ? '\n' : text[at - 1];
+  return before === '\n' || before === '\r' || before === ' ' || before === '\t' || before === ':';
+};
+
+/** The index after an F# `(* *)` comment. Nested comments count. */
+const skipFsComment = (text: string, at: number): number => {
+  let depth = 1;
+  let cursor = at + 2;
+  while (cursor < text.length && depth > 0) {
+    if (text[cursor] === '(' && text[cursor + 1] === '*') {
+      depth++;
+      cursor += 2;
+    } else if (text[cursor] === '*' && text[cursor + 1] === ')') {
+      depth--;
+      cursor += 2;
+    } else cursor++;
+  }
+  return cursor;
+};
+
+/** The index after a comment that starts at `at`, or `at` when none does. */
+const skipDotnetComment = (text: string, at: number, source: DotnetKind): number => {
+  const next = text[at + 1] ?? '';
+  if (source !== 'vb' && text[at] === '/' && next === '/') {
+    let cursor = at + 2;
+    while (cursor < text.length && text[cursor] !== '\n') cursor++;
+    return cursor;
+  }
+  if (source === 'cs' && text[at] === '/' && next === '*') {
+    const close = text.indexOf('*/', at + 2);
+    return close < 0 ? text.length : close + 2;
+  }
+  if (source === 'fs' && text[at] === '(' && next === '*') return skipFsComment(text, at);
+  if (source === 'vb' && (text[at] === "'" || isVbRem(text, at))) {
+    let cursor = text[at] === "'" ? at + 1 : at + 3;
+    while (cursor < text.length && text[cursor] !== '\n') cursor++;
+    return cursor;
+  }
+  return at;
+};
+
+/** A C# or F# character literal: `'a'`, `'\n'`, `'\u0041'`. Not an F# type such as `'a`. */
+const CHAR_LITERAL = /^'(?:\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}|\\x[0-9a-fA-F]{1,4}|\\.|[^'\\\r\n])'/;
+/** The index after a character literal at `at`, or `at` when there is none. */
+const charLiteralEnd = (text: string, at: number): number => {
+  if (text[at] !== "'") return at;
+  const match = CHAR_LITERAL.exec(text.slice(at, at + 14));
+  return match ? at + match[0].length : at;
+};
+
+/**
+ * The code inside an interpolation hole at `{`, or nothing when the braces are literal.
+ * One `$` makes `{{` a brace and `{` a hole. Each added `$` adds one brace to both.
+ */
+function readDotnetHole(text: string, at: number, dollars: number, source: DotnetKind): DotnetWalk {
+  let run = 0;
+  while (text[at + run] === '{') run++;
+  if (run < dollars || run >= dollars * 2) {
+    const width = run >= dollars * 2 ? dollars * 2 : run;
+    return { code: '', at: at + width };
+  }
+  return scanDotnet(text, at + dollars, dollars, source);
+}
+
+/** The hole code inside the string that starts at `start`, and the index after the string. */
+function readDotnetString(text: string, start: number, source: DotnetKind, mode: StringMode): DotnetWalk {
+  const parts: string[] = [];
+  let at = start;
+  while (at < text.length) {
+    const char = text[at];
+    if (mode.endOnNewline && (char === '\n' || char === '\r')) return { code: parts.join(''), at };
+    if (mode.backslash && char === '\\' && text[at + 1] !== '\n' && text[at + 1] !== '\r') {
+      at += at + 1 < text.length ? 2 : 1;
+      continue;
+    }
+    if (mode.dollars > 0 && char === '{') {
+      const hole = readDotnetHole(text, at, mode.dollars, source);
+      // A hole that does not move would loop on this same brace.
+      if (hole.at <= at) return { code: parts.join(''), at };
+      parts.push(hole.code);
+      at = hole.at;
+      continue;
+    }
+    if (text.startsWith(mode.closer, at)) {
+      if (mode.doubles && mode.closer === '"' && text[at + 1] === '"') {
+        at += 2;
+        continue;
+      }
+      return { code: parts.join(''), at: at + mode.closer.length };
+    }
+    at++;
+  }
+  return { code: parts.join(''), at };
+}
+
+/** The string at `at`, or null when none starts there. Hole code is kept. String text is not. */
+function skipDotnetString(text: string, at: number, source: DotnetKind): DotnetWalk | null {
+  let cursor = at;
+  let dollars = 0;
+  let isVerbatim = false;
+  if (source !== 'vb' && text[cursor] === '@') {
+    isVerbatim = true;
+    cursor++;
+    if (text[cursor] === '$') {
+      dollars = 1;
+      cursor++;
+    }
+  } else if (text[cursor] === '$') {
+    while (text[cursor] === '$') {
+      dollars++;
+      cursor++;
+    }
+    if (source !== 'vb' && text[cursor] === '@') {
+      isVerbatim = true;
+      cursor++;
+    }
+  }
+  if (text[cursor] !== '"') return null;
+  let quotes = 0;
+  while (text[cursor + quotes] === '"') quotes++;
+  // A raw C# string and an F# triple quote hide their text. `@"` stays a verbatim string.
+  if (quotes >= 3 && !isVerbatim) {
+    const width = source === 'fs' ? 3 : quotes;
+    return readDotnetString(text, cursor + width, source, { closer: '"'.repeat(width), dollars, doubles: false, backslash: false, endOnNewline: false });
+  }
+  // Plain strings use a backslash. VB and verbatim strings use doubled quotes.
+  const isPlain = !isVerbatim && source !== 'vb';
+  return readDotnetString(text, cursor + 1, source, {
+    closer: '"',
+    dollars,
+    doubles: !isPlain,
+    backslash: isPlain,
+    endOnNewline: isPlain || source === 'vb',
+  });
+}
+
+/** One pass over `text`. `holeDollars` is 0 in the file, and the `$` count inside a hole. */
+function scanDotnet(text: string, start: number, holeDollars: number, source: DotnetKind): DotnetWalk {
+  const parts: string[] = [];
+  let at = start;
+  let depth = 0;
+  while (at < text.length) {
+    if (holeDollars > 0 && depth === 0 && text[at] === '}') {
+      let run = 0;
+      while (text[at + run] === '}') run++;
+      if (run >= holeDollars) return { code: parts.join(''), at: at + holeDollars };
+    }
+    const comment = skipDotnetComment(text, at, source);
+    if (comment > at) {
+      at = comment;
+      continue;
+    }
+    if (source !== 'vb') {
+      const charEnd = charLiteralEnd(text, at);
+      if (charEnd > at) {
+        at = charEnd;
+        continue;
+      }
+    }
+    const literal = skipDotnetString(text, at, source);
+    if (literal) {
+      // A string that does not move would loop on this same quote.
+      if (literal.at <= at) return { code: parts.join(''), at };
+      parts.push(literal.code);
+      at = literal.at;
+      continue;
+    }
+    const char = text[at];
+    if (char === '{') depth++;
+    else if (char === '}' && depth > 0) depth--;
+    parts.push(char);
+    at++;
+  }
+  return { code: parts.join(''), at };
+}
+
+/** Whether the scan holds a .NET test attribute in code. A comment or a string does not count. */
 const hasDotnetTestAttribute = (root: string, scan: TestScan): boolean =>
   scan.files.some((path) => {
     if (!isDotnetSource(path)) return false;
-    const text = readText(join(root, path));
-    return (path.endsWith('.vb') ? VB_TEST_ATTRIBUTE : CSHARP_TEST_ATTRIBUTE).test(text);
+    const source = path.endsWith('.vb') ? 'vb' : path.endsWith('.fs') ? 'fs' : 'cs';
+    const text = dotnetCode(readText(join(root, path)), source);
+    return (source === 'vb' ? VB_TEST_ATTRIBUTE : CSHARP_TEST_ATTRIBUTE).test(text);
   });
 
 /**
@@ -271,7 +479,7 @@ export const TEST_LANGUAGES: TestLanguage[] = [
   },
   {
     language: '.NET', files: ['*.csproj', '*.fsproj', '*.vbproj', '*.sln', '*.slnx'], runner: 'dotnet test', runs: [sequence(word('dotnet'), word('test'))],
-    // A suffix name, or a test attribute in source. `tests/Calculator.cs` with `[Fact]` is a test `dotnet test` finds (#576).
+    // A suffix name, or a test attribute in source. A comment or a string does not count (#576).
     hasTests: (root, scan) => hasTestFile(scan, isSuffixTest) || hasDotnetTestAttribute(root, scan),
   },
   {
