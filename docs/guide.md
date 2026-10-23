@@ -296,7 +296,7 @@ endpoint and model.
 
 ## Works with
 
-yokoten guards eight AI coding agents with the same rules. This table is the one list of
+yokoten guards nine AI coding agents with the same rules. This table is the one list of
 them and how well each is covered. Each "yes" below is a real run: the agent tried
 `git push --tags` in a throwaway repo, and the guard stopped it. "Not run end to end"
 means the agent is listed, but its guard is not verified end to end yet. Docs are not
@@ -312,6 +312,7 @@ proof.
 | DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check: the lead runs a worker's done-when check |
 | Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
+| OpenCode | `.opencode/plugins/yokoten.ts`: OpenCode 2 permission `evaluate`, and OpenCode 1 `tool.execute.before` | OpenCode 2 sets `effect` to deny; OpenCode 1 throws the reason | not run end to end | No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read |
 | Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
 
 `install` writes the user hooks: the guide at the start of each session, and the command
@@ -320,7 +321,8 @@ guard. They go in `~/.claude/settings.json`, and in `~/.codex/hooks.json` and
 `~/.config/muse/settings.json` (`$XDG_CONFIG_HOME/muse/settings.json` when that is set),
 when its config folder exists. Grok CLI gets only the command guard,
 in `~/.grok/hooks/yokoten.json`, when `~/.grok` exists: it shows a session-start hook's
-output to you, not to the agent. `doctor` counts every folder as trusted when
+output to you, not to the agent. OpenCode gets the command guard in
+`~/.config/opencode/plugins/yokoten.ts` when `~/.config/opencode` exists. `doctor` counts every folder as trusted when
 Grok's trust gate is off: `GROK_FOLDER_TRUST=0`, or `[folder_trust] enabled = false` in
 `~/.grok/config.toml`. In Codex, the guard checks the files
 of an `apply_patch`, also one run through the shell.
@@ -353,8 +355,9 @@ Each agent runs a project hook only after you trust it:
 - **Gemini CLI** runs project hooks only in a trusted folder. Start Gemini at the repo
   root: it reads `.gemini/settings.json` from the folder it starts in, and nowhere else.
   It warns once before it runs a new or changed hook.
+- **OpenCode** loads the plugin in `.opencode/plugins/` when it starts. OpenCode 2 denies in the permission hook. OpenCode 1 still blocks on a throw. This path was not run end to end.
 
-`init` prints the one step that trusts the folder for each agent. `doctor` then reads
+`init` prints the one step that trusts the folder for each agent that has one. `doctor` then reads
 each agent's own trust store, read-only, and notes a folder it does not trust yet:
 
 | Agent | Trust store | Counts as trusted |
@@ -476,7 +479,7 @@ set. A subagent starts no session, so it hears nothing.
 
 A value you set stays. `doctor` names what differs, with one fix.
 
-Muse Code, DeepSeek Harness, Antigravity and Copilot have no project-writable sandbox, so `init` writes none for them. Muse has no project settings file for one. DeepSeek Harness and Antigravity keep only hooks in the project, and Copilot's own sandbox is user-level.
+Muse Code, DeepSeek Harness, Antigravity and Copilot have no project-writable sandbox, so `init` writes none for them. Muse has no project settings file for one. DeepSeek Harness and Antigravity keep only hooks in the project, and Copilot's own sandbox is user-level. OpenCode gets a plugin, not a sandbox file.
 
 ### DeepSeek Harness
 
@@ -819,7 +822,8 @@ workflow of the project's own that `init` keeps, `doctor` gives the step to add 
 commit check, a lint job with actionlint and zizmor, and one `ci` job to make the required
 check), `pr.yml` and `issue.yml`. Each action is pinned to a commit, each job has a time
 limit, checkout keeps no token, and in `yokoten.yml` a new push cancels the old run on the
-same pull request. `pr.yml` cancels nothing. Its runs can start in any order, so each one
+same pull request. A push to `main` cancels nothing: every commit is tested on its own.
+`pr.yml` cancels nothing. Its runs can start in any order, so each one
 reads the pull request's title, body, labels and milestone as they are now, with the job's
 token, and a rerun reads them again. Add your tests as a job in `yokoten.yml` and to the `needs` list of `ci`. A
 private repo can keep CI off: see [A private repo without CI](#a-private-repo-without-ci).
@@ -887,7 +891,7 @@ It puts three safe defaults in `.github/` too:
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
-| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok` |
+| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. A plain clone, such as a desk, is marked too: the mark goes in its own `.git` (#672). The lead marks a clone from its own checkout. The main checkout (the clone the lead runs in, or one with worktrees) and a submodule are never marked. A worker can't mark or unmark. See [Works with](#works-with) |
@@ -1072,7 +1076,7 @@ flowchart LR
 - A subagent worker shares the lead's folder and environment. It does not get its own
   `YOKOTEN_DONE_WHEN`. The check runs in the event's folder. It runs in the worker's
   worktree only when the stop event names that worktree.
-- DeepSeek Harness and Antigravity CLI have no stop hook. The lead runs the check.
+- DeepSeek Harness, Antigravity CLI and OpenCode have no stop hook. The lead runs the check.
 - Claude Code, Codex, Muse Code and Grok CLI each wait 600 seconds for this hook.
   Gemini CLI reads `timeout` in milliseconds, so its hook waits 600000 milliseconds.
   Each of those is 10 minutes. That covers the two-minute command.
@@ -2257,7 +2261,7 @@ Honest limits:
 - **Claude Code first.** Agents follow Claude Code's format.
   Skills are the open SKILL.md format, so `install` also puts them in `~/.agents/skills`,
   where Codex, Gemini CLI, Copilot, Cursor and other agents find them. The tool-call
-  guard also runs in Copilot CLI, Antigravity CLI, Codex, Muse Code, DeepSeek Harness and Gemini CLI: see
+  guard also runs in Copilot CLI, Antigravity CLI, Codex, Muse Code, DeepSeek Harness, Gemini CLI and OpenCode: see
   [Works with](#works-with) for which runs were seen to block (#30). `doctor` reports
   the other agents' hooks, and the user hooks once `~/.codex` or `~/.gemini` exists, but
   does not count them as missing: a project may use none of these agents. The rules are plain `AGENTS.md`, which

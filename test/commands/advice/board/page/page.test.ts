@@ -25,6 +25,7 @@ test('board page: one page with its regions, the nonce on its only script, nothi
   assert.equal(page.includes('id="right"'), false, 'the right column is gone');
   assert.ok((page.match(/grid-template-columns:[^;}]+/g) ?? []).every((rule) => !rule.includes('360px')), 'the stream takes the old right width');
   assert.match(page, /\.needs-panel\{[^}]*overflow:auto/, 'a long list scrolls');
+  assert.match(page, /@media \(max-width:700px\)\{[\s\S]*?\.needs-panel\{position:fixed;left:8px;right:8px/, 'a phone keeps the list inside the screen');
   assert.ok(page.includes('.badge.pulse{animation:none}'), 'reduced motion stops the pulse');
   assert.match(page, /#pinned\{display:none\}/, 'a phone hides the left column');
   assert.equal(page.split('<script').length - 1, 1, 'one script');

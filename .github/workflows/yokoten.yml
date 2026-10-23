@@ -16,12 +16,12 @@ on:
     - cron: '17 5 * * *'
 # No job gets a permission it does not name.
 permissions: {}
-# A newer run cancels the one still going for the same pull request or branch. On main,
-# the newest run tests everything the older ones would have, so a merge never waits
-# behind runs that no longer matter (macOS runners are few and shared).
+# A newer run cancels the one still going for the same pull request: only its newest
+# commit can merge. A push to main never cancels a run: every commit stays in history,
+# and a cancelled run leaves a ✗ on it (#660).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under
   # docs/ or changes/, or is a README.md or CHANGELOG.md outside kit/. Then the jobs that
