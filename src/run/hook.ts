@@ -309,35 +309,62 @@ export function isSameFile(listed: { dev: number; ino: number }, opened: { dev: 
 }
 
 /**
- * The text of a regular file, or null. A link is not opened. The open does not wait
- * on a pipe. The open file is checked before any byte is read. It must be the same
- * file the list saw, and it must be under the size cap. Windows has no `O_NOFOLLOW`,
- * so that check compares `dev` and `ino`. `openFile` opens the path. A test passes
- * one that opens another file.
+ * Why a status file was not read. The words are plain, for the warning on stderr.
  */
-export function readStatusText(path: string, openFile: (file: string, flags: number) => number = openSync): string | null {
+export type StatusRefusal = 'too large' | 'cannot be read' | 'changed while it was read';
+
+/** The text of a status file, or the reason it was refused. */
+export type StatusReadResult = { text: string } | { refused: StatusRefusal };
+
+/**
+ * Read a regular status file, or say why it was refused. A link is not opened. The
+ * open does not wait on a pipe. The open file is checked before any byte is read. It
+ * must be the same file the list saw, and it must be under the size cap. Windows has
+ * no `O_NOFOLLOW`, so that check compares `dev` and `ino`. `openFile` opens the path.
+ * A test passes one that opens another file.
+ */
+export function readStatusResult(path: string, openFile: (file: string, flags: number) => number = openSync): StatusReadResult {
   let listed: { dev: number; ino: number };
   try {
     const before = lstatSync(path);
-    if (!before.isFile()) return null;
+    if (!before.isFile()) return { refused: 'cannot be read' };
     listed = { dev: before.dev, ino: before.ino };
   } catch {
-    return null;
+    return { refused: 'cannot be read' };
   }
   const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
   let fd: number | undefined;
   try {
-    fd = openFile(path, flags);
+    try {
+      fd = openFile(path, flags);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return { refused: code === 'ENOENT' || code === 'ELOOP' ? 'changed while it was read' : 'cannot be read' };
+    }
     const opened = fstatSync(fd);
-    if (!opened.isFile() || !isSameFile(listed, opened) || opened.size > STATUS_TEXT_LIMIT) return null;
+    if (!opened.isFile() || !isSameFile(listed, opened)) return { refused: 'changed while it was read' };
+    if (opened.size > STATUS_TEXT_LIMIT) return { refused: 'too large' };
     const buffer = Buffer.alloc(opened.size);
     const count = readSync(fd, buffer, 0, opened.size, 0);
-    return buffer.toString('utf8', 0, count);
+    if (count !== opened.size) return { refused: 'changed while it was read' };
+    return { text: buffer.toString('utf8', 0, count) };
   } catch {
-    return null;
+    return { refused: 'cannot be read' };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** The text of a regular status file, or null when it was refused. */
+export function readStatusText(path: string, openFile: (file: string, flags: number) => number = openSync): string | null {
+  const result = readStatusResult(path, openFile);
+  return 'text' in result ? result.text : null;
+}
+
+/** One warning line for a refused status file. It never contains the file's text. */
+function statusRefusalLine(reason: StatusRefusal): string {
+  const phrase = reason === 'too large' ? 'is too large' : reason;
+  return `yokoten: ${AGENT_STATUS_FILE} ${phrase}, so it was left unchanged.\n`;
 }
 
 function parseStatus(text: string | null): Record<string, unknown> {
@@ -353,7 +380,9 @@ function parseStatus(text: string | null): Record<string, unknown> {
 
 /**
  * Record `checks` in `.yokoten-agent.json` at `folder`. Other fields stay. `updated` is UTC.
- * A link, or any other non-file, is left unchanged and named on `warn` in one line.
+ * A refused status file is left unchanged and named on `warn` in one line. That
+ * includes a link or other non-file, a file over the size cap, a file that cannot be
+ * read, and a file that changed while it was read.
  * The bytes go to a temp file in the same folder and are renamed over the path, so a
  * link that appears in between is replaced and never followed. A file that cannot be
  * written does not crash the hook.
@@ -367,9 +396,17 @@ export function writeAgentChecks(folder: string, checks: 'failing' | 'passing', 
       warn(`yokoten: ${AGENT_STATUS_FILE} is not a regular file, so it was left unchanged.\n`);
       return;
     }
-    status = parseStatus(readStatusText(path));
+    const result = readStatusResult(path);
+    if ('refused' in result) {
+      warn(statusRefusalLine(result.refused));
+      return;
+    }
+    status = parseStatus(result.text);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      warn(statusRefusalLine('cannot be read'));
+      return;
+    }
   }
   status.checks = checks;
   status.updated = now.toISOString().replace(/\.\d{3}Z$/, 'Z');

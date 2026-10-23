@@ -816,6 +816,7 @@ flowchart LR
 - yokoten 自己出错时直接放行，只在标准错误里写一行。
 - 有个新文件你想留着、不想被查，就把它写进 `.gitignore`，或者写进 `yokoten.json` 的
   `privacy.skip`。
+- yokoten 读不了的 `.yokoten-agent.json` 保持原样，收尾检查会说明原因。
 
 `init` 会把它写进 `.claude/settings.json`、`.codex/hooks.json` 和 `.gemini/settings.json`。
 `install` 不在用户级加它：它要读文件，所以由
