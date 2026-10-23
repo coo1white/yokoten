@@ -131,7 +131,7 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   const call = { cwd: sandbox.repo, tool_input: { command: 'git push --force' } };
   result = await sandbox.call(['hook', '--json'], { input: JSON.stringify(call) });
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten stopped this: git push --force forces the push\.\nWhy: a plain force push can throw away work that someone else pushed\.\nWhat to do: use --force-with-lease/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --force forces the push\.\nWhy: a plain force push can throw away work that someone else pushed\.\nTell the AI: "Do not force push; put my work on a new branch instead\."\nOr run it yourself: git push origin HEAD:refs\/heads\/safe-copy/);
   const blocked = JSON.parse(result.stdout);
   assert.equal(blocked.blocked, true);
   shaped(blocked.finding);

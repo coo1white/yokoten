@@ -103,7 +103,7 @@ test('hook: the five safeguards hold in a repo with no yokoten.json (#816)', asy
   for (const [command, id] of refused) {
     const result = await bash(command ?? '');
     assert.equal(result.status, 2, command ?? '');
-    assert.match(result.stderr, /^yokoten stopped this: [^\n]+\.\nWhy: [^\n]+\.\nWhat to do: [^\n]+\.\n\(rule [a-z-]+/, command ?? '');
+    assert.match(result.stderr, /^yokoten stopped this: [^\n]+\.\nWhy: [^\n]+\.\nTell the AI: "[^\n]+"\nOr run it yourself: [^\n]+\n\(rule [a-z-]+/, command ?? '');
     assert.match(result.stderr, new RegExp(`\\(rule ${id}( ·|\\))`), command ?? '');
   }
   // Taking the safeguard apart is refused even with no yokoten.json.
@@ -171,7 +171,7 @@ test('hook --stop: sends the agent back once with the findings in changed files,
   result = await sandbox.call(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Bash', tool_input: { command: 'git push --tags' } }) });
   assert.equal(result.status, 2);
   assert.doesNotMatch(result.stderr, /fatal|not a git repository/);
-  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags\.\nWhy: only the owner decides when to release\.\nWhat to do: [^\n]*`YOKOTEN_RELEASE_APPROVAL=1 claude` \(or your agent's command\)/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags\.\nWhy: only the owner decides when to release\.\nTell the AI: "I will push these tags myself\."\nOr run it yourself: git push --tags/);
   // A broken config is an internal error: the turn ends, with one line on stderr.
   sandbox.write('yokoten.json', '{ broken');
   result = await sandbox.call(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo }) });
@@ -241,10 +241,9 @@ test('hook --stop --agent codex|gemini: the end-of-turn event sends the agent ba
   assert.match((await sandbox.call(['doctor'])).stdout, /note +codex-hook: no stop check in \.codex\/hooks\.json/);
 });
 
-// The release refusal names the command that starts the agent the hook ran for (#350). Copilot
-// CLI sends Claude Code's shape, so that one says "or your agent's command". Muse Code passes
-// the approval to no hook, so it says so instead of naming a command.
-test('hook --agent: the release refusal names the agent\'s own command (#350)', async () => {
+// The release finding still names the command that starts the agent the hook ran for (#350),
+// in its JSON. The five-line refusal gives the person the command to run instead.
+test('hook --agent: the release finding names the agent\'s own command (#350)', async () => {
   const sandbox = makeSandbox();
   const cwd = sandbox.repo;
   const command = 'git push --tags origin';
@@ -260,11 +259,11 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
   };
   for (const [agent, [input, fix]] of Object.entries(agents)) {
     const result = await sandbox.call(['hook', '--agent', agent], { input: JSON.stringify(input) });
-    assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags\.\nWhy: only the owner decides when to release\./, agent);
-    assert.match(result.stderr, fix, agent);
-    // --json carries the same fix.
+    assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags\.\nWhy: only the owner decides when to release\.\nTell the AI: "I will push these tags myself\."\nOr run it yourself: git push --tags/, agent);
+    assert.doesNotMatch(result.stderr, /RELEASE_APPROVAL/, `${agent}: the text block gives the owner the command`);
+    // --json carries the finding, with the fix that names this agent's own command.
     const json = JSON.parse((await sandbox.call(['hook', '--agent', agent, '--json'], { input: JSON.stringify(input) })).stdout);
-    assert.ok(result.stderr.includes(`${json.finding.fix.slice(1)}.`), `${agent} --json`); // the text form capitalizes it
+    assert.match(json.finding.fix, fix, agent);
     // Another refusal keeps its own fix.
     const force = await sandbox.call(['hook', '--agent', agent], { input: JSON.stringify(input).replace('--tags', '--force') });
     assert.match(force.stderr, /git push --force/, `${agent}: a force push`);
@@ -386,7 +385,7 @@ test("hook: an agent that can't rewrite runs the command, or with privacy.output
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /^yokoten stopped this: `git remote` prints remote URLs, and this agent can't filter it\./);
-  assert.match(result.stderr, /run it as `set -o pipefail # yokoten-redact\n\(\ngit remote -v\n\) 2>&1 \| \{ "[^"]+" "[^"]+" redact \|\| cat; \}`\./);
+  assert.match(result.stderr, /Or run it yourself: set -o pipefail # yokoten-redact\n\(\ngit remote -v\n\) 2>&1 \| \{ "[^"]+" "[^"]+" redact \|\| cat; \}/);
   // A push still runs: only plain reads are ever stopped.
   assert.deepEqual(pick(await codexCall('git push origin main')), [0, '', '']);
   const json = await sandbox.call(['hook', '--json'], { input: JSON.stringify({ tool_input: { command: 'npm whoami' } }) });
@@ -797,7 +796,7 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
     'gh api repos/a/b/issues -f title=x',
   ]) {
     result = await refused(command, /worker-push|worker does not push|pushes|host|alias|bot/);
-    assert.match(result.stderr, /commit in your worktree and report; the lead pushes after review/i, command);
+    assert.match(result.stderr, /Tell the lead: "This is a worker; report the work to your lead, who reviews and pushes it\."/, command);
   }
   // The reviewer's ways to drop the mark (H1, L2).
   const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();

@@ -79,9 +79,21 @@ hold with no `yokoten init` and no setting.
 4. **Run code from the internet unread**: no download piped into a shell.
 5. **Take the safeguard apart**: no turning off a check or a hook, and no editing CI or the rules.
 
-When it stops something, it says what it stopped, why, and what to do. The rule id and a
-link come last, for people who want them. Only the owner makes the changes in the fifth
-line; an agent asks the owner to make them.
+When it stops something, it shows the same five short lines:
+
+```
+yokoten stopped this: creating the tag v1.2.0.
+Why: a tag publishes a release, and only you decide when to release.
+Tell the AI: "I will publish this release myself."
+Or run it yourself: git tag v1.2.0
+(rule release · more: docs/guide.md#the-safeguard)
+```
+
+The first line names the exact tag, file or branch. Two ways forward follow: a sentence to
+say back to the AI, and the command to run. A beginner can use the sentence without reading
+code. The words fit the case: a worker reports to its lead, and a download is read before
+it runs. A case with no special words gets a plain sentence. The rule id and link come
+last. Only the owner makes the changes in the fifth line; an agent asks the owner.
 
 ## Three checks and a lock
 

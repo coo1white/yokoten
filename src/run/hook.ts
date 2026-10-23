@@ -12,28 +12,321 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
-import { type Finding, finding } from '../rules/message.ts';
+import { type Finding, finding, place } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
 /** The start of a docs link, so a refusal shows a short path instead of the whole URL. */
 const DOCS_PREFIX = 'https://github.com/yokoten-labs/yokoten/blob/main/';
-const noFullStop = (text: string): string => text.replace(/[.\s]+$/, '');
+const noFullStop = (text: string): string => text.replace(/[.。\s]+$/, '');
 const shortDocs = (url: string | undefined): string | undefined =>
   url === undefined ? undefined : url.startsWith(DOCS_PREFIX) ? url.slice(DOCS_PREFIX.length) : url;
 
+/** The two languages a refusal speaks: English, or Simplified Chinese. */
+export type RefusalLanguage = 'en' | 'zh-CN';
+
+/** What the guard can read about the place before it writes a refusal. */
+export interface RefusalContext {
+  lang?: RefusalLanguage;
+  /** The action comes from a worker: its way forward is its lead, not its owner. */
+  worker?: boolean;
+  /** The repo has a workflow that starts a release from a tag or a release event. */
+  hasReleaseWorkflow?: boolean;
+  /** The repo has a yokoten.json, so its own rules are on top of the safeguard. */
+  hasConfig?: boolean;
+  /** Why this session is a worker, when the mark set the role (#555). */
+  workerNote?: string;
+}
+
+/** The two ways forward: a sentence the person says back, and a command or a step. */
+interface RefusalWays {
+  tell: string;
+  run: string;
+}
+
+interface RefusalLabels {
+  stopped: string;
+  why: string;
+  tell: string;
+  tellLead: string;
+  run: string;
+  /** The quote around the sentence: plain ASCII, or the Chinese pair. */
+  quote: [string, string];
+  stop: string;
+}
+
+const REFUSAL_LABELS: Record<RefusalLanguage, RefusalLabels> = {
+  en: {
+    stopped: 'yokoten stopped this: ',
+    why: 'Why: ',
+    tell: 'Tell the AI: ',
+    tellLead: 'Tell the lead: ',
+    run: 'Or run it yourself: ',
+    quote: ['"', '"'],
+    stop: '.',
+  },
+  'zh-CN': {
+    stopped: 'yokoten 拦下了这个动作：',
+    why: '为什么：',
+    tell: '告诉 AI：',
+    tellLead: '告诉 lead：',
+    run: '或者你自己运行：',
+    quote: ['“', '”'],
+    stop: '。',
+  },
+};
+
+/** The language of the refusal: YOKOTEN_LANG first, then the usual locale variables. */
+export function refusalLanguage(env: Env): RefusalLanguage {
+  const tag = env.YOKOTEN_LANG ?? env.LC_ALL ?? env.LC_MESSAGES ?? env.LANG ?? '';
+  return /^zh([-_]|$)/i.test(tag) ? 'zh-CN' : 'en';
+}
+
 /**
- * A finding as the four lines a refusal prints (#816): what was stopped, why, what to do,
- * and the rule id with its link last. Every runtime's hook uses this one function, so a
- * person reads the same plain words under Claude Code, Codex, Grok and OpenCode. A secret
- * in a field reads `<hidden>`, never the secret.
+ * Whether the repo starts a release from a tag or a release event. A release workflow
+ * means the tag you make starts a release; without one, the tag is just a tag. A read
+ * that fails says nothing, so the refusal keeps its plain wording.
  */
-export function formatRefusal(f: Finding): string {
+export function hasReleaseWorkflow(root: string | null | undefined): boolean {
+  if (root === null || root === undefined || root === '') return false;
+  const folder = join(root, '.github', 'workflows');
+  let names: string[];
+  try {
+    names = readdirSync(folder).filter((name) => /\.ya?ml$/i.test(name));
+  } catch {
+    return false;
+  }
+  return names.some((name) => {
+    if (/release/i.test(name)) return true;
+    try {
+      const text = readFileSync(join(folder, name), 'utf8');
+      return /^\s*release\s*:/m.test(text) || /^\s*tags\s*:/m.test(text);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** The tag a release finding stopped, when it names one. */
+const stoppedTag = (what: string): string | undefined => /creating the tag (\S+)/.exec(what)?.[1];
+/** The path an edit finding stopped, when it names one. */
+const stoppedPath = (what: string): string | undefined =>
+  /^(\S+) is (?:lead-only|a test file)/.exec(what)?.[1] ??
+  /writes (\S+), which is lead-only/.exec(what)?.[1] ??
+  /changes (\S+), which is lead-only/.exec(what)?.[1];
+
+/** The command in a fix, when it holds one in backticks, or the general explanation. */
+const commandInFix = (f: Finding): string => {
+  const command = /`([^`]+)`/.exec(f.fix)?.[1];
+  return command === undefined ? `yokoten explain ${f.id}` : command;
+};
+
+/**
+ * The two ways forward that fit this finding (#816). A specific case names the real value
+ * and its safe road; a case with no words of its own gets one plain sentence and the
+ * explanation command. The refusal never bends: only its wording follows the case.
+ */
+function refusalWays(f: Finding, context: RefusalContext): RefusalWays {
+  const zh = context.lang === 'zh-CN';
+  const worker = context.worker === true;
+  const leadReport = (zhText: string, enText: string, run: string): RefusalWays => ({ tell: zh ? zhText : enText, run });
+
+  switch (f.id) {
+    case 'release': {
+      const tag = stoppedTag(f.what);
+      if (worker) {
+        return {
+          tell: zh ? '只有我的 lead 能决定什么时候发布；请把这件事报告给 lead。' : 'Only my lead decides when to release; report this to your lead.',
+          run: `yokoten msg send lead "${zh ? '请检查这个发布请求' : 'please check this release request'}"`,
+        };
+      }
+      if (/public repo|making the repo public/i.test(f.what)) {
+        return { tell: zh ? '这个仓库我自己来公开。' : 'I will make this repo public myself.', run: 'gh repo edit --visibility public' };
+      }
+      if (/publish(es)? a package|npm|pnpm|yarn/i.test(f.what)) {
+        return { tell: zh ? '这个软件包我自己来发布。' : 'I will publish this package myself.', run: 'npm publish' };
+      }
+      const push = /^(git push .+?) (?:pushes|publishes)\b/.exec(f.what)?.[1];
+      if (push !== undefined) return { tell: zh ? '这些 tag 我自己来推。' : 'I will push these tags myself.', run: push };
+      if (tag !== undefined) return { tell: zh ? '这个版本我自己来发布。' : 'I will publish this release myself.', run: `git tag ${tag}` };
+      if (/gh release/i.test(f.what)) return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: 'gh release create <tag>' };
+      return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: commandInFix(f) };
+    }
+    case 'force-push':
+      return worker
+        ? leadReport(
+            '不要把分支强推上去；请把这个分支交给 lead。',
+            'Do not force push; report this branch to your lead.',
+            `yokoten msg send lead "${zh ? '请检查这个分支再推送' : 'please check this branch before any push'}"`,
+          )
+        : {
+            tell: zh ? '不要 force push；把我的工作推到新分支。' : 'Do not force push; put my work on a new branch instead.',
+            run: 'git push origin HEAD:refs/heads/safe-copy',
+          };
+    case 'hard-reset':
+      return {
+        tell: zh ? '不要 hard reset；保留我没有提交的改动。' : 'Do not reset hard; keep my uncommitted work.',
+        run: 'git stash',
+      };
+    case 'remove-git':
+      return {
+        tell: zh ? '不要删 .git；只删我指定的文件。' : 'Do not delete .git; delete only the file I named.',
+        run: 'git rm <path>',
+      };
+    case 'delete-default-branch':
+      return {
+        tell: zh ? '不要删默认分支；只删我指定的分支。' : 'Do not delete the default branch; delete only the branch I named.',
+        run: 'git branch -a',
+      };
+    case 'pipe-to-shell': {
+      const url = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(f.what)?.[0];
+      return {
+        tell: zh ? '先把文件下载下来给我看，再运行。' : 'Download the file and show it to me before anything runs it.',
+        run: url === undefined ? 'curl -fsSL <url> -o download.sh' : `curl -fsSL ${url} -o download.sh`,
+      };
+    }
+    case 'skip-check':
+      return {
+        tell: zh ? '不要跳过提交检查；先修好它报告的问题。' : 'Do not skip the commit check; fix what it reports.',
+        run: 'yokoten check',
+      };
+    case 'hooks-path':
+      return {
+        tell: zh ? '保留提交检查；我需要它。' : 'Leave the commit check on; I need it.',
+        run: 'yokoten init',
+      };
+    case 'workflow-disable':
+      return {
+        tell: zh ? '别关掉这个 workflow；由我来决定。' : 'Leave the workflow on; I will decide.',
+        run: 'gh workflow list',
+      };
+    case 'test-file': {
+      const path = stoppedPath(f.what) ?? '<test file>';
+      return {
+        tell: zh ? '不要改测试；改代码直到测试通过。' : 'Do not change the test; fix the code until the test passes.',
+        run: `git diff -- ${path}`,
+      };
+    }
+    case 'lead-only': {
+      const path = stoppedPath(f.what) ?? '<file>';
+      if (worker) {
+        return {
+          tell: zh ? `这是 lead 的文件；请把它报告给 lead。` : 'This file belongs to my lead; report it to your lead.',
+          run: `yokoten msg send lead "${zh ? `请修改 ${path}` : `please change ${path}`}"`,
+        };
+      }
+      const noConfig = context.hasConfig === false;
+      return {
+        tell: noConfig
+          ? zh
+            ? '这个项目没有 yokoten.json，守桥用默认规则；规则或 CI 的改动由我自己来。'
+            : 'This project has no yokoten.json, so the safeguard uses its defaults; I will make the change to the rules or CI myself.'
+          : zh
+            ? '这是 lead 专属文件；这个改动由我自己来。'
+            : 'This file is lead-only; I will make this change myself.',
+        run: `yokoten explain lead-only`,
+      };
+    }
+    case 'worker-push':
+      return {
+        tell: zh ? '这是 worker；请把工作报告给 lead，由 lead 审查后推送。' : 'This is a worker; report the work to your lead, who reviews and pushes it.',
+        run: `yokoten msg send lead "${zh ? '请审查并推送我的工作' : 'please review and push my work'}"`,
+      };
+    case 'worker-mark':
+      return {
+        tell: zh ? '不要动 worker 标记；请把这件事报告给 lead。' : 'Leave the worker mark alone; report this to your lead.',
+        run: `yokoten msg send lead "${zh ? '请检查我的 worktree 标记' : 'please check my worktree mark'}"`,
+      };
+    case 'secret': {
+      const file = f.file ?? '<file>';
+      return {
+        tell: zh ? '把密钥移到 git 忽略的文件里，然后换掉这个密钥。' : 'Move the key to a file git ignores, then rotate it.',
+        run: `git check-ignore -v ${file}`,
+      };
+    }
+    case 'email':
+    case 'ip':
+    case 'private-mark':
+      return {
+        tell: zh ? '提交前把它换成占位内容。' : 'Replace it with a placeholder before you commit.',
+        run: f.file === undefined ? `yokoten explain ${f.id}` : `git diff --cached -- ${f.file}`,
+      };
+    case 'gh-token':
+      return {
+        tell: zh ? '不要把 token 打出来；让 gh 自己用，不显示它。' : 'Do not print the token; let gh use it without showing it.',
+        run: 'gh auth status',
+      };
+    case 'alias':
+      return {
+        tell: zh ? '直接跑完整命令，不要用别名。' : 'Run the full command instead of an alias.',
+        run: 'yokoten explain alias',
+      };
+    case 'blocked-command':
+      return {
+        tell: zh ? '不要运行这个程序；这个项目禁用了它。' : 'Do not run that program; this project blocks it.',
+        run: 'yokoten explain blocked-command',
+      };
+    case 'unreadable-command':
+      return {
+        tell: zh ? '把它拆成几条更小的命令。' : 'Split this into smaller commands, one per call.',
+        run: 'yokoten explain unreadable-command',
+      };
+    case 'run-remove':
+      return {
+        tell: zh ? '不要动这次 Actions 运行；告诉我你需要什么。' : 'Leave the Actions run alone; tell me what you need.',
+        run: 'gh run list',
+      };
+    case 'private-output':
+      return {
+        tell: zh ? '把输出交给 yokoten redact 再给我看。' : 'Show me the output through yokoten redact.',
+        run: commandInFix(f),
+      };
+    case 'home-folder':
+      return {
+        tell: zh ? '不要改我的主目录；yokoten 要用它。' : 'Do not change my home folder; yokoten needs it.',
+        run: 'yokoten explain home-folder',
+      };
+    default:
+      return {
+        tell: zh ? '我没有让你这样做；请先停下来，用简单的话解释给我听。' : 'I did not ask for that; stop and explain it to me in plain words.',
+        run: `yokoten explain ${f.id}`,
+      };
+  }
+}
+
+/** Why the refusal matters, with the project's own release path when the guard can read it. */
+function refusalWhy(f: Finding, context: RefusalContext): string {
+  if (f.id !== 'release' || stoppedTag(f.what) === undefined) return f.why;
+  if (context.lang === 'zh-CN') {
+    return context.hasReleaseWorkflow === true
+      ? '打 tag 会启动一个需要你批准的发布，只有你能决定什么时候发布'
+      : '打 tag 会发布一个版本，只有你能决定什么时候发布';
+  }
+  return context.hasReleaseWorkflow === true
+    ? 'a tag starts a release you approve, and only you decide when to release'
+    : 'a tag publishes a release, and only you decide when to release';
+}
+
+/**
+ * A finding as the five lines a refusal prints (#816): what was stopped, why, the sentence
+ * to say to the AI, the command to run yourself, and the rule id with its link last. Every
+ * runtime's hook uses this one function, so a person reads the same plain words under
+ * Claude Code, Codex, Grok and OpenCode. A secret in a field reads `<hidden>`, never the
+ * secret.
+ */
+export function formatRefusal(f: Finding, context: RefusalContext = {}): string {
+  const lang = context.lang ?? 'en';
+  const labels = REFUSAL_LABELS[lang];
   const plain = (text: string) => noFullStop(makeSecretHider()(text).replaceAll(SECRET, '<hidden>'));
   const docs = shortDocs(f.docs);
+  const ways = refusalWays(f, context);
+  const baseWhy = refusalWhy(f, context);
+  const why = context.workerNote === undefined ? baseWhy : `${baseWhy}; ${context.workerNote}`;
+  const [open, close] = labels.quote;
   return [
-    `yokoten stopped this: ${plain(f.what)}.`,
-    `Why: ${plain(f.why)}.`,
-    `What to do: ${plain(f.fix)}.`,
+    `${labels.stopped}${plain(`${place(f)}${f.what}`)}${labels.stop}`,
+    `${labels.why}${plain(why)}${labels.stop}`,
+    `${context.worker === true ? labels.tellLead : labels.tell}${open}${plain(ways.tell)}${labels.stop}${close}`,
+    `${labels.run}${plain(ways.run)}`,
     `(rule ${f.id}${docs === undefined ? '' : ` \u00b7 more: ${docs}`})`,
   ].join('\n');
 }

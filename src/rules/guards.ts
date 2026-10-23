@@ -2716,14 +2716,22 @@ function checkPipeToShell(command: string): Finding | null {
     // The first download in the segments so far: one pass, so a long pipeline reads in
     // linear time. A shell in the first segment has nothing before it, so it passes.
     let downloader: string | undefined;
+    let downloadUrl: string | undefined;
     for (const segment of segments) {
       const commands = commandWords(segment);
       const programs = commands.flatMap(findPrograms).map(programName);
       const shell = findPipeShell(programs, commands, segment);
       if (shell !== undefined && downloader !== undefined) {
-        return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
+        const download = downloadUrl === undefined ? 'a download' : `the download ${downloadUrl}`;
+        return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs ${download} without letting you read it first`, PIPE_SHELL_FIX);
       }
-      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program.toLowerCase()));
+      if (downloader === undefined) {
+        const program = programs.find((name) => DOWNLOAD_PROGRAMS.has(name.toLowerCase()));
+        if (program !== undefined) {
+          downloader = program;
+          downloadUrl = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(segment)?.[0];
+        }
+      }
     }
   }
   return null;

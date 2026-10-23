@@ -27,6 +27,8 @@ import {
   doneTryKey,
   findStatusCheckout,
   formatRefusal,
+  hasReleaseWorkflow,
+  refusalLanguage,
   registerDesk,
   type Guard,
   guardDeadline,
@@ -489,7 +491,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
-    if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    const markReason = found != null && role === 'mark' && WORKER_RULES.has(found.id) ? capital(markNote(folders, invocation.env)) : undefined;
+    if (found != null && markReason !== undefined) found = { ...found, fix: `${found.fix}. ${markReason}` };
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
@@ -501,8 +504,14 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     }
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
-    // Every refusal uses the same four lines, whatever the runtime and whether the repo ran init.
-    const reason = formatRefusal(found);
+    // Every refusal uses the same five lines, whatever the runtime and whether the repo ran init.
+    const reason = formatRefusal(found, {
+      lang: refusalLanguage(invocation.env),
+      worker: role !== null || action.worker,
+      hasReleaseWorkflow: hasReleaseWorkflow(root),
+      hasConfig: root !== null && existsSync(join(root, 'yokoten.json')),
+      workerNote: markReason,
+    });
     say(invocation, `${reason}\n`, invocation.stderr);
     const denial = Object.hasOwn(DENIALS, agent) ? DENIALS[agent](reason) : { stdout: '', exitCode: 2 };
     if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
