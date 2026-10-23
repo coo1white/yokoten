@@ -118,7 +118,7 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 它们不会卡住关卡。自建服务器的名字从不打印，doctor 一律叫它 "this host"。接下来会做 Gitea 适配（issue #505）。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
-`owner`、`incident`、`good first issue`、`hotfix`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
+`owner`、`incident`、`good first issue`、`hotfix`、`security`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。
 `init` 会告诉你缺哪些，`init --github --yes` 帮你加上。
 
 第 4 关的 `review` 也这样读服务器。默认分支的规则集（或者分支保护）要求至少一个批准，这一步就算做完。
@@ -633,7 +633,8 @@ hook 一行都不删，`init` 也会说改了哪个文件。git 自己提交合�
 `init` 还会在 `.github/workflows/` 里放三个 workflow：`yokoten.yml`（跑提交检查；一个 lint
 job 用 actionlint 和 zizmor 查 workflow 本身；还有一个 `ci` job，设成必过的检查就只要设它）、
 `pr.yml` 和 `issue.yml`。每个 action 都固定到某一次提交，每个 job 都有超时，checkout 不留
-token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那次会取消。`pr.yml` 什么都不取消。
+token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那次会取消。推送到 `main`
+不会取消运行：每一次提交都单独测一遍。`pr.yml` 什么都不取消。
 它的几次运行开始的顺序不固定，所以每一次都用这个 job 的 token，去读 PR 现在的标题、正文、标签和
 里程碑。重跑也是再读一遍现在的。你自己的测试，加成 `yokoten.yml` 里的一个 job，再把它写进 `ci`
 的 `needs`。
