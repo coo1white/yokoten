@@ -3103,14 +3103,145 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
     const path = stopped(target);
     if (path !== null) return finding('lead-only', `this command writes ${path}, which is lead-only (yokoten.json "leadOnly")`, LEAD_ONLY_FIX);
   }
+  // A merge of origin/<default branch> may commit a lead-only file that matches that
+  // branch, or that is unchanged against HEAD. Any other commit of one is refused (#684).
+  const tips = new Map<string, string | null>();
+  const diffs = new Map<string, Set<string> | null>();
   for (const target of commitTargets(words, folder, rules.rootOf, env)) {
     if (isUnsureTarget(target, env)) {
       return finding('lead-only', `this commit changes ${target.path}, and yokoten can't tell which file that is from an unknown folder`, UNSURE_FOLDER_FIX);
     }
     const path = stopped(target);
-    if (path !== null) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
+    if (path !== null && (target.from === null || !matchesDefaultTip(target.from, path, env, tips, diffs))) {
+      return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
+    }
   }
   return null;
+}
+
+/** A full object id: SHA-1 or SHA-256. The commit check uses the same shape. */
+const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
+const isObjectId = (text: string) => OBJECT_ID.test(text);
+
+/**
+ * Whether `commit` already contains HEAD, so merging it is a fast-forward. Git commits
+ * that with one parent, and the commit check drops it. Null when git cannot say: no
+ * exemption, and the file is still refused.
+ */
+function commitContainsHead(dir: string, commit: string, env: Env): boolean | null {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', 'HEAD', commit], { cwd: dir, env, stdio: 'ignore' });
+    return true;
+  } catch (error) {
+    return (error as { status?: number }).status === 1 ? false : null;
+  }
+}
+
+/**
+ * The other parents of the merge being committed, from MERGE_HEAD. The same rules as
+ * the commit check: a line that is not an object id makes the file untrusted, and a
+ * parent that already contains HEAD is dropped. None outside a merge, or when git cannot say.
+ */
+function readMergeHeads(dir: string, env: Env): string[] {
+  const gitPath = readGit(dir, ['rev-parse', '--git-path', 'MERGE_HEAD'], env);
+  if (gitPath === null) return [];
+  let text: string;
+  try {
+    text = readFileSync(resolve(dir, gitPath), 'utf8');
+  } catch {
+    return [];
+  }
+  const lines = text.split('\n').filter(Boolean);
+  if (!lines.every(isObjectId)) return [];
+  const kept: string[] = [];
+  for (const head of lines) {
+    const contains = commitContainsHead(dir, head, env);
+    if (contains === null) return [];
+    if (!contains) kept.push(head);
+  }
+  return kept;
+}
+
+/** The object id `ref` names, or null when it is missing or git cannot say. */
+function verifyTip(dir: string, ref: string, env: Env): string | null {
+  const id = readGit(dir, ['rev-parse', '--verify', '--quiet', ref], env);
+  return id !== null && isObjectId(id) ? id : null;
+}
+
+/**
+ * The tip of origin/<default branch>: what `refs/remotes/origin/HEAD` names, else
+ * `origin/main`, then `origin/master`. Never the local branch `main`. Null when none
+ * of those resolve. Git failing is null, never a stop (#684).
+ */
+function originDefaultTip(dir: string, env: Env): string | null {
+  const printed = readGit(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD'], env);
+  const named = printed !== null && /^refs\/remotes\/origin\/.+$/.test(printed) ? printed : null;
+  const fallback = ['refs/remotes/origin/main', 'refs/remotes/origin/master'];
+  for (const ref of named === null ? fallback : [named]) {
+    const id = verifyTip(dir, ref, env);
+    if (id !== null) return id;
+  }
+  if (named === null) return null;
+  for (const ref of fallback) {
+    if (ref === named) continue;
+    const id = verifyTip(dir, ref, env);
+    if (id !== null) return id;
+  }
+  return null;
+}
+
+/**
+ * The one MERGE_HEAD, when it is the tip of origin/<default branch>. A worker may commit
+ * lead-only files from that merge only. Any other merge, or a git failure, is null.
+ */
+function exemptMergeTip(dir: string, env: Env): string | null {
+  const heads = readMergeHeads(dir, env);
+  if (heads.length !== 1) return null;
+  const tip = originDefaultTip(dir, env);
+  return tip === heads[0] ? tip : null;
+}
+
+/** Paths whose staged state differs from `rev`, or null when git cannot say. */
+function stagedNames(dir: string, rev: string, env: Env): Set<string> | null {
+  const out = readGit(dir, ['diff', '--cached', '--name-only', '--no-renames', '-z', '--end-of-options', rev], env);
+  if (out === null) return null;
+  return new Set(out.split('\0').filter(Boolean));
+}
+
+/** Whether `names` lists `path` or a file inside it. A named folder counts for its files. */
+function diffHasPath(names: Set<string>, path: string): boolean {
+  if (names.has(path)) return true;
+  const prefix = `${path.replace(/\/$/, '')}/`;
+  for (const name of names) if (name.startsWith(prefix)) return true;
+  return false;
+}
+
+/**
+ * Whether this lead-only path may ride along in the commit: the merge is exactly
+ * origin/<default branch>, and the index matches that commit, or the path is unchanged
+ * against HEAD. A diff git cannot answer is not a match.
+ */
+function matchesDefaultTip(dir: string, path: string, env: Env, tips: Map<string, string | null>, diffs: Map<string, Set<string> | null>): boolean {
+  let tip = tips.get(dir);
+  if (tip === undefined) {
+    tip = exemptMergeTip(dir, env);
+    tips.set(dir, tip);
+  }
+  if (tip === null) return false;
+  const against = (rev: string): Set<string> | null => {
+    const key = `${dir}\0${rev}`;
+    const kept = diffs.get(key);
+    if (kept !== undefined) return kept;
+    const found = stagedNames(dir, rev, env);
+    diffs.set(key, found);
+    return found;
+  };
+  const againstTip = against(tip);
+  const againstHead = against('HEAD');
+  const sameAsTip = againstTip !== null && !diffHasPath(againstTip, path);
+  const sameAsHead = againstHead !== null && !diffHasPath(againstHead, path);
+  return sameAsTip || sameAsHead;
 }
 
 /**

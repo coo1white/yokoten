@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { findUnknownKeys, matcher } from '../rules/config.ts';
-import { checkEdit, withWorkerMark } from '../rules/guards.ts';
+import { checkEdit, isLeadOnly, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkLayout } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
@@ -300,6 +300,52 @@ function mergeRemoved(root: string, heads: string[], env: Env): string[] {
   return [...gone].filter((path) => !inHead.has(path));
 }
 
+/**
+ * The tip of `origin/<default branch>`, or null when this clone has none. A missing
+ * `origin/HEAD` falls through to `origin/main`, then `origin/master`. The local branch
+ * `main` is never that tip. Git failing is null: the check goes on, and a lead-only
+ * file is still checked (#684).
+ */
+function originDefaultTip(root: string, env: Env): string | null {
+  const commitOf = (ref: string): string | null => {
+    try {
+      const id = git(root, env, ['rev-parse', '--verify', '--quiet', ref]).trim();
+      return OBJECT_ID.test(id) ? id : null;
+    } catch {
+      return null;
+    }
+  };
+  let named: string | null = null;
+  try {
+    const printed = git(root, env, ['symbolic-ref', 'refs/remotes/origin/HEAD']).trim();
+    if (/^refs\/remotes\/origin\/.+$/.test(printed)) named = printed;
+  } catch {
+    named = null;
+  }
+  const fallback = ['refs/remotes/origin/main', 'refs/remotes/origin/master'];
+  for (const ref of named === null ? fallback : [named]) {
+    const id = commitOf(ref);
+    if (id !== null) return id;
+  }
+  if (named === null) return null;
+  for (const ref of fallback) {
+    if (ref === named) continue;
+    const id = commitOf(ref);
+    if (id !== null) return id;
+  }
+  return null;
+}
+
+/**
+ * The one other parent of this merge, when that parent is the tip from `originDefaultTip`.
+ * Several parents, or any other commit, are not that merge: a lead-only file stays checked.
+ */
+function exemptMergeId(root: string, env: Env, heads: string[]): string | null {
+  if (heads.length !== 1) return null;
+  const tip = originDefaultTip(root, env);
+  return tip === heads[0] ? tip : null;
+}
+
 /** A gitlink (a submodule's commit): no blob to read in this repo. */
 const GITLINK = '160000';
 
@@ -435,15 +481,26 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     if (isCommitting && config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, env, ['var', v])))) {
       problems.push(finding('time-zone', "this commit's time carries your time zone", TIME_ZONE_FIX));
     }
-    // In a merge, the role checks see only what the merge itself changed: a worker
-    // bringing in main is not handing over main's edits to lead-only files or tests. A
-    // move is checked at its old path too: moving AGENTS.md away removes it. A copy leaves it.
+    // In a merge, ordinary files are role-checked only when the merge itself changed
+    // them, so a side branch may still bring its own files. A lead-only file is exempt
+    // only when the one MERGE_HEAD is origin/<default branch> and the index matches
+    // that commit (mergeMade drops it), or the path is unchanged against HEAD (it is
+    // not in `touched`). Any other lead-only change is checked, and the finding names
+    // the file (#684). A move is checked at its old path too: moving AGENTS.md away
+    // removes it. A copy leaves it.
     const touched = [...new Set(files.flatMap((f) => (f.from === undefined || f.status !== 'R' ? [f.path] : [f.from, f.path])))];
     // A file only the other branch had, removed during the merge, is the worker's too.
     const heads = mergeHeads(root, env);
+    const exemptId = exemptMergeId(root, env, heads);
+    const rolePaths = new Set([...mergeMade(root, touched, heads, env), ...mergeRemoved(root, heads, env)]);
+    if (exemptId === null) {
+      for (const path of touched) {
+        if (isLeadOnly(path, config.leadOnly)) rolePaths.add(path);
+      }
+    }
     // A worker by YOKOTEN_ROLE or by the mark on its worktree, which a runtime's env can't drop (#555).
     const roleEnv = withWorkerMark(env, [root]);
-    for (const path of [...new Set([...mergeMade(root, touched, heads, env), ...mergeRemoved(root, heads, env)])]) {
+    for (const path of rolePaths) {
       const reason = checkEdit(path, { config, env: roleEnv });
       if (reason) problems.push(reason);
     }
