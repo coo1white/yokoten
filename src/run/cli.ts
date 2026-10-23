@@ -156,6 +156,8 @@ export interface Command {
   argument?: string;
   /** The positional arguments it takes, in order, when it takes more than one: an action, then its word (#447). */
   arguments?: string[];
+  /** It takes any number of positional arguments, in the order given: a merge train's queue (#320). */
+  many?: boolean;
   example: string;
 }
 
@@ -406,6 +408,25 @@ export const COMMANDS: Command[] = [
     ],
     options: [],
     example: 'yokoten bot -- gh pr create --fill',
+  },
+  {
+    name: 'train',
+    summary: 'merge an approved queue one pull request at a time, with a gate between each',
+    usage: '<pr>... [--wait <seconds>]',
+    text: [
+      'Merges each pull request in the order given, as the bot, and stops at the first one',
+      'that needs a person. Only the lead runs it.',
+      'Before the first merge it records every base branch, because GitHub forgets a base',
+      'when it deletes the branch. A pull request stacked on a squash-merged branch then',
+      'merges from the base it really shares with its old branch, not an older one.',
+      'A conflict that is only import lines is resolved by taking the union. Any other',
+      'conflict, a failing test or a missing approval stops the train.',
+      'Each merged tree runs the project\'s tests and `check` before it is pushed, and CI',
+      'must pass on the pushed merge before the squash.',
+    ],
+    options: [{ name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' }],
+    many: true,
+    example: 'yokoten train 1207 1209 1211',
   },
   {
     name: 'board',
