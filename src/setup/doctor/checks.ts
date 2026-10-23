@@ -347,39 +347,40 @@ function readDefaultBranch(root: string, env: Env): string | null {
 /** How many commits on the default branch doctor reads for its time zone count (#760). */
 export const HISTORY_DEPTH = 200;
 
-/** The first default-branch ref that exists in `root`, in the order `readDefaultBranch` tries them. Null when none does. */
-function readDefaultBranchRef(root: string, env: Env): string | null {
-  try {
-    const listed = new Set(execFileSync('git', ['for-each-ref', '--format=%(refname)', ...DEFAULT_BRANCH_REFS], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').map((ref) => ref.trim()).filter(Boolean));
-    return DEFAULT_BRANCH_REFS.find((ref) => listed.has(ref)) ?? null;
-  } catch {
-    return null;
-  }
+/** The default branch as a person names it, in the order doctor reads it: `origin/HEAD`, else `origin/main`, else `main`. */
+const DEFAULT_BRANCH_NAMES = ['origin/HEAD', 'origin/main', 'main'];
+
+/**
+ * The revision arguments for the last `HISTORY_DEPTH` commits on each default-branch name.
+ * `--ignore-missing` drops a ref that is not here, and a `~` depth past a short history.
+ * One `git log` takes them all, so doctor starts one git process, not two (#453).
+ */
+function historyWindow(): string[] {
+  return [...DEFAULT_BRANCH_NAMES, '--not', ...DEFAULT_BRANCH_NAMES.map((name) => `${name}~${HISTORY_DEPTH}`)];
 }
 
 /**
  * A note when a merge commit among the last `HISTORY_DEPTH` commits on the default branch
  * carries an author or committer time zone other than UTC (#760). One `git log` reads them
- * all, and the note names one command that shows the merges. The zone is never printed, and
- * neither is a name or email. Null when every merge is UTC, or git can't answer.
+ * all, against the same refs and window the note prints, so the count and the command agree
+ * (#775). The zone is never printed, and neither is a name or email. Null when every merge is
+ * UTC, or git can't answer.
  */
 export function mergeTimeZones(root: string, env: Env): Finding | null {
-  const ref = readDefaultBranchRef(root, env);
-  if (!ref) return null;
   let text = '';
   try {
-    text = execFileSync('git', ['log', `--max-count=${HISTORY_DEPTH}`, '--format=%H%x00%P%x00%ad|%cd', '--date=format:%z', ref], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: 1 << 26 }).trim();
+    text = execFileSync('git', ['log', '--first-parent', '--merges', '--ignore-missing', '--format=%H%x00%ad|%cd', '--date=format:%z', ...historyWindow()], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: 1 << 26 }).trim();
   } catch {
     return null;
   }
   const count = text.split('\n').filter((line) => {
-    const [sha, parents = '', zones = ''] = line.split('\0');
+    if (line === '') return false;
+    const [, zones = ''] = line.split('\0');
     const [author = '', committer = ''] = zones.split('|');
-    return sha !== '' && parents.includes(' ') && (notUtc(` ${author}`) || notUtc(` ${committer}`));
+    return notUtc(` ${author}`) || notUtc(` ${committer}`);
   }).length;
   if (!count) return null;
-  const name = ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\//, '');
-  return finding('time-zone', `${count} merge commit(s) among the last ${HISTORY_DEPTH} commits on ${name} carry an author or committer time zone other than UTC`, `see them with \`git log --merges -n ${HISTORY_DEPTH} --date=format:%z --format='%h %ad %cd' ${name}\`; each line ends with its zone, and +0000 is UTC; leave history as it is, and merge through the bot so new merges stay UTC`);
+  return finding('time-zone', `${count} merge commit(s) among the last ${HISTORY_DEPTH} commits on the default branch carry an author or committer time zone other than UTC`, `see them with \`git log --first-parent --merges --ignore-missing --date=format:%z --format='%h %ad %cd' ${historyWindow().join(' ')}\`; each line ends with its zone, and +0000 is UTC; leave history as it is, and merge through the bot so new merges stay UTC`);
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */

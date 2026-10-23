@@ -280,7 +280,7 @@ test('doctor: counts merge commits whose time is not UTC, and prints one command
   const out = (await zoned.call(['doctor'])).stdout;
   const line = out.split('\n').find((text) => text.includes('time-zone:'));
   assert.ok(line, out);
-  assert.match(line, /^ {2}note {4}time-zone: 1 merge commit\(s\) among the last 200 commits on main carry an author or committer time zone other than UTC; see them with /);
+  assert.match(line, /^ {2}note {4}time-zone: 1 merge commit\(s\) among the last 200 commits on the default branch carry an author or committer time zone other than UTC; see them with /);
   assert.doesNotMatch(out, /\+0900/, 'the time zone value is never printed');
   // The command doctor prints really shows the merge commit.
   const command = /`(git log[^`]+)`/.exec(line)?.[1];
@@ -293,6 +293,41 @@ test('doctor: counts merge commits whose time is not UTC, and prints one command
   // All UTC: no line at all.
   const plain = withMerge(null);
   assert.doesNotMatch((await plain.call(['doctor'])).stdout, /time-zone:/);
+});
+
+test('doctor: the time zone count and the command it prints cover the same commits (#760, #775)', async () => {
+  const sandbox = makeSandbox();
+  const when = '2026-09-01T00:00:00+0000';
+  const env = { ...sandbox.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when };
+  const commit = (message: string) => execFileSync('git', ['commit', '--allow-empty', '-q', '-m', message], { cwd: sandbox.repo, env });
+  const merge = (zone: string) => {
+    execFileSync('git', ['checkout', '-q', '-B', 'topic'], { cwd: sandbox.repo, env });
+    commit('on topic');
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: sandbox.repo, env });
+    const zoned = { ...env, GIT_AUTHOR_DATE: `2026-09-02T00:00:00${zone}`, GIT_COMMITTER_DATE: `2026-09-02T00:00:00${zone}` };
+    execFileSync('git', ['merge', '--no-ff', '-q', '-m', `merge ${zone}`, 'topic'], { cwd: sandbox.repo, env: zoned });
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sandbox.repo, env, encoding: 'utf8' }).trim();
+  };
+  // 216 commits on main: an old merge at #16, outside the last 200, and a new one at #216.
+  for (let i = 0; i < 15; i++) commit(`plain ${i}`);
+  const old = merge('+0900');
+  for (let i = 0; i < 199; i++) commit(`plain ${i}`);
+  const recent = merge('+0900');
+
+  const out = (await sandbox.call(['doctor'])).stdout;
+  const line = out.split('\n').find((text) => text.includes('time-zone:'));
+  assert.ok(line, out);
+  assert.match(line, /1 merge commit\(s\) among the last 200 commits on the default branch/);
+  // The printed command shows exactly that one merge, not the older one outside the window.
+  const command = /`(git log[^`]+)`/.exec(line)?.[1];
+  assert.ok(command, line);
+  if (process.platform !== 'win32') {
+    const shown = execFileSync('sh', ['-c', command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' }).trim();
+    const lines = shown === '' ? [] : shown.split('\n');
+    assert.equal(lines.length, 1, shown);
+    assert.match(shown, new RegExp(recent.slice(0, 7)), 'the newer merge is shown');
+    assert.doesNotMatch(shown, new RegExp(old.slice(0, 7)), 'the older merge is outside the window');
+  }
 });
 
 test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {

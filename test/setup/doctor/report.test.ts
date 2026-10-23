@@ -956,6 +956,39 @@ test('doctor: full doctor in an empty repo starts each git read once, ten child 
   assert.equal(runs.length, 10, runs.join('\n'));
 });
 
+// #760, #775: a repo with a default branch reads its merge history in one git process.
+// A `for-each-ref` to pick the ref and a `log` to read it would be two (#453).
+test('doctor: a repo with a default branch reads its merge history in one git process (#453, #760)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('one.md', 'one\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'one');
+  // As the command runs it: the environment is the process's own (src/commands/shared.ts).
+  const saved = process.env.YOKOTEN_TEMP_DIRS;
+  process.env.YOKOTEN_TEMP_DIRS = '';
+  const runs: string[] = [];
+  const originals = { ...childProcess };
+  for (const name of ['execFileSync', 'spawnSync', 'execSync', 'execFile', 'spawn', 'exec'] as const) {
+    const original = originals[name] as (...args: unknown[]) => unknown;
+    (childProcess as Record<string, unknown>)[name] = (file: string, args?: unknown, options?: { cwd?: string }) => {
+      runs.push(`${Array.isArray(args) ? [file, ...args].join(' ') : file} (in ${options?.cwd === sandbox.repo ? 'the repo' : options?.cwd})`);
+      return original(file, args, options);
+    };
+  }
+  syncBuiltinESMExports();
+  try {
+    doctor(sandbox.repo, { env: process.env, config: DEFAULTS, gh: () => { throw new Error('no network in this test'); }, machine: fakeMachine(100 * GB) });
+  } finally {
+    Object.assign(childProcess, originals);
+    syncBuiltinESMExports();
+    if (saved === undefined) delete process.env.YOKOTEN_TEMP_DIRS;
+    else process.env.YOKOTEN_TEMP_DIRS = saved;
+  }
+  const logs = runs.filter((run) => run.startsWith('git log'));
+  assert.equal(logs.length, 1, runs.join('\n'));
+  assert.ok(!runs.some((run) => run.includes('for-each-ref --format=%(refname) ')), runs.join('\n'));
+});
+
 // ---- The sandbox step (#589): doctor names the one missing or too-wide sandbox. ----
 
 test('doctor: the sandbox step is to do, then done after init, then names a too-wide value (#589)', async () => {
