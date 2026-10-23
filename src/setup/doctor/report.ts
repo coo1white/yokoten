@@ -50,7 +50,7 @@ export const SERVER_TIMEOUT_MS = 3000;
 
 /** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
 const NO_REMOTE = 'there is no origin remote yet';
-const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
+const NO_REMOTE_FIX = 'make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again';
 
 /** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
 function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {

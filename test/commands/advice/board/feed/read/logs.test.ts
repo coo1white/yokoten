@@ -94,6 +94,43 @@ test('board stream logs: a Codex rollout by its cwd, for Codex and DeepSeek', ()
   assert.equal(deepseek?.file, join(desk, 'rollout-desk.jsonl'));
 });
 
+test('board stream logs: a plain log is read when no session log is found (#694)', () => {
+  const home = makeTempDir('yokoten-logs-');
+  const tree = join(home, 'dev', 'repo');
+  const env = { HOME: home };
+  const plain = join(tree, 'runner.log');
+  put(plain, 'opencode run\n');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.source, 'plain', 'OpenCode keeps no session log this reader can follow');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.file, realpathSync(plain), 'the path is resolved');
+  // OpenCode's own log folder is a named runtime log folder.
+  const runtimeLog = join(home, '.local', 'share', 'opencode', 'log', 'opencode.log');
+  put(runtimeLog, 'opencode run\n');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), runtimeLog)?.source, 'plain', 'the runtime log folder is allowed');
+  // A session log wins over the plain log.
+  const day = join(home, '.codex', 'sessions', '2026', '10', '23');
+  put(join(day, 'rollout-1.jsonl'), `${JSON.stringify({ type: 'session_meta', payload: { cwd: tree } })}\n`, 0);
+  assert.equal(findAgentLog(tree, 'codex', env, new Map(), plain)?.source, 'codex', 'the session log wins over the plain log');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.source, 'plain', 'an OpenCode agent does not take another runtime\'s log');
+  // A log path that is missing, relative or not a file is no log at all.
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), join(tree, 'missing.log')), null);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), 'runner.log'), null, 'a relative path is refused');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), tree), null, 'a folder is not a file');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), ''), null);
+  // A positive control: a path outside the worktree and its runtime folders is refused,
+  // even when a symlink inside the worktree points at it.
+  const outside = join(home, 'outside.log');
+  put(outside, 'outside the worktree\n');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), outside), null, 'a path outside the worktree is refused');
+  const escape = join(tree, 'link.log');
+  symlinkSync(outside, escape);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), escape), null, 'a symlink that leaves the worktree is refused');
+  // The named runtime folder itself must be a real folder, not a link to another one.
+  const named = join(`${tree}.state`, 'opencode', 'log');
+  mkdirSync(join(named, '..'), { recursive: true });
+  symlinkSync(home, named);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), outside), null, 'a linked runtime folder is refused');
+});
+
 // #700: the main checkout's lead log is the registered path, when that path stays inside
 // Claude's projects folder. A path that escapes, a symlink out, or a non-jsonl file is
 // refused, and the folder search runs as before. A missing file does the same.
