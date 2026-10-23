@@ -622,8 +622,14 @@ to the plugin, run `yokoten uninstall`. It removes what `install` wrote and keep
 For Codex CLI and Gemini CLI, or without the plugin:
 
 ```sh
-npx yokoten install      # this machine: skills, agents, hooks
 cd your-project
+npx yokoten             # once: installs what is missing, then the road
+```
+
+Run it again in any project and it does only what is still missing. One step at a time:
+
+```sh
+npx yokoten install      # this machine: skills, agents, hooks
 npx yokoten init         # this project: adds files, never overwrites
 npx yokoten doctor       # the road: where you are, what's next
 ```
