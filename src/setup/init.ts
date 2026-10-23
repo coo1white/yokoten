@@ -14,14 +14,15 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import * as antigravity from '../agents/runtimes/antigravity.ts';
+import * as antigravity from '../agents/runtimes/small/antigravity.ts';
 import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
-import * as dsh from '../agents/runtimes/deepseek-harness.ts';
+import * as dsh from '../agents/runtimes/small/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import * as opencode from '../agents/runtimes/small/opencode.ts';
 import { type Problem, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { type TrustChange, type TrustPlan, revertTrust, writeTrust } from '../agents/runtimes/codex.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
@@ -201,7 +202,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
       `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
     ];
   });
-  // Codex, Gemini CLI, Antigravity CLI, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
+  // Codex, Gemini CLI, Antigravity CLI, OpenCode, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
   // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
@@ -220,6 +221,10 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   });
   const antigravityHooks = agentHooks('the Antigravity CLI hook', '.agents/hooks.json', () => [
     `${antigravity.addProjectHook(root, hookCli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
+  ]);
+  // OpenCode has no trust step in the docs we have. The plugin loads when OpenCode starts.
+  const openCodePlugin = agentHooks('the OpenCode plugin', opencode.PLUGIN_FILE, () => [
+    `${opencode.addProjectPlugin(root, hookCli)} the OpenCode tool-call plugin in ${opencode.PLUGIN_FILE}`,
   ]);
   const museHooks = agentHooks('the Muse Code hooks', '.muse/hooks.json', () => {
     const added = muse.addProjectHooks(root, hookCli);
@@ -256,6 +261,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
     ...showSteps(codexHooks.lines, codex.hasUserDir(env)),
     ...geminiHooks.lines,
     ...antigravityHooks.lines,
+    ...openCodePlugin.lines,
     ...showSteps(museHooks.lines, muse.hasUserDir(env)),
     // On Windows, initLines has no bridge command. The Windows line stays either way.
     ...showSteps(dshHooks.lines, dsh.profilesWithBridge(env) !== null),
@@ -273,7 +279,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   const [hookLine, ...hookNotes] = setCommitCheck(root, cli, hooks, blocks, env);
   report.unshift(hookLine);
   report.push(...hookNotes);
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok && trust.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && openCodePlugin.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok && trust.ok, lines: report };
 }
 
 // ---- A project that keeps CI off (#377) ----

@@ -31,6 +31,7 @@ import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
+import * as opencode from '../agents/runtimes/small/opencode.ts';
 import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { copyRuntime, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github/index.ts';
@@ -338,6 +339,13 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ok &&= museHooks.ok;
     report.push(...museHooks.lines);
   } else report.push(`skipped Muse Code: ${dirname(museFile)} not found (run \`yokoten install\` again after installing Muse Code)`);
+  // OpenCode gets the command guard only, and only when its config folder is already there.
+  if (opencode.hasUserDir(env)) {
+    const file = opencode.userPluginFile(env);
+    const openCodeHooks = agentHooks('OpenCode', file, () => [`${opencode.addUserPlugin(env, USER_CLI, USER_MISSING)} the OpenCode command guard in ${file}`]);
+    ok &&= openCodeHooks.ok;
+    report.push(...openCodeHooks.lines);
+  } else report.push(`skipped OpenCode: ${opencode.userPluginFile(env).replace(/\/plugins\/yokoten\.ts$/, '')} not found (run \`yokoten install\` again after installing OpenCode)`);
 
   const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (`yokoten marks add` adds one of your own)' : ''}`);
