@@ -1,8 +1,11 @@
+<!-- source: docs/assets/manifesto.md -->
 # ルールの層
 
 ### エージェント時代のためのマニフェスト
 
 [English](../../assets/manifesto.md) | [简体中文](../zh-CN/manifesto.md) | [繁體中文](../zh-TW/manifesto.md) | 日本語
+
+<sub>このページは英語版からの翻訳です。不自然な表現や誤りに気づいたら、issue や pull request で教えてください。</sub>
 
 コードは安くなった。チームが1週間かけて書いたものを、モデルは1分で書く。プロンプト1つで、誰でもエンジニア10人を呼び出せる。
 
