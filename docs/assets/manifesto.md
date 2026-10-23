@@ -2,7 +2,7 @@
 
 ### A manifesto for the age of agents
 
-English | [简体中文](i18n/zh-CN/manifesto.md) | [繁體中文](i18n/zh-TW/manifesto.md) | [日本語](i18n/ja/manifesto.md)
+English | [简体中文](../i18n/zh-CN/manifesto.md) | [繁體中文](../i18n/zh-TW/manifesto.md) | [日本語](../i18n/ja/manifesto.md)
 
 Code is cheap now. A model writes in a minute what took a team a week. Anyone can
 summon ten engineers with one prompt.
@@ -23,7 +23,7 @@ We refuse.
 
 Asking an agent to behave is not control. yokoten checks each action before it
 runs. If it breaks the rules, it does not run. The same rules run in nine agents
-today. The [guide's agent table](guide.md#works-with) is the one list. Gemini CLI
+today. The [guide's agent table](../guide.md#works-with) is the one list. Gemini CLI
 is listed, but not verified end to end. No agent gets a pass.
 
 ## 2. No model grades its own homework.
@@ -84,7 +84,7 @@ You do.
 npx yokoten install
 ```
 
-[Read the guide](guide.md) · [Star the repo](https://github.com/yokoten-labs/yokoten)
+[Read the guide](../guide.md) · [Star the repo](https://github.com/yokoten-labs/yokoten)
 
 ---
 

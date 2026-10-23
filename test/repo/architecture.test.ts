@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
-import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
+import { noteWork } from '../../src/rules/message.ts';
+import { assertLinear, assertLinearEach, assertWallSmoke } from '../../scripts/linear.ts';
 import { judgeSuite, readReport, SUITE_BUDGET } from '../../scripts/time/suite.ts';
 import { clearYokotenEnv, TEST_HOME } from './home.ts';
 
@@ -51,7 +52,9 @@ test('layers: no module imports from a layer above its own', () => {
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
 // invoke.ts, which runs a command in-process (#475), and merge-utc.test.ts, which reads
-// the merge skill and record. docs.test.ts checks the manifesto count against the guide (#487).
+// the merge skill and record. docs.test.ts checks that prose agrees with the code: the
+// manifesto count against the guide (#487), and the open standard against the shapes (#755).
+// The real-home preload is a temp script home.ts writes, not a file here, so this folder stays at 7 (#739).
 const TEST_TOP = ['repo/architecture.test.ts', 'repo/docs.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/merge-utc.test.ts'];
 // Kit prose has no src module. This test reads the skill files (#531).
 const PROSE_TESTS = ['setup/kit-habits.test.ts'];
@@ -739,6 +742,142 @@ test('docs: every install command in docs/facts.json is in the guides and README
   }
 });
 
+// npm shows the README from the package. A relative image or link breaks there (#713).
+// http(s) URLs and #anchors still open. The scan names the file and the line.
+type ReadmeTarget = { line: number; target: string };
+
+/** The URL in a Markdown destination, without a title or angle brackets. */
+function readLinkTarget(raw: string): string {
+  const target = raw.trim();
+  if (target.startsWith('<')) {
+    const end = target.indexOf('>');
+    return (end >= 0 ? target.slice(1, end) : target.slice(1)).trim();
+  }
+  const title = target.search(/\s+["']/);
+  return (title >= 0 ? target.slice(0, title) : target).trim();
+}
+
+/** One inline link at `open` (`[`), plus links nested in its text, such as a badge. */
+function parseMarkdownLink(line: string, open: number): { target: string; end: number; inner: string[] } | null {
+  const inner: string[] = [];
+  let index = open + 1;
+  while (index < line.length) {
+    const character = line[index];
+    if (character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character === '[') {
+      const nested = parseMarkdownLink(line, index);
+      if (!nested) {
+        index += 1;
+        continue;
+      }
+      inner.push(nested.target, ...nested.inner);
+      index = nested.end + 1;
+      continue;
+    }
+    if (character === ']' && line[index + 1] === '(') {
+      const start = index + 2;
+      let depth = 1;
+      let cursor = start;
+      while (cursor < line.length && depth > 0) {
+        const next = line[cursor];
+        if (next === '\\') {
+          cursor += 2;
+          continue;
+        }
+        if (next === '(') depth += 1;
+        else if (next === ')') depth -= 1;
+        if (depth > 0) cursor += 1;
+      }
+      if (depth !== 0) return null;
+      return { target: readLinkTarget(line.slice(start, cursor)), end: cursor, inner };
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/** Targets of `src`, `srcset`, `href`, Markdown images, links and reference definitions on one line. */
+function collectReadmeTargets(line: string, lineNumber: number, found: ReadmeTarget[]): void {
+  const definition = /^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?/.exec(line);
+  if (definition) found.push({ line: lineNumber, target: definition[1] });
+  for (const match of line.matchAll(/\b(srcset|src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    const parts = match[1].toLowerCase() === 'srcset' ? value.split(',') : [value];
+    for (const part of parts) {
+      const target = part.trim().split(/\s+/)[0];
+      if (target) found.push({ line: lineNumber, target });
+    }
+  }
+  let index = 0;
+  while (index < line.length) {
+    const open = line.indexOf('[', index);
+    if (open < 0) return;
+    if (open > 0 && line[open - 1] === '\\') {
+      index = open + 1;
+      continue;
+    }
+    const parsed = parseMarkdownLink(line, open);
+    if (!parsed) {
+      index = open + 1;
+      continue;
+    }
+    for (const target of [...parsed.inner, parsed.target]) found.push({ line: lineNumber, target });
+    index = parsed.end + 1;
+  }
+}
+
+/** Every image and link target in a README, in source order. */
+function findReadmeTargets(text: string): ReadmeTarget[] {
+  const found: ReadmeTarget[] = [];
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index++) collectReadmeTargets(lines[index].replace(/\r$/, ''), index + 1, found);
+  return found;
+}
+
+/** True when npm can still open `target`: an http(s) URL, or a #anchor. */
+const isAllowedReadmeTarget = (target: string): boolean => target.startsWith('#') || /^https?:\/\//i.test(target);
+
+test('docs: README images and links use full URLs, so the npm page can show them (#713)', () => {
+  const sample = [
+    '<img src="docs/a.svg" alt="x">',
+    "<source srcset='docs/b.svg 1x, https://example.com/c.svg'>",
+    '![pic](docs/d.svg "a title")',
+    '[site](https://example.com/page)',
+    '[here](#local)',
+    '[rel](docs/guide.md)',
+    '[![badge](https://example.com/b.svg)](LICENSE)',
+    '[angled](<https://example.com/a>)',
+    '<a href="docs/e.md">e</a>',
+    '[ref]: docs/f.md',
+  ].join('\n');
+  assert.deepEqual(findReadmeTargets(sample).map((item) => `${item.line} ${item.target}`), [
+    '1 docs/a.svg',
+    '2 docs/b.svg',
+    '2 https://example.com/c.svg',
+    '3 docs/d.svg',
+    '4 https://example.com/page',
+    '5 #local',
+    '6 docs/guide.md',
+    '7 https://example.com/b.svg',
+    '7 LICENSE',
+    '8 https://example.com/a',
+    '9 docs/e.md',
+    '10 docs/f.md',
+  ]);
+
+  const files = ['README.md', 'docs/i18n/zh-CN/README.md', 'docs/i18n/zh-TW/README.md', 'docs/i18n/ja/README.md'];
+  const found: string[] = [];
+  for (const file of files) {
+    for (const item of findReadmeTargets(readFileSync(join(ROOT, file), 'utf8'))) {
+      if (!isAllowedReadmeTarget(item.target)) found.push(`${file}:${item.line}: ${item.target}`);
+    }
+  }
+  assert.deepEqual(found, [], found.join('\n'));
+});
+
 // The guide's Commands table is typed by hand; COMMANDS in src/run/cli.ts is what the
 // parser and --help read (#219). Each command needs a row, and each option must show in
 // one of its rows or in the paragraph right after the table. A command with no row, like
@@ -880,99 +1019,71 @@ test('split tests: an import it cannot place stops it with a list, and nothing i
   assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
 });
 
-// A slow spell of real work: a busy wait until the process has spent `ms` of CPU time. The check
-// reads CPU time (#648), so a wait by the wall clock would shrink when the runner pauses the process.
-const busyWait = (ms: number) => {
-  const spent = () => {
-    const { user, system } = process.cpuUsage();
-    return (user + system) / 1000;
-  };
-  const end = spent() + ms;
-  while (spent() < end);
-};
-
-// A simulated clock for the controls (#493): a wait adds to the time instead of spinning, so a control gives
-// the same result on every run, however busy the runner, and takes no real time.
+// A simulated clock for the smoke control: a wait adds to the time instead of spinning.
 const simulated = () => {
   let now = 0;
   return { clock: { now: () => now }, wait: (ms: number) => void (now += ms) };
 };
 
-test('assertLinear: a quadratic read fails; a slow spell in one round does not (#343)', () => {
-  const { clock, wait } = simulated();
-  // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic. The time is simulated.
-  const quadratic = (input: string) => wait(0.6 * (input.length / 1000) ** 2);
-  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000, clock), /linear is about 8x/);
-  // Linear, but every big read of the first round is 200 ms slower, as on a busy runner. A round
-  // has as many reads as fit in 20 ms, from one timed read, so a busy runner cuts the count
-  // (#359). A 7 ms read is past 20 / 3 ms: every round has 3 reads, however busy the runner.
-  let bigReads = 0;
-  const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 3) wait(200);
-    wait(7 * (input.length / 1000));
+test('assertLinear: a quadratic scan fails every time; a linear scan passes (#754)', () => {
+  // n * n counted steps. The old control counted pairs and hoped the clock noticed.
+  const quadratic = (input: string) => {
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) noteWork(1);
   };
-  assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000, clock);
+  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 200), /linear is about 8x/);
+  const linear = (input: string) => {
+    for (let i = 0; i < input.length; i++) noteWork(1);
+  };
+  assertLinear('linear', (n) => 'x'.repeat(n), linear, 200);
 });
 
-test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
-  const { clock, wait } = simulated();
-  // 2 ms per 1000 chars when linear, on a simulated clock. The controls ask for a base of 2 ms, not 20: a quadratic read grown to 20 ms would take 64x that per big read.
-  const linear = (input: string) => wait(2 * (input.length / 1000));
-  const quadratic = (input: string) => wait(2 * (input.length / 1000) ** 2);
+test('assertLinearEach: one quadratic shape among linear ones fails (#442)', () => {
+  const linear = (input: string) => {
+    for (let i = 0; i < input.length; i++) noteWork(1);
+  };
+  const quadratic = (input: string) => {
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) noteWork(1);
+  };
   const shapes = (read: (input: string) => void) => [
     { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
     { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
     { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
   ];
-  assert.throws(() => assertLinearEach(shapes(quadratic), 1000, 2, clock), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
-  // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
-  let bigReads = 0;
-  const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 1) wait(200);
-    linear(input);
-  };
-  assertLinearEach(shapes(noisy), 1000, 2, clock);
+  assert.throws(
+    () => assertLinearEach(shapes(quadratic), 200),
+    (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'),
+  );
 });
 
-test('assertLinearEach: a real nested loop over the input fails, and a slow spell sends a linear one to a grown second round (#474)', () => {
-  // Counts pairs of equal characters: n * n steps, with no wait in it.
-  const nested = (input: string) => {
-    let pairs = 0;
-    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) if (input.charCodeAt(i) === input.charCodeAt(j)) pairs++;
-    assert.ok(pairs > 0);
-  };
-  const linear = (input: string) => {
-    let sum = 0;
-    for (let i = 0; i < input.length; i++) sum += input.charCodeAt(i);
-    assert.ok(sum > 0);
-  };
-  assert.throws(() => assertLinearEach([{ name: 'nested', make: (n) => 'x'.repeat(n), read: nested }], 1000, 2), (error: Error) => /^nested: .* \d+x; linear is about 8x$/.test(error.message));
-  // A linear read that a slow spell sends to the second round is grown there, and passes.
-  const sizes = new Set<number>();
-  let slow = 0;
-  const spell = (input: string) => {
-    sizes.add(input.length);
-    if (input.length === 8000 && ++slow <= 3) busyWait(30);
-    linear(input);
-  };
-  assertLinearEach([{ name: 'summed', make: (n) => 'x'.repeat(n), read: spell }], 1000);
-  assert.ok(Math.max(...sizes) > 8000, 'the shape was grown past its starting size');
+test('assertLinear: a scan that counts nothing fails (#754)', () => {
+  assert.throws(() => assertLinear('empty', (n) => 'x'.repeat(n), () => {}, 8), /counted no work/);
 });
 
-test('assertLinearEach: a pause on every big read does not count, as on a busy runner (#648)', () => {
-  // The thread sleeps 60 ms in each big read, the one that follows its small read: its wall time
-  // grows far past 24x, its CPU time does not. By wall-clock time this failed, in both rounds; the
-  // nested-loop control above shows the CPU time still catches a quadratic read.
-  const pause = new Int32Array(new SharedArrayBuffer(4));
-  let last = 0;
-  const paused = (input: string) => {
-    if (input.length === 8 * last) Atomics.wait(pause, 0, 0, 60);
-    last = input.length;
-    let sum = 0;
-    for (let i = 0; i < input.length; i++) sum += input.charCodeAt(i);
-    assert.ok(sum > 0);
+test('assertLinear: a scan that counts only its outer loop still passes (#754)', () => {
+  // The inner loop is quadratic and never calls noteWork. Record 0032: the count cannot see it.
+  const hidden = (input: string) => {
+    for (let i = 0; i < input.length; i++) {
+      noteWork(1);
+      for (let j = 0; j < input.length; j++) input.charCodeAt(j);
+    }
   };
-  assertLinearEach([{ name: 'paused', make: (n) => 'x'.repeat(n), read: paused }], 1000, 2);
+  assertLinear('hidden quadratic', (n) => 'x'.repeat(n), hidden, 50);
+});
+
+test('wall-clock smoke: a 100x blow-up fails, one slow read is retried, and a hang fails at once (#754)', () => {
+  const blow = simulated();
+  const quadraticTime = (input: string) => blow.wait(input.length > 100 ? 100 : 1);
+  assert.throws(() => assertWallSmoke('blow', (n) => 'x'.repeat(n), quadraticTime, 100, blow.clock), /100x blow-up/);
+  // The first big read is slow. The retry is linear, so the smoke passes.
+  const noisy = simulated();
+  let slowReads = 0;
+  const oneSlowRead = (input: string) => {
+    if (input.length > 100 && slowReads++ === 0) noisy.wait(5_000);
+    noisy.wait(input.length / 100);
+  };
+  assertWallSmoke('noisy', (n) => 'x'.repeat(n), oneSlowRead, 100, noisy.clock);
+  const hung = simulated();
+  assert.throws(() => assertWallSmoke('hung', (n) => 'x'.repeat(n), () => hung.wait(30_000), 100, hung.clock), /a hang/);
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an

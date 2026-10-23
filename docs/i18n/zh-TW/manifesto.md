@@ -2,7 +2,7 @@
 
 ### 寫給 AI agent 時代的宣言
 
-[English](../../manifesto.md) | [简体中文](../zh-CN/manifesto.md) | 繁體中文 | [日本語](../ja/manifesto.md)
+[English](../../assets/manifesto.md) | [简体中文](../zh-CN/manifesto.md) | 繁體中文 | [日本語](../ja/manifesto.md)
 
 寫程式碼已經不值錢了。一個團隊花一週才寫得完的東西，模型一分鐘就寫完。任何人只要一句提示詞，就能叫來十個工程師。
 

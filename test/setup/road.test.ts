@@ -247,8 +247,8 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
     ['make -C flags', (n) => `- run: make ${'-Cx '.repeat(n / 4)}`],
     ['npm workspaces flags', (n) => `- run: npm -w ${'-a b '.repeat(n / 5)}`],
   ];
-  // From 4096 characters to 32,768, the shapes taking turns (#474). A reader that goes over the text
-  // again for each character is thousands of times over at that size.
+  // From 4096 characters to 8 times that. A reader that goes over the text again
+  // for each character is thousands of times over at that size.
   assertLinearEach(
     inputs.flatMap(([name, make]) =>
       [false, true].map((workspaces) => ({ name: `${name}, workspaces ${workspaces}`, make, read: (ci: string) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name) })),
@@ -483,7 +483,128 @@ test('road: the sandbox step is missing, then done, then names each too-wide val
   }
 });
 
-// #501: the tests step says where the CI job goes, shows it, and names the `needs` list of `ci`.
+// A reader for the one-line flow job doctor prints (#653). It accepts the subset that line uses.
+const parseFlow = (text: string): unknown => {
+  let index = 0;
+  const skip = () => {
+    while (text[index] === ' ') index++;
+  };
+  const fail = (what: string): never => {
+    throw new Error(`${what} at ${index}: ${text.slice(index, index + 20)}`);
+  };
+  const parseString = (): string => {
+    index++;
+    let out = '';
+    while (index < text.length && text[index] !== '"') {
+      if (text[index] === '\\') {
+        index++;
+        const escaped = text[index];
+        out += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped;
+      } else out += text[index];
+      index++;
+    }
+    if (text[index] !== '"') fail('open string');
+    index++;
+    return out;
+  };
+  const parse = (): unknown => {
+    skip();
+    if (text[index] === '{') return parseMap();
+    if (text[index] === '[') return parseList();
+    if (text[index] === '"') return parseString();
+    const start = index;
+    while (index < text.length && text[index] !== ',' && text[index] !== '}' && text[index] !== ']') index++;
+    const raw = text.slice(start, index).trim();
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    if (raw === 'null') return null;
+    if (/^-?\d+$/.test(raw)) return Number(raw);
+    return raw;
+  };
+  const parseKey = (): string => {
+    skip();
+    if (text[index] === '"') return parseString();
+    const start = index;
+    while (index < text.length && text[index] !== ':' && text[index] !== ' ') index++;
+    if (start === index) fail('key');
+    return text.slice(start, index);
+  };
+  const parseMap = (): Record<string, unknown> => {
+    const map: Record<string, unknown> = {};
+    index++;
+    skip();
+    if (text[index] === '}') {
+      index++;
+      return map;
+    }
+    for (;;) {
+      const key = parseKey();
+      skip();
+      if (text[index] !== ':') fail('colon');
+      index++;
+      map[key] = parse();
+      skip();
+      if (text[index] === ',') {
+        index++;
+        continue;
+      }
+      if (text[index] === '}') {
+        index++;
+        return map;
+      }
+      fail('comma or brace');
+    }
+  };
+  const parseList = (): unknown[] => {
+    const list: unknown[] = [];
+    index++;
+    skip();
+    if (text[index] === ']') {
+      index++;
+      return list;
+    }
+    for (;;) {
+      list.push(parse());
+      skip();
+      if (text[index] === ',') {
+        index++;
+        continue;
+      }
+      if (text[index] === ']') {
+        index++;
+        return list;
+      }
+      fail('comma or bracket');
+    }
+  };
+  skip();
+  let value: unknown;
+  if (text[index] === '{' || text[index] === '[') value = parse();
+  else {
+    const key = parseKey();
+    skip();
+    if (text[index] !== ':') fail('colon');
+    index++;
+    value = { [key]: parse() };
+  }
+  skip();
+  if (index !== text.length) fail('end');
+  return value;
+};
+
+const isBalanced = (text: string) => {
+  const open: Record<string, string> = { '{': '}', '[': ']' };
+  const close = new Set(Object.values(open));
+  const stack: string[] = [];
+  for (const mark of text) {
+    const expected = open[mark];
+    if (expected) stack.push(expected);
+    else if (close.has(mark) && stack.pop() !== mark) return false;
+  }
+  return stack.length === 0;
+};
+
+// #501, #653: the tests step says where the CI job goes. For Node it is real YAML on one line.
 test('road: the tests step names the workflow file, the job to add and the needs list of ci (#501)', () => {
   const tests = ROAD.find((s) => s.key === 'tests');
   const dir = makeTempDir('yokoten-tests-where-');
@@ -491,14 +612,43 @@ test('road: the tests step names the workflow file, the job to add and the needs
     const fix = () => tests?.fix(dir, {}, undefined) ?? '';
     // No workflow file yet: init adds it first. No package.json: a placeholder command.
     assert.equal(fix(), 'run `yokoten init` to add .github/workflows/yokoten.yml, then in it, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout step of the other jobs>, {run: <your test command>}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
-    // A test script and a lock file: npm test, after npm ci.
+    // A test script and a pinned checkout: one line of real YAML a beginner can paste.
+    const pin = '3d3c42e5aac5ba805825da76410c181273ba90b1';
+    const setup = 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1';
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
     writeFileSync(join(dir, 'package-lock.json'), '{}');
     mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
-    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), 'jobs: {}\n');
-    assert.equal(fix(), 'in .github/workflows/yokoten.yml, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout and setup-node steps of the other jobs>, {run: npm ci}, {run: npm test}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
-    // The job line is valid flow YAML on one line: it can sit in a session start.
-    assert.ok(!fix().includes('\n'));
+    const workflow = ['jobs:', '  ci:', '    steps:', `      - uses: actions/checkout@${pin} # v7.0.1`, '        with:', '          persist-credentials: false', ''].join('\n');
+    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflow);
+    const text = fix();
+    assert.equal(text.includes('\n'), false, 'the fix is one line');
+    assert.equal(text.includes('<'), false);
+    assert.match(text, /paste this under `jobs:`/);
+    assert.match(text, /add `tests` to the `needs` list of `ci`/);
+    const body = /`(tests: \{.*\})`/.exec(text)?.[1];
+    assert.ok(body);
+    assert.equal(isBalanced(body), true);
+    assert.ok(body.includes(pin) && body.includes(setup) && body.includes('npm ci') && body.includes('npm test'));
+    assert.deepEqual(parseFlow(body), {
+      tests: {
+        'runs-on': 'ubuntu-latest',
+        'timeout-minutes': 10,
+        steps: [
+          { uses: `actions/checkout@${pin}`, with: { 'persist-credentials': false } },
+          { uses: setup, with: { 'node-version': '^22.23.4' } },
+          { run: 'npm ci' },
+          { run: 'npm test' },
+        ],
+      },
+    });
+    // A tag is not a commit pin, so the advice invents no SHA.
+    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflow.replace(`actions/checkout@${pin}`, 'actions/checkout@v7.0.1'));
+    const loose = fix();
+    assert.equal(loose.includes('\n'), false);
+    assert.equal(loose.includes('<'), false);
+    assert.equal(/[0-9a-f]{40}/.test(loose), false);
+    assert.match(loose, /checkout step is not pinned/);
+    assert.match(loose, /Pin it, then run `yokoten init`/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

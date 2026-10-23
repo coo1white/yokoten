@@ -699,7 +699,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
-| `board [--text]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后打印链接，按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
+| `board [--text] [--no-open]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
 `yokoten help <命令>` 打出的也一样，`yokoten --help` 列出所有命令，`yokoten version`（或者
@@ -1389,16 +1389,59 @@ yokoten msg log
 
 ### 团队看板
 
-`yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面，
-启动后打印链接，用浏览器打开。链接里带有一个随机口令，只有能看到这台终端输出的人才能打开页面。
+`yokoten board` 一眼看到整个团队。它只在这台电脑上开一个页面。
+页面地址是 `http://<repo>.localhost:<port>/`。
+`<repo>` 是文件夹名，改成主机名能用的样子。
+这个仓库的端口保持不变。端口被占用时，看板会试后面的端口。
+启动后它会自己在浏览器里打开页面，并打印链接（加 `--no-open` 就只打印）。
+第一次打开用链接里的 `?token=`。
+这一次会设置 HttpOnly、Secure、SameSite=Strict 的 cookie，然后打开没有口令的地址。
+之后的访问用这个 cookie。只有能看到终端的人能打开页面。错误的主机名会被拒绝。
 
-页面分三栏。左栏按 issue 列出 agent，点一个，中间就显示它。
-中间显示选中的 agent 在做什么任务、现在在干什么。右栏列出 PR 和它们的检查。
+Chrome 和 Edge 可以把看板安装成自己的窗口。
+在浏览器菜单里选「安装」。
+装好之后，看板打开时不再带着浏览器的标签页。
+
+页面有两栏。顶栏的铃铛是「等你处理」，就在 Live 旁边。
+左栏按角色列出 agent。点一个，中间就显示它。手机宽度下，负责人那一栏会藏起来，左栏还在。
+每家 vendor 只用一个名字：Claude、Grok、Muse、DeepSeek。
+Codex 用 DeepSeek 模型时，也显示为 DeepSeek。
+中间像聊天一样，实时显示选中的 agent 自己的会话。它说的话是正文。每个工具是下面的一行短字。
+连续的工具超过三步就折起来，点开才看其余的。时间只在每条消息上出现一次。
+每种日志都先变成同一种内容：agent 的话、一个工具步骤、步骤的结果、失败的步骤。
+工具名共用一套：Bash、Read、Edit、Write、Search、Web、Agent、Other。
+新加一家厂商，只写一个读取器，别的都不用改。
+看板能读 Claude、Grok、Muse 和 Codex 的日志。DeepSeek 走 Codex 的日志。
+找不到日志时，中间照旧显示它写的 `doing` 步骤。
+选中负责人时，中间改成最近 24 小时的时间线。
+铃铛上的数字在 0 时是灰色，大于 0 时是橙色。点一下，列表在铃铛下面打开。
+每一行写清是什么、哪个 PR 或 issue、过了多久，并有一个「在这里处理」链接。
+按 Esc、点外面，或再点铃铛，列表就关上。同一个 PR 或 issue 只占一行。
+页面开着的时候，这一行也会去掉：PR 已在最新提交上 Approve，或这个 PR、issue 已合并或已关闭。
+超过一天的一行会写明。来了新的一行，数字会闪一下。评审还没结束的 PR 不进这个列表。
+右栏已经去掉，会话因此更宽。PR 仍在 `yokoten board --text` 和 `/data` 里。
 页面每 15 秒刷新一次，按 Ctrl-C 停掉。
+agent 一打开页面就能看到。PR 和 issue 由 gh 在后台读，同一时间只读一次。
+第一次读完之前，这两个列表显示「正在读取 GitHub…」。
+哪次没读到，页面就留着上一次的列表，并写明是什么时候读的。
+
+负责人那一栏是一张小办公桌。一行字写它正在做什么。
+手机上点铃铛就能看到这张办公桌。
+最多三件等你决定的事。每件带上负责人的建议，和几个一个词的答案。
+最后一行是负责人最近一句话的第一句。点一下就能看剩下的。
+
+选中负责人，中间就是最近 24 小时的时间线。
+一行是一个 agent，或一个还没人接的 issue。
+横条从开始画到现在，做完了就画到结束。颜色是这家 vendor 的。还在做的时候，横条会轻轻呼吸。
+一行上写它在等什么，比如「在 #697 之后」。
+
+负责人把「正在做」和这些决定写进主目录 `.git/yokoten-lead-desk.json`。
+文件里有 `now`、`decisions` 和 `updated`。每条决定有问题、建议和答案。
+看板像读状态文件一样读它。文件坏了就当没有。文字和会话一样先遮住。
 
 `yokoten board --text` 在终端里用纯文本打印 agent、PR 和 worktree。
 
-顶部「等你处理」列出需要 owner 的事：绿灯还没 Approve 的 tier A PR、
+`yokoten board --text` 在有事等你时打印「等你处理」：绿灯且最新提交还没 Approve 的 tier A PR、
 被 guard 拦住的命令、agent 的提问。每一行写清种类、agent、它的分工、
 等了多久、一句话原因，以及去哪里处理。这个列表是只读的：
 agent 发的任何请求都清不掉它。没事可做时会说没事。
@@ -1417,15 +1460,31 @@ worktree 和里面的提交。自己退出来的进程算停掉：名额放出�
 限制（limits）说同时能跑几个 agent（默认三个），以及一个 model 能跑几个。
 超了就用一句话说明原因，拒绝启动。
 
-有人等的时候，`yokoten board --text` 也打印「等你处理」，以及看板启动的任务。
+`yokoten board --text` 也打印看板启动的任务。
 
-安全：链接里有随机口令，改动还要带页面的 Origin。看板只停自己启动的进程。
+安全：第一次访问会设置一个 HttpOnly Secure cookie，改动还要带页面的 Origin。看板只停自己启动的进程。
 每次启动和停止都记到仓库根目录的 `.yokoten-board.log`。每个 agent 都过 guard，
 push 和合并只走 bot。没有 Approve 也没有 Merge 按钮：那些留在 host 那边，归 owner。
 
-agent 在自己 worktree 的根目录写一个 `.yokoten-agent.json` 就加入了，
-删掉这个文件就离开。不管跑的是哪家的 agent，都可以写。格式是公开的，
-别的工具也可以读。一个 worktree 一个文件。
+agent 会自己出现在看板上。在这个仓库、它的某个 worktree，或者一个 desk（`yokoten desk`）里
+打开 agent，yokoten 的钩子就会把它的状态写进那个目录根部的 `.yokoten-agent.json`。
+每家 vendor 都一样：
+
+- 会话一开始，写上 `vendor`、`model`、`role`（主目录里是 `lead`，worker 是 `engineer`，
+  和 guard 用同一条规则判断）、`worktree`、`state: working`，还有 `started`。
+  `started` 只写一次，时间线上的横条才不会挪动。Grok 没有会话开始的钩子，
+  由它的第一次调用来写。
+- 每次放行的工具调用会更新 `doing` 和 `updated`，最多每 5 秒写一次。
+- 被拦下的调用会写上 `blocked`。下一次放行的调用会清掉它，看板上的那一行还留着。
+- 结束时写上 `state`：worker 是 `done`，并带上 `checks`；负责人是 `waiting`。
+
+钩子只在有 `yokoten.json` 的仓库里写这个文件。worker 从不写主目录里的那份：那份是负责人的。
+第一次写的时候，会把这个文件加进仓库自己的 `.git/info/exclude`，所以 `git status` 里永远看不到它。
+desk 是普通的 clone，`git worktree list` 列不出来，所以 `yokoten desk` 会把它记在仓库的 git 目录里，
+看板也就能显示它。
+
+agent 也可以自己写这个文件，比如 `task`、`question` 或 `link`；钩子不碰它没设的字段。
+删掉这个文件就离开。格式是公开的，别的工具也可以读。一个 worktree 一个文件。
 
 | 字段 | 意思 |
 |------|------|
@@ -1436,6 +1495,7 @@ agent 在自己 worktree 的根目录写一个 `.yokoten-agent.json` 就加入�
 | `worktree` | 在哪个 worktree 干活 |
 | `doing` | 现在在干什么，一句话 |
 | `updated` | 上次写这个文件的时间，比如 `2026-10-22T10:00:00Z`。看板会换算成多久以前 |
+| `started` | 这件事什么时候开始的，比如 `2026-10-22T08:00:00Z`。没写就用文件的创建时间，再没有就用 `updated` |
 | `blocked` | 需要决定的 guard 拦截，一句话，会进「等你处理」 |
 | `question` | 问 owner 的一句话，会进「等你处理」 |
 | `link` | 去哪里处理，只认 http(s)，别的只当纯文本显示 |

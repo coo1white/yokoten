@@ -2,7 +2,7 @@
 
 ### エージェント時代のためのマニフェスト
 
-[English](../../manifesto.md) | [简体中文](../zh-CN/manifesto.md) | [繁體中文](../zh-TW/manifesto.md) | 日本語
+[English](../../assets/manifesto.md) | [简体中文](../zh-CN/manifesto.md) | [繁體中文](../zh-TW/manifesto.md) | 日本語
 
 コードは安くなった。チームが1週間かけて書いたものを、モデルは1分で書く。プロンプト1つで、誰でもエンジニア10人を呼び出せる。
 

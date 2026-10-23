@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fixture, makeTempDir } from '../../repo/helpers.ts';
 import { facts } from '../../../src/setup/advice/adopt.ts';
-import { TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
+import { languagesWithTests, TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
 import { ROAD } from '../../../src/setup/road.ts';
 
 const project = (files: Record<string, string>) => {
@@ -157,6 +157,216 @@ test('test commands: composer test counts only when composer.json has a test scr
   assert.equal(testsStep({ 'composer.json': '{}', ...workflow('composer test') }).done, false);
   assert.equal(testsStep({ 'composer.json': JSON.stringify({ scripts: { lint: 'phpcs' } }), ...workflow('composer test') }).done, false);
   assert.equal(testsStep(workflow('composer test')).done, false);
+});
+
+test('test commands: a test folder counts only for the language whose test files are in it (#576)', () => {
+  // Each folder name, with no test file of the language, is missing.
+  for (const path of ['spec/openapi.yaml', 'test/notes.md', 'tests/notes.md', '__tests__/notes.md']) {
+    const adopt = adoptTests({ 'go.mod': 'module example.com/x\n', [path]: '' });
+    assert.equal(adopt?.status, 'missing', path);
+    assert.equal(adopt?.evidence, '`go test` (Go) once tests exist', path);
+  }
+
+  // A source file in that folder is not a test unless the language's own rule matches it.
+  // A root spec/ folder still makes Ruby suggest rspec. This task leaves hasRspec as it is.
+  const missing: { files: Record<string, string>; runner: string; language: string }[] = [
+    { files: { 'requirements.txt': 'requests\n', 'tests/helper.py': '' }, runner: 'pytest', language: 'Python' },
+    { files: { 'requirements.txt': 'requests\n', 'tests/test.py': '' }, runner: 'pytest', language: 'Python' },
+    { files: { 'Cargo.toml': '[package]\n', 'tests/lib.rs': '' }, runner: 'cargo test', language: 'Rust' },
+    { files: { 'pom.xml': '<project/>\n', 'src/test/Helper.java': '' }, runner: 'mvn test', language: 'Maven' },
+    { files: { 'build.gradle': '', 'src/test/Helper.java': '' }, runner: 'gradle test', language: 'Gradle' },
+    { files: { 'deno.json': '{}', '__tests__/main.ts': '' }, runner: 'deno test', language: 'Deno' },
+    { files: { 'App.csproj': '<Project/>\n', 'tests/Foo.cs': '' }, runner: 'dotnet test', language: '.NET' },
+    { files: { Gemfile: '', 'spec/helper.rb': '' }, runner: 'bundle exec rspec', language: 'Ruby' },
+    { files: { Gemfile: '', 'spec/openapi.yaml': '' }, runner: 'bundle exec rspec', language: 'Ruby' },
+    { files: { Gemfile: '', 'test/helper.rb': '' }, runner: 'bundle exec rake test', language: 'Ruby' },
+    { files: { 'composer.json': '{}', 'tests/Foo.php': '' }, runner: 'vendor/bin/phpunit', language: 'PHP' },
+    { files: { 'Package.swift': '', 'Tests/Foo.swift': '' }, runner: 'swift test', language: 'Swift' },
+    { files: { 'mix.exs': '', 'test/x.exs': '' }, runner: 'mix test', language: 'Elixir' },
+    { files: { 'pubspec.yaml': FLUTTER_PUBSPEC, 'test/a.dart': '' }, runner: 'flutter test', language: 'Flutter' },
+    { files: { 'pubspec.yaml': DART_PUBSPEC, 'test/a.dart': '' }, runner: 'dart test', language: 'Dart' },
+  ];
+  for (const { files, runner, language } of missing) {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  }
+
+  // One language's test file does not mark the other language done.
+  const goAndRust = adoptTests({ 'go.mod': 'module example.com/x\n', 'Cargo.toml': '[package]\n', 'test/widget_test.go': 'package x\n' });
+  assert.equal(goAndRust?.status, 'done');
+  assert.equal(goAndRust?.evidence, '`go test` (Go)');
+
+  // The same folders still count when the file is a test file of that language.
+  const done: { files: Record<string, string>; evidence: string }[] = [
+    { files: { 'go.mod': 'module example.com/x\n', 'spec/widget_test.go': 'package x\n' }, evidence: '`go test` (Go)' },
+    { files: { 'requirements.txt': 'requests\n', 'tests/test_app.py': '' }, evidence: '`pytest` (Python)' },
+    { files: { 'requirements.txt': 'requests\n', 'tests/app_test.py': '' }, evidence: '`pytest` (Python)' },
+    { files: { 'requirements.txt': 'requests\n', 'tests/conftest.py': '' }, evidence: '`pytest` (Python)' },
+    { files: { 'Cargo.toml': '[package]\n', 'tests/widget_test.rs': '' }, evidence: '`cargo test` (Rust)' },
+    { files: { 'Cargo.toml': '[package]\n', 'tests/lib.rs': '#[test]\nfn has() {}\n' }, evidence: '`cargo test` (Rust)' },
+    { files: { 'pom.xml': '<project/>\n', 'src/test/FooIT.java': '' }, evidence: '`mvn test` (Maven)' },
+    { files: { 'build.gradle': '', 'src/test/FooIT.java': '' }, evidence: '`gradle test` (Gradle)' },
+    { files: { 'deno.json': '{}', '__tests__/main_test.ts': '' }, evidence: '`deno test` (Deno)' },
+    { files: { 'App.csproj': '<Project/>\n', 'tests/FooTests.cs': '' }, evidence: '`dotnet test` (.NET)' },
+    { files: { Gemfile: '', 'spec/a_spec.rb': '' }, evidence: '`bundle exec rspec` (Ruby)' },
+    { files: { 'composer.json': '{}', 'tests/FooTest.php': '' }, evidence: '`vendor/bin/phpunit` (PHP)' },
+    { files: { 'composer.json': COMPOSER_TEST, 'spec/openapi.yaml': '' }, evidence: '`composer test` (PHP)' },
+    { files: { 'Package.swift': '', 'Tests/FooTests.swift': '' }, evidence: '`swift test` (Swift)' },
+    { files: { 'mix.exs': '', 'test/x_test.exs': '' }, evidence: '`mix test` (Elixir)' },
+    { files: { 'pubspec.yaml': FLUTTER_PUBSPEC, 'test/a_test.dart': '' }, evidence: '`flutter test` (Flutter)' },
+    { files: { 'pubspec.yaml': DART_PUBSPEC, 'test/a_test.dart': '' }, evidence: '`dart test` (Dart)' },
+  ];
+  for (const { files, evidence } of done) {
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', evidence);
+    assert.equal(adopt?.evidence, evidence);
+  }
+});
+
+test('test commands: Surefire names and a .NET test attribute count as tests (#576)', () => {
+  const found = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [{ language, runner }], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
+  };
+  const missing = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  };
+
+  // Surefire runs Test*.java and *TestCase.java. The prefix only counts under src/test:
+  // src/main/java/TestUtils.java is production code, and mvn test does not run it.
+  found({ 'pom.xml': '<project/>\n', 'src/test/java/TestFoo.java': '' }, 'Maven', 'mvn test');
+  found({ 'pom.xml': '<project/>\n', 'src/test/java/FooTestCase.java': '' }, 'Maven', 'mvn test');
+  found({ 'pom.xml': '<project/>\n', 'mod/src/test/java/com/example/Testing.java': '' }, 'Maven', 'mvn test');
+  found({ 'build.gradle': '', 'src/test/java/TestFoo.java': '' }, 'Gradle', 'gradle test');
+  found({ 'build.gradle': '', 'src/test/java/FooTestCase.java': '' }, 'Gradle', 'gradle test');
+  found({ 'build.gradle.kts': '', 'src/test/kotlin/FooTest.kt': '' }, 'Gradle', 'gradle test');
+  missing({ 'pom.xml': '<project/>\n', 'src/main/java/TestUtils.java': '' }, 'Maven', 'mvn test');
+  missing({ 'pom.xml': '<project/>\n', 'src/main/java/Testing.java': '' }, 'Maven', 'mvn test');
+  missing({ 'pom.xml': '<project/>\n', 'src/test/java/Helper.java': '' }, 'Maven', 'mvn test');
+  missing({ 'pom.xml': '<project/>\n', 'src/test/java/Latest.java': '' }, 'Maven', 'mvn test');
+  missing({ 'build.gradle': '', 'src/main/java/TestUtils.java': '' }, 'Gradle', 'gradle test');
+
+  // dotnet test finds an attribute. The file name does not have to end in Test.
+  const fact = 'using Xunit;\n\npublic class Calculator\n{\n    [Fact]\n    public void Adds() {}\n}\n';
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': fact }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '[Xunit.Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '[Fact(Skip = "slow")]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Rows.cs': 'public class Rows { [Theory] public void Adds(int n) {} }\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Rows.cs': 'public class Rows { [Test] public void Adds() {} }\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Rows.cs': 'public class Rows { [TestMethod] public void Adds() {} }\n' }, '.NET', 'dotnet test');
+  found({ 'Lib.fsproj': '', 'tests/Calculator.fs': '[<Fact>]\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  found({ 'Lib.vbproj': '', 'tests/Calculator.vb': '<Fact>\nPublic Sub Adds()\nEnd Sub\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { public int Add(int a, int b) => a + b; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'var fact = 1;\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'src/List.cs': 'class Box { List<Test> items = new(); }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'src/Setup.cs': 'public class Setup { [TestInitialize] public void Init() {} }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'src/Setup.cs': 'public class Setup { [Other.TestInitialize] public void Init() {} }\n' }, '.NET', 'dotnet test');
+  // Build output is not a source file the project wrote as a test.
+  missing({ 'App.csproj': '<Project/>\n', 'obj/Debug/Generated.cs': '[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+});
+
+test('test commands: a Kotlin Test prefix counts, and a quoted .NET attribute does not (#576)', () => {
+  const found = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [{ language, runner }], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
+  };
+  const missing = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  };
+
+  // Gradle runs Test*.kt from src/test the way Surefire runs Test*.java. The suffix
+  // rule already accepts FooTest.kt. A name that only starts with Test must too.
+  found({ 'build.gradle.kts': '', 'src/test/kotlin/TestFoo.kt': '' }, 'Gradle', 'gradle test');
+  found({ 'pom.xml': '<project/>\n', 'src/test/kotlin/TestFoo.kt': '' }, 'Maven', 'mvn test');
+  missing({ 'build.gradle.kts': '', 'src/main/kotlin/TestFoo.kt': '' }, 'Gradle', 'gradle test');
+  missing({ 'build.gradle.kts': '', 'src/test/kotlin/Helper.kt': '' }, 'Gradle', 'gradle test');
+
+  // dotnet test does not run an attribute that lives in a comment or a string.
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = "[Fact]"; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '// [Fact]\npublic class Calculator {}\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '/* [Fact] */\npublic class Calculator {}\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = @"[Fact]"; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = $"[Fact]"; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = "say \\"[Fact]\\"";\n }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = @"say ""[Fact]"""; }\n' }, '.NET', 'dotnet test');
+  missing({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'public class Calculator { string note = """\n[Fact]\n"""; }\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': '// [<Fact>]\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': '(* [<Fact>] *)\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': '(* outer (* still *) [<Fact>] *)\nlet adds () = ()\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': 'let note = "[<Fact>]"\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.fsproj': '', 'tests/Calculator.fs': 'let note = """[<Fact>]"""\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.vbproj': '', 'tests/Calculator.vb': "' <Fact>\nPublic Class Calculator\nEnd Class\n" }, '.NET', 'dotnet test');
+  missing({ 'Lib.vbproj': '', 'tests/Calculator.vb': 'Public Class Calculator\n    Dim note = "<Fact>"\nEnd Class\n' }, '.NET', 'dotnet test');
+  missing({ 'Lib.vbproj': '', 'tests/Calculator.vb': 'Dim x = 1 Rem <Fact>\nPublic Class Calculator\nEnd Class\n' }, '.NET', 'dotnet test');
+
+  // A real attribute still counts beside a comment or a string that names one.
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '// [Fact]\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'string note = "[Theory]";\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': '[Fact(Skip = "see [Theory]")]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'string note = $"keep { "[Fact]" }";\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'App.csproj': '<Project/>\n', 'tests/Calculator.cs': 'string note = "/*";\n[Fact]\npublic void Adds() {}\n' }, '.NET', 'dotnet test');
+  found({ 'Lib.vbproj': '', 'tests/Calculator.vb': "Rem <Fact>\n<Fact>\nPublic Sub Adds()\nEnd Sub\n" }, '.NET', 'dotnet test');
+});
+
+test('test commands: async Rust tests, Gradle annotations and C# indexers (#576)', () => {
+  const found = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [{ language, runner }], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'done', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language})`, name);
+  };
+  const missing = (files: Record<string, string>, language: string, runner: string) => {
+    const name = `${language}: ${Object.keys(files).join(', ')}`;
+    assert.deepEqual(languagesWithTests(project(files)), [], name);
+    const adopt = adoptTests(files);
+    assert.equal(adopt?.status, 'missing', name);
+    assert.equal(adopt?.evidence, `\`${runner}\` (${language}) once tests exist`, name);
+  };
+
+  // cargo test runs an integration test that uses an async or rstest attribute.
+  const rust = (body: string) => ({ 'Cargo.toml': '[package]\n', 'tests/lib.rs': body });
+  found(rust('#[tokio::test]\nasync fn adds() {}\n'), 'Rust', 'cargo test');
+  found(rust('#[async_std::test]\nasync fn adds() {}\n'), 'Rust', 'cargo test');
+  found(rust('#[rstest]\nfn adds() {}\n'), 'Rust', 'cargo test');
+  found(rust('#[tokio::test(flavor = "multi_thread")]\nasync fn adds() {}\n'), 'Rust', 'cargo test');
+  missing(rust('#[cfg(test)]\nmod tests {}\n'), 'Rust', 'cargo test');
+
+  // Gradle discovers @Test and a Kotest StringSpec under src/test. Maven stays on Surefire names.
+  const junit = 'import org.junit.jupiter.api.Test;\nclass Foo {\n    @Test\n    void adds() {}\n}\n';
+  const kotest = 'class FooSpec : StringSpec({\n    "adds" { }\n})\n';
+  found({ 'build.gradle': '', 'src/test/java/Foo.java': junit }, 'Gradle', 'gradle test');
+  found({ 'build.gradle.kts': '', 'src/test/kotlin/FooSpec.kt': kotest }, 'Gradle', 'gradle test');
+  missing({ 'pom.xml': '<project/>\n', 'src/test/java/Foo.java': junit }, 'Maven', 'mvn test');
+  missing({ 'build.gradle': '', 'src/main/java/Foo.java': junit }, 'Gradle', 'gradle test');
+
+  // A bracket after a name or an equals sign is an indexer or a collection, not an attribute.
+  const dotnet = (body: string) => ({ 'App.csproj': '<Project/>\n', 'src/App.cs': body });
+  missing(dotnet('var values = [Fact];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var values =\n[Fact];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var value = values[Test];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var value = map[Theory];\n'), '.NET', 'dotnet test');
+  missing(dotnet('var value = map[key][Theory];\n'), '.NET', 'dotnet test');
+  found(dotnet('[Trait("a", "b")][Fact]\npublic void Adds() {}\n'), '.NET', 'dotnet test');
+  found(dotnet('public class Rows { [Theory] public void Adds(int n) {} }\n'), '.NET', 'dotnet test');
+  found(dotnet('#nullable enable\n\n[Fact]\npublic void Adds() {}\n'), '.NET', 'dotnet test');
+  found({ 'Lib.fsproj': '', 'tests/Calculator.fs': 'module Tests\n\n[<Fact>]\nlet adds () = ()\n' }, '.NET', 'dotnet test');
 });
 
 test('test commands: a pubspec.yaml with many blank lines is read in linear time (#546)', () => {

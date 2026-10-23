@@ -382,15 +382,21 @@ export const COMMANDS: Command[] = [
   {
     name: 'board',
     summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
-    usage: '[--text]',
+    usage: '[--text] [--no-open]',
     text: [
-      'Serves a live page on this machine only (127.0.0.1): the agents on the left,',
-      'the picked one in the middle, and each pull request stage on the right. It',
-      'prints the link and runs until you stop it. The page refreshes every 15 seconds.',
-      'An agent joins by writing .yokoten-agent.json at its worktree root, and leaves',
-      'by removing it; the guide shows the format.',
+      'Serves a live page on this machine only, at http://<repo>.localhost:<port>/.',
+      'The folder name is the host. The port stays with this repo. The first visit',
+      'sets a cookie and opens the page without the token. Agents sit on the left.',
+      'The picked one fills the rest. Needs you is a bell next to Live. The',
+      'board opens the page in your browser, prints the link, and runs until you stop it.',
+      'Chrome and Edge can install it as its own window. The page refreshes every 15',
+      'seconds. Agents in this repo, its worktrees and its desks show by themselves:',
+      'the hooks write .yokoten-agent.json for them.',
     ],
-    options: [{ name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' }],
+    options: [
+      { name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' },
+      { name: '--no-open', text: 'only print the link; do not open the browser' },
+    ],
     example: 'yokoten board --text',
   },
   {
