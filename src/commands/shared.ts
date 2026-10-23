@@ -75,7 +75,7 @@ export function parse(name: string, words: string[]): Parsed | string {
       return `unknown option ${a}${near ? `. Did you mean ${near}?` : ''}`;
     } else parsed.positional.push(a);
   }
-  const allowed = command.arguments?.length ?? (command.argument ? 1 : 0);
+  const allowed = command.many ? Infinity : command.arguments?.length ?? (command.argument ? 1 : 0);
   if (parsed.positional.length > allowed) return `unexpected argument ${parsed.positional[allowed]}`;
   return parsed;
 }

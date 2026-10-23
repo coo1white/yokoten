@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {
+  delimiter,
   dirname,
   join,
   resolve,
@@ -693,6 +694,40 @@ test('hook --stop: a subagent runs the done-when command only in the worktree th
   assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(nested), 'a subagent in the lead folder runs in the event folder');
 });
 
+// #746: a desk whose `.git` lost what git needs is broken, but its own done-when is still on
+// disk: the stop runs it in the desk, never the parent's, and never skips it.
+test('hook --stop: a partial desk runs its own done-when in the desk (#746)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const desk = join(sandbox.repo, 'desk');
+  // `HEAD` and `objects` alone are not a checkout: git walks up to the parent, so does yokoten.
+  mkdirSync(join(desk, '.git', 'objects'), { recursive: true });
+  writeFileSync(join(desk, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+  mkdirSync(join(desk, 'src'));
+  const record = join(sandbox.repo, 'record.mjs');
+  writeFileSync(record, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], process.cwd());\n');
+  const marker = join(sandbox.repo, 'desk-ran');
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), 'exit 1\n');
+  writeFileSync(join(desk, '.git', 'yokoten-done-when'), `${process.execPath} ${record} ${marker}\n`);
+  const stop = (session: string) =>
+    sandbox.call(['hook', '--stop'], {
+      cwd: join(desk, 'src'),
+      input: JSON.stringify({ session_id: session, cwd: join(desk, 'src'), hook_event_name: 'Stop', stop_hook_active: false }),
+    });
+  let result = await stop('desk-partial-746');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(realpathSync(readFileSync(marker, 'utf8')), realpathSync(desk), 'the command ran in the desk, not the parent');
+  // A failing one refuses the stop: the check is kept, not skipped.
+  rmSync(marker);
+  writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'echo desk-failed >&2; exit 1\n');
+  result = await stop('desk-partial-746-fail');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /desk-failed/);
+});
+
 // #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every
 // agent in it a worker, whatever env reaches the hook; the lead's main checkout is not affected.
 // Every call here is Muse-shaped, piped to `hook --agent muse`, with YOKOTEN_ROLE unset.
@@ -1262,4 +1297,23 @@ test('stops: off and on work, and the state says where the log is (#621)', async
   assert.match(state.stdout, /stops\.jsonl/);
   assert.match(state.stdout, /on:/);
   assert.match(state.stdout, /Nothing is sent anywhere/);
+});
+
+// The guard read the session's root twice: once for the call, and once more for the team
+// messages an allowed Claude Code call carries (#821). One git call, not two.
+test('hook: an allowed call asks git for the root once (#821)', { skip: process.platform === 'win32' && 'the fake git is a node script with no .cmd shim' }, async () => {
+  const sandbox = makeSandbox();
+  const bin = makeTempDir('yokoten-fake-git-');
+  const log = join(bin, 'git.log');
+  const realGit = (process.env.PATH ?? '').split(delimiter).map((dir) => join(dir, 'git')).find((file) => existsSync(file));
+  assert.ok(realGit, 'git is on PATH');
+  // A git that writes down its arguments, then runs the real one.
+  writeFileSync(join(bin, 'git'), `#!/usr/bin/env node\nimport { spawnSync } from 'node:child_process';\nimport { appendFileSync } from 'node:fs';\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nconst done = spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: 'inherit', env: process.env });\nprocess.exit(done.status ?? 1);\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'ls -la' } });
+  const result = await sandbox.call(['hook'], { input, extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0);
+  assert.ok(existsSync(log), 'the guard asked git');
+  const asked = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
+  assert.equal(asked.filter((args) => args.join(' ') === 'rev-parse --show-toplevel').length, 1);
 });
