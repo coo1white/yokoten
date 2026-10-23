@@ -16,7 +16,7 @@ import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
-import { type Finding, finding, isFailingFinding, type RuleId } from './message.ts';
+import { type Finding, finding, isFailingFinding, noteWork, type RuleId } from './message.ts';
 import { findEnvironmentValues, findLineIgnores, findSecretHits, type IgnoreDirective, makeSafeIgnoreReason, makeSecretHider, parseIgnoreFile, SECRET } from './secrets.ts';
 
 /** Where the system says the home folder is, with no $HOME: the password file. Empty when it can't tell. */
@@ -155,14 +155,20 @@ const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '
 /** `text` without any of `chars` at its end. A loop, so it is linear on any input. */
 function trimEnd(text: string, chars: string): string {
   let end = text.length;
-  while (end > 0 && chars.includes(text[end - 1])) end--;
+  while (end > 0 && chars.includes(text[end - 1])) {
+    noteWork(1);
+    end--;
+  }
   return text.slice(0, end);
 }
 
 /** `text` without any of `chars` at its start. */
 function trimStart(text: string, chars: string): string {
   let start = 0;
-  while (start < text.length && chars.includes(text[start])) start++;
+  while (start < text.length && chars.includes(text[start])) {
+    noteWork(1);
+    start++;
+  }
   return text.slice(start);
 }
 
@@ -179,6 +185,7 @@ function localKey(path: string, base?: string): string | null {
   // The deepest folder that exists, with links followed, then the rest: a link such as
   // macOS's /var gives one key whether or not the path exists yet.
   for (let head = full, rest = ''; ; rest = rest ? join(basename(head), rest) : basename(head), head = dirname(head)) {
+    noteWork(1);
     try {
       return rest ? join(realpathSync(head), rest) : realpathSync(head);
     } catch {
@@ -195,6 +202,7 @@ function localKey(path: string, base?: string): string | null {
  * a relative one against `base`, the repo's top folder. Null when it can't be read.
  */
 export function normalizeRemote(url: string, base?: string): string | null {
+  noteWork(url.length);
   const split = splitRemote(url);
   if (!split) return null;
   return 'local' in split ? localKey(split.local, base) : hostKey(split.host, split.path);
@@ -710,6 +718,7 @@ function isStable(text: string, index: number): boolean {
 function hasLongJoin(text: string): boolean {
   for (let index = 0, run = 0; index < text.length; ) {
     const width = joinerWidth(text, index);
+    noteWork(width || 1);
     if (!width) run = 0;
     else if (++run > MAX_JOINED) return true;
     index += width || 1;
@@ -734,8 +743,15 @@ export interface FoldedText {
  * cut before each character that does not join is NFKD of its pieces.
  */
 function foldPlain(text: string): string {
-  if (!NON_ASCII.test(text)) return text;
-  return hasLongJoin(text) ? foldText(text).text : text.normalize('NFKD');
+  if (!NON_ASCII.test(text)) {
+    noteWork(text.length);
+    return text;
+  }
+  if (!hasLongJoin(text)) {
+    noteWork(text.length);
+    return text.normalize('NFKD');
+  }
+  return foldText(text).text;
 }
 
 /** The one fold of text, for the check and for `redact` (#507). A line of ASCII costs one test. */
@@ -747,6 +763,7 @@ export function foldText(text: string): FoldedText {
   for (let start = 0; start < text.length; ) {
     let end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
     for (let joined = 0, width = 0; joined < MAX_JOINED && end < text.length && (width = joinerWidth(text, end)); joined++) end += width;
+    noteWork(end - start);
     const piece = end === start + 1 && isStable(text, start) ? text[start] : text.slice(start, end).normalize('NFKD');
     folded += piece;
     for (let i = 0; i < piece.length; i++) {
@@ -767,8 +784,14 @@ export interface FoldedLine {
   lower: string;
 }
 export const foldLine = (line: string): FoldedLine => {
-  if (!NON_ASCII.test(line)) return { text: line, lower: line.toLowerCase() };
-  const text = hasLongJoin(line) ? foldText(line).text : line.normalize('NFKD');
+  if (!NON_ASCII.test(line)) {
+    noteWork(line.length);
+    return { text: line, lower: line.toLowerCase() };
+  }
+  const long = hasLongJoin(line);
+  // One normalize of the whole line when no joined run is over the limit.
+  if (!long) noteWork(line.length);
+  const text = long ? foldText(line).text : line.normalize('NFKD');
   return { text, lower: text.replace(ZERO_WIDTH, '').toLowerCase() };
 };
 
@@ -853,6 +876,7 @@ export function hasMark(text: string, mark: string, folded: FoldedLine = foldLin
     }
     markTests.set(mark, test);
   }
+  noteWork(folded.text.length);
   return test(folded.text, folded.lower);
 }
 
@@ -1562,6 +1586,7 @@ const LONE_POST_START = new RegExp(String.raw`^(?:(?:(?:NODE_USE_ENV_PROXY|GH_RE
  * `cd` is true when the line starts with that `cd`; its target may start with `~`.
  */
 export function lonePost(command: string): { cd: boolean; target?: string } | null {
+  noteWork(command.length);
   let text = trimStart(command, ' \t');
   const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
@@ -1571,6 +1596,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   let heredoc: { word: string; tabs: boolean } | null = null;
   let index = start[0].length;
   for (; index < text.length; index++) {
+    noteWork(1);
     const char = text[index];
     if (quote === "'") {
       if (char === "'") quote = null;
@@ -1626,6 +1652,7 @@ export function withoutReadPipe(command: string): string {
   let quote = '';
   let at = -1;
   for (let index = 0; index < command.length && at === -1; index++) {
+    noteWork(1);
     const char = command[index];
     if (char === '\n' || (char === '\\' && quote !== "'")) return command;
     if (quote) {
@@ -1654,6 +1681,7 @@ function isReadPipe(text: string, at: number): boolean {
   let quote = '';
   let program = '';
   for (let index = at; index < text.length; index++) {
+    noteWork(1);
     const char = text[index];
     if (char === '$' && program === 'sed') return false;
     if (quote === "'") {

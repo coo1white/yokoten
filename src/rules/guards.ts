@@ -17,7 +17,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } fr
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
-import { type Finding, finding } from './message.ts';
+import { type Finding, finding, noteWork } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
 import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
@@ -5074,6 +5074,8 @@ let budget: { left: number } | null = null;
 class OverBudget extends Error {}
 
 function spend(amount: number): void {
+  // The same steps the budget draws. The linear tests read the count (#754).
+  noteWork(amount);
   if (budget !== null && (budget.left -= amount) < 0) throw new OverBudget('the command costs too much to read');
 }
 
@@ -5385,10 +5387,12 @@ interface Group {
 // to `out`. Returns the index after the closer, or -1 if a closer was wanted and not found.
 function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
   // Too deep to follow: fall back to the rough cut, which finds more than is there.
+  // Return -1 when a closer was wanted. text.length would look like the closer was found
+  // at the end, and the caller would read the same tail again (#754).
   if (depth > MAX_DEPTH) {
     spend(text.length - start);
     for (const words of rough(text.slice(start))) out.push(words);
-    return text.length;
+    return closer ? -1 : text.length;
   }
   const nested = (s: string) => out.push(...commandWords(s, depth + 1));
   let words: string[] = [];

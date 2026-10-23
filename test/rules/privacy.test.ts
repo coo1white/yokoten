@@ -1591,7 +1591,7 @@ test('normalizeRemote: linear on long input (#447)', () => {
     ['colons', (n) => `${'a:'.repeat(n / 2)}`],
     ['no colon', (n) => 'a'.repeat(n)],
   ];
-  // One call for every shape: a noisy first round grows to a 20 ms base (#594).
+  // One call for every shape, at this size and at 8 times that.
   assertLinearEach(inputs.map(([name, make]) => ({ name, make, read: (text: string) => normalizeRemote(text, '/base') })), 1 << 16);
 });
 
