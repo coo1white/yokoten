@@ -6,7 +6,7 @@ import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
-import { ageText, readBoardAgents, readBoardWorktrees } from '../../../../src/commands/advice/board/agents.ts';
+import { ageText, readBoardAgents, readBoardWorktrees, vendorKeyOf, vendorOf } from '../../../../src/commands/advice/board/agents.ts';
 
 const BLANK = { vendor: '', model: '', effort: '', task: '', worktree: '', doing: '', updated: '', started: '', log: '', role: '', state: '', checks: '' };
 
@@ -73,4 +73,16 @@ test('board worktrees: the repo lists its own; outside a repo git cannot list th
     { path: realpathSync(second), branch: 'feature' },
   ]);
   assert.equal(readBoardWorktrees(sandbox.home, sandbox.env), 'git could not list the worktrees: run it again');
+});
+
+test('board vendors: a filed name maps to one key and one look (#693, #779)', () => {
+  assert.equal(vendorKeyOf(' DeepSeek-Harness '), 'deepseek', 'a filed name maps to its vendor');
+  assert.equal(vendorKeyOf('codex', 'deepseek-v4.1-flash'), 'deepseek', 'the model names the vendor');
+  assert.equal(vendorKeyOf('claude-code'), 'claude');
+  assert.equal(vendorKeyOf('nobody'), 'nobody', 'an unknown vendor keeps its name');
+  assert.deepEqual(vendorOf('deepseek-harness'), { name: 'DeepSeek', color: '#4d6bfe' });
+  assert.deepEqual(vendorOf('nobody'), { name: 'nobody', color: '#8b8b8b' });
+  assert.equal(vendorOf('').name, 'Unknown');
+  assert.deepEqual(vendorOf('constructor'), { name: 'constructor', color: '#8b8b8b' }, 'an object key is not a vendor');
+  assert.equal(vendorKeyOf('__proto__'), '__proto__');
 });

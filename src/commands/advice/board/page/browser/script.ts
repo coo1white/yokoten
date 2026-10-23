@@ -164,7 +164,7 @@ export function summaryOf(state: PageState, dots: string[]): string {
 /** The UI the owner left last time, or the defaults. A phone starts with the agent groups folded. */
 export function loadUi(isPhone: boolean, browserLangs: readonly string[] = []): PageUi {
   const groups = ['group.manager', 'group.engineer', 'group.reviewer', 'group.verifier', 'group.helper'];
-  const fold: Record<string, boolean> = { 'group.finished': true };
+  const fold: Record<string, boolean> = {};
   if (isPhone) for (const group of groups) fold[group] = true;
   const ui: PageUi = { current: '', fold, open: {}, cleared: [], showCleared: false, mergedCleared: '', theme: '', lang: pickLang(browserLangs) };
   try {
@@ -332,7 +332,7 @@ export function onClick(state: PageState, event: Event): void {
     state.isNeedsOpen = false;
     closedNeeds = true;
   }
-  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
+  const target = hit?.closest('[data-fold],[data-clear],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
@@ -366,10 +366,6 @@ export function onClick(state: PageState, event: Event): void {
   else if (ask('data-clear')) {
     ui.cleared.push(ask('data-clear') as string);
     showToast(state, 'clearedToast', [ask('data-clear') as string], false);
-  } else if (ask('data-clear-all')) {
-    const ids = state.data.agents.filter((agent) => agent.dot === 'done' && !isCheckoutLead(agent)).map(clearedId).filter((id) => !ui.cleared.includes(id));
-    ui.cleared.push(...ids);
-    showToast(state, 'clearedMany', ids, false);
   } else if (ask('data-fold')) ui.fold[ask('data-fold') as string] = !ui.fold[ask('data-fold') as string];
   else if (ask('data-show-cleared')) ui.showCleared = !ui.showCleared;
   else if (ask('data-restore')) ui.cleared = ui.cleared.filter((id) => id !== ask('data-restore'));

@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { type Env } from '../../../rules/config.ts';
+import { type Env, loadConfig } from '../../../rules/config.ts';
 import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
 
 /** The repo's main folder. Every worktree shares it, and the lead's log path is kept there. */
@@ -188,8 +188,25 @@ function readGitWorktrees(root: string, env: Env): BoardWorktree[] | string {
 }
 
 /**
+ * One total per vendor, or null when no vendor has a seat. Each role's count is added (#779).
+ * A filed vendor name maps to the same key the agents use, and a table of zeros is no seats.
+ */
+export function seatTotals(seats: Record<string, Record<string, number>>): Record<string, number> | null {
+  const totals: Record<string, number> = {};
+  for (const [vendor, roles] of Object.entries(seats)) {
+    const key = vendorKeyOf(vendor);
+    if (!key || SEAT_SKIP.has(key)) continue;
+    let total = 0;
+    for (const count of Object.values(roles)) total += count;
+    totals[key] = (totals[key] ?? 0) + total;
+  }
+  return Object.values(totals).some((count) => count > 0) ? totals : null;
+}
+
+/**
  * Seats from the text of `.git/yokoten-seats.json`, or null when it is not a JSON object.
- * A vendor name is kept in lower case. A count that is not a whole number, or is negative, is skipped.
+ * A vendor name maps to the same key the agents use, and a table of zeros is no seats.
+ * A count that is not a whole number, or is negative, is skipped.
  */
 export function parseBoardSeats(text: string): Record<string, number> | null {
   let value: unknown;
@@ -201,16 +218,21 @@ export function parseBoardSeats(text: string): Record<string, number> | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const seats: Record<string, number> = {};
   for (const [name, count] of Object.entries(value)) {
-    const key = name.trim().toLowerCase();
+    const key = vendorKeyOf(name);
     if (!key || SEAT_SKIP.has(key)) continue;
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) continue;
-    seats[key] = count;
+    seats[key] = (seats[key] ?? 0) + count;
   }
-  return seats;
+  return Object.values(seats).some((count) => count > 0) ? seats : null;
 }
 
-/** The seats file in the common git folder, or null when it is missing or bad. */
+/**
+ * Seats per vendor (#779). `team.seats` in yokoten.json wins, and each role's count is added.
+ * With no seats there, `.git/yokoten-seats.json` is used. A bad file of either kind is ignored.
+ */
 export function readBoardSeats(root: string): Record<string, number> | null {
+  const fromConfig = seatTotals(loadConfig(root, { onProblem: () => undefined }).team.seats);
+  if (fromConfig) return fromConfig;
   const common = commonGitDir(root);
   if (!common) return null;
   try {
@@ -218,4 +240,60 @@ export function readBoardSeats(root: string): Record<string, number> | null {
   } catch {
     return null;
   }
+}
+
+// Vendors: How a vendor shows on the board (#693), and the one key every name maps to (#779).
+// An agent files its own name, and an owner writes seats by vendor, so both map here.
+
+/** A vendor's shown name and colour. */
+export interface VendorLook {
+  name: string;
+  color: string;
+}
+
+/** Filed names that share one shown name (#693). The hooks file each agent by its --agent name. */
+const VENDOR_KEY: Record<string, string> = {
+  anthropic: 'claude',
+  claude: 'claude',
+  'claude-code': 'claude',
+  xai: 'grok',
+  grok: 'grok',
+  muse: 'muse',
+  deepseek: 'deepseek',
+  'deepseek-harness': 'deepseek',
+  'codex-deepseek': 'deepseek',
+  'codex on deepseek': 'deepseek',
+};
+
+const VENDOR_LOOKS: Record<string, VendorLook> = {
+  claude: { name: 'Claude', color: '#d97757' },
+  codex: { name: 'Codex', color: '#10a37f' },
+  gemini: { name: 'Gemini', color: '#4285f4' },
+  antigravity: { name: 'Antigravity', color: '#4285f4' },
+  grok: { name: 'Grok', color: '#9ca3af' },
+  muse: { name: 'Muse', color: '#0866ff' },
+  deepseek: { name: 'DeepSeek', color: '#4d6bfe' },
+};
+const OTHER_VENDOR_COLOR = '#8b8b8b';
+
+/**
+ * The one key a filed vendor name maps to, in lower case. Seats and agents use it, so
+ * "deepseek-harness" and "DeepSeek" meet. Codex on a DeepSeek model is DeepSeek.
+ */
+export function vendorKeyOf(vendor: string, model = ''): string {
+  const filed = vendor.trim().toLowerCase();
+  let key = Object.hasOwn(VENDOR_KEY, filed) ? VENDOR_KEY[filed] : filed;
+  if (key === 'codex' && model.toLowerCase().includes('deepseek')) key = 'deepseek';
+  return key;
+}
+
+/**
+ * How a vendor shows (#693). Claude, Grok, Muse and DeepSeek each have one name.
+ * Codex on a DeepSeek model shows as DeepSeek. Claude on that model stays Claude.
+ * Any other vendor keeps its filed name, in grey.
+ */
+export function vendorOf(vendor: string, model = ''): VendorLook {
+  const key = vendorKeyOf(vendor, model);
+  const known = Object.hasOwn(VENDOR_LOOKS, key) ? VENDOR_LOOKS[key] : null;
+  return known ?? { name: vendor.trim() || 'Unknown', color: OTHER_VENDOR_COLOR };
 }

@@ -14,6 +14,8 @@ export interface Config {
   areas: string[];
   translations: { fail: boolean };
   commands: { block: Record<string, string> };
+  /** Seats on the team board: a vendor, then a role, then how many (#779). */
+  team: { seats: Record<string, Record<string, number>> };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -49,6 +51,8 @@ export const DEFAULTS: Config = {
   // Programs no agent may run here, each with the reason (#192):
   // { "block": { "python3": "this project is TypeScript only" } }.
   commands: { block: {} },
+  // No seats: the board counts the agents it can see. A project sets its own.
+  team: { seats: {} },
 };
 
 /**
@@ -75,6 +79,44 @@ interface Fields {
 }
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+/** Keys a seat table must not keep. They would touch the object itself. */
+const seatSkip = new Set(['__proto__', 'constructor', 'prototype']);
+const isWholeCount = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+
+/**
+ * `team.seats`: vendor, then role, then a count. Names are kept in lower case.
+ * A dangerous key is dropped. A count that is not a whole number is the field's problem.
+ */
+const seatTable: Shape = {
+  problem: (value, path) => {
+    const looks = `yokoten.json: "${path}" must be vendors, each with roles and counts, such as { "grok": { "engineer": 6 } }`;
+    if (!isPlainObject(value)) return looks;
+    for (const [vendor, roles] of Object.entries(value)) {
+      if (seatSkip.has(vendor)) continue;
+      if (!isPlainObject(roles)) return `yokoten.json: "${path}.${vendor}" must be roles and counts, such as { "engineer": 6 }`;
+      for (const [role, count] of Object.entries(roles)) {
+        if (seatSkip.has(role)) continue;
+        if (!isWholeCount(count)) return `yokoten.json: "${path}.${vendor}.${role}" must be a whole number, 0 or more`;
+      }
+    }
+    return null;
+  },
+  read: (value) => {
+    const seats: Record<string, Record<string, number>> = {};
+    for (const [vendor, roles] of Object.entries(value as Record<string, Record<string, number>>)) {
+      const vendorKey = vendor.trim().toLowerCase();
+      if (!vendorKey || seatSkip.has(vendorKey)) continue;
+      const counts = seats[vendorKey] ?? {};
+      for (const [role, count] of Object.entries(roles)) {
+        const roleKey = role.trim().toLowerCase();
+        if (!roleKey || seatSkip.has(roleKey)) continue;
+        counts[roleKey] = (counts[roleKey] ?? 0) + count;
+      }
+      seats[vendorKey] = counts;
+    }
+    return seats;
+  },
+};
 const isTextList = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === 'string');
 
 // A shape said in words. The message names the key and what it must be (#228).
@@ -123,6 +165,10 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
   areas: shape('a list of names, like ["cli", "docs"]', (value) => isTextList(value) && (value as string[]).every((item) => item.trim() !== '')),
   translations: { example: '{ "fail": true }', fields: { fail: trueOrFalse } },
   commands: blockList,
+  team: {
+    example: '{ "seats": { "grok": { "engineer": 6 } } }',
+    fields: { seats: seatTable },
+  },
 };
 
 /**

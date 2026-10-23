@@ -103,6 +103,16 @@ export function foldHead(state: PageState, key: string, dots: string[], extra: H
     extra);
 }
 
+/**
+ * True when the left column lists this agent (#779). Live or waiting stays.
+ * A finished agent, a stale desk, or one the owner cleared, does not.
+ */
+export function isOnBoard(agent: AgentView, cleared: readonly string[]): boolean {
+  if (cleared.includes(clearedId(agent))) return false;
+  if (agent.dot === 'done') return false;
+  return agent.isLive === true || agent.dot === 'waiting';
+}
+
 /** One agent in the left column. A finished one gets a clear button beside it. */
 function agentRow(state: PageState, agent: AgentView): HTMLElement {
   const isDone = agent.dot === 'done';
@@ -126,27 +136,32 @@ export function renderSide(state: PageState, data: PageData): [HTMLElement, HTML
     pinned.append(renderDesk(state, data, lead));
   }
   const list = el('div', { class: 'agents' });
-  const cleared = new Set(state.ui.cleared);
+  const cleared = state.ui.cleared;
   const others = data.agents.filter((agent) => agent !== lead);
-  const live = others.filter((agent) => agent.dot !== 'done');
+  const listed = others.filter((agent) => isOnBoard(agent, cleared));
   for (const group of ['group.manager', 'group.engineer', 'group.reviewer', 'group.verifier', 'group.helper']) {
-    const members = live.filter((agent) => roleGroup(agent.role) === group);
+    const members = listed.filter((agent) => roleGroup(agent.role) === group);
     if (!members.length) continue;
     list.append(foldHead(state, group, members.map((agent) => agent.dot)));
     if (!state.ui.fold[group]) list.append(...members.map((agent) => agentRow(state, agent)));
   }
-  const finished = others.filter((agent) => agent.dot === 'done' && !cleared.has(clearedId(agent)));
-  if (finished.length) {
-    list.append(foldHead(state, 'group.finished', finished.map((agent) => agent.dot), el('button', { class: 'act', 'data-clear-all': '1', title: say(state, 'clearAllHint') }, say(state, 'clearAll'))));
-    if (!state.ui.fold['group.finished']) list.append(...finished.map((agent) => agentRow(state, agent)));
-  }
-  const hidden = others.filter((agent) => cleared.has(clearedId(agent)));
-  if (hidden.length) {
-    list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'clearedCount', { n: hidden.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
+  // A finished or stale desk joins the archived list. It comes back when it is live again.
+  const archived = others.filter((agent) => !isOnBoard(agent, cleared));
+  if (archived.length) {
+    const kept = new Set(cleared);
+    list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'archivedCount', { n: archived.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
     if (state.ui.showCleared) {
-      list.append(...hidden.map((agent) => el('div', { class: 'row done-row still' },
-        el('span', { class: 'r1' }, el('span', { class: 'dot done' }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
-        el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name), el('button', { class: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack'))))));
+      list.append(...archived.map((agent) => {
+        const id = clearedId(agent);
+        const action = kept.has(id)
+          ? el('button', { class: 'act', 'data-restore': id }, say(state, 'putBack'))
+          : el('button', { class: 'x', 'data-clear': id, title: say(state, 'clearOne'), 'aria-label': say(state, 'clearOne') }, icon('x', true));
+        return el('div', { class: 'item' },
+          el('button', { class: 'row done-row still', 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
+            el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}` }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
+            el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name))),
+          action);
+      }));
     }
   }
   if (!others.length) list.append(el('p', { class: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));
@@ -154,4 +169,4 @@ export function renderSide(state: PageState, data: PageData): [HTMLElement, HTML
 }
 
 /** The bell and the left column, in the order page.ts writes them. */
-export const COLUMN_FUNCTIONS = [ageOfNeed, idOfNeed, noteNewNeeds, webLink, readNeedTarget, renderNeedItem, fillNeeds, vendorChip, refChip, foldHead, agentRow, renderSide];
+export const COLUMN_FUNCTIONS = [ageOfNeed, idOfNeed, noteNewNeeds, webLink, readNeedTarget, renderNeedItem, fillNeeds, vendorChip, refChip, foldHead, isOnBoard, agentRow, renderSide];

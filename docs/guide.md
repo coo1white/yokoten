@@ -1153,6 +1153,7 @@ missing key, a key set to `null`, or a missing file gives the default.
 | `areas` | a list of words | any lowercase word |
 | `translations` | `{ "fail": true }` | `false` |
 | `commands` | `{ "block": { "<program>": "<reason>" } }` | no program blocked |
+| `team` | `{ "seats": { "grok": { "engineer": 6 } } }`: a vendor, then a role, then a whole number from 0 up | no seats |
 
 yokoten checks each key against this table, in one place:
 
@@ -1465,6 +1466,7 @@ A list you set replaces the default list; it does not add to it.
 | `allowBuild` | none | Build output and binaries the commit check lets through |
 | `areas` | any | The areas a title may name. See [Issue titles](#issue-titles) |
 | `translations.fail` | `false` | A translation behind its source fails the check |
+| `team.seats` | none | Seats for the team board, by vendor and by role. The footer shows working of these seats |
 
 #### Folders that may grow
 
@@ -1808,9 +1810,21 @@ The board then opens without the browser tabs.
 The page has two columns. Needs you is a bell in the header, next to Live.
 
 - **Left:** the agents by role. Click one to see it in the middle. On a phone the
-  lead column hides, and this column stays. Finished agents fold away. **Clear** hides one until it writes
-  again. Its log and branch stay. Each vendor has one name on the page:
+  lead column hides, and this column stays. The list counts live or waiting agents.
+  A finished or stale desk joins the archived list. Show opens it, and a click still
+  shows its session and log. **Clear** hides one until it writes again. Its log and
+  branch stay. Each vendor has one name on the page:
   Claude, Grok, Muse or DeepSeek. Codex on a DeepSeek model shows as DeepSeek.
+
+The footer shows one line per vendor.
+With no seats set, that line counts the agents on the board.
+`team.seats` in yokoten.json sets the seats: a vendor, a role, then a count.
+The counts of one vendor's roles add up to one total.
+The footer then shows how many are working, of those seats.
+A vendor with agents but no seats shows its agent count.
+A filed vendor name maps to its vendor, so `deepseek-harness` seats show as DeepSeek.
+A table of zeros is no seats.
+A desk with no write for 15 minutes does not add to the count.
 - **Middle:** the picked agent's own session, live, like a chat. The agent's own
   words are the main text. Each tool is one short line under them. A long run of
   tools folds after three. A click opens the rest. A time shows once, on the message.

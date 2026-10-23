@@ -3,6 +3,13 @@
   "privacy": { "allow": ["conduct@yokoten.app"] },
   "areas": ["doctor", "check", "hook", "init", "install", "agents", "host", "kit", "adopt", "pr", "secrets", "privacy", "site", "docs", "readme", "records", "ci", "release", "repo", "owner"],
   "notNow": {},
+  "team": {
+    "seats": {
+      "claude": { "lead": 1 },
+      "grok": { "manager": 1, "engineer": 3 },
+      "deepseek": { "manager": 4, "engineer": 12 }
+    }
+  },
   "commands": {
     "block": {
       "python": "this project is TypeScript only (AGENTS.md)",

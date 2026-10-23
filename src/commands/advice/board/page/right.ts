@@ -122,39 +122,52 @@ export function renderRight(state: PageState, data: PageData, now: number): HTML
   return box;
 }
 
-/** The bar at the bottom: free seats, or idle agents when no seats file is set (#698). */
+/** The bar at the bottom: working of seats, or the agents on the board when no seats are set (#698, #779). */
 export function renderBar(state: PageState, data: PageData): HTMLElement[] {
+  // Same names and colours as the server's vendor list. This function is copied into the page, so the list lives here.
+  const seatLooks: Record<string, { name: string; color: string }> = {
+    claude: { name: 'Claude', color: '#d97757' },
+    codex: { name: 'Codex', color: '#10a37f' },
+    gemini: { name: 'Gemini', color: '#4285f4' },
+    antigravity: { name: 'Antigravity', color: '#4285f4' },
+    grok: { name: 'Grok', color: '#9ca3af' },
+    muse: { name: 'Muse', color: '#0866ff' },
+    deepseek: { name: 'DeepSeek', color: '#4d6bfe' },
+  };
   const vendors = new Map<string, { name: string; color: string; count: number; working: number; idle: number }>();
+  const seats = data.seats ?? null;
+  if (seats) {
+    for (const key of Object.keys(seats)) {
+      const look = seatLooks[key] ?? { name: key ? key.charAt(0).toUpperCase() + key.slice(1) : key, color: '#8b8b8b' };
+      if (!vendors.has(key)) vendors.set(key, { name: look.name, color: look.color, count: 0, working: 0, idle: 0 });
+    }
+  }
   for (const agent of data.agents) {
     if (agent.dot === 'done') continue;
-    const name = agent.vendor.name;
-    const seen = vendors.get(name) ?? { name, color: agent.vendor.color, count: 0, working: 0, idle: 0 };
+    const key = agent.vendor.name.toLowerCase();
+    const seen = vendors.get(key) ?? { name: agent.vendor.name, color: agent.vendor.color, count: 0, working: 0, idle: 0 };
+    seen.color = agent.vendor.color;
     seen.count += 1;
     if (agent.isLive) seen.working += 1;
     else seen.idle += 1;
-    vendors.set(name, seen);
+    vendors.set(key, seen);
   }
-  const seats = data.seats ?? null;
   let free = 0;
   if (seats) {
-    const used = new Set<string>();
-    for (const seen of vendors.values()) {
-      const key = seen.name.toLowerCase();
-      used.add(key);
+    for (const [key, seen] of vendors) {
       free += Math.max(0, (seats[key] ?? 0) - seen.working);
     }
-    for (const [key, count] of Object.entries(seats)) if (!used.has(key)) free += count;
   }
   const idle = [...vendors.values()].reduce((sum, seen) => sum + seen.idle, 0);
   const parts: HTMLElement[] = [el('span', {}, icon('shield', true), say(state, 'oneRuleSet', { n: vendors.size }))];
   parts.push(el('span', {}, say(state, seats ? 'barFree' : 'barIdle', { n: seats ? free : idle })));
-  for (const seen of vendors.values()) {
+  for (const [key, seen] of vendors) {
     const mark = el('span', { class: seen.working > 0 ? 'vm live' : 'vm' });
     mark.style.background = seen.color;
-    const key = seen.name.toLowerCase();
-    const text = seats
-      ? say(state, 'barSeats', { name: seen.name, working: seen.working, free: Math.max(0, (seats[key] ?? 0) - seen.working) })
-      : say(state, 'barOpen', { name: seen.name, n: seen.count, idle: seen.idle });
+    const seatCount = seats?.[key];
+    const text = seatCount === undefined
+      ? say(state, 'barOpen', { name: seen.name, n: seen.count, idle: seen.idle })
+      : say(state, 'barSeats', { name: seen.name, working: seen.working, seats: seatCount });
     parts.push(el('span', {}, mark, text));
   }
   parts.push(el('span', { class: 'sp' }), el('span', {}, icon('lock', true), say(state, 'local')));

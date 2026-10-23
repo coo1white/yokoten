@@ -306,6 +306,49 @@ test('board view: a stale working agent holds no seat, and seats come from the g
   assert.equal(read().seats, null, 'a bad seats file is ignored');
   writeFileSync(seats, '{"grok":16,"claude":0,"deepseek":-1,"bad":1.5,"constructor":9,"__proto__":3}');
   assert.deepEqual(read().seats, { grok: 16, claude: 0 });
+  writeFileSync(seats, '{"deepseek-harness":4,"codex on deepseek":2}');
+  assert.deepEqual(read().seats, { deepseek: 6 }, 'a filed name maps to the vendor the agents show');
+});
+
+// #779: seats live in yokoten.json, by vendor and role. Thirty old desks hold no seat.
+test('board view: team.seats are the seats, and old desks are not working (#779)', () => {
+  const sandbox = makeSandbox();
+  const clock = Date.now();
+  const read = () => collectBoard(sandbox.repo, sandbox.env, () => '[]', clock);
+  writeFileSync(join(sandbox.repo, 'yokoten.json'), JSON.stringify({ team: { seats: { grok: 6 } } }));
+  assert.equal(read().seats, null, 'a count where a role table belongs is ignored');
+  const seats = { claude: { lead: 1 }, grok: { manager: 2, engineer: 6 }, deepseek: { manager: 3, engineer: 9 } };
+  writeFileSync(join(sandbox.repo, 'yokoten.json'), JSON.stringify({ team: { seats } }));
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-seats.json'), JSON.stringify({ grok: 99 }));
+  assert.deepEqual(read().seats, { claude: 1, grok: 8, deepseek: 12 }, 'the role counts add up');
+  const old = new Date(clock - 60 * 60 * 1000);
+  for (let index = 0; index < 30; index += 1) {
+    const desk = join(sandbox.home, `old-desk-${index}`);
+    mkdirSync(join(desk, '.git'), { recursive: true });
+    const vendor = index < 15 ? 'grok' : 'deepseek';
+    const status = join(desk, '.yokoten-agent.json');
+    writeFileSync(status, JSON.stringify({ name: `old-${index}`, vendor, state: 'working', role: 'engineer', updated: old.toISOString() }));
+    utimesSync(status, old, old);
+    assert.equal(registerDesk(sandbox.repo, desk), '');
+  }
+  for (const [name, vendor] of [['g1', 'grok'], ['g2', 'grok'], ['d1', 'deepseek']] as const) {
+    const desk = join(sandbox.home, `live-desk-${name}`);
+    mkdirSync(join(desk, '.git'), { recursive: true });
+    writeFileSync(join(desk, '.yokoten-agent.json'), JSON.stringify({ name, vendor, state: 'working', role: 'engineer', updated: new Date(clock).toISOString() }));
+    assert.equal(registerDesk(sandbox.repo, desk), '');
+  }
+  const board = read();
+  const grokLive = board.agents.filter((agent) => agent.isLive && agent.vendor.name === 'Grok').length;
+  const deepLive = board.agents.filter((agent) => agent.isLive && agent.vendor.name === 'DeepSeek').length;
+  assert.equal(board.agents.filter((agent) => !agent.isLive).length, 30);
+  assert.equal(`${grokLive} of ${board.seats?.grok}`, '2 of 8');
+  assert.equal(`${deepLive} of ${board.seats?.deepseek}`, '1 of 12');
+  assert.equal(Object.values(board.seats ?? {}).reduce((sum, count) => sum + count, 0), 21);
+  writeFileSync(join(sandbox.repo, 'yokoten.json'), JSON.stringify({ team: { seats: { 'deepseek-harness': { engineer: 4 }, 'codex on deepseek': { lead: 1 } } } }));
+  assert.deepEqual(read().seats, { deepseek: 5 }, 'a filed vendor name maps to one vendor');
+  writeFileSync(join(sandbox.repo, 'yokoten.json'), JSON.stringify({ team: { seats: { grok: { engineer: 0 } } } }));
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-seats.json'), JSON.stringify({ grok: 3 }));
+  assert.deepEqual(read().seats, { grok: 3 }, 'a table of zeros is no seats, so the git file is used');
 });
 
 // #693: the board runs in a linked worktree. The top bar still names the main folder.
