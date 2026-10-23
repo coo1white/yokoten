@@ -1498,6 +1498,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // with nothing keeping it out of .git is the same loss (#573, #744). For a worker
       // the mark rule above already answers, with its own id.
       checkRemoveGit(words, postCwd, env) ??
+      // git's own ways to lose uncommitted work, a stash, the reflog or the default branch (#828).
+      checkGitLoseWork(words, postCwd, env) ??
       checkHooksEnvironment(words) ??
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
@@ -1628,7 +1630,7 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
       return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${tag}\` themselves; do not look for another way`);
     }
   }
-  if (sub === 'reset' && args.some((arg) => arg === '--hard')) {
+  if (sub === 'reset' && args.some((arg) => isGitLongOption(arg, '--hard'))) {
     return finding('hard-reset', 'git reset --hard throws away uncommitted work', 'commit or stash the work first; to undo a commit, use `git revert`');
   }
   if (sub === 'branch') {
@@ -1701,9 +1703,15 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
     const name = programName(program);
     const args = withoutShellRedirects(words, at + 1);
     if (REMOVE_PROGRAMS.has(name)) {
-      const target = plainArgs(args).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
+      const targets = plainArgs(args);
+      const target = targets.find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
       if (target !== undefined) {
         return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+      }
+      // `.` is the checkout and `..` holds it: one word removes every file and every commit (#828).
+      const whole = targets.find(isCheckoutPath);
+      if (whole !== undefined) {
+        return finding('delete-checkout', `\`${name}\` on \`${whole}\` would delete the whole checkout, including every file and every commit`, DELETE_CHECKOUT_FIX);
       }
     }
     if (name === 'find') {
@@ -1711,6 +1719,124 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
         return finding('remove-git', '`find` deletes files, and nothing keeps it out of the .git folder, which holds the repo history', REMOVE_GIT_FIX);
       }
       coveredUntil = words.length;
+    }
+  }
+  return null;
+}
+
+// ---- Git calls that throw work or history away (#828) ----
+//
+// Each call below loses work that has one copy only: the checkout or the folder that
+// holds it, untracked files, uncommitted edits, a saved stash, the reflog that makes
+// undo possible, or the commits of the default branch. Git reads any unique prefix of a
+// long option (`--har` is `--hard`, `--del` is `--delete`), so the guard reads options
+// the same way and refuses a form it cannot tell apart. These answer after the worker's
+// own rules, so a worker that names its mark or the config folder hears that rule first.
+
+const DELETE_CHECKOUT_FIX = 'delete only the files you mean, by name';
+const DISCARD_WORK_FIX = 'keep the work first (`git stash` saves it), or commit it; do not throw it away';
+const ERASE_HISTORY_FIX = 'leave the history as it is; if you need to roll back, ask the owner first';
+const MOVE_BRANCH_FIX = 'leave the default branch where it is, and put the change on a new branch (`git switch -c <name>`)';
+
+/** Whether `word` is the long option `name` as git reads it: a unique prefix counts (`--har`, `--del`). */
+function isGitLongOption(word: string, name: string): boolean {
+  const given = word.split('=', 1)[0];
+  return given.startsWith('--') && given.length > 2 && name.startsWith(given);
+}
+
+/** Whether git's long option `name` is set to `value`, written `--name=value`, `--name value`, or shortened. */
+function gitOptionIs(args: string[], name: string, value: string): boolean {
+  for (const [at, word] of args.entries()) {
+    if (!isGitLongOption(word, name)) continue;
+    return (word.includes('=') ? word.slice(word.indexOf('=') + 1) : args[at + 1]) === value;
+  }
+  return false;
+}
+
+/** Whether `path` is the folder the command runs in, or a parent: removing it removes the checkout. */
+function isCheckoutPath(path: string): boolean {
+  const parts = path.split(/[\\/]+/).filter((part) => part !== '' && part !== '.');
+  return parts.length === 0 || parts[parts.length - 1] === '..';
+}
+
+/** The git call's subcommand and arguments, and the folder it works in (null when unknown). */
+function readGitCall(words: string[], cwd: string | null): { sub: string; args: string[]; directory: string | null } | null {
+  const start = words.findIndex(isGit);
+  if (start === -1) return null;
+  let directory = cwd;
+  let at = start + 1;
+  while (at < words.length && words[at].startsWith('-')) {
+    if (words[at] === '-C' && directory !== null) directory = resolve(directory, words[at + 1] ?? '');
+    if (/^--(git-dir|work-tree)(=|$)/.test(words[at])) directory = null;
+    at += GIT_VALUE_OPTIONS.has(words[at]) ? 2 : 1;
+  }
+  const sub = words[at];
+  return sub === undefined ? null : { sub, args: withoutShellRedirects(words, at + 1), directory };
+}
+
+/** The ways a git call throws away work or history that exists in one place only (#828). */
+function checkGitLoseWork(words: string[], cwd: string | null, env: Env): Finding | null {
+  const call = readGitCall(words, cwd);
+  if (call === null) return null;
+  const { sub, args, directory } = call;
+  // A plain word, in order, after the options. A path is not an option.
+  const plain = plainArgs(args);
+
+  // Untracked files have no other copy. A dry run removes nothing, so it passes.
+  if (sub === 'clean') {
+    const dryRun = args.some((arg) => /^-[A-Za-z]*n[A-Za-z]*$/.test(arg) || isGitLongOption(arg, '--dry-run'));
+    if (!dryRun) return finding('discard-work', '`git clean` deletes every file you have not committed, and no other copy of them exists', DISCARD_WORK_FIX);
+  }
+
+  // A whole-tree checkout or restore throws away every uncommitted edit. `restore --staged`
+  // alone only unstages, which is the way back from `git add`, so it passes.
+  if (sub === 'checkout' || sub === 'restore') {
+    const stagedOnly = sub === 'restore'
+      && args.some((arg) => isGitLongOption(arg, '--staged'))
+      && !args.some((arg) => arg === '-W' || isGitLongOption(arg, '--worktree'));
+    const whole = plain.find((word) => word === '.' || word === './' || word === ':/');
+    if (whole !== undefined && !stagedOnly) {
+      return finding('discard-work', `\`git ${sub} ${whole}\` throws away every uncommitted edit in the checkout`, DISCARD_WORK_FIX);
+    }
+  }
+
+  // A saved stash is the guard's own way back before a reset. Clearing or dropping it removes that.
+  if (sub === 'stash' && (plain[0] === 'clear' || plain[0] === 'drop')) {
+    return finding('discard-work', `\`git stash ${plain[0]}\` destroys saved work that has no other copy`, DISCARD_WORK_FIX);
+  }
+
+  // Erasing unreachable commits and the reflog takes away the usual way back.
+  const erases = (sub === 'gc' && gitOptionIs(args, '--prune', 'now'))
+    || (sub === 'prune' && gitOptionIs(args, '--expire', 'now'))
+    || (sub === 'reflog' && (plain[0] === 'expire' || plain[0] === 'delete'))
+    || sub === 'filter-branch'
+    || sub === 'filter-repo';
+  if (erases) {
+    return finding('erase-history', `\`git ${sub}\` erases the history at once, and the old commits are the usual way back`, ERASE_HISTORY_FIX);
+  }
+
+  // Moving the default branch back drops the commits every other branch builds on.
+  if (sub === 'update-ref') {
+    const reads = args.some((arg) => arg === '-l' || isGitLongOption(arg, '--verify') || isGitLongOption(arg, '--list'));
+    const stdin = args.some((arg) => isGitLongOption(arg, '--stdin'));
+    const ref = reads ? undefined : stdin ? '--stdin' : plain[0];
+    if (ref !== undefined && (ref === '--stdin' || isDefaultBranch(ref, directory, env))) {
+      return finding('move-default-branch', stdin ? '`git update-ref --stdin` writes refs the guard cannot read, and can move the default branch' : `\`git update-ref ${ref}\` moves the default branch`, MOVE_BRANCH_FIX);
+    }
+  }
+  if (sub === 'branch' && args.some((arg) => /^-[A-Za-z]*f[A-Za-z]*$/.test(arg) || isGitLongOption(arg, '--force'))) {
+    const name = plain[0];
+    if (name !== undefined && isDefaultBranch(name, directory, env)) {
+      return finding('move-default-branch', `\`git branch -f ${name}\` moves the default branch`, MOVE_BRANCH_FIX);
+    }
+  }
+  if (sub === 'checkout' || sub === 'switch') {
+    const forced = sub === 'checkout'
+      ? args.some((arg) => /^-[A-Za-z]*B[A-Za-z]*$/.test(arg))
+      : args.some((arg) => /^-[A-Za-z]*C[A-Za-z]*$/.test(arg) || isGitLongOption(arg, '--force-create'));
+    const name = plain[0];
+    if (forced && name !== undefined && isDefaultBranch(name, directory, env)) {
+      return finding('move-default-branch', `\`git ${sub}\` moves the default branch \`${name}\``, MOVE_BRANCH_FIX);
     }
   }
   return null;
@@ -2657,9 +2783,9 @@ function findDeletedBranches(args: string[]): string[] | null {
   return deletes ? plainArgs(args) : null;
 }
 
-/** The branches a `git push --delete` (or `-d`) or `git push <remote> :<branch>` deletes, or null. */
+/** The branches a `git push --delete` (or `-d`, or a shortened `--del`) or `git push <remote> :<branch>` deletes, or null. */
 function findPushedDeletes(args: string[]): string[] | null {
-  if (args.includes('--delete') || args.includes('-d')) return plainArgs(args).map((name) => name.replace(/^:/, ''));
+  if (args.includes('-d') || args.some((arg) => isGitLongOption(arg, '--delete'))) return plainArgs(args).map((name) => name.replace(/^:/, ''));
   const colon = plainArgs(args).filter((name) => name.startsWith(':')).map((name) => name.slice(1));
   return colon.length > 0 ? colon : null;
 }

@@ -177,6 +177,26 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
         tell: zh ? '不要删默认分支；只删我指定的分支。' : 'Do not delete the default branch; delete only the branch I named.',
         run: 'git branch -a',
       };
+    case 'delete-checkout':
+      return {
+        tell: zh ? '不要删掉整个项目文件夹；告诉我你想删哪些文件。' : 'Do not delete the whole project folder; tell me which files you want removed.',
+        run: 'git status',
+      };
+    case 'discard-work':
+      return {
+        tell: zh ? '不要丢掉没有提交的工作；先留着给我看。' : 'Do not throw away uncommitted work; keep it so I can look.',
+        run: 'git stash',
+      };
+    case 'erase-history':
+      return {
+        tell: zh ? '不要清除历史记录；我可能还要用它撤销。' : 'Do not erase the history; I may need it to undo.',
+        run: 'git log --oneline -5',
+      };
+    case 'move-default-branch':
+      return {
+        tell: zh ? '不要把主分支往回移；我可能要保留那些提交。' : 'Do not move the main branch back; I may need those commits.',
+        run: 'git log --oneline -5',
+      };
     case 'pipe-to-shell': {
       const url = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(finding.what)?.[0];
       return {

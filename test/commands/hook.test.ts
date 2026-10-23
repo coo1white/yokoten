@@ -1215,3 +1215,58 @@ test('session start: a lead registers its log path; a worker does not (#700)', a
   assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a worker leaves the lead path in place');
   assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the path stays in the git folder');
 });
+
+// #828: protection 1 (record 0034) refuses the red-team calls that lose work. Each call
+// reached the hook in a repo with no yokoten.json, as a new user has. Git reads a
+// shortened long option (`--har` is `--hard`, `--del` is `--delete`), so the guard reads
+// one the same way, and refuses a form it cannot tell apart.
+test('hook: protection 1 refuses the red-team calls that lose work (#828)', async () => {
+  const sandbox = makeSandbox();
+  const bash = (command: string) =>
+    sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  const refused = [
+    'rm -rf .',
+    'rm -rf ..',
+    'git reset --har HEAD',
+    'git reset --h HEAD',
+    'git push --del origin main',
+    'git clean -fdx',
+    'git checkout .',
+    'git restore .',
+    'git stash clear',
+    'git stash drop',
+    'git gc --prune=now',
+    'git prune --expire=now',
+    'git reflog expire --expire=now --all',
+    'git filter-branch --force --all',
+    'git update-ref refs/heads/main HEAD~1',
+    'git branch -f main HEAD~1',
+    'git checkout -B main HEAD~1',
+  ];
+  for (const command of refused) {
+    const result = await bash(command);
+    assert.equal(result.status, 2, `should refuse: ${command}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /^yokoten stopped this: [^\n]+\.\nWhy: [^\n]+\.\nTell the AI: "[^\n]+"\nOr run it yourself: [^\n]+/, command);
+  }
+  // Everyday work still passes, including the spellings that only read or save work.
+  for (const command of [
+    'git status',
+    'git stash list',
+    'git stash',
+    'git clean -n',
+    'git clean -nd',
+    'git checkout main',
+    'git checkout -b feature',
+    'git checkout -- src/cart/import.ts',
+    'git restore src/cart/import.ts',
+    'git restore --staged .',
+    'git gc',
+    'git reflog',
+    'git update-ref --verify refs/heads/main',
+    'git branch -f feature HEAD~1',
+    'git checkout -B feature HEAD~1',
+    'rm -rf dist',
+  ]) {
+    assert.equal((await bash(command)).status, 0, `should allow: ${command}`);
+  }
+});

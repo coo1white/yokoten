@@ -145,6 +145,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const mainRepo = makeTempDir('yokoten-default-main-');
   execFileSync('git', ['init', '-q', '-b', 'main', mainRepo]);
   add(checkCommand('git branch -D main', { cwd: mainRepo, env: {} }));
+  // The other ways to lose work or history (#828).
+  add(checkCommand('rm -rf .', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git clean -fdx', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git gc --prune=now', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git branch -f main HEAD~1', { cwd: mainRepo, env: {} }));
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   add(checkCommand('git push', { cwd: process.cwd(), env }));
