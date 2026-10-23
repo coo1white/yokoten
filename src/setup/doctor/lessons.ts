@@ -99,7 +99,12 @@ export function lessonChecks(root: string, notNow: Record<string, string>, place
  */
 export function formatLessonChecks(lessons: LessonCheck[]): string[] {
   return lessons.flatMap(({ id, mark, findings, reason, what, isNew }) => {
-    const intro = isNew ? [`  note    new lesson: ${id}${what ? ` (${what})` : ''}; doctor now runs it in this project`] : [];
+    // A new lesson that passes says so in a few words: its own lesson text reads as an accusation.
+    const intro = isNew
+      ? mark === 'ok'
+        ? [`  note    a new check ran: ok (${id}); doctor now runs it in this project`]
+        : [`  note    new lesson: ${id}${what ? ` (${what})` : ''}; doctor now runs it in this project`]
+      : [];
     if (mark === 'not now') return [`  not now lesson ${id}: ${reason}`];
     if (mark === 'ok') return [...intro, `  ok      lesson ${id}`];
     return [...intro, ...findings.map((f) => `  note    lesson ${id}: ${stepText(f)}`)];
