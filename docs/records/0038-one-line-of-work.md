@@ -1,4 +1,4 @@
-# 0036 One line of work: the story first
+# 0038 One line of work: the story first
 
 Status: accepted
 Date: 2026-10-23 (UTC)
