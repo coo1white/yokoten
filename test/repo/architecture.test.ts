@@ -793,9 +793,11 @@ function parseMarkdownLink(line: string, open: number): { target: string; end: n
   return null;
 }
 
-/** Targets of `src`, `srcset`, Markdown images and Markdown links on one line. */
+/** Targets of `src`, `srcset`, `href`, Markdown images, links and reference definitions on one line. */
 function collectReadmeTargets(line: string, lineNumber: number, found: ReadmeTarget[]): void {
-  for (const match of line.matchAll(/\b(srcset|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+  const definition = /^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?/.exec(line);
+  if (definition) found.push({ line: lineNumber, target: definition[1] });
+  for (const match of line.matchAll(/\b(srcset|src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
     const value = match[2] ?? match[3] ?? match[4] ?? '';
     const parts = match[1].toLowerCase() === 'srcset' ? value.split(',') : [value];
     for (const part of parts) {
@@ -842,6 +844,8 @@ test('docs: README images and links use full URLs, so the npm page can show them
     '[rel](docs/guide.md)',
     '[![badge](https://example.com/b.svg)](LICENSE)',
     '[angled](<https://example.com/a>)',
+    '<a href="docs/e.md">e</a>',
+    '[ref]: docs/f.md',
   ].join('\n');
   assert.deepEqual(findReadmeTargets(sample).map((item) => `${item.line} ${item.target}`), [
     '1 docs/a.svg',
@@ -854,6 +858,8 @@ test('docs: README images and links use full URLs, so the npm page can show them
     '7 https://example.com/b.svg',
     '7 LICENSE',
     '8 https://example.com/a',
+    '9 docs/e.md',
+    '10 docs/f.md',
   ]);
 
   const files = ['README.md', 'docs/i18n/zh-CN/README.md', 'docs/i18n/zh-TW/README.md', 'docs/i18n/ja/README.md'];

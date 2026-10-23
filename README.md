@@ -22,11 +22,12 @@ yokoten adds three things on top of the agents you already use. It uses each age
 hooks, sandbox and settings, and doesn't replace them.
 
 1. **One set of rules for every agent.** A guard checks each command and edit before it
-   runs. It stops a force push, a test edited to pass, a release tag, a secret or a private
-   detail on its way out, and tells the agent why and what to do instead.
-2. **The rules, in each agent's own language.** `yokoten init` writes the hooks and
-   sandbox settings for each agent you use. The commit check and CI stop a bad change even
-   when no agent is involved.
+   runs. It stops a force push, a release tag, a skipped commit check, a test edited in a
+   fix task, and a secret or private detail in what an agent posts. It tells the agent why
+   and what to do instead.
+2. **The rules, in each agent's own language.** `yokoten init` writes the hooks for each
+   agent it supports, and the sandbox settings for Claude Code, Codex, Gemini CLI and Grok.
+   The commit check and CI stop a bad change even when no agent is involved.
 3. **A board for a team of agents.** Agents from different vendors work side by side,
    each in its own fenced desk, and you see all of them on one page.
 
@@ -65,7 +66,7 @@ different vendors each take one issue.
 - **A bot opens the pull requests.** Every pull request says how risky it is (tier A, B
   or C). The risky ones wait for your approval; checks must be green before anything merges.
 - **One board.** `yokoten board` serves a page on your machine: every agent and what it
-  is doing, each pull request as Built, Checked, You, Merged, and what needs you. It works
+  is doing, each pull request as Built, Checked, You (tier A only), Merged, and what needs you. It works
   on a phone, in four languages, and loads nothing from the internet.
 
 The board and the desk are on `main` and come to npm with the next release.
