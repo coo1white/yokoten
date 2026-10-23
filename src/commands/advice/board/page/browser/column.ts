@@ -72,6 +72,7 @@ export function renderNeedItem(state: PageState, need: NeedView, now: number): H
 export function fillNeeds(state: PageState, data: PageData): void {
   const menu = document.getElementById('needs-menu');
   if (!menu) return;
+  const scroll = menu.scrollTop;
   menu.hidden = state.isNeedsOpen !== true;
   const rows = data.needs.length ? data.needs.map((need) => renderNeedItem(state, need, Date.now())) : [el('p', { class: 'quiet' }, say(state, 'nothingNeeds'))];
   const parts: HTMLElement[] = [el('div', { role: 'list' }, ...rows)];
@@ -79,6 +80,8 @@ export function fillNeeds(state: PageState, data: PageData): void {
   const hasDesk = !!data.desk && (data.desk.now !== '' || data.desk.decisions.length > 0 || data.desk.reply !== '');
   if (lead || hasDesk) parts.push(el('div', { class: 'phone-desk' }, renderDesk(state, data, lead)));
   menu.replaceChildren(...parts);
+  // A refresh keeps the list where the owner left it, even while a row leaves.
+  menu.scrollTop = scroll;
 }
 
 export function vendorChip(agent: AgentView): HTMLElement {
