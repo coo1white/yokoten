@@ -1726,7 +1726,7 @@ const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, t
 // A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
 const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574, #734). */
+/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574, #734, #745). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1750,6 +1750,7 @@ function checkPipeToShell(command: string): Finding | null {
 /**
  * The program that would run this segment as a shell.
  * A `$(…)`, backticks or `<(…)` inherits the pipe, so the nested command can run the download (#734).
+ * A program word that is not plain text can become a shell too, so it is refused (#745).
  */
 function findPipeShell(programs: string[], commands: string[][], segment: string): string | undefined {
   const first = programs[0];
@@ -1760,19 +1761,69 @@ function findPipeShell(programs: string[], commands: string[][], segment: string
     if (runner !== undefined) return runner;
   }
   const substitutions = scanSubstitutions(segment);
-  if (!substitutions.live) return undefined;
-  // `bash -c "$(cat)"`: `$(cat)` is read first, so the shell is not the first program.
-  const nested = programs.find((program) => isPipeShell(program));
-  if (nested !== undefined) return nested;
-  // `$x`, or a substitution that never closes, may be a shell. The guard cannot tell, so it refuses.
-  const hidden = programs.find(isHiddenProgram);
-  if (hidden !== undefined) return hidden;
-  if (substitutions.unclosed) return 'sh';
-  return undefined;
+  if (substitutions.live) {
+    // `bash -c "$(cat)"`: `$(cat)` is read first, so the shell is not the first program.
+    const nested = programs.find((program) => isPipeShell(program));
+    if (nested !== undefined) return nested;
+    // `$x`, or a substitution that never closes, may be a shell. The guard cannot tell, so it refuses.
+    const hidden = programs.find(isHiddenProgram);
+    if (hidden !== undefined) return hidden;
+    if (substitutions.unclosed) return 'sh';
+  }
+  // No shell name was written out. A prefix or a `$` name can still expand into one.
+  return findUnplainProgram(commands);
 }
 
 /** A program whose name is still a `$` value or a substitution, so it may be a shell. */
 const isHiddenProgram = (name: string) => name.startsWith('$') || name.includes('`') || name.includes('<(') || name.includes('>(');
+
+// After a download, a program word may hold only these characters. The guard allows
+// characters and does not read the shell's grammar: `s$(echo h)`, `$sh` and `sh*` are
+// not plain, so they are refused, and so is `eval` with any argument (#734, #745).
+const PLAIN_PROGRAM = /^[A-Za-z0-9._/-]+$/;
+// The inside of `$((1+2))`. commandWords lists it as its own command. It is math, not a program.
+const ARITHMETIC_BODY = /\$\(\(([0-9]+(?:[+\-*/%][0-9]+)*)\)\)/g;
+
+/** Program words `$((…))` lists beside the real command, such as `1+2` from `echo $((1+2))`. */
+function findArithmeticBodies(commands: string[][]): Set<string> {
+  const bodies = new Set<string>();
+  for (const words of commands) {
+    for (const word of words) {
+      spend(word.length);
+      ARITHMETIC_BODY.lastIndex = 0;
+      for (let match = ARITHMETIC_BODY.exec(word); match !== null; match = ARITHMETIC_BODY.exec(word)) bodies.add(match[1]);
+    }
+  }
+  return bodies;
+}
+
+/**
+ * A program word that is not plain text, or `eval` with an argument.
+ * The word is the text before expansion, path included, so `/bin/s$(echo h)` is refused.
+ */
+function findUnplainProgram(commands: string[][]): string | undefined {
+  const arithmetic = findArithmeticBodies(commands);
+  for (const words of commands) {
+    spend(words.length);
+    if (words.length === 1 && arithmetic.has(words[0])) continue;
+    for (const place of findProgramPlaces(words)) {
+      if (!PLAIN_PROGRAM.test(place.word)) return place.word;
+    }
+    if (hasEvalArgument(words)) return 'eval';
+  }
+  return undefined;
+}
+
+/** Whether `eval` has an argument, so it runs that argument as a command. A redirect is not one. */
+function hasEvalArgument(words: string[]): boolean {
+  for (const place of findProgramPlaces(words)) {
+    if (place.index < 0 || programName(place.word).toLowerCase() !== 'eval') continue;
+    let index = place.index + 1;
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (index < words.length) return true;
+  }
+  return false;
+}
 
 // Whether a substitution in `text` runs, and whether one never closes.
 // Single quotes and `$'…'` hide it. `<(…)` and `>(…)` do not run inside `"…"`. `$((…))` is arithmetic.
