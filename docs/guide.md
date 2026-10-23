@@ -1736,8 +1736,10 @@ desk, read-only. Use it only for an agent you trust with the words.
   proxy port that the desk needs. It blocks `open`, `osascript`, Launch Services and Apple
   events. Not yet run on a Mac: run `node --test test/agents/desk/start.test.ts` there once
   to check the contract.
-- **Native Windows**: no desk yet (#669). Run yokoten in WSL2. On native Windows, the
-  guard alone holds the rules.
+- **Native Windows**: experimental, and not ready yet (#669). It needs a restricted-token
+  helper, ACLs on the desk and a firewall rule. The #637 contract test must pass on real
+  Windows 11 before it starts a worker. Until then run yokoten in WSL2, where the Linux
+  desk works. On native Windows, the guard alone holds the rules.
 
 ### Messages between agents
 
