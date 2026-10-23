@@ -7,6 +7,9 @@ import { type Value, evaluate, fieldObject, gap, isIdentStart, lineAt, matchClos
 const HELPERS = new Set(['blocked', 'allowed', 'shouldBlock', 'shouldPass', 'refusedAs', 'isBlockedByList']);
 const REFUSE_HELPERS = new Set(['blocked', 'shouldBlock', 'refusedAs']);
 const ALLOW_HELPERS = new Set(['allowed', 'shouldPass']);
+/** Every name a refusal may be written through: the guard itself, and the helpers a test may declare. */
+const REFUSAL_NAMES = new Set([...REFUSE_HELPERS, ...ALLOW_HELPERS, 'checkCommand', 'isBlockedByList']);
+const LOCAL_HELPER_NAMES = [...REFUSAL_NAMES];
 const FLAG_NAMES = new Set(['refused', 'isRefused', 'blocked', 'isBlocked']);
 
 /** A test file whose removal or weakening can make the rules looser. */
@@ -133,6 +136,8 @@ export interface TestShape {
   /** True when a refusal call was there but its command could not be read. */
   opaque: boolean;
   body: string;
+  /** The refusals a test makes, as source text, so an unrelated edit to an opaque test stays neutral. */
+  refusalShape: string[];
 }
 
 export interface HelperShape {
@@ -858,6 +863,49 @@ function hideUnreadable(body: string): string {
   return out;
 }
 
+/**
+ * The refusals a test makes, as source text: a call to the guard or a helper, a local
+ * helper it declares, and a loop whose list it would read. An edit elsewhere in an
+ * opaque test changes nothing here, so the test stays as it was (#697).
+ */
+export function refusalShape(body: string): string[] {
+  const parts: string[] = [];
+  for (let index = 0; index < body.length; ) {
+    index = gap(body, index);
+    if (index >= body.length) break;
+    if (quoteOf(body[index])) {
+      const read = scanQuote(body, index);
+      index = read ? read.end : index + 1;
+      continue;
+    }
+    if (namedAt(body, index, 'const') || namedAt(body, index, 'let') || namedAt(body, index, 'var')) {
+      const size = namedAt(body, index, 'const') ? 'const'.length : 'var'.length;
+      const nameAt = gap(body, index + size);
+      if (isIdentStart(body[nameAt]) && LOCAL_HELPER_NAMES.includes(readIdent(body, nameAt).text)) {
+        const end = skipExpr(body, nameAt);
+        parts.push(flatText(body.slice(index, end)));
+        index = end > index ? end : index + 1;
+        continue;
+      }
+    }
+    if (isIdentStart(body[index])) {
+      const name = readIdent(body, index);
+      const open = gap(body, name.end);
+      if ((REFUSAL_NAMES.has(name.text) || name.text === 'for') && body[open] === '(') {
+        const close = matchClose(body, open);
+        const end = close < 0 ? skipExpr(body, open + 1) : close + 1;
+        parts.push(flatText(body.slice(index, end)));
+        index = end > index ? end : index + 1;
+        continue;
+      }
+      index = name.end;
+      continue;
+    }
+    index++;
+  }
+  return parts;
+}
+
 function collect(body: string, bindings: Map<string, Value>): Bag {
   // Blank refusals that may not run, then read what is left. A blanked call is still
   // in the original text, so the test stays opaque: the reader could not count it.
@@ -1046,6 +1094,7 @@ function addTest(source: string, at: number, file: string, bindings: Map<string,
     flags: claims.flags,
     opaque: claims.opaque,
     body: body.body.replace(/\s+/g, ' ').trim(),
+    refusalShape: refusalShape(body.body),
   });
   return close + 1;
 }

@@ -374,3 +374,61 @@ test('this repo against itself is not looser, and the replay finishes in under 3
   assert.equal(texts(change, 'hard-line').length, 0);
   assert.ok(elapsed < 30_000, `${elapsed} ms`);
 });
+
+test('a test that follows a renamed module is not looser (#697)', () => {
+  const source = `import { test } from 'node:test';
+import { blocked } from './guard-helpers.ts';
+test('force push is refused', () => {
+  blocked('git push --force');
+});
+`;
+  const box = setup({ [SPEC]: source, 'test/rules/guard-helpers.ts': "export const blocked = (command: string) => command;\n" });
+  const moved = box.sandbox.git('mv', 'test/rules/guard-helpers.ts', 'test/rules/refusals.ts');
+  assert.equal(moved.status, 0, moved.stderr);
+  box.write({ [SPEC]: source.replace('./guard-helpers.ts', './refusals.ts') });
+  const change = box.judge();
+  assert.equal(change.verdict, 'stricter-or-neutral', texts(change, 'looser').join('; '));
+  assert.equal(texts(change, 'looser').length, 0);
+});
+
+test('a module renamed with a changed helper is looser (#697)', () => {
+  const source = `import { test } from 'node:test';
+import { blocked } from './guard-helpers.ts';
+test('force push is refused', () => {
+  blocked('git push --force');
+});
+`;
+  const box = setup({ [SPEC]: source, 'test/rules/guard-helpers.ts': "export const blocked = (command: string) => command;\n" });
+  const moved = box.sandbox.git('mv', 'test/rules/guard-helpers.ts', 'test/rules/refusals.ts');
+  assert.equal(moved.status, 0, moved.stderr);
+  box.write({ [SPEC]: source.replace('./guard-helpers.ts', './refusals.ts'), 'test/rules/refusals.ts': 'export const blocked = (_command: string) => undefined;\n' });
+  assertLooser(box.judge(), /the declaration import .* was removed/);
+});
+
+test('an unrelated edit to an opaque test is not looser (#697)', () => {
+  const source = `import { test } from 'node:test';
+const blocked = (command: unknown) => command;
+const make = () => 'git push --force';
+test('force push is refused', () => {
+  blocked(make());
+});
+`;
+  const box = setup({ [SPEC]: source });
+  box.write({ [SPEC]: source.replace('  blocked(make());', '  const note = 1;\n  blocked(make());') });
+  const change = box.judge();
+  assert.equal(change.verdict, 'stricter-or-neutral', texts(change, 'looser').join('; '));
+  assert.equal(texts(change, 'looser').length, 0);
+});
+
+test('changing a refusal an opaque test hides is looser (#697)', () => {
+  const source = `import { test } from 'node:test';
+const blocked = (command: unknown) => command;
+const make = () => 'git push --force';
+test('force push is refused', () => {
+  blocked(make());
+});
+`;
+  const box = setup({ [SPEC]: source });
+  box.write({ [SPEC]: source.replace('blocked(make())', 'allowed(make())') });
+  assertLooser(box.judge(), /changed a refusal that could not be read on its own/);
+});

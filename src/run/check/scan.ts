@@ -79,6 +79,44 @@ export function matchClose(source: string, openAt: number): number {
   return -1;
 }
 
+/** Words that a slash may follow and still start a regex, not a division. */
+const REGEX_WORDS = ['return', 'case', 'typeof', 'delete', 'void', 'new', 'in', 'of', 'yield', 'await', 'do', 'else'];
+
+/** True when the slash at `at` starts a regex: the last code before it is an operator, a bracket, or one of `REGEX_WORDS`. */
+function isRegexStart(source: string, at: number): boolean {
+  for (let index = at - 1; index >= 0; index--) {
+    const char = source[index];
+    if (char === ' ' || char === '\t' || char === '\n' || char === '\r') continue;
+    if ('([{,;:!&|?=+-*%<>'.includes(char)) return true;
+    if (!/[A-Za-z_$]/.test(char)) return false;
+    let start = index;
+    while (start > 0 && /[A-Za-z0-9_$]/.test(source[start - 1])) start--;
+    return REGEX_WORDS.includes(source.slice(start, index + 1));
+  }
+  return true;
+}
+
+/** The index after a regex literal, or `at` when this slash is not one. A class (`[...]`) may hold a slash; a newline means it is not a regex. */
+function skipRegex(source: string, at: number): number {
+  let inClass = false;
+  for (let index = at + 1; index < source.length; index++) {
+    const char = source[index];
+    if (char === '\\') {
+      index++;
+      continue;
+    }
+    if (char === '\n') return at;
+    if (char === '[') inClass = true;
+    else if (char === ']') inClass = false;
+    else if (char === '/' && !inClass) {
+      index++;
+      while (index < source.length && /[A-Za-z]/.test(source[index])) index++;
+      return index;
+    }
+  }
+  return at;
+}
+
 export function skipExpr(source: string, at: number): number {
   let depth = 0;
   for (let index = at; index < source.length; index++) {
@@ -94,6 +132,13 @@ export function skipExpr(source: string, at: number): number {
       if (!read) return source.length;
       index = read.end - 1;
       continue;
+    }
+    if (source[index] === '/' && isRegexStart(source, index)) {
+      const end = skipRegex(source, index);
+      if (end > index) {
+        index = end - 1;
+        continue;
+      }
     }
     const char = source[index];
     if (depth === 0 && ',)]};'.includes(char)) return index;

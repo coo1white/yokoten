@@ -242,7 +242,7 @@ function compareTests(baseTests: TestShape[], headTests: TestShape[], baseHelper
       reasons.push({ kind: 'looser', file: item.file, line: item.line, text: `test ${quoteName(name)} may be skipped, so a refusal in it may not run` });
       break;
     }
-    if (was.some((item) => item.opaque) && !now.some((item) => was.some((old) => old.body === item.body))) {
+    if (was.some((item) => item.opaque) && !now.some((item) => was.some((old) => old.refusalShape.join('\n') === item.refusalShape.join('\n')))) {
       reasons.push({ kind: 'looser', file: place.file, line: place.line, text: `test ${quoteName(name)} changed a refusal that could not be read on its own` });
     }
     for (const key of union(now, 'refuses')) {
@@ -258,7 +258,7 @@ function compareTests(baseTests: TestShape[], headTests: TestShape[], baseHelper
   return reasons;
 }
 
-function compareHelpers(base: Map<string, HelperShape>, head: Map<string, HelperShape>): RuleReason[] {
+function compareHelpers(base: Map<string, HelperShape>, head: Map<string, HelperShape>, moved: Map<string, string>): RuleReason[] {
   const reasons: RuleReason[] = [];
   const headTexts = new Set([...head.values()].map((helper) => `${helper.name}\0${helper.text}`));
   for (const [key, helper] of base) {
@@ -266,6 +266,9 @@ function compareHelpers(base: Map<string, HelperShape>, head: Map<string, Helper
     if (next?.text === helper.text) continue;
     // A move inside the watched folders keeps the helper. A change in place does not.
     if (!next && headTexts.has(`${helper.name}\0${helper.text}`)) continue;
+    // A test that follows a renamed module brings in the same bindings from the same code,
+    // so its refusals do not change. The path moved; the import did not (#697).
+    if (!next && followedModuleMove(key, helper, head, moved)) continue;
     const file = key.slice(0, key.indexOf('\0'));
     const role = HELPER_NAMES.includes(helper.name) ? 'helper' : 'declaration';
     const uses = role === 'helper' ? 'calls' : 'uses';
@@ -277,6 +280,52 @@ function compareHelpers(base: Map<string, HelperShape>, head: Map<string, Helper
     });
   }
   return reasons;
+}
+
+/** The module an import declaration names, or null when it is not an import. */
+function importedSpecifier(name: string): string | null {
+  return name.startsWith('import ') ? name.slice('import '.length) : null;
+}
+
+/** What an import brings in, with the module path left out, so a rename does not change it. */
+function importClause(text: string): string {
+  const at = text.search(/\bfrom\s*(['"])/);
+  return (at < 0 ? text : text.slice(0, at)).replace(/\s+/g, ' ').trim();
+}
+
+/** True when the base import's module was renamed to the module the head imports, with the same bindings. */
+function followedModuleMove(key: string, helper: HelperShape, head: Map<string, HelperShape>, moved: Map<string, string>): boolean {
+  const spec = importedSpecifier(helper.name);
+  if (spec === null) return false;
+  const file = key.slice(0, key.indexOf('\0'));
+  const from = resolveImport(file, spec);
+  const to = from === null ? undefined : moved.get(from);
+  if (to === undefined) return false;
+  const clause = importClause(helper.text);
+  for (const [otherKey, other] of head) {
+    if (otherKey.slice(0, otherKey.indexOf('\0')) !== file) continue;
+    const otherSpec = importedSpecifier(other.name);
+    if (otherSpec === null || importClause(other.text) !== clause) continue;
+    if (resolveImport(file, otherSpec) === to) return true;
+  }
+  return false;
+}
+
+/** A module's own code, with its import lines and spacing taken out: what a move may not change. */
+function moduleCode(text: string): string {
+  return text.replace(/^import[\s\S]*?;\s*$/gm, '').replace(/\s+/g, ' ').trim();
+}
+
+/** The renamed files whose own code did not change, old path to new path. A test may follow these. */
+function unchangedMoves(changed: Diff[], root: string, baseRef: string, headRef: string, env: Env): Map<string, string> {
+  const moved = new Map<string, string>();
+  for (const diff of changed) {
+    if (!diff.basePath || !diff.headPath || !diff.status.startsWith('R')) continue;
+    const before = textAt(root, baseRef, diff.basePath, env);
+    const after = textAt(root, headRef, diff.headPath, env);
+    if (before !== null && after !== null && moduleCode(before) === moduleCode(after)) moved.set(diff.basePath, diff.headPath);
+  }
+  return moved;
 }
 
 function helperMap(files: Map<string, string>): Map<string, HelperShape> {
@@ -484,7 +533,7 @@ export function ruleChange(root: string, baseRef: string, headRef: string, env: 
   const baseHelpers = helperMap(baseFiles);
   const headHelpers = helperMap(headFiles);
   reasons.push(...compareTests(baseTests, headTests, baseHelpers, headHelpers));
-  reasons.push(...compareHelpers(baseHelpers, headHelpers));
+  reasons.push(...compareHelpers(baseHelpers, headHelpers, unchangedMoves(changed, root, baseRef, headRef, env)));
   const baseClosure = readClosure(root, baseRef, env);
   const headClosure = readClosure(root, headRef, env);
   reasons.push(...compareImports(baseClosure, headClosure));
