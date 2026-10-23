@@ -1260,10 +1260,11 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 | tier | 什么样的改动 | 谁来审 |
 |------|--------------|--------|
 | C | 日常小改：文档、措辞、样式 | lead 审 |
-| B | 普通改动：其他代码，带测试 | lead 审 |
-| A | 改错了很难收回：密钥、数据、安装、发版、CODEOWNERS 里的文件 | 主人审 |
+| B | 普通改动：其他代码，带测试 | 另一家厂商的 agent 审，lead 批准 |
+| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审 |
 
-`.github/CODEOWNERS` 只列出改错了很难收回的文件：规则、kit、agent 配置、CI、记录。
+在 yokoten 自己的仓库里，`.github/CODEOWNERS` 只列出改错了很难收回的文件：核心规则、CODEOWNERS、
+会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和 `package.json`（记录 0037）。
 不是每个文件都列。新项目跑 `init` 时，会按只许 lead 改的路径写好一份。仓库打开「需要 code owner 审查」以后，PR 一改到这些文件，GitHub
 就会请主人来审。
 
