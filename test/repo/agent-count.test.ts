@@ -17,23 +17,23 @@ type ManifestoPage = {
 const PAGES: ManifestoPage[] = [
   {
     file: 'docs/manifesto.md',
-    has: ['eight agents', 'not verified end to end'],
-    lacks: 'seven agents',
+    has: ['nine agents', 'not verified end to end'],
+    lacks: 'eight agents',
   },
   {
     file: 'docs/i18n/zh-CN/manifesto.md',
-    has: ['八个', '还没有完整跑过'],
-    lacks: '七个 agent',
+    has: ['九个', '还没有完整跑过'],
+    lacks: '八个 agent',
   },
   {
     file: 'docs/i18n/zh-TW/manifesto.md',
-    has: ['八個', '還沒有完整跑過'],
-    lacks: '七個 agent',
+    has: ['九個', '還沒有完整跑過'],
+    lacks: '八個 agent',
   },
   {
     file: 'docs/i18n/ja/manifesto.md',
-    has: ['八つ', '端から端まではまだ確認していません'],
-    lacks: '7つの',
+    has: ['九つ', '端から端まではまだ確認していません'],
+    lacks: '八つの',
   },
 ];
 
@@ -57,10 +57,10 @@ function listGuardedAgents(guide: string): string[] {
   return names;
 }
 
-/** The failure text when `names` is not eight rows. Empty when the count is eight. */
+/** The failure text when `names` is not nine rows. Empty when the count is nine. */
 function agentCountReport(names: string[]): string {
-  if (names.length === 8) return '';
-  return `the Works with table lists ${names.length} agents, not 8: ${names.join(', ')}`;
+  if (names.length === 9) return '';
+  return `the Works with table lists ${names.length} agents, not 9: ${names.join(', ')}`;
 }
 
 /** Phrases `text` must show, and one phrase it must not. Empty when the page agrees. */
@@ -73,7 +73,7 @@ function phraseProblems(text: string, has: readonly string[], lacks: string): st
   return problems;
 }
 
-test('docs: manifestos match the guide list of eight agents (#487)', () => {
+test('docs: manifestos match the guide list of nine agents (#487)', () => {
   const shortGuide = [
     '## Other',
     '| Agent | Note |',
@@ -96,12 +96,12 @@ test('docs: manifestos match the guide list of eight agents (#487)', () => {
   ].join('\n');
   const shortNames = listGuardedAgents(shortGuide);
   assert.deepEqual(shortNames, ['Claude Code', 'Codex CLI']);
-  assert.equal(agentCountReport(shortNames), 'the Works with table lists 2 agents, not 8: Claude Code, Codex CLI');
-  assert.equal(agentCountReport(['Claude Code', 'Copilot', 'Antigravity', 'Codex', 'Muse', 'DeepSeek', 'Grok', 'Gemini']), '');
-  assert.deepEqual(phraseProblems('The same rules run in seven agents today.', ['eight agents', 'not verified end to end'], 'seven agents'), [
-    'missing: eight agents',
+  assert.equal(agentCountReport(shortNames), 'the Works with table lists 2 agents, not 9: Claude Code, Codex CLI');
+  assert.equal(agentCountReport(['Claude Code', 'Copilot', 'Antigravity', 'Codex', 'Muse', 'DeepSeek', 'Grok', 'Gemini', 'OpenCode']), '');
+  assert.deepEqual(phraseProblems('The same rules run in eight agents today.', ['nine agents', 'not verified end to end'], 'eight agents'), [
+    'missing: nine agents',
     'missing: not verified end to end',
-    'still says: seven agents',
+    'still says: eight agents',
   ]);
 
   const names = listGuardedAgents(readFileSync(join(ROOT, 'docs/guide.md'), 'utf8'));

@@ -18,7 +18,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as codex from '../../../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../../../agents/runtimes/deepseek-harness.ts';
+import * as deepseekHarness from '../../../agents/runtimes/small/deepseek-harness.ts';
 import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Gh, repoOf } from '../../../host/github/index.ts';
