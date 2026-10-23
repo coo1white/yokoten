@@ -57,6 +57,8 @@ yokoten 自身も、このようなチームで作っています。リードの
 
 ボードとデスクは `main` にあります。次のリリースで npm に入ります。
 
+yokoten はプルリクエストの前に動き、[PR レビューボット](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) と並んで働きます。
+
 ## 対応しているもの
 
 **エージェント。** 番人は、Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness、Grok CLI で動きます。Gemini CLI は一覧にありますが、端から端まではまだ確認していません。[エージェント表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)に、それぞれの試し方が書いてあります。
