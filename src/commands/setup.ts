@@ -4,7 +4,7 @@ import { existsSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ghIn } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
-import { init, updateCoreRules } from '../setup/init.ts';
+import { init, updateCoreRules } from '../setup/init/index.ts';
 import { type Ask, install, uninstall } from '../setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../setup/plan.ts';
 import { type Invocation, type Output, parse, print, requireRoot, usage } from './shared.ts';

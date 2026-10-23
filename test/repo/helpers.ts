@@ -185,6 +185,29 @@ export function makeSandbox() {
   return { home, repo, env, git, run, call, write, withTests };
 }
 
+/**
+ * A gh first on PATH that answers only the given calls (all its words, joined by spaces)
+ * and fails every other one, so the real gh and GitHub are never reached (#313). Each
+ * call is logged, one a line, for `ghCalls`.
+ */
+export function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string, string>): Record<string, string> {
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node
+const answers = ${JSON.stringify(answers)};
+const call = process.argv.slice(2).join(' ');
+require('node:fs').appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+const said = answers[call];
+if (said === undefined) process.exit(1);
+console.log(said);
+`,
+  );
+  chmodSync(join(bin, 'gh'), 0o755);
+  return { PATH: `${bin}:${process.env.PATH}` };
+}
+
 export const ROOT = join(dirname(CLI), '..');
 
 // The server settings (#7), read through a fake gh. Each route is an API path; a missing

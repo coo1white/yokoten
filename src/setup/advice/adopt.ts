@@ -17,7 +17,7 @@ import type { Env } from '../../rules/config.ts';
 import { place } from '../../rules/message.ts';
 import { loadMarks, scanText } from '../../rules/privacy.ts';
 import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
-import { findRulesGap } from '../init.ts';
+import { findRulesGap } from '../init/index.ts';
 import { languagesWithTests, orList, testLanguages } from './test-commands.ts';
 import { type Found, gitConfig, hasIssueTemplate, hasPrTemplate, ROAD, road, securityLacking, todoFiles } from '../road.ts';
 

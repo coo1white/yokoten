@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
-import { init } from '../../../src/setup/init.ts';
+import { init } from '../../../src/setup/init/index.ts';
 import { ROAD } from '../../../src/setup/road.ts';
 import { testLanguages } from '../../../src/setup/advice/test-commands.ts';
 import { addTestsNeeds, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';

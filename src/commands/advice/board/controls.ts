@@ -24,7 +24,7 @@ import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Gh, repoOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
-import { hookCliPath } from '../../../setup/init.ts';
+import { hookCliPath } from '../../../setup/init/index.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import { markWorktree } from '../../hook.ts';
 import { ageText, BOARD_AGENT_FILE, BOARD_READ_TIMEOUT_MS, parseBoardAgent, type BoardRole, type BoardWorktree } from './agents.ts';

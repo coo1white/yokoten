@@ -96,7 +96,7 @@ import {
   upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor.ts';
-import { workflowNotes } from '../../src/setup/init.ts';
+import { workflowNotes } from '../../src/setup/init/index.ts';
 import {
   ROAD,
   serverChecks,
