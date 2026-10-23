@@ -229,7 +229,9 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   let doneWhen: { command: string; ok: boolean; output: string } | undefined;
   // A subagent runs in the worker's worktree only when the event's folder is that
   // worktree. Otherwise it shares the lead's folder (#614).
-  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : root) : folder;
+  // A broken `.git` still reads its own done-when, so run it in the desk it belongs to (#746).
+  const link = isWorker ? gitLinkAbove(folder) : null;
+  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : link?.top ?? root) : folder;
   if (isWorker && root) {
     const command = readDoneWhen(env, event.subagent ? ranIn : folder);
     if (command) {
