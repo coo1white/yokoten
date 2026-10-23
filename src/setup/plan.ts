@@ -203,7 +203,7 @@ const SET_UP = `yokoten init --github --yes`;
  */
 export function setUpPlanning(gh: Gh, remote: string, { apply, removeDefaults, areas = [], board = false }: PlanningOptions): { ok: boolean; skipped: boolean; lines: string[] } {
   const skip = (line: string) => ({ ok: true, skipped: true, lines: [line] });
-  if (!remote.trim()) return skip(`GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run \`${SET_UP}\` to set up labels and a milestone`);
+  if (!remote.trim()) return skip(`GitHub: skipped, because there is no origin remote yet. Make the repo on GitHub, add it as origin, and push; then run \`${SET_UP}\` to set up labels and a milestone`);
   const repo = repoOf(remote);
   if (!repo) return skip('GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo');
   const found = readPlanning(gh, repo);

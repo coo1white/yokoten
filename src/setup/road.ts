@@ -633,6 +633,16 @@ const keptWorkflow = (root: string, name: string, args: string, after: string): 
   return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
 };
 
+/** True when origin has a branch from this repo: a push put one there. Reads local refs, never the network. */
+const hasPushedOrigin = (root: string, env: Env): boolean => {
+  if (!gitConfig(root, 'remote.origin.url', env)) return false;
+  try {
+    return execFileSync('git', ['--no-optional-locks', 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
+  } catch {
+    return false;
+  }
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -727,6 +737,17 @@ export const ROAD: Step[] = [
     how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
     withoutCi: 'run the tests yourself before each merge',
+  },
+  {
+    // One order for a new project (#655): make the repo, add the remote, push, then the
+    // CODEOWNERS handle and the labels. This step is the first of those, so it is next.
+    stage: 2,
+    key: 'remote',
+    check: (root, env) => hasPushedOrigin(root, env),
+    what: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'the origin remote has no branch from this repo, so the work is only on this machine' : 'there is no origin remote, so the work is only on this machine'),
+    fix: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'push it: `git push -u origin --all`' : 'make the repo on your code host, add it as origin (`git remote add origin <url>`), and push (`git push -u origin --all`)'),
+    why: 'the code host keeps a copy, so a lost machine does not lose the work',
+    how: 'git has an origin remote, and a branch from this repo is on it',
   },
   {
     stage: 2,

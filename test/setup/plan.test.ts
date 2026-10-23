@@ -153,7 +153,7 @@ test('planning: no gh, signed out, or no GitHub remote is a skip that says why, 
   const elsewhere = setUpPlanning(() => { throw new Error('gh was called'); }, 'https://gitea.example.com/me/repo.git', APPLY);
   assert.deepEqual(elsewhere, { ok: true, skipped: true, lines: ['GitHub: skipped, because the origin remote is not on GitHub. Labels and a milestone need a GitHub repo'] });
   const none = setUpPlanning(() => { throw new Error('gh was called'); }, '', APPLY);
-  assert.deepEqual(none, { ok: true, skipped: true, lines: ['GitHub: skipped, because there is no origin remote yet. Add one on GitHub, then run `yokoten init --github --yes` to set up labels and a milestone'] }, 'no remote at all (#208)');
+  assert.deepEqual(none, { ok: true, skipped: true, lines: ['GitHub: skipped, because there is no origin remote yet. Make the repo on GitHub, add it as origin, and push; then run `yokoten init --github --yes` to set up labels and a milestone'] }, 'no remote at all (#208)');
 });
 
 test('planning: one neutral label per area when the list is short; kept as it is, never deleted (#156)', () => {
