@@ -27,10 +27,13 @@ test('kit habits: the skills name the merge order, the cause, the road and the i
 });
 
 test('kit habits: every skill warns when it came from a skills-only copy (#540)', () => {
-  for (const name of readdirSync(join(ROOT, 'kit/user/skills'))) {
-    const text = readSkill(name);
-    assert.match(text, /npx skills add/, `${name}: names the command that copies skills alone`);
-    assert.match(text, /not on PATH and the Claude Code plugin is not enabled/, `${name}: says when the guard is missing`);
-    assert.match(text, /This copy has the skills only; run `npx yokoten install` to add the guard/, `${name}: gives the one line and the fix`);
+  for (const folder of ['user', 'plugin']) {
+    for (const name of readdirSync(join(ROOT, 'kit', folder, 'skills'))) {
+      const text = readFileSync(join(ROOT, 'kit', folder, 'skills', name, 'SKILL.md'), 'utf8');
+      assert.match(text, /npx skills add/, `${folder}/${name}: names the command that copies skills alone`);
+      assert.match(text, /not on PATH and the Claude Code plugin is not enabled/, `${folder}/${name}: says when the guard is missing`);
+      assert.match(text, /This copy has the skills only; run `npx yokoten install` to add the guard/, `${folder}/${name}: gives the one line and the fix`);
+      assert.match(text, /say one\s+>\s*line\. Then carry on:/, `${folder}/${name}: the instruction is two short sentences`);
+    }
   }
 });

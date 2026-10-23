@@ -6,7 +6,7 @@ description: Find the root cause of a process failure and turn the fix into a ch
 
 > **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
 > doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
-> line, then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+> line. Then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
 
 # Root cause, countermeasure, yokoten
 
