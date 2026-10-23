@@ -1,8 +1,8 @@
 // `yokoten init` writes the `tests` job for the project's language (#550, #653): the setup
-// action pinned to a commit, the install step, and the runner. Node uses `npm test` when
-// no earlier language matches and package.json has a real test script. It asks first, as
-// install's writes do (record 0014), and says how to undo it. doctor stays read-only: it
-// reads a project and advises, never writes.
+// action pinned to a commit, the install step, and the runner. Node uses its lockfile's
+// package manager when no earlier language matches and package.json has a real test script.
+// No lockfile means `npm install`. It asks first, as install's writes do (record 0014), and
+// says how to undo it. doctor stays read-only: it reads a project and advises, never writes.
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,8 +27,6 @@ export interface TestsJob {
 
 /** The Node line `action.yml` sets up when a project names no version of its own. */
 const KIT_NODE = '^22.23.4';
-/** The command the Node tests job runs. The script body stays in package.json. */
-const NODE_RUNNER = 'npm test';
 /** `engines.node` may name a range. Anything else is not a version we can copy. */
 const ENGINES_NODE = /^[0-9A-Za-z.^~<>=* |]+$/;
 /** One version on the first line of `.nvmrc` or `.node-version`, with one leading `v` dropped. */
@@ -37,7 +35,8 @@ const VERSION_LINE = /^v?(\d+\.\d+(?:\.\d+)?)$/;
 /**
  * Languages `yokoten init` can write a job for. The first six follow the order in
  * test-commands.ts. Node.js is last, and only when none of those six is found.
- * The Node pin is the same commit as action.yml.
+ * The Node pin is the same commit as action.yml. Its install here is the no-lockfile
+ * command; `nodeCommands` replaces it from the lockfile.
  */
 export const TESTS_JOBS: TestsJob[] = [
   { language: 'Go', action: 'actions/setup-go', version: 'v7.0.0', commit: 'b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', input: 'go-version', inputValue: 'stable', install: 'go mod download' },
@@ -46,7 +45,7 @@ export const TESTS_JOBS: TestsJob[] = [
   { language: '.NET', action: 'actions/setup-dotnet', version: 'v6.0.0', commit: 'a98b56852c35b8e3190ac28c8c2271da59106c68', input: 'dotnet-version', inputValue: '10.x', install: 'dotnet restore' },
   { language: 'Ruby', action: 'ruby/setup-ruby', version: 'v1.332.0', commit: 'b1da4809b005e0178fe08a1d57317bffc00b7b4c', input: 'ruby-version', inputValue: '3.4', install: 'bundle install' },
   { language: 'PHP', action: 'shivammathur/setup-php', version: '2.40.0', commit: 'eb7c497e18156a6bbabfef1d3a82760b9eda3962', input: 'php-version', inputValue: '8.4', install: 'composer install' },
-  { language: 'Node.js', action: 'actions/setup-node', version: 'v7.1.0', commit: '949feb2413d6458794dcd2491c4babbbce0c15c1', input: 'node-version', inputValue: KIT_NODE, install: 'npm ci' },
+  { language: 'Node.js', action: 'actions/setup-node', version: 'v7.1.0', commit: '949feb2413d6458794dcd2491c4babbbce0c15c1', input: 'node-version', inputValue: KIT_NODE, install: 'npm install' },
 ];
 
 /** The pinned checkout step copied from the project's workflow. `note` is its version comment, or empty. */
@@ -199,50 +198,127 @@ export const nodeVersion = (root: string): string => {
 /** Node's version quoted, so `>=` and `22.10` stay text. The other jobs keep plain values. */
 const quotedNodeJob = (job: TestsJob): TestsJob => (job.language === 'Node.js' ? { ...job, inputValue: JSON.stringify(job.inputValue) } : job);
 
-const withNodeVersion = (job: TestsJob, root: string): TestsJob => (job.language === 'Node.js' ? { ...job, inputValue: nodeVersion(root) } : job);
+/** One Node package manager: the lockfiles that show it, and the command that installs from them. */
+interface NodeManager {
+  locks: readonly string[];
+  /** `npm`, `pnpm`, `yarn` or `bun`. The test command is this name plus `test`, except Bun. */
+  manager: string;
+  install: string | ((root: string) => string);
+}
+
+/**
+ * Lockfiles at the project root, first match wins. Bun, pnpm and Yarn come before npm:
+ * `npm ci` cannot install from their lockfiles. `npm ci` needs an npm lockfile, so a
+ * project with none gets `npm install` instead.
+ */
+const NODE_MANAGERS: readonly NodeManager[] = [
+  { locks: ['bun.lock', 'bun.lockb'], manager: 'bun', install: 'bun install --frozen-lockfile' },
+  { locks: ['pnpm-lock.yaml'], manager: 'pnpm', install: 'pnpm install --frozen-lockfile' },
+  { locks: ['yarn.lock'], manager: 'yarn', install: (root) => (isYarnBerry(root) ? 'yarn install --immutable' : 'yarn install --frozen-lockfile') },
+  { locks: ['package-lock.json', 'npm-shrinkwrap.json'], manager: 'npm', install: 'npm ci' },
+];
+
+/** The major in `packageManager`, such as `yarn@3.6.1`, or null when the field names another tool. */
+const packageManagerMajor = (root: string, manager: string): number | null => {
+  try {
+    const field = JSON.parse(readText(join(root, 'package.json')) || 'null')?.packageManager;
+    const prefix = `${manager}@`;
+    if (typeof field !== 'string' || !field.startsWith(prefix)) return null;
+    const major = /^(\d+)/.exec(field.slice(prefix.length))?.[1];
+    return major === undefined ? null : Number(major);
+  } catch {
+    return null;
+  }
+};
+
+/** Yarn 2 and later reject `--frozen-lockfile`. A v1 lockfile still takes that flag. */
+const isYarnBerry = (root: string): boolean => {
+  const major = packageManagerMajor(root, 'yarn');
+  if (major !== null && major >= 2) return true;
+  if (existsSync(join(root, '.yarnrc.yml'))) return true;
+  // Berry writes `__metadata:` in the head. A v1 file never does.
+  return readText(join(root, 'yarn.lock')).slice(0, 800).includes('__metadata:');
+};
+
+/**
+ * The install and the test command for this Node project. The script body stays in
+ * package.json. `bun test` is Bun's own runner, so the script is `bun run test`.
+ */
+const nodeCommands = (root: string): { install: string; runner: string } => {
+  for (const manager of NODE_MANAGERS) {
+    if (!manager.locks.some((name) => existsSync(join(root, name)))) continue;
+    const install = typeof manager.install === 'string' ? manager.install : manager.install(root);
+    const runner = manager.manager === 'bun' ? 'bun run test' : `${manager.manager} test`;
+    return { install, runner };
+  }
+  return { install: 'npm install', runner: 'npm test' };
+};
+
+/** The Node job for this project: its version, and the install its lockfile needs. */
+const nodeJob = (root: string): { job: TestsJob; runner: string } | null => {
+  const base = TESTS_JOBS.find((named) => named.language === 'Node.js');
+  if (!base) return null;
+  const commands = nodeCommands(root);
+  return { job: { ...base, inputValue: nodeVersion(root), install: commands.install }, runner: commands.runner };
+};
 
 /** The job init would write, or null when no covered language matches and there is no real test script. */
 const pickedJob = (root: string): { job: TestsJob; runner: string } | null => {
   const found = testLanguages(root).find((named) => TESTS_JOBS.some((job) => job.language === named.language));
   if (found) {
     const job = TESTS_JOBS.find((named) => named.language === found.language);
-    if (!job) return null;
-    return { job: withNodeVersion(job, root), runner: job.language === 'Node.js' ? NODE_RUNNER : found.runner };
+    return job ? { job, runner: found.runner } : null;
   }
   if (!testScript(root)) return null;
-  const job = TESTS_JOBS.find((named) => named.language === 'Node.js');
-  return job ? { job: withNodeVersion(job, root), runner: NODE_RUNNER } : null;
+  return nodeJob(root);
+};
+
+/** The one-line flow job doctor can paste, from a checkout step that is already pinned. */
+const nodeLine = (job: TestsJob, runner: string, checkout: CheckoutStep): string => {
+  const version = JSON.stringify(job.inputValue);
+  const setup = `${job.action}@${job.commit}`;
+  return `tests: {runs-on: ubuntu-latest, timeout-minutes: 10, steps: [{uses: ${checkout.uses}, with: {persist-credentials: false}}, {uses: ${setup}, with: {"${job.input}": ${version}}}, {run: ${job.install}}, {run: ${runner}}]}`;
+};
+
+/** The workflow's checkout, or why there is nothing pinned to copy. */
+const workflowCheckout = (root: string): { checkout: CheckoutStep } | { gap: 'missing' | 'no-checkout' | 'unpinned' } => {
+  let contents = '';
+  try {
+    contents = readFileSync(join(root, WORKFLOW), 'utf8');
+  } catch {
+    return { gap: 'missing' };
+  }
+  const checkout = checkoutOf(contents);
+  if (!checkout) return { gap: 'no-checkout' };
+  if (!isCommitPin(checkout.uses)) return { gap: 'unpinned' };
+  return { checkout };
 };
 
 /**
  * One flow line for the Node tests job, copied from the workflow's pinned checkout.
  * Null when that pin is missing. The caller decides that the project is a Node project.
+ * The install and the test command follow the lockfile.
  */
 export const nodeTestsLine = (root: string): string | null => {
-  let contents = '';
-  try {
-    contents = readFileSync(join(root, WORKFLOW), 'utf8');
-  } catch {
-    return null;
-  }
-  const checkout = checkoutOf(contents);
-  if (!checkout || !isCommitPin(checkout.uses)) return null;
-  const job = TESTS_JOBS.find((named) => named.language === 'Node.js');
-  if (!job) return null;
-  const version = JSON.stringify(nodeVersion(root));
-  const setup = `${job.action}@${job.commit}`;
-  return `tests: {runs-on: ubuntu-latest, timeout-minutes: 10, steps: [{uses: ${checkout.uses}, with: {persist-credentials: false}}, {uses: ${setup}, with: {"${job.input}": ${version}}}, {run: ${job.install}}, {run: ${NODE_RUNNER}}]}`;
+  const found = workflowCheckout(root);
+  if (!('checkout' in found)) return null;
+  const picked = nodeJob(root);
+  return picked ? nodeLine(picked.job, picked.runner, found.checkout) : null;
 };
 
 /**
  * The fix doctor shows for a Node project with a test script. Null when a language in
- * TESTS_JOBS comes first, or when there is no real test script. The line has no newline.
+ * TESTS_JOBS comes first, when there is no real test script, or when the workflow file
+ * is missing: the caller then says to run `yokoten init`. The line has no newline.
  */
 export const nodeTestsFix = (root: string): string | null => {
   const picked = pickedJob(root);
   if (!picked || picked.job.language !== 'Node.js') return null;
-  const line = nodeTestsLine(root);
-  if (line) return `in ${WORKFLOW}, paste this under \`jobs:\`, then add \`tests\` to the \`needs\` list of \`ci\`: \`${line}\``;
+  const found = workflowCheckout(root);
+  if ('checkout' in found) return `in ${WORKFLOW}, paste this under \`jobs:\`, then add \`tests\` to the \`needs\` list of \`ci\`: \`${nodeLine(picked.job, picked.runner, found.checkout)}\``;
+  // No file yet. Naming a checkout pin would send the reader to fix a step that is not there.
+  if (found.gap === 'missing') return null;
+  if (found.gap === 'no-checkout') return `in ${WORKFLOW}, add a checkout step pinned to a commit, then run \`yokoten init\``;
   return `in ${WORKFLOW}, the checkout step is not pinned. Pin it, then run \`yokoten init\``;
 };
 
