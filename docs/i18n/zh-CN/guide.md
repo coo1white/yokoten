@@ -112,10 +112,12 @@ not now（暂不，后面跟着你给的原因）或者 can't check（这里查�
 会话开头不联网，所以那里这三步总是 can't check。
 
 **别的托管平台。** doctor 从 `origin` 远程仓库看出托管平台。在 GitHub 上，服务器设置照上面的办法读。
-在 Gitea、GitLab 这类别的平台上，核心照常工作：规则、守卫、提交检查都一样。只有平台自己才判断得了的
+在 Gitea 上，在 `yokoten.json` 里写 `"host": "gitea"`，并把 bot 用户的令牌放进 `GITEA_TOKEN`；doctor 会通过
+Gitea 的 API 读取分支和标签保护、标签、里程碑和忘记的分支。`gitea.com` 不用写这个键。在 GitLab 这类别的平台上，
+核心照常工作：规则、守卫、提交检查都一样。只有平台自己才判断得了的
 步骤，是 `tests`、`ci`、`labels`、`milestone`、`titles`、`codeowners`、`bot`、`review`，以及那三步
 服务器设置。这些步骤在那里都标 **can't check**，并写明它在问什么，你可以自己动手设好。
-它们不会卡住关卡。自建服务器的名字从不打印，doctor 一律叫它 "this host"。接下来会做 Gitea 适配（issue #505）。
+它们不会卡住关卡。自建服务器的名字从不打印，doctor 一律叫它 "this host"。
 
 第 2 关的 `labels` 和 `milestone` 也这样读。标准标签是 `bug`、`feat`、`docs`、`refactor`、`ci`、
 `owner`、`incident`、`good first issue`、`hotfix`、`security`，还有三个 tier 标签 `tier A`、`tier B`、`tier C`。

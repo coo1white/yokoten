@@ -1,0 +1,247 @@
+// The Gitea adapter (#505). Gitea's API is close to GitHub's, so the road's ideas map
+// onto it: a protected branch, labels, milestones. Gitea has no Apps: the bot is a bot
+// user, and its token is in GITEA_TOKEN (or YOKOTEN_GITEA_TOKEN). A token is never
+// printed, and it is sent only over https, or to this machine in a test.
+//
+// Read only, and only in full doctor. The shape returned is yokoten's neutral server
+// read, the one the road judges; it lives with the GitHub adapter until a third host
+// needs it somewhere else.
+//
+// Gitea differs from GitHub in what it has no API for: its core has no secret scanning,
+// no Dependabot and no Actions approval switch, so those read as unknown ("can't
+// check"), never as off. Tag protection covers future `v*` tags; code owner review is
+// read from the fields a newer Gitea sends, and is missing when it sends none.
+
+import type { Env } from '../rules/config.ts';
+import type { Unread } from './github/index.ts';
+import type { BranchRules, Security, ServerSettings } from './github/server.ts';
+import type { Planning } from './github/planning.ts';
+
+/** One answer from the Gitea API. `status` is HTTP; `body` is JSON, or null. */
+export interface GiteaAnswer {
+  status: number;
+  body: unknown;
+}
+
+/** One API read, by path from the API root (`/repos/owner/name`). Injected, so a test needs no network. */
+export type GiteaGet = (path: string) => Promise<GiteaAnswer>;
+
+/** How long one API read waits for Gitea: the same cap full doctor puts on the GitHub read. */
+const API_TIMEOUT_MS = 3000;
+
+/** The most pages one list read follows; Gitea caps a page at 50 rows. */
+const MAX_PAGES = 20;
+
+/** The token the adapter uses, from either name Gitea projects use. */
+export const giteaTokenOf = (env: Env): string => (env.GITEA_TOKEN || env.YOKOTEN_GITEA_TOKEN || '').trim();
+
+/** The API address can carry a token: https, or plain http to this machine only. */
+function isSafeApi(api: string): boolean {
+  try {
+    const url = new URL(api);
+    return url.protocol === 'https:' || (url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+/** A read through `fetch`, with the token in the header and never in a message. */
+export function giteaGet(api: string, token: string, fetchImpl: typeof fetch = fetch): GiteaGet {
+  const root = api.replace(/\/$/, '');
+  return async (path) => {
+    const res = await fetchImpl(`${root}${path}`, {
+      headers: { authorization: `token ${token}`, accept: 'application/json', 'user-agent': 'yokoten' },
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    let body: unknown = null;
+    if (res.status !== 204) {
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
+      }
+    }
+    return { status: res.status, body };
+  };
+}
+
+/** Why Gitea could not answer, in words a beginner can act on. */
+function noAnswer(): Unread {
+  return { unread: 'Gitea gave no answer', fix: 'check the network and the address of the server, then run doctor again' };
+}
+
+/** Why Gitea refused, by status. A 404 and a 401 hide the same thing: no access. */
+function refused(status: number): Unread {
+  if (status === 401 || status === 403) return { unread: 'Gitea refused the token', fix: 'make a token for the bot user with repo read access, put it in GITEA_TOKEN, then run doctor again' };
+  if (status === 404) return { unread: 'Gitea did not find the repo, or the token cannot see it', fix: 'check the origin address, and that the token belongs to a user with read access to the repo' };
+  return { unread: `Gitea answered ${status}`, fix: 'run doctor again; if it keeps failing, check the server' };
+}
+
+/** The answer when it worked, or why not. */
+type Read = { body: unknown } | Unread;
+
+const isUnread = (value: unknown): value is Unread => typeof value === 'object' && value !== null && 'unread' in value;
+
+async function ask(get: GiteaGet, path: string): Promise<Read> {
+  let answer: GiteaAnswer;
+  try {
+    answer = await get(path);
+  } catch {
+    return noAnswer();
+  }
+  if (answer.status < 200 || answer.status >= 300) return refused(answer.status);
+  return { body: answer.body };
+}
+
+/** Every row of a list read, page by page. Gitea caps a page at 50 rows. */
+async function getAll(get: GiteaGet, path: string): Promise<unknown[] | Unread> {
+  const rows: unknown[] = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const read = await ask(get, `${path}${path.includes('?') ? '&' : '?'}page=${page}&limit=50`);
+    if (isUnread(read)) return read;
+    if (!Array.isArray(read.body)) return { unread: 'Gitea sent a list that is not a list', fix: 'run doctor again; if it keeps failing, check the server version' };
+    rows.push(...read.body);
+    if (read.body.length < 50) break;
+  }
+  return rows;
+}
+
+const asObject = (value: unknown): Record<string, unknown> => (typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+const asText = (value: unknown): string => (typeof value === 'string' ? value : '');
+const asBoolean = (value: unknown): boolean | null => (typeof value === 'boolean' ? value : null);
+
+/** A branch protection rule, as Gitea sends it. */
+interface Protection {
+  branch_name?: unknown;
+  enable_status_check?: unknown;
+  status_check_contexts?: unknown;
+  required_approvals?: unknown;
+  require_code_owner_approval?: unknown;
+  enable_code_owner_review?: unknown;
+}
+
+/** True when a Gitea branch pattern (`main`, `release/*`) names `branch`. */
+function matchesBranch(pattern: string, branch: string): boolean {
+  if (pattern === branch) return true;
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`).test(branch);
+}
+
+/** True when a tag pattern covers the next release tag too, not only one tag that exists now. */
+function coversReleaseTags(pattern: string): boolean {
+  if (!pattern) return false;
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  const patternOf = new RegExp(`^${escaped}$`);
+  return ['v1.0.0', 'v2.0.0'].every((tag) => patternOf.test(tag));
+}
+
+/** The default branch's rules, from the protection Gitea keeps, or none. */
+function branchRules(protections: unknown[], defaultBranch: string): BranchRules {
+  const found = protections
+    .map(asObject)
+    .map((rule) => rule as Protection)
+    .find((rule) => matchesBranch(asText(rule.branch_name), defaultBranch));
+  if (!found) {
+    return { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
+  }
+  const checks = Array.isArray(found.status_check_contexts) ? found.status_check_contexts.map(asText).filter(Boolean) : [];
+  return {
+    pullRequest: true,
+    codeOwnerReview: found.require_code_owner_approval === true || found.enable_code_owner_review === true,
+    // Gitea sets merge methods on the repo, not on the protection; the repo read judges them.
+    mergeMethods: [],
+    requiredChecks: found.enable_status_check === true ? checks : [],
+    // A protected branch refuses a force push and a deletion in Gitea.
+    noForcePush: true,
+    noDeletion: true,
+    approvals: typeof found.required_approvals === 'number' && found.required_approvals > 0 ? found.required_approvals : 0,
+  };
+}
+
+/** What a success read holds as a list; an empty list for an odd body. */
+const rowsOf = (body: unknown): unknown[] => (Array.isArray(body) ? body : []);
+
+/**
+ * The server settings of a Gitea repo, or why they can't be read. `host` is what
+ * `hostOf` worked out; `get` is for a test, and without it the adapter reads `env`.
+ */
+export async function readGiteaServer(host: { repo: string; api: string }, env: Env, get?: GiteaGet): Promise<ServerSettings | Unread> {
+  const token = giteaTokenOf(env);
+  if (!token) return { unread: 'GITEA_TOKEN is not set, so yokoten can\'t read the server', fix: 'make a token for the bot user with repo read access, put it in GITEA_TOKEN, then run doctor again' };
+  if (!isSafeApi(host.api)) return { unread: 'the Gitea address is not https, so the token is not sent', fix: 'give the repo an https origin address, or run doctor on the server itself' };
+  const api = get ?? giteaGet(host.api, token);
+  const base = `/repos/${host.repo}`;
+
+  const infoRead = await ask(api, base);
+  if (isUnread(infoRead)) return infoRead;
+  const info = asObject(infoRead.body);
+  if (!Object.keys(info).length) return { unread: 'Gitea sent no repo for the origin address', fix: 'check the origin address, then run doctor again' };
+  const defaultBranch = asText(info.default_branch) || 'main';
+
+  // The independent reads run together: doctor waits for the slowest, not the sum.
+  const [protectionRead, tagRead, labelRead, milestoneRead, branchRead, pullRead] = await Promise.all([
+    ask(api, `${base}/branch_protections`),
+    getAll(api, `${base}/tag_protections`),
+    getAll(api, `${base}/labels`),
+    getAll(api, `${base}/milestones?state=all`),
+    getAll(api, `${base}/branches`),
+    getAll(api, `${base}/pulls?state=open`),
+  ]);
+
+  const branch = isUnread(protectionRead) ? protectionRead : branchRules(rowsOf(protectionRead.body), defaultBranch);
+
+  // An older Gitea has no tag protection endpoint. That is unknown, never "off".
+  const tags: boolean | Unread = isUnread(tagRead)
+    ? tagRead.unread.startsWith('Gitea answered 404')
+      ? { unread: 'this Gitea has no tag protection API', fix: 'protect the v* tags by hand in the repo settings, or update Gitea, then run doctor again' }
+      : tagRead
+    : tagRead.some((rule) => coversReleaseTags(asText(asObject(rule).name_pattern)));
+
+  const planning: Planning | Unread =
+    isUnread(labelRead) || isUnread(milestoneRead)
+      ? (isUnread(labelRead) ? labelRead : milestoneRead as Unread)
+      : {
+          repo: host.repo,
+          labels: labelRead.map(asObject).map((label) => ({ name: asText(label.name), color: asText(label.color), description: asText(label.description) })).filter((label) => label.name !== ''),
+          milestones: milestoneRead.map(asObject).map((milestone) => ({ title: asText(milestone.title), open: asText(milestone.state) === 'open' })).filter((milestone) => milestone.title !== ''),
+        };
+
+  const forgotten: string[] | Unread = isUnread(branchRead) || isUnread(pullRead)
+    ? (isUnread(branchRead) ? branchRead : pullRead as Unread)
+    : (() => {
+        const owner = host.repo.split('/')[0];
+        const open = new Set(pullRead.map(asObject).map((pull) => {
+          const head = asObject(pull.head);
+          return asText(head.label) || `${owner}:${asText(head.ref)}`;
+        }).filter(Boolean));
+        return branchRead.map(asObject).map((row) => asText(row.name)).filter((name) => name && name !== defaultBranch && !open.has(`${owner}:${name}`));
+      })();
+
+  // Gitea's core has no secret scanning, Dependabot or private vulnerability reporting.
+  // They are unknown, so the step says "can't check", never "off".
+  const security: Security = { secretScanning: null, pushProtection: null, privateReporting: null, dependabotAlerts: null };
+
+  const methods: [string, boolean | null][] = [
+    ['squash', asBoolean(info.allow_squash_merge)],
+    ['merge', asBoolean(info.allow_merge_commit)],
+    ['rebase', asBoolean(info.allow_rebase_merge)],
+  ];
+  const mergeMethods = methods.some(([, on]) => on === null) ? null : methods.filter(([, on]) => on).map(([name]) => name);
+
+  return {
+    repo: host.repo,
+    defaultBranch,
+    isPrivate: asBoolean(info.private),
+    // Gitea has no Actions setting that lets a workflow approve a pull request.
+    actionsCanApprove: null,
+    actionsApprovalNote: 'Gitea has no Actions approval switch that yokoten can read, so check the approvals by hand',
+    mergeMethods,
+    deleteBranchOnMerge: asBoolean(info.delete_branch_after_merge),
+    branch,
+    tags,
+    security,
+    forgotten,
+    planning,
+    boards: [],
+  };
+}

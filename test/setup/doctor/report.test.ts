@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeF
 import { syncBuiltinESMExports } from 'node:module';
 import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { at, fakeGh, GOOD, makeSandbox, makeTempDir, planningFound, REPO, said, serverGh, stepMark, withPlanning } from '../../repo/helpers.ts';
+import { at, fakeGh, GOOD, makeSandbox, makeTempDir, planningFound, REPO, said, serverGh, stepMark, stopCheckoutWalk, withPlanning } from '../../repo/helpers.ts';
 import { DEFAULTS } from '../../../src/rules/config.ts';
 import { type BranchRules, type Gh, ghIn, readPlanning, readServer, type ServerSettings, type Unread } from '../../../src/host/github/index.ts';
 import { blocksToSay, doctor, listBoardSteps, saveHostCache, SERVER_TIMEOUT_MS, SESSION_UNSAVED_BUDGET, sessionsDir, sessionUnsaved, STOPPED_EARLY, UNSAVED_OFFER, noCiNote, privacyNotes, upstreamNote } from '../../../src/setup/doctor/index.ts';
@@ -85,7 +85,7 @@ test("server: gh missing, signed out or refused is \"can't check\" with the fix,
     assert.equal(checks.find((c) => c.id === id)?.mark, "can't check", id);
   }
   assert.match(checks.find((c) => c.id === 'tag-rules')?.finding.fix ?? '', /GitHub Pro/);
-  assert.match(checks.find((c) => c.id === 'delete-branch')?.finding.what ?? '', /only a repo admin/);
+  assert.match(checks.find((c) => c.id === 'delete-branch')?.finding.what ?? '', /code host did not say/);
 });
 
 test('road: the server steps are stage 5, and pass a repo with every setting on (#7)', () => {
@@ -450,7 +450,9 @@ test('doctor --session: exactly three lines, about the first step of the first s
     'Why: an agent follows the rules it can read, and only those.',
     'Tell the user in plain words, one step at a time, and offer to do it (as-is, lighter, or not now with a reason).',
   ]);
-  // Outside a repo it says nothing (unless yokoten itself is broken).
+  // Outside a repo it says nothing (unless yokoten itself is broken). A stop marker keeps
+  // the walk from finding the repo around this folder when TMPDIR lives inside one.
+  stopCheckoutWalk(sandbox.home);
   assert.equal((await sandbox.call(['doctor', '--session'], { cwd: sandbox.home })).stdout, '');
 });
 

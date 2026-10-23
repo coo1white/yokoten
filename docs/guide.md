@@ -123,12 +123,15 @@ Without `gh`, a sign-in, the network or a GitHub remote, they are **can't check*
 A session never calls the network, so there they are always **can't check**.
 
 **Another host.** doctor reads the host from the `origin` remote. On GitHub it reads the
-server as above. On another host, such as Gitea or GitLab, the core works the same: the
+server as above. On Gitea, name the host in `yokoten.json` (`"host": "gitea"`) and give the
+bot user a token in `GITEA_TOKEN`; doctor then reads the branch and tag protection, the
+labels, the milestones and the forgotten branches through Gitea's API. `gitea.com` is
+recognised without the key. On another host, such as GitLab, the core works the same: the
 rules, the guard and the commit check. The steps that only the host can judge are `tests`,
 `ci`, `labels`, `milestone`, `titles`, `codeowners`, `bot`, `review` and the three server
 steps. There each one is **can't check**, and says what it asks, so you can set it up by
 hand. They never hold the stage. A self-hosted server's name is never printed: doctor calls
-it "this host". A Gitea adapter comes next (issue #505).
+it "this host".
 
 `labels` and `milestone` in stage 2 are read the same way. The standard labels are `bug`, `feat`,
 `docs`, `refactor`, `ci`, `owner`, `incident`, `good first issue`, `hotfix`, `security`, and the

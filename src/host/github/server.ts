@@ -35,6 +35,8 @@ export interface ServerSettings {
   isPrivate: boolean | null;
   /** Whether a workflow may approve a pull request (an Actions setting), or null without admin rights. */
   actionsCanApprove: boolean | null;
+  /** Why the approval switch can't be read here, in the host's words (#505); GitHub leaves it out. */
+  actionsApprovalNote?: string;
   /** Merge methods the repo allows, or null without admin rights. */
   mergeMethods: string[] | null;
   deleteBranchOnMerge: boolean | null;
