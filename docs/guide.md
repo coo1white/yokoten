@@ -113,7 +113,7 @@ listed:
 | Stage | Steps |
 |---|---|
 | **1 · Safety net** | `rules`, `tool-hook`, `commit-check`, `runtime`, `tests` (a test command, and CI runs it) |
-| **2 · Issues and pull requests** | `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
+| **2 · Issues and pull requests** | `remote` (the repo is on the code host, and a branch from it is pushed), `ci` (CI runs `check`, or uses the yokoten Action), `issues` (no todo file), `templates`, `labels` (the standard set), `milestone` (an open one), `no-build-output` (nothing in `dist/`, `build/` or `out/`, no built binaries) |
 | **3 · Release** | `changelog`, `titles` (CI runs `check --pr`, or uses the Action on pull requests without `pr-check: false`) |
 | **4 · A team of agents** | `codeowners`, `bot`, `skills`, `sandbox` (each agent may write the worktree, and nothing wider), `review` (a merge to the default branch needs one approval) |
 | **5 · Going public** | `security-files` (a security policy, Dependabot, a license), `protection` (rulesets on the default branch and `v*` tags), `merge-settings` (squash only, delete branch on merge), `security-settings` (secret scanning, push protection, private reporting, Dependabot alerts) |
@@ -212,7 +212,7 @@ A power cut, a crash or a dead disk loses work that lives only on one machine. S
 
 | Note | What it means | The command |
 |---|---|---|
-| `uncommitted-changes` | A worktree has changed files: how many, and how old the oldest is | `git add -A` and `git commit` there, then push |
+| `uncommitted-changes` | A worktree has changed files: how many, and how old the oldest is | `git add -A` and `git commit -m "chore: save work"` there, then push; with `.yokoten/`, the message is `chore: add yokoten`, and committing the copy is the point |
 | `unpushed-commits` | A branch has commits that no remote has, or a detached HEAD has commits that no branch holds | `git push`, or `git push -u origin <branch>` for a branch with no upstream of its own; `git switch -c <name>` first for a detached HEAD |
 | `stashes` | There are stashes. A stash is never pushed | `git stash branch <name>`, then push it |
 | `stale-index-lock` | An `index.lock` is left from a crash, and no git process runs in the repo | `rm` the file |
@@ -569,6 +569,10 @@ are two ways to install: the Claude Code plugin, or the `install` command, from 
 from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
 on Windows, use Git Bash.
 
+Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copies the
+skills only. A skill is advice to the agent; the guard is what stops a command. So skills
+alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -601,8 +605,11 @@ Claude Code runs the plugin's `.ts` files with `node`. Node can do this because 
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
 does not update on its own until you turn on auto-update for it. From your shell,
-`claude plugin update yokoten@yokoten` does the same; restart Claude Code after it. When the
-plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
+`claude plugin update yokoten@yokoten` does the same. The next tool call runs the updated
+guard. A session which still has the old hook command needs one restart. If Claude Code
+removes the old plugin folder while a session still runs, the tool call is refused and
+asks for a restart. When the plugin is older than the yokoten that runs `doctor`,
+`doctor` says so in a note.
 
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`
@@ -863,7 +870,8 @@ It puts three safe defaults in `.github/` too:
   `yokoten.json`, `.yokoten/`, the hooks, the agent config and `.github/`. The guard
   stops a worker on the machine; this file stops the same change on the server. The
   owner is the account in a GitHub `origin` remote. Without one, the file has a
-  placeholder, and `doctor` asks you to put your GitHub handle in it. GitHub takes no
+  placeholder: make the repo, add the remote and push, then `doctor` asks you to put your
+  GitHub handle in it. GitHub takes no
   organization as an owner, so when `gh` says the account is one, the file has the
   placeholder too, and `init` asks for a person or `@org/team`. Full `doctor` flags a
   file whose only owner is the organization. It bites only when
@@ -1389,10 +1397,11 @@ project:
   note    lesson incident-138: test/api.test.ts: a test calls a server on this machine and does not set NO_PROXY; set NO_PROXY and no_proxy to 127.0.0.1,localhost while the test runs, then put the old values back
 ```
 
-The first time a project's full `doctor` runs a new lesson, it also says so once, even
-when the lesson finds nothing: `note    new lesson: incident-138 (<what>); doctor now
-runs it in this project`. It keeps the lessons it has seen in `.git/yokoten/state.json`,
-so the file is never committed.
+The first time a project's full `doctor` runs a new lesson, it says so once. A lesson
+that finds nothing says `note    a new check ran: ok (incident-138); doctor now runs it
+in this project`. One that finds a problem says `note    new lesson: incident-138
+(<what>); doctor now runs it in this project`, then the problem. It keeps the lessons
+it has seen in `.git/yokoten/state.json`, so the file is never committed.
 
 The session start hears a new lesson too, once, when it finds a problem here. It is one
 line, and it names the command that shows where:
@@ -1613,11 +1622,12 @@ is to undo (record 0004):
 | Tier | Kind of change | Who reviews |
 |------|----------------|-------------|
 | C | Standard: docs, wording, styles | The lead |
-| B | Normal: other code, with tests | The lead |
-| A | Hard to undo: secrets, data, install, releases, owned files | The owner |
+| B | Normal: other code, with tests | Another vendor's agent reviews; the lead approves |
+| A | Hard to undo: owned files, or a change that makes a rule looser | The owner |
 
-`.github/CODEOWNERS` lists the owned files: the rules, the kit, agent config, CI and the
-records. It does not list every file. In a new project, `init` writes one for the
+In yokoten's own repo, `.github/CODEOWNERS` lists the owned files: the core rules,
+CODEOWNERS, CI that publishes or holds a secret, the bot token, guard config and
+`package.json` (record 0037). In a new project, `init` writes one for the
 lead-only paths. With "require review from code owners" on, the
 host asks the owner to review a pull request that changes one of them.
 
@@ -1736,8 +1746,10 @@ desk, read-only. Use it only for an agent you trust with the words.
   proxy port that the desk needs. It blocks `open`, `osascript`, Launch Services and Apple
   events. Not yet run on a Mac: run `node --test test/agents/desk/start.test.ts` there once
   to check the contract.
-- **Native Windows**: no desk yet (#669). Run yokoten in WSL2. On native Windows, the
-  guard alone holds the rules.
+- **Native Windows**: experimental, and not ready yet (#669). It needs a restricted-token
+  helper, ACLs on the desk and a firewall rule. The #637 contract test must pass on real
+  Windows 11 before it starts a worker. Until then run yokoten in WSL2, where the Linux
+  desk works. On native Windows, the guard alone holds the rules.
 
 ### Messages between agents
 
@@ -1816,6 +1828,14 @@ The page has two columns. Needs you is a bell in the header, next to Live.
   The board reads Claude, Grok, Muse and Codex logs. DeepSeek runs on Codex.
   With no log, you see the agent's `doing` steps.
   Pick the lead and the middle is the 24-hour timeline.
+
+The bottom bar counts free agent seats.
+Each vendor shows its working agents and its free seats.
+Write `.git/yokoten-seats.json` in the main folder, as a JSON object of vendor to seat count.
+For example, `{"claude": 2, "grok": 4}` gives Claude two seats and Grok four.
+A runtime name works too, such as `claude-code`.
+A vendor with no working agents holds all its seats.
+Without the file, the bar counts idle agents instead.
 
 The bell's badge is grey at zero and orange when something needs you.
 A click opens the list under the bell.
