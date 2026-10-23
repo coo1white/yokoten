@@ -21,6 +21,7 @@ const HELP = [
   '',
   "Start: run `yokoten` with no command in your project. It installs what is missing.",
   'It adds the rules to the project and shows the next step.',
+  'To run each step yourself, use `yokoten install`, then `yokoten init`.',
   'Run `yokoten <command> --help` for its options and an example.',
   '--json on check, doctor, hook, explain and adopt: data on stdout,',
   'for an agent or a script.',
