@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ROOT } from '../repo/helpers.ts';
@@ -24,4 +24,13 @@ test('kit habits: the skills name the merge order, the cause, the road and the i
   assert.ok(release.includes('weak model'));
   assert.ok(inspect.includes('How you name an issue'));
   assert.ok(inspect.includes('issue #N'));
+});
+
+test('kit habits: every skill warns when it came from a skills-only copy (#540)', () => {
+  for (const name of readdirSync(join(ROOT, 'kit/user/skills'))) {
+    const text = readSkill(name);
+    assert.match(text, /npx skills add/, `${name}: names the command that copies skills alone`);
+    assert.match(text, /not on PATH and the Claude Code plugin is not enabled/, `${name}: says when the guard is missing`);
+    assert.match(text, /This copy has the skills only; run `npx yokoten install` to add the guard/, `${name}: gives the one line and the fix`);
+  }
 });

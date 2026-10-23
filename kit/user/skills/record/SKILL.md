@@ -4,6 +4,10 @@ description: Write down a decision so it is not argued again. Use when the user 
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line, then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Record a decision
 
 A decision that lives only in a chat gets made again, often differently. Write it

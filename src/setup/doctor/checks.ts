@@ -20,7 +20,7 @@ import type { FolderTrust } from '../../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../../agents/hooks-file.ts';
 import { runtimeVersion, VERSION } from '../files.ts';
 import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init.ts';
-import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
+import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, installedSkillDirs, projectSkillDirs, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
 
 export interface Practice {
   name: string;
@@ -437,17 +437,33 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 }
 
 /**
- * A note when the plugin is on and install's pieces are here too (#300): then the guard
- * and the session doctor run twice, and every skill shows up twice. It names what to
- * remove, and the one command that does it.
+ * A note when the plugin is on and install's pieces, or a skills-only copy, are here too
+ * (#300, #540): then the guard and the session doctor run twice, and every skill shows up
+ * twice. It names what to remove, and the one command that does it.
  */
-export function doubleInstallCheck(env: Env): Finding | null {
+export function doubleInstallCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const pieces = installedPieces(env);
-  if (!pieces.length) return null;
-  return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
-    why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
-  });
+  const homeSkills = installedSkillDirs(env);
+  const projectSkills = root ? projectSkillDirs(root) : [];
+  if (!pieces.length && !projectSkills.length) return null;
+  const places = [...pieces, ...projectSkills.map((dir) => `the skills in ${dir}`)];
+  // A skills-only copy has no hooks and no runtime, so only the skills show up twice.
+  const skillsOnly = !pieces.some((piece) => !piece.startsWith('the skills in'));
+  const projectList = projectSkills.map((dir) => `\`${dir}\``).join(' and ');
+  const remove =
+    homeSkills.length || !skillsOnly
+      ? projectSkills.length
+        ? `remove the copy with \`yokoten uninstall\`, or delete ${projectList}`
+        : 'remove the copy with `yokoten uninstall`'
+      : `remove the copy: delete ${projectList}`;
+  const what = skillsOnly
+    ? `the yokoten plugin is on, and a skills-only copy is here too: ${places.join('; ')}`
+    : `the yokoten plugin is on, and \`yokoten install\` put these here too: ${places.join('; ')}`;
+  const why = skillsOnly
+    ? 'the plugin brings the same skills, so every skill shows up twice'
+    : 'with both, the guard and the session doctor run twice and every skill shows up twice';
+  return finding('machine-runtime', what, `${remove}; the plugin brings its own`, { why });
 }
 
 /**

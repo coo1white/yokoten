@@ -4,6 +4,10 @@ description: Merge a pull request through the bot and stop when the new commit i
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line, then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Merge through the bot
 
 Only the bot merges. A person's merge writes that person's time zone into the commit GitHub creates.

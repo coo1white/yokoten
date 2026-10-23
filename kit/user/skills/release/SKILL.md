@@ -4,6 +4,10 @@ description: Pick the next version from the changelog and prepare a release for 
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line, then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Prepare a release
 
 The owner decides when to release, and only the owner creates the tag (core rule 3).

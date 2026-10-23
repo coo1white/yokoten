@@ -4,6 +4,10 @@ description: Bring the yokoten practices into a project, new or old. Use when do
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line, then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Adopt yokoten in this project
 
 The goal is a project that runs the practices for real, not a copy of files. An old
