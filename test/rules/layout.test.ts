@@ -158,3 +158,20 @@ test('codeowners: a pattern with * matches when any file does (#667)', () => {
   assert.equal(codeOwnersPatternMatches('*.md', 'deep/a/b.md'), true);
   assert.equal(codeOwnersPatternMatches('docs/**/a.md', 'docs/a.md'), true);
 });
+
+test('codeowners: a section header names no path and is not reported (#667)', () => {
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, '[Documentation]\n^[Security]\n[Docs][2]\n/docs/ @lead\n'), []);
+  assert.equal(codeOwnersPatternMatches('/docs/', 'docs'), false, 'a folder pattern needs something inside it');
+});
+
+test('codeowners: a [class] matches one character, not the brackets (#667)', () => {
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, 'src/*.[jt]s @lead\n'), []);
+  assert.equal(codeOwnersPatternMatches('src/*.[jt]s', 'src/app.ts'), true);
+  assert.equal(codeOwnersPatternMatches('src/*.[jt]s', 'src/app.tsx'), false);
+});
+
+test('codeowners: an escaped space stays inside the pattern (#667)', () => {
+  const files = [...OWNED_FILES, 'docs/my file.md'];
+  assert.deepEqual(checkCodeOwners(files, 'docs/my\\ file.md @lead\n'), []);
+  assert.equal(codeOwnersPatternMatches('docs/my\\ file.md', 'docs/my file.md'), true);
+});

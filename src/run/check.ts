@@ -483,13 +483,19 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   problems.push(...checkLayout(indexed(), config, staged ? undefined : notes));
   // A CODEOWNERS line for a path that moved protects nothing (#667), so the new path has no
   // owner review. The line is lead-only: the fix tells the reader to hand it to the lead.
-  const owners = findCodeOwnersFile(root);
+  // With `--staged`, the index is the commit's tree, so its CODEOWNERS is the one that
+  // counts: a fix already staged must pass while the work tree copy is still dirty.
+  const owners = findCodeOwnersFile(root, env, staged ? indexed() : undefined);
   if (owners) problems.push(...checkCodeOwners(indexed(), owners.text, owners.file, new Set(config.leadOnly.map(codeOwnersPath))));
   return problems;
 }
 
 /** The first CODEOWNERS file GitHub reads here, with its text, or null when there is none. */
-function findCodeOwnersFile(root: string): { file: string; text: string } | null {
+function findCodeOwnersFile(root: string, env: Env, index?: string[]): { file: string; text: string } | null {
+  if (index) {
+    for (const file of CODEOWNERS_PLACES) if (index.includes(file)) return { file, text: git(root, env, ['show', `:${file}`]) };
+    return null;
+  }
   for (const file of CODEOWNERS_PLACES) {
     const path = join(root, file);
     if (existsSync(path)) return { file, text: readFileSync(path, 'utf8') };

@@ -6,7 +6,9 @@ import { posix } from 'node:path';
 import type { Config } from './config.ts';
 import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
-import { CHANGES_DIR } from './pr.ts';
+import { CHANGES_DIR, codeOwnersWords, compileCodeOwnersPattern, isCodeOwnersHeader } from './pr.ts';
+
+export { codeOwnersPatternMatches } from './pr.ts';
 
 /**
  * The folder at the root that holds worker worktrees, one per issue (#571): inside the
@@ -167,48 +169,6 @@ export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODE
 /** A lead-only glob as the CODEOWNERS path init writes: `x/**` is the folder `/x/`. */
 export const codeOwnersPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
 
-const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-/** One pattern segment as a test; `*` and `?` stay inside the segment. */
-const segment = (part: string): RegExp =>
-  new RegExp(`^${part.split('').map((char) => (char === '*' ? '[^/]*' : char === '?' ? '[^/]' : escape(char))).join('')}$`);
-
-/**
- * Whether the segments of `path` match `pattern` from `start`. `partial` lets a folder
- * pattern stop before the end of the path, so `/docs/` matches `docs/a.md`.
- */
-function matchesFrom(parts: string[], pattern: string[], start: number, partial: boolean): boolean {
-  const walk = (at: number, part: number): boolean => {
-    if (part === pattern.length) return partial || at === parts.length;
-    if (pattern[part] === '**') {
-      // `**` matches no segment too, so `docs/**/a.md` also matches `docs/a.md`.
-      for (let next = at; next <= parts.length; next++) if (walk(next, part + 1)) return true;
-      return false;
-    }
-    return at < parts.length && segment(pattern[part] as string).test(parts[at] as string) && walk(at + 1, part + 1);
-  };
-  return walk(start, 0);
-}
-
-/**
- * Whether one CODEOWNERS pattern matches a file path. A pattern with a slash is relative
- * to the root, a pattern without one matches at any level, and a trailing slash names a
- * folder: `docs/`, `*.ts`, `src/**`. A pattern with `*` matches when any file does.
- */
-export function codeOwnersPatternMatches(pattern: string, path: string): boolean {
-  let body = pattern;
-  const isFolder = body.endsWith('/');
-  if (isFolder) body = body.slice(0, -1);
-  const anchored = body.startsWith('/');
-  if (anchored) body = body.slice(1);
-  const parts = path.split('/');
-  const wanted = body.split('/');
-  if (anchored || wanted.length > 1) return matchesFrom(parts, wanted, 0, isFolder);
-  // No slash: a name from any level, and a folder name covers what is inside it.
-  for (let start = 0; start < parts.length; start++) if (matchesFrom(parts, wanted, start, true)) return true;
-  return false;
-}
-
 /**
  * Problems for the rule lines of a CODEOWNERS file whose path matches none of `files`.
  * `file` is the place the file was read from, for the message. A path in `reserved` is a
@@ -217,12 +177,12 @@ export function codeOwnersPatternMatches(pattern: string, path: string): boolean
 export function checkCodeOwners(files: string[], text: string, file: string = CODEOWNERS_PLACES[0] as string, reserved: ReadonlySet<string> = new Set()): Finding[] {
   const problems: Finding[] = [];
   text.split(/\r?\n/).forEach((line, index) => {
-    const trimmed = line.trim();
-    // A blank line and a comment name no path, as on GitHub.
-    if (!trimmed || trimmed.startsWith('#')) return;
-    const pattern = trimmed.split(/\s+/)[0];
+    // A blank line, a comment and a section header name no path, as on GitHub.
+    if (isCodeOwnersHeader(line.trim())) return;
+    const pattern = codeOwnersWords(line)[0];
     if (!pattern || reserved.has(pattern)) return;
-    if (files.some((path) => codeOwnersPatternMatches(pattern, path))) return;
+    const matcher = compileCodeOwnersPattern(pattern);
+    if (files.some((path) => matcher.test(path))) return;
     problems.push(finding('stale-codeowners', `${pattern} matches no file: this rule protects nothing; point it at the new path`, `ask the lead or owner to change it in ${file}`, {
       file,
       line: index + 1,

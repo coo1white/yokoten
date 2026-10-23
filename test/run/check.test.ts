@@ -259,6 +259,19 @@ test('check: a CODEOWNERS line whose file moved says it protects nothing (#667)'
   assert.match(result.stderr, /Ask the lead or owner to change it in \.github\/CODEOWNERS/);
 });
 
+test('check --staged: reads the staged CODEOWNERS, not a dirty work tree (#667)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.write('.github/CODEOWNERS', 'src/gone.ts @lead\n');
+  sandbox.git('add', '.');
+  // Fix the line in the index, then break the work tree copy again: the index is what commits.
+  sandbox.write('.github/CODEOWNERS', 'src/a.ts @lead\n');
+  sandbox.git('add', '.github/CODEOWNERS');
+  sandbox.write('.github/CODEOWNERS', 'src/gone.ts @lead\n');
+  const result = await sandbox.call(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('check: a project with no CODEOWNERS gets no CODEOWNERS finding (#667)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('src/a.ts', 'a\n');

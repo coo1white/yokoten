@@ -471,15 +471,71 @@ export interface OwnerRule {
   test: (path: string) => boolean;
 }
 
-/** The regular expression for one CODEOWNERS pattern. */
-function ownerPattern(raw: string): RegExp {
+/** A section header, such as `[Docs]` or `^[Security]`, names no path. */
+export const isCodeOwnersHeader = (line: string): boolean => /^\^?(\[[^\]]*\]\s*)+$/.test(line);
+
+/**
+ * The words of one CODEOWNERS line, with any comment removed. A `\` keeps the next
+ * character in its word, so `docs/my\ file.md` is one pattern; `#` after a space starts
+ * a comment.
+ */
+export function codeOwnersWords(line: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let started = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index] as string;
+    if (character === '\\' && index + 1 < line.length) {
+      word += line[index + 1];
+      index += 1;
+      started = true;
+    } else if (/\s/.test(character)) {
+      if (started) {
+        words.push(word);
+        word = '';
+        started = false;
+      }
+    } else if (character === '#' && !started) {
+      break;
+    } else {
+      word += character;
+      started = true;
+    }
+  }
+  if (started) words.push(word);
+  return words;
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The regular expression for one CODEOWNERS pattern. `[...]` is a character class,
+ * `\` makes the next character literal, `*` stays inside one folder and `**` crosses
+ * folders. A leading `/`, or a `/` inside the pattern, anchors it at the root; a trailing
+ * `/` names a folder, so it never matches a file of that name.
+ */
+export function compileCodeOwnersPattern(raw: string): RegExp {
   const folder = raw.endsWith('/');
   const body = raw.replace(/^\//, '').replace(/\/$/, '');
   const anchored = raw.startsWith('/') || body.includes('/');
   let re = '';
   for (let index = 0; index < body.length; index++) {
-    const character = body[index];
-    if (character === '*' && body[index + 1] === '*') {
+    const character = body[index] as string;
+    if (character === '\\' && index + 1 < body.length) {
+      re += escapeRegExp(body[index + 1] as string);
+      index += 1;
+    } else if (character === '[') {
+      const close = body.indexOf(']', index + 1);
+      if (close > index + 1) {
+        let inside = body.slice(index + 1, close);
+        const negated = inside.startsWith('!') || inside.startsWith('^');
+        if (negated) inside = inside.slice(1);
+        re += `[${negated ? '^' : ''}${inside.replace(/\\/g, '\\\\').replace(/\]/g, '\\]').replace(/\^/g, '\\^')}]`;
+        index = close;
+      } else {
+        re += '\\[';
+      }
+    } else if (character === '*' && body[index + 1] === '*') {
       if (body[index + 2] === '/') {
         re += '(?:.*/)?';
         index += 2;
@@ -489,21 +545,24 @@ function ownerPattern(raw: string): RegExp {
       }
     } else if (character === '*') re += '[^/]*';
     else if (character === '?') re += '[^/]';
-    else re += character.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    else re += escapeRegExp(character);
   }
   // `docs/*` matches the files in docs/ and not deeper (GitHub's documented case).
   const end = folder ? '/.*' : /(^|\/)\*$/.test(body) && body !== '*' ? '' : '(?:/.*)?';
   return new RegExp(`^${anchored ? '' : '(?:.*/)?'}${re}${end}$`);
 }
 
+/** Whether one CODEOWNERS pattern matches a file path. */
+export const codeOwnersPatternMatches = (pattern: string, path: string): boolean => compileCodeOwnersPattern(pattern).test(path);
+
 /** The rules in a CODEOWNERS file, in order. */
 export function parseCodeOwners(text: string): OwnerRule[] {
   const rules: OwnerRule[] = [];
   for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/(^|\s)#.*$/, '').trim();
-    if (!line) continue;
-    const [pattern, ...owners] = line.split(/\s+/);
-    const re = ownerPattern(pattern);
+    if (isCodeOwnersHeader(raw.trim())) continue;
+    const [pattern, ...owners] = codeOwnersWords(raw);
+    if (!pattern) continue;
+    const re = compileCodeOwnersPattern(pattern);
     rules.push({ pattern, owners, test: (p) => re.test(p) });
   }
   return rules;

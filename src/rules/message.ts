@@ -218,7 +218,7 @@ export const RULES = {
   'stale-codeowners': {
     rule: 'every CODEOWNERS line names a path that exists',
     why: 'a moved or renamed file leaves its line behind, so the new path has no owner review',
-    check: '`yokoten check`, `check --pr` and full `doctor` read the first CODEOWNERS file GitHub reads and report each rule line whose path matches no file in the tree; a pattern with `*` matches when any file does',
+    check: '`yokoten check` and full `doctor` read the first CODEOWNERS file GitHub reads and report each rule line whose path matches no file in the tree; a pattern with `*` matches when any file does',
     docs: guide('the-core-rules'),
   },
   'build-output': {
