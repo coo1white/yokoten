@@ -101,7 +101,11 @@ test('board stream logs: a plain log is read when no session log is found (#694)
   const plain = join(tree, 'runner.log');
   put(plain, 'opencode run\n');
   assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.source, 'plain', 'OpenCode keeps no session log this reader can follow');
-  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.file, plain);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), plain)?.file, realpathSync(plain), 'the path is resolved');
+  // OpenCode's own log folder is a named runtime log folder.
+  const runtimeLog = join(home, '.local', 'share', 'opencode', 'log', 'opencode.log');
+  put(runtimeLog, 'opencode run\n');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), runtimeLog)?.source, 'plain', 'the runtime log folder is allowed');
   // A session log wins over the plain log.
   const day = join(home, '.codex', 'sessions', '2026', '10', '23');
   put(join(day, 'rollout-1.jsonl'), `${JSON.stringify({ type: 'session_meta', payload: { cwd: tree } })}\n`, 0);
@@ -112,6 +116,19 @@ test('board stream logs: a plain log is read when no session log is found (#694)
   assert.equal(findAgentLog(tree, 'opencode', env, new Map(), 'runner.log'), null, 'a relative path is refused');
   assert.equal(findAgentLog(tree, 'opencode', env, new Map(), tree), null, 'a folder is not a file');
   assert.equal(findAgentLog(tree, 'opencode', env, new Map(), ''), null);
+  // A positive control: a path outside the worktree and its runtime folders is refused,
+  // even when a symlink inside the worktree points at it.
+  const outside = join(home, 'outside.log');
+  put(outside, 'outside the worktree\n');
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), outside), null, 'a path outside the worktree is refused');
+  const escape = join(tree, 'link.log');
+  symlinkSync(outside, escape);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), escape), null, 'a symlink that leaves the worktree is refused');
+  // The named runtime folder itself must be a real folder, not a link to another one.
+  const named = join(`${tree}.state`, 'opencode', 'log');
+  mkdirSync(join(named, '..'), { recursive: true });
+  symlinkSync(home, named);
+  assert.equal(findAgentLog(tree, 'opencode', env, new Map(), outside), null, 'a linked runtime folder is refused');
 });
 
 // #700: the main checkout's lead log is the registered path, when that path stays inside
