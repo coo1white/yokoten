@@ -895,7 +895,7 @@ It puts three safe defaults in `.github/` too:
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
-| `board [--text]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It prints the link and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1781,19 +1781,69 @@ yokoten msg log
 ### The team board
 
 `yokoten board` shows the team at a glance. It serves a page on this machine only.
-It prints a link. Open it in a browser. The link holds a random token, so only
-someone who reads this terminal can open the page.
+The page is at `http://<repo>.localhost:<port>/`.
+`<repo>` is the folder name, made safe for a hostname.
+The port stays the same for this repo.
+When that port is taken, the board tries the next ones.
+It opens the page in your browser and prints the link (`--no-open` only prints it).
+The first visit uses `?token=` in that link.
+That visit sets an HttpOnly Secure cookie, then opens the page without the token.
+The cookie is SameSite=Strict.
+Later visits use the cookie.
+Only someone who can read the terminal can open the page.
+A wrong host is refused.
 
-The page has three columns:
+Chrome and Edge can install the board as its own window.
+Use Install in the browser menu.
+The board then opens without the browser tabs.
 
-- **Left:** what needs you first (a tier A pull request ready for your Approve, or an
-  agent waiting for an answer). It never folds. Below it, the agents by role. Click
-  one to see it in the middle. Finished agents fold away; **Clear** hides one until it
-  writes again. Its log and branch stay.
-- **Middle:** what the picked agent did, step by step. Routine steps fold; waits,
-  failures and the latest step always show.
-- **Right:** the pull requests, each as four steps: Built, Checked, You (tier A only),
-  Merged. Today's merged ones are listed below.
+The page has two columns. Needs you is a bell in the header, next to Live.
+
+- **Left:** the agents by role. Click one to see it in the middle. On a phone the
+  lead column hides, and this column stays. Finished agents fold away. **Clear** hides one until it writes
+  again. Its log and branch stay. Each vendor has one name on the page:
+  Claude, Grok, Muse or DeepSeek. Codex on a DeepSeek model shows as DeepSeek.
+- **Middle:** the picked agent's own session, live, like a chat. The agent's own
+  words are the main text. Each tool is one short line under them. A long run of
+  tools folds after three. A click opens the rest. A time shows once, on the message.
+  Each reader maps its log to the same kinds: the agent's words, a tool step, the step's result, and a failed step.
+  Tool names share one set: Bash, Read, Edit, Write, Search, Web, Agent and Other.
+  A new vendor needs one reader, and nothing else.
+  The board reads Claude, Grok, Muse and Codex logs. DeepSeek runs on Codex.
+  With no log, you see the agent's `doing` steps.
+  Pick the lead and the middle is the 24-hour timeline.
+
+The bell's badge is grey at zero and orange when something needs you.
+A click opens the list under the bell.
+Each row says what it is, which pull request or issue, and how old.
+It has one Act here link.
+Escape, a click outside, or the bell closes the list.
+A row leaves while the page stays open.
+It leaves once that pull request is approved on its latest commit.
+It also leaves when the pull request or issue is merged or closed.
+A row older than a day says so.
+A new row pulses the badge once.
+A pull request stays off the list while its review is still open.
+
+The right column is gone, so the session is wider.
+Pull requests still show in `yokoten board --text` and in `/data`.
+Start and stop stay on those paths too.
+
+The lead box is a short desk. One line says what the lead is doing now.
+On a phone, open the bell to read the desk.
+Up to three decisions follow. Each one shows the lead's recommendation and one-word answers.
+The last line is the first sentence of the lead's newest reply. Click it to read the rest.
+
+Pick the lead and the middle becomes a timeline of the last 24 hours.
+One row is one agent, or one open issue nobody has taken.
+A bar runs from when the work started to now, or to when it finished.
+The colour is the vendor's. The bar breathes while the work is going on.
+A row names what it waits for, such as "after #697".
+
+The lead writes the now line and the decisions to `.git/yokoten-lead-desk.json` in the main folder.
+The file holds `now`, `decisions` and `updated`. Each decision has a question, a recommendation and answers.
+The board reads that file the same way it reads a status file. A bad file is ignored.
+The words are masked like a session.
 
 The top bar has the language (English, 简体中文, 繁體中文 or 日本語; it starts in your
 browser's language), a link to the repo on GitHub, and light or dark. What agents write
@@ -1801,15 +1851,18 @@ shows as they wrote it. The page keeps your choices (language, folds, cleared ag
 until you stop the board.
 
 The page refreshes every 15 seconds and works on a phone too. Stop the command with Ctrl-C.
+The agents show at once. gh reads the pull requests and issues in the background,
+one read at a time. Until the first read ends, those lists say "Reading GitHub…".
+When a read fails, the page keeps the last lists and says when they were read.
 It only shows; to talk to an agent, use its own terminal for now.
 
 `yokoten board --text` prints the same in plain text.
 
-At the top, Waiting for you lists what needs the owner: tier A pull requests with
-green checks and no Approve, commands the guard stopped, and questions agents ask.
-Each row shows the kind, the agent, its role, how long it waited, one line on why,
-and a link to act. The list is read only: no request an agent can make clears an
-item. An empty list says so.
+`yokoten board --text` prints Waiting for you when something waits. It lists tier A
+pull requests with green checks and no Approve on the latest commit, commands the
+guard stopped, and questions agents ask. Each row shows the kind, the agent, its
+role, how long it waited, one line on why, and a link to act. The list is read only.
+No request an agent can make clears an item. An empty list says so.
 
 The owner starts an agent through the board: send an open issue, a vendor, and a
 model to `/agents/start`. The board makes `.worktrees/<issue>`, marks it as a worker's
@@ -1826,18 +1879,35 @@ that exits by itself counts as stopped: its slot frees and a later Stop says so.
 The limits say how many agents run at once (three at first), and how many of one
 model. Over the limit, the board refuses a start with a plain reason.
 
-`yokoten board --text` also prints Waiting for you whenever something waits, and the
-runs the board started.
+`yokoten board --text` also prints the runs the board started.
 
-Safety: the link holds a random token, and a change needs the page's Origin too.
+Safety: the first visit sets an HttpOnly Secure cookie, and a change needs the page's Origin too.
 The board stops only processes it started. Every start and stop goes to
 `.yokoten-board.log` at the repo root. The guard checks each agent, and pushes and
 merges still go only through the bot. There are no Approve or Merge buttons: those
 stay on the host, with the owner.
 
-An agent joins by writing `.yokoten-agent.json` at its worktree's root. It leaves
-by removing the file. Any agent can write it, whatever vendor it runs on. The
-format is open: other tools may read it too. One file per worktree.
+Agents show by themselves. Start an agent in this repo, in one of its worktrees,
+or in a desk (`yokoten desk`), and yokoten's hooks keep its status in
+`.yokoten-agent.json` at that checkout's root. This works for every vendor:
+
+- The session start writes `vendor`, `model`, `role` (`lead` in the main
+  checkout, `engineer` for a worker, by the guard's own rule), `worktree`,
+  `state: working` and `started`. `started` is written once, so the bar does not
+  move. Grok has no session-start hook: its first call writes them.
+- Each allowed tool call sets `doing` and `updated`, at most once every 5 seconds.
+- A refused call sets `blocked`. The next allowed call clears it; the board keeps the row.
+- The stop sets `state`: `done` with `checks` for a worker, `waiting` for the lead.
+
+The hooks write the file only in a repo with `yokoten.json`. A worker never writes the
+main checkout's file: that one is the lead's. The first write adds the file to the
+repo's own `.git/info/exclude`, so `git status` never shows it. A desk is a plain
+clone, so `git worktree list` misses it: `yokoten desk` notes it in the repo's git
+folder, and the board shows it too.
+
+An agent may still write the file itself, for `task`, `question` or `link`; the
+hooks keep the fields they do not set. It leaves by removing the file. The format is
+open: other tools may read it too. One file per worktree.
 
 | Field | Means |
 |-------|-------|
@@ -1851,6 +1921,7 @@ format is open: other tools may read it too. One file per worktree.
 | `state` | `working`, `waiting` (it needs you) or `done` |
 | `checks` | `passing` or `failing`, from its last test run |
 | `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. Quiet for 30 minutes shows as idle |
+| `started` | When this work started, such as `2026-10-22T08:00:00Z`. Without it, the file's birth time is used, then `updated` |
 | `blocked` | A guard stop that needs a decision, in one line. It joins Waiting for you |
 | `question` | One line the agent asks the owner. It joins Waiting for you |
 | `link` | Where the owner acts, http(s) only. Anything else stays plain text |
@@ -1891,6 +1962,27 @@ or `eval` that runs them, also after `env` or `sudo`. It refuses a setting for t
 the line too: `export`, `declare`, `read`, `printf -v`, a `for` loop or `${HOME:=x}`.
 Before another program the setting passes: `HOME=$(mktemp -d) npm test` keeps a test away
 from your files. Reading `$HOME` is fine.
+
+Unsetting `HOME` or `USERPROFILE` is refused.
+So is `env -u HOME` before git, gh, yokoten or a shell.
+`env -u HOME npm test` still passes.
+
+A worker cannot set `HOME`, `USERPROFILE` or `XDG_CONFIG_HOME` before `git commit`,
+`yokoten check`, or a shell that runs them. `env` and `export` count the same way.
+A worker cannot unset those names before the commit check.
+In a desk, the runner commits for the worker.
+
+A worker cannot run a shell script from a file (`bash script`, `sh script`).
+The guard cannot read that file, so it refuses.
+`bash -c` stays allowed, because the script text is in the command.
+An option that may name a file, such as `--rcfile`, is refused too.
+
+When the marks file under `$HOME` is missing, or it holds no marks, the check reads the file in the real home.
+The real home comes from the password database, not from `$HOME`.
+A missing file there is not an error.
+A file it cannot read stops the check.
+A file it can read is used, so a changed `$HOME` does not skip those marks.
+With no `HOME`, the check still reads the marks file in the real home.
 
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but

@@ -1,14 +1,14 @@
 // `yokoten board --text` (#601, #603): the board's data as plain text, for a terminal or an agent.
 
-import { terminalText } from '../../../run/learn.ts';
-import { BOARD_AGENT_FILE } from './agents.ts';
-import type { BoardRun, BoardWaiting } from './controls.ts';
-import type { AgentView, BoardData, PullView } from './view.ts';
+import { terminalText } from '../../../../run/learn.ts';
+import type { BoardRun, BoardWaiting } from '../controls.ts';
+import type { AgentView, BoardData, PullView } from '../view.ts';
 
-/** One agent as plain words: its name, vendor, role, task, worktree, what it does now, and how long ago. */
+/** One agent as plain words: its nickname, vendor, role, task, worktree, what it does now, and how long ago. */
 function formatAgent(agent: AgentView): string {
   const vendor = agent.vendor.name === 'Unknown' ? '' : ` (${agent.vendor.name})`;
-  const head = `${agent.name}${vendor}${agent.role ? ` [${agent.role}]` : ''}`;
+  const who = agent.nickname || agent.name;
+  const head = `${who}${vendor}${agent.role ? ` [${agent.role}]` : ''}`;
   const state = agent.dot === 'waiting' || agent.dot === 'failing' || agent.dot === 'done' ? agent.dot : '';
   const parts = [agent.task, agent.key ? `in ${agent.key}` : '', agent.doing, state, agent.age].filter(Boolean);
   return parts.length ? `${head}: ${parts.join(', ')}` : head;
@@ -58,7 +58,7 @@ export function renderBoardText(board: BoardData, extra?: BoardTextExtra): strin
     ...(board.needs.length ? board.needs.map((need) => `- ${need.title}: ${need.why}`) : ['- nothing.']),
     '',
     'Agents:',
-    ...(board.agents.length ? board.agents.map((agent) => `- ${formatAgent(agent)}`) : [`- none. An agent joins by writing ${BOARD_AGENT_FILE} in its worktree.`]),
+    ...(board.agents.length ? board.agents.map((agent) => `- ${formatAgent(agent)}`) : [`- none. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself.`]),
     '',
     ...(extra === undefined
       ? []

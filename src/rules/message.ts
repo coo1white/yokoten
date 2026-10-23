@@ -98,9 +98,9 @@ export const RULES = {
     check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
   },
   'pipe-to-shell': {
-    rule: 'no piping a download into a shell',
+    rule: 'no piping a download into a shell or a program named by a variable',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+    check: 'the tool-call guard stops a pipeline that feeds a download into a shell, into `eval`, into a substitution that can run it, or into a program word that is not plain text, including a name that starts with `$`. A `$` argument of a plain program passes. Save the file first, read it, then run it',
   },
   'gh-token': {
     rule: "an agent does not see or send gh's token",
@@ -188,7 +188,7 @@ export const RULES = {
   'home-folder': {
     rule: 'an agent does not change the home folder for a command (core rule 11)',
     why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
-    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); before another program, and reading $HOME, it passes',
+    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); it also stops unsetting HOME or USERPROFILE, and env -u HOME before git, gh, yokoten or a shell; before another program, and reading $HOME, it passes; a worker is also stopped from setting or unsetting HOME, USERPROFILE or XDG_CONFIG_HOME before git commit, yokoten check or a shell, and from running a shell script file (bash script, sh script) or a shell option that may name a file, because the guard cannot read that file; the commit check reads the marks file in the real home, from the password database, when HOME is missing or the file under it is missing or holds no marks: a file it cannot read stops the check, and a file it can read is used',
     docs: guide('privacy'),
   },
   secret: {
@@ -697,3 +697,33 @@ export const formatFindingMarks = (f: Finding): string => {
  */
 export const formatFinding = (f: Finding): string =>
   `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
+
+// ---- Steps a scan takes (#754) ----
+//
+// The linear tests read this count, not the clock. A busy runner made an 8-times longer
+// text look 28 times slower, and eleven clock limits failed that way. Counting stays off
+// until a test asks, so a real read pays one check. The count only sees a call to noteWork.
+
+/** The steps counted while a test is measuring. Null the rest of the time. */
+let workCounter: { count: number } | null = null;
+
+/** Counts `amount` steps of a scan. Nothing while no test is measuring. */
+export function noteWork(amount: number): void {
+  if (workCounter !== null) workCounter.count += amount;
+}
+
+/**
+ * The steps `read` counts, from zero. Counting is off again after it. A measure inside a
+ * measure counts on its own, then the outer count resumes. A throw does not leave counting on.
+ */
+export function measureWork(read: () => void): number {
+  const previous = workCounter;
+  const counter = { count: 0 };
+  workCounter = counter;
+  try {
+    read();
+    return counter.count;
+  } finally {
+    workCounter = previous;
+  }
+}
