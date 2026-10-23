@@ -263,7 +263,7 @@ test('grok project hooks: init writes the guard and the stop check, keeps other 
   mkdirSync(join(sandbox.home, '.grok'));
   const trusted = await sandbox.call(['init']);
   assert.match(trusted.stdout, /same the Grok CLI tool-call hook/);
-  assert.match(trusted.stdout, /^Grok CLI runs the hooks in \.grok\/hooks\/yokoten\.json only after you trust this folder: run `grok` in this folder and type `\/hooks-trust`$/m);
+  assert.match(trusted.stdout, /^to turn on yokoten's guard in Grok CLI, run `yokoten trust`$/m);
   written.hooks.Stop[0].hooks[0].timeout = 5;
   sandbox.write('.grok/hooks/yokoten.json', JSON.stringify(written));
   assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated', 'a hook with the default timeout is out of date');
@@ -282,10 +282,10 @@ test('grok trust: doctor says when Grok skips the hooks; ok only when trusted_fo
   const doctor = async () => (await sandbox.call(['doctor'])).stdout;
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
   mkdirSync(join(sandbox.home, '.grok'));
-  assert.match(await doctor(), /note +grok-hook: can't check whether Grok CLI trusts this folder: no ~\/\.grok\/trusted_folders\.toml; if you use Grok CLI: run `grok` in this folder and type `\/hooks-trust`/);
+  assert.match(await doctor(), /note +grok-hook: can't check whether Grok CLI trusts this folder: no ~\/\.grok\/trusted_folders\.toml; if you use Grok CLI: run `yokoten trust`/);
   // The positive control: a store that trusts another folder, and one that says no to this one.
   trustFolder(sandbox.home, { '/somewhere/else': true, [root]: false });
-  assert.match(await doctor(), /note +grok-hook: Grok CLI skips \.grok\/hooks\/yokoten\.json until you trust this folder; run `grok` in this folder and type `\/hooks-trust`/);
+  assert.match(await doctor(), /note +grok-hook: Grok CLI skips \.grok\/hooks\/yokoten\.json until you trust this folder; run `yokoten trust`/);
   // A trusted parent folder does not cover a repo inside it, and a trailing slash is another key.
   trustFolder(sandbox.home, { [dirname(root)]: true, [`${root}/`]: true });
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');

@@ -27,9 +27,9 @@ import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
-import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
+import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
-import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
+import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables, type TrustChange, type TrustPlan } from './codex.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
 
@@ -165,8 +165,8 @@ export const hasUserDir = (env: Env): boolean => isFolder(homeDir(env));
 // whole keys, exactly. GROK_FOLDER_TRUST=0 (or false), or `[folder_trust] enabled = false`
 // in Grok's config.toml, turns the gate off, and then every folder counts as trusted.
 
-/** The one step that makes Grok run the project's hooks. yokoten never trusts a folder for the user. */
-export const TRUST_STEP = 'run `grok` in this folder and type `/hooks-trust`';
+/** The one step that makes Grok run the project's hooks. */
+export const TRUST_STEP = TRUST_COMMAND;
 
 /** Whether `[folder_trust] enabled = false` in Grok's config.toml turns its trust gate off. Read-only. */
 function isTrustGateOff(home: string): boolean {
@@ -194,6 +194,36 @@ export function readTrust(root: string, env: Env): FolderTrust {
   }
   const isTrusted = folderKeys(root).some((key) => folders.get(key)?.trusted === true);
   return { state: isTrusted ? 'trusted' : 'untrusted', store };
+}
+
+/**
+ * What yokoten must write into `trusted_folders.toml` to trust this folder (#661). Grok's
+ * trust is per folder, not per hook: this one entry is what makes yokoten's hooks run.
+ */
+export function trustProject(root: string, env: Env): TrustPlan {
+  const store = env.GROK_HOME ? '$GROK_HOME/trusted_folders.toml' : '~/.grok/trusted_folders.toml';
+  const home = homeDir(env);
+  if (!home) return { state: 'no home', store, changes: [] };
+  const file = join(home, 'trusted_folders.toml');
+  let text = '';
+  try {
+    if (existsSync(file)) text = readFileSync(file, 'utf8');
+  } catch {
+    return { state: 'unreadable', store, changes: [] };
+  }
+  let folders: Map<string, Record<string, unknown>>;
+  try {
+    [folders] = readTomlTables(text, [['folders']]);
+  } catch {
+    return { state: 'unreadable', store, changes: [] };
+  }
+  const keys = folderKeys(root);
+  const folder = keys.find((key) => folders.has(key)) ?? keys[0];
+  const trusted = folders.get(folder)?.trusted;
+  if (trusted === true) return { state: 'same', store, changes: [] };
+  const before = trusted === false ? 'false' : null;
+  const change: TrustChange = { agent: 'Grok CLI', store, file, format: 'toml', path: ['folders', folder], key: 'trusted', value: 'true', before, kind: 'boolean' };
+  return { state: 'trusted', store, changes: [change] };
 }
 
 // ---- The project's sandbox (#589) ----

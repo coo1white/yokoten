@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectSandbox, blankedToml, hasTomlKey, hasTomlTable, hookHash, isInsideProject, parseToml, readTrust, readTrustTables, sandboxProblem } from '../../../src/agents/runtimes/codex.ts';
+import { addProjectSandbox, blankedToml, hasTomlKey, hasTomlTable, hookHash, isInsideProject, parseToml, readTrust, readTrustTables, revertTrust, sandboxProblem, type TrustChange, writeTrust } from '../../../src/agents/runtimes/codex.ts';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 
 // Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
@@ -154,10 +154,10 @@ test('codex trust (#341): doctor says when Codex skips the hooks, and ok only wh
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'no home');
   // A home without a store: can't check, and never ok.
   mkdirSync(dirname(config), { recursive: true });
-  assert.match(await doctor(), /note +codex-hook: can't check whether Codex trusts this folder: no ~\/\.codex\/config\.toml; if you use Codex: run `codex` in this folder, trust it, then trust both yokoten hooks in `\/hooks`/);
+  assert.match(await doctor(), /note +codex-hook: can't check whether Codex trusts this folder: no ~\/\.codex\/config\.toml; if you use Codex: run `yokoten trust`/);
   // The positive control: a store without this folder.
   writeConfig('model = "x"\n');
-  assert.match(await doctor(), /note +codex-hook: Codex skips \.codex\/hooks\.json until you trust this folder; run `codex` in this folder/);
+  assert.match(await doctor(), /note +codex-hook: Codex skips \.codex\/hooks\.json until you trust this folder; run `yokoten trust`/);
   // Codex compares the key exactly: a parent folder or a trailing slash trusts nothing.
   writeConfig(`[projects."${dirname(root)}"]\ntrust_level = "trusted"\n[projects."${root}/"]\ntrust_level = "trusted"\n`);
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
@@ -166,7 +166,7 @@ test('codex trust (#341): doctor says when Codex skips the hooks, and ok only wh
   assert.equal(readTrust(root, { HOME: sandbox.home }).state, 'untrusted');
   const project = `[projects."${root}"]\ntrust_level = "trusted"\n`;
   writeConfig(project);
-  assert.match(await doctor(), /note +codex-hook: Codex trusts this folder, but not yokoten's hooks in \.codex\/hooks\.json, so it skips them; in a Codex session here, trust both in `\/hooks`/);
+  assert.match(await doctor(), /note +codex-hook: Codex trusts this folder, but not yokoten's hooks in \.codex\/hooks\.json, so it skips them; run `yokoten trust`/);
   // Both hooks trusted, by the hash of what init wrote: ok.
   const hooks = JSON.parse(readFileSync(join(root, '.codex', 'hooks.json'), 'utf8')).hooks;
   const state = (event: string, hash: string, extra = '') => `[hooks.state."${join(root, '.codex', 'hooks.json')}:${event}:0:0"]\ntrusted_hash = "${hash}"\n${extra}`;
@@ -361,4 +361,53 @@ test('sandbox inside: ~ grows from HOME, and a relative path is read from the pr
   assert.equal(isInsideProject('~/x', root, {}), false, 'no home to grow from');
   assert.equal(isInsideProject('', root, { HOME: home }), false);
   assert.equal(isInsideProject('.', root, { HOME: home }), true);
+});
+
+// ---- Writing that trust (#661) ----
+
+const store = (name: string, text: string, change: Omit<TrustChange, 'file'>): { file: string; change: TrustChange } => {
+  const file = join(makeTempDir('yokoten-trust-'), name);
+  writeFileSync(file, text);
+  return { file, change: { ...change, file } };
+};
+
+const TOML: TrustChange = { agent: 'Codex', store: '~/.codex/config.toml', file: '', format: 'toml', path: ['projects', '/repo'], key: 'trust_level', value: 'trusted', before: null };
+
+test('trust store: a TOML entry is added, and undo removes only it', () => {
+  const { file, change } = store('config.toml', '[projects."/other"]\ntrust_level = "trusted"\n', TOML);
+  assert.equal(writeTrust({ state: 'trusted', store: change.store, changes: [change] }), 'written');
+  const written = readFileSync(file, 'utf8');
+  assert.ok(written.includes('[projects."/other"]\ntrust_level = "trusted"'), written);
+  assert.ok(written.includes('[projects."/repo"]\ntrust_level = "trusted"'), written);
+  assert.equal(revertTrust(change), 'reverted');
+  assert.equal(readFileSync(file, 'utf8'), '[projects."/other"]\ntrust_level = "trusted"\n');
+});
+
+test('trust store: an entry the user changed since is left as it is', () => {
+  const { file, change } = store('config.toml', '', TOML);
+  assert.equal(writeTrust({ state: 'trusted', store: change.store, changes: [change] }), 'written');
+  writeFileSync(file, readFileSync(file, 'utf8').replace('trust_level = "trusted"', 'trust_level = "untrusted"'));
+  assert.equal(revertTrust(change), 'kept');
+  assert.ok(readFileSync(file, 'utf8').includes('trust_level = "untrusted"'));
+});
+
+test('trust store: a dotted key is edited where it stands, never written twice', () => {
+  const text = 'projects."/repo".trust_level = "untrusted"\n';
+  const { file, change } = store('config.toml', text, { ...TOML, before: 'untrusted' });
+  assert.equal(writeTrust({ state: 'trusted', store: change.store, changes: [change] }), 'written');
+  assert.equal(readFileSync(file, 'utf8'), 'projects."/repo".trust_level = "trusted"\n');
+  assert.equal(revertTrust(change), 'reverted');
+  assert.equal(readFileSync(file, 'utf8'), text);
+});
+
+test('trust store: a list in a JSON file keeps its comment lines, and undo removes one item', () => {
+  const text = '// Copilot CLI settings\n{"trustedFolders":["/other"]}\n';
+  const change: TrustChange = { agent: 'Copilot CLI', store: '~/.copilot/config.json', file: '', format: 'json', path: [], key: 'trustedFolders', value: '/repo', before: null, kind: 'list' };
+  const { file, change: full } = store('config.json', text, change);
+  assert.equal(writeTrust({ state: 'trusted', store: full.store, changes: [full] }), 'written');
+  assert.equal(readFileSync(file, 'utf8'), '// Copilot CLI settings\n{\n  "trustedFolders": [\n    "/other",\n    "/repo"\n  ]\n}\n');
+  assert.equal(revertTrust(full), 'reverted');
+  assert.equal(readFileSync(file, 'utf8'), '// Copilot CLI settings\n{\n  "trustedFolders": [\n    "/other"\n  ]\n}\n');
+  // Already gone: undo leaves the file and says it kept it.
+  assert.equal(revertTrust(full), 'kept');
 });

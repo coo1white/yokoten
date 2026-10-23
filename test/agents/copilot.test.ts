@@ -26,12 +26,12 @@ test('copilot trust (#341): doctor says when Copilot CLI skips the hooks; a trus
   assert.match(await doctor(), /note +copilot-hook: no tool-call guard in \.claude\/settings\.json; `yokoten init` adds it/);
   const init = await sandbox.call(['init']);
   assert.equal(init.status, 0, init.stderr);
-  assert.match(init.stdout, /GitHub Copilot CLI runs the hooks in \.claude\/settings\.json only after you trust this folder\n.*to trust this folder in Copilot CLI: run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"/);
+  assert.match(init.stdout, /^to turn on yokoten's guard in Copilot CLI, run `yokoten trust`$/m);
   const root = realpathSync(sandbox.repo);
-  assert.match(await doctor(), /note +copilot-hook: can't check whether Copilot CLI trusts this folder: no ~\/\.copilot\/config\.json; if you use Copilot CLI: run `copilot` in this folder/);
+  assert.match(await doctor(), /note +copilot-hook: can't check whether Copilot CLI trusts this folder: no ~\/\.copilot\/config\.json; if you use Copilot CLI: run `yokoten trust`/);
   // The positive control: a config that trusts other folders, one of them a name that only starts like this one.
   const file = trustFolders(sandbox.home, '/somewhere/else', root.slice(0, -1));
-  assert.match(await doctor(), /note +copilot-hook: Copilot CLI skips \.claude\/settings\.json until you trust this folder; run `copilot` in this folder and choose "Yes, and remember this folder for future sessions"/);
+  assert.match(await doctor(), /note +copilot-hook: Copilot CLI skips \.claude\/settings\.json until you trust this folder; run `yokoten trust`/);
   // Checked with Copilot CLI 1.0.98: the folder, a folder above it, or either with a trailing slash.
   trustFolders(sandbox.home, root);
   assert.match(await doctor(), /ok +copilot-hook\n/);

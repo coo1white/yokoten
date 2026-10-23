@@ -169,6 +169,20 @@ export const COMMANDS: Command[] = [
     example: 'yokoten init --github --yes',
   },
   {
+    name: 'trust',
+    summary: "turn on yokoten's guard in the agents installed here",
+    usage: '[dir] [--undo]',
+    text: [
+      'Writes the trust that makes Codex, Grok CLI, Copilot CLI and Muse Code run',
+      "yokoten's hooks in the project at [dir] (default: here). It writes only yokoten's",
+      'entries, and says what it wrote and how to undo it. With --undo it removes only',
+      'what it wrote, and leaves a setting you changed since.',
+    ],
+    options: [{ name: '--undo', text: 'remove only the entries yokoten trust wrote for this project' }],
+    argument: 'dir',
+    example: 'yokoten trust',
+  },
+  {
     name: 'update',
     summary: "the core rules in a project's AGENTS.md: preview, or replace with --write",
     usage: '[dir] [--write]',

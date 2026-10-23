@@ -4,7 +4,7 @@ import { existsSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ghIn } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
-import { init, updateCoreRules } from '../setup/init.ts';
+import { init, trust, undoTrust, updateCoreRules } from '../setup/init.ts';
 import { type Ask, install, uninstall } from '../setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../setup/plan.ts';
 import { type Invocation, type Output, parse, print, requireRoot, usage } from './shared.ts';
@@ -43,6 +43,21 @@ export function runInit(invocation: Invocation): number {
   print(invocation, planning.lines, planning.ok && !isRefused ? invocation.stdout : invocation.stderr);
   if (isRefused) print(invocation, ['yokoten init: --github --yes changed nothing on GitHub (the reason is above). The project files are as listed above.'], invocation.stderr);
   return planning.ok && !isRefused && done.ok ? 0 : 1;
+}
+
+export function runTrust(invocation: Invocation): number {
+  const options = parse('trust', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const dir = resolve(invocation.cwd, options.positional[0] ?? '.');
+  if (!existsSync(dir)) {
+    print(invocation, [`yokoten trust: ${options.positional[0]} does not exist; nothing was written.`], invocation.stderr);
+    return 1;
+  }
+  const root = requireRoot(invocation, dir);
+  if (!root) return 1;
+  const done = options.flags.has('--undo') ? undoTrust(root, invocation.env) : trust(root, invocation.env);
+  print(invocation, done.lines);
+  return done.ok ? 0 : 1;
 }
 
 export function runUpdate(invocation: Invocation): number {

@@ -15,7 +15,7 @@ import * as dsh from '../../agents/runtimes/deepseek-harness.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import * as grok from '../../agents/runtimes/grok.ts';
 import * as muse from '../../agents/runtimes/muse.ts';
-import type { FolderTrust } from '../../agents/folder-trust.ts';
+import { TRUST_COMMAND, type FolderTrust } from '../../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../../agents/hooks-file.ts';
 import { runtimeVersion, VERSION } from '../files.ts';
 import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init.ts';
@@ -57,11 +57,11 @@ function trustPractice(id: RuleId, agent: string, file: string, trust: FolderTru
     case 'unreadable':
       return note(`can't check whether ${agent} trusts this folder: can't read ${trust.store}`, `if you use ${agent}: ${step}`);
     case 'hooks untrusted':
-      return note(`${agent} trusts this folder, but not yokoten's hooks in ${file}, so it skips them`, 'in a Codex session here, trust both in `/hooks`');
+      return note(`${agent} trusts this folder, but not yokoten's hooks in ${file}, so it skips them`, TRUST_COMMAND);
     case 'hooks changed':
-      return note(`yokoten's hooks in ${file} changed after you trusted them, so ${agent} skips them`, 'in a Codex session here, trust both again in `/hooks`');
+      return note(`yokoten's hooks in ${file} changed after you trusted them, so ${agent} skips them`, TRUST_COMMAND);
     case 'hooks off':
-      return note(`a yokoten hook in ${file} is turned off in ${agent}`, 'in a Codex session here, turn it on in `/hooks`');
+      return note(`a yokoten hook in ${file} is turned off in ${agent}`, TRUST_COMMAND);
   }
 }
 

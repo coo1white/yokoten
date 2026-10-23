@@ -16,7 +16,8 @@ import type { Env } from '../../rules/config.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
-import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
+import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
+import { type TrustChange, type TrustPlan } from './codex.ts';
 import { type Added, addHook, checkHooksFile, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -89,7 +90,7 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
 // key with a trailing slash trusts nothing: so doctor compares whole keys, exactly.
 
 /** The one step that makes Muse run the project's hooks. */
-export const TRUST_STEP = 'run `muse` in this folder and choose "Trust and continue"';
+export const TRUST_STEP = TRUST_COMMAND;
 
 /** The fix when the guard is off: both ways to trust a folder (#554). */
 export const TRUST_FIX = `${TRUST_STEP}, or pass \`--trust-workspace\` to \`muse exec\``;
@@ -129,6 +130,43 @@ export function readTrust(root: string, env: Env): FolderTrust {
     return isObject(entry) && entry.decision === 'trusted';
   });
   return { state: isTrusted ? 'trusted' : 'untrusted', store };
+}
+
+/**
+ * What yokoten must write into `trust.json` to trust this folder (#661). Muse's trust is
+ * per folder: this one decision is what makes yokoten's hooks run.
+ */
+export function trustProject(root: string, env: Env): TrustPlan {
+  const store = env.XDG_CONFIG_HOME ? '$XDG_CONFIG_HOME/muse/trust.json' : '~/.config/muse/trust.json';
+  const user = homeOf(env);
+  const config = env.XDG_CONFIG_HOME || (user ? join(user, '.config') : '');
+  if (!config) return { state: 'no home', store, changes: [] };
+  const home = join(config, 'muse');
+  const file = join(home, 'trust.json');
+  let text = '';
+  try {
+    if (existsSync(file)) text = readFileSync(file, 'utf8');
+  } catch {
+    return { state: 'unreadable', store, changes: [] };
+  }
+  let projects: Record<string, unknown> = {};
+  if (text !== '') {
+    let saved: unknown;
+    try {
+      saved = JSON.parse(text);
+    } catch {
+      return { state: 'unreadable', store, changes: [] };
+    }
+    if (!isObject(saved) || saved.schema_version !== 1 || !isObject(saved.projects)) return { state: 'unreadable', store, changes: [] };
+    projects = saved.projects;
+  }
+  const keys = folderKeys(root);
+  const folder = keys.find((key) => Object.hasOwn(projects, key)) ?? keys[0];
+  const entry = projects[folder];
+  if (isObject(entry) && entry.decision === 'trusted') return { state: 'same', store, changes: [] };
+  const before = isObject(entry) && typeof entry.decision === 'string' ? entry.decision : null;
+  const change: TrustChange = { agent: 'Muse Code', store, file, format: 'json', path: ['projects', folder], key: 'decision', value: 'trusted', before };
+  return { state: 'trusted', store, changes: [change], seed: { schema_version: 1, projects: {} } };
 }
 
 // ---- The user's hooks (#557) ----
