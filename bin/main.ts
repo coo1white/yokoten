@@ -19,7 +19,8 @@ const HELP = [
   '',
   ...commandList(),
   '',
-  'Start: `yokoten install` once on this machine, then `yokoten init` in your project.',
+  "Start: run `yokoten` with no command in your project. It installs what is missing.",
+  'It adds the rules to the project and shows the next step.',
   'Run `yokoten <command> --help` for its options and an example.',
   '--json on check, doctor, hook, explain and adopt: data on stdout,',
   'for an agent or a script.',
@@ -113,6 +114,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return 0;
     }
     case undefined:
+      // No command in a project is not an error: it is the start (#548).
+      return import('../src/commands/setup.ts').then((m) => m.runStart(invocation));
     case '--help':
     case '-h':
       break;

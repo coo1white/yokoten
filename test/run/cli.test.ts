@@ -178,8 +178,9 @@ test('help: every command has --help, -h and `help <command>`; each exits 0 and 
     }
   }
   assert.deepEqual(before(), start, '--help writes nothing');
-  // The command list names every command, and -h and -v work alone.
-  for (const args of [[], ['--help'], ['-h'], ['help']]) {
+  // The command list names every command, and -h and -v work alone. Bare `yokoten` is the
+  // start now, not the list (#548): test/commands/setup.test.ts holds it.
+  for (const args of [['--help'], ['-h'], ['help']]) {
     const r = await run(args);
     assert.equal(r.code, 0, args.join(' '));
     for (const command of COMMANDS) assert.match(r.stdout, new RegExp(`^ {2}${command.name} `, 'm'), `${args.join(' ')}: lists ${command.name}`);
