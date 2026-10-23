@@ -98,6 +98,7 @@ import {
   upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor/index.ts';
+import { openCodePluginNote } from '../../src/setup/doctor/checks.ts';
 import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
@@ -217,9 +218,14 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));
   add(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, { ...fullMachine, now: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) })?.finding);
-  // The Codex, Gemini CLI, Grok CLI and Muse Code user hooks: only once their folders exist.
+  // The Codex, Gemini CLI, Grok CLI, Muse Code and OpenCode user hooks: only once their folders exist.
   for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
   mkdirSync(join(dir, '.config', 'muse'), { recursive: true });
+  mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
+  // A project that uses OpenCode without the plugin (#767).
+  const openProject = makeTempDir();
+  mkdirSync(join(openProject, '.opencode'));
+  add(openCodePluginNote(openProject, 'yokoten')?.finding);
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
   // Command output (#390): the mailmap note, and the refusal for an agent that can't rewrite.
   // Claude's user rules file is there, and so is Muse's hook file. With no project root the

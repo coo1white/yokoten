@@ -20,19 +20,19 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Env } from '../../rules/config.ts';
-import { docsLink } from '../../rules/message.ts';
-import { homeIn, homeOf } from '../../rules/privacy.ts';
-import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
-import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../hooks-file.ts';
-import type { RuntimeEnv } from '../desk/agent-env.ts';
+import type { Env } from '../../../rules/config.ts';
+import { docsLink } from '../../../rules/message.ts';
+import { homeIn, homeOf } from '../../../rules/privacy.ts';
+import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
+import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../../hooks-file.ts';
+import type { RuntimeEnv } from '../../desk/agent-env.ts';
 
 /**
  * A PreToolUse call, as an Action. The payload is Claude Code's, and its reader goes by the
  * fields, not the tool's name: `command` for bash, `file_path` for write and edit. A relative
  * `file_path` is resolved against `cwd` by the guard, as in Claude Code.
  */
-export { readToolCall } from './claude-code.ts';
+export { readToolCall } from '../claude-code.ts';
 
 /**
  * The tools the guard sees: the shell and the two edit tools. `pwsh` is dsh's shell on

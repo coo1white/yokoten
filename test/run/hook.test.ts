@@ -79,6 +79,7 @@ test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#5
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, options)?.id, 'lead-only');
   assert.equal(judge({ paths: ['.worktrees/571-x/src/a.ts'], worker: false }, options), null, 'other files pass');
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+  assert.equal(judge({ command: 'git push --force origin main', commands: [], paths: [], worker: false }, options)?.id !== undefined, true, 'an empty commands list never hides a command');
 });
 
 // #674: a worker outside a desk can't write a team folder: nothing else fences it there.
