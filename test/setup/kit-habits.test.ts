@@ -26,6 +26,13 @@ test('kit habits: the skills name the merge order, the cause, the road and the i
   assert.ok(inspect.includes('issue #N'));
 });
 
+test('kit habits: the lead names outside pull requests in the session summary (#88)', () => {
+  const dispatch = readSkill('dispatch');
+  assert.ok(dispatch.includes('## The summary you give the owner'));
+  assert.ok(dispatch.includes('pull requests\nfrom outside accounts this week'), 'the summary names outside pull requests, with the line break the skill uses');
+  assert.ok(dispatch.includes('even when it is zero'), 'a quiet week is said, so the owner knows the watch ran');
+});
+
 test('kit habits: every skill warns when it came from a skills-only copy (#540)', () => {
   for (const folder of ['user', 'plugin']) {
     for (const name of readdirSync(join(ROOT, 'kit', folder, 'skills'))) {
