@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
+import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programExtensions, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
 import { workerMarkAt } from '../../../src/rules/guards.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
@@ -37,6 +37,14 @@ test('isInside: the folder itself and what is under it, not a name that only sta
   assert.ok(isInside('/a/b', '/a/b'));
   assert.ok(isInside('/a/b/c', '/a/b'));
   assert.ok(!isInside('/a/bc', '/a/b'));
+  assert.ok(!isInside('/A/b/c', '/a/b'), 'a system that keeps case compares it');
+});
+
+test('isInside: Windows paths compare without case, and only after a separator', () => {
+  assert.ok(isInside('C:\\Users\\Me\\desk\\a', 'c:\\users\\me\\desk', 'win32'));
+  assert.ok(isInside('C:\\Users\\Me', 'C:\\Users\\Me', 'win32'));
+  assert.ok(!isInside('C:\\Users\\Mew', 'C:\\Users\\Me', 'win32'));
+  assert.ok(!isInside('C:\\Users\\Me', 'C:\\Users\\Me\\desk', 'win32'));
 });
 
 test('findProgram: a name on PATH, a path as it is, null when missing', () => {
@@ -45,6 +53,16 @@ test('findProgram: a name on PATH, a path as it is, null when missing', () => {
   assert.equal(findProgram('agent', `relative:${folder}`), join(folder, 'agent'));
   assert.equal(findProgram(join(folder, 'agent'), ''), join(folder, 'agent'));
   assert.equal(findProgram('missing', folder), null);
+});
+
+test('findProgram: Windows tries the PATHEXT extensions, and a path with a backslash', () => {
+  const folder = makeTempDir('bin-');
+  writeFileSync(join(folder, 'agent.cmd'), '');
+  assert.equal(findProgram('agent', folder, ['', '.cmd']), join(folder, 'agent.cmd'));
+  assert.equal(findProgram(`C:\\tools\\agent.cmd`, ''), null, 'a Windows path is not on a Mac');
+  assert.deepEqual(programExtensions('win32', { PATHEXT: '.EXE;.CMD' }), ['', '.EXE', '.CMD']);
+  assert.deepEqual(programExtensions('win32', {}), ['', '.COM', '.EXE', '.BAT', '.CMD']);
+  assert.deepEqual(programExtensions('linux', { PATHEXT: '.EXE' }), ['']);
 });
 
 test('programFolders: the folder named, and the package the real file is in', () => {
@@ -62,6 +80,15 @@ test('hiddenFolders: every home, other drives, and the desk parent; only those t
   const linux = hiddenFolders('linux', TEST_HOME, desk);
   assert.ok(linux.includes(TEST_HOME) && linux.includes(dirname(desk)));
   for (const folder of hiddenFolders('darwin', TEST_HOME, desk)) assert.ok(!['/home', '/mnt'].includes(folder));
+});
+
+test('hiddenFolders: Windows hides every profile folder and every other drive', () => {
+  const hidden = hiddenFolders('win32', 'C:\\Users\\Me', 'C:\\Users\\Me\\projects\\desk', () => true);
+  assert.ok(hidden.includes('C:\\Users\\Me'), 'the home folder');
+  assert.ok(hidden.includes('C:\\Users'), 'every profile folder');
+  assert.ok(hidden.includes('C:\\Users\\Me\\projects'), 'the desk parent');
+  assert.ok(hidden.includes('D:\\') && hidden.includes('Z:\\'), 'the other drives');
+  assert.ok(!hidden.includes('C:\\'), 'the desk drive stays walkable');
 });
 
 test('planDesk: the desk and its own state writable, a token dropped, role and time zone fixed', () => {

@@ -381,6 +381,28 @@ test("road: init's CODEOWNERS with the placeholder owner is to do; with a real o
   assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
 });
 
+test('road: make the repo, add the remote and push come before the CODEOWNERS handle and the labels (#655)', () => {
+  const sandbox = makeSandbox();
+  const remote = ROAD.find((s) => s.key === 'remote')!;
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false);
+  assert.equal(remote.what(sandbox.repo, sandbox.env, undefined), 'there is no origin remote, so the work is only on this machine');
+  assert.equal(remote.fix(sandbox.repo, sandbox.env, undefined), 'make the repo on your code host, add it as origin (`git remote add origin <url>`), and push (`git push -u origin --all`)');
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app.git');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false);
+  assert.equal(remote.what(sandbox.repo, sandbox.env, undefined), 'the origin remote has no branch from this repo, so the work is only on this machine');
+  assert.equal(remote.fix(sandbox.repo, sandbox.env, undefined), 'push it: `git push -u origin --all`');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  // A branch on another remote is not origin's, so the step stays not done (#655).
+  sandbox.git('remote', 'add', 'upstream', 'https://example.com/octo/fork.git');
+  sandbox.git('update-ref', 'refs/remotes/upstream/main', 'HEAD');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false, "another remote's branch is not origin's");
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), true);
+  const keys = ROAD.map((s) => s.key);
+  assert.ok(keys.indexOf('remote') < keys.indexOf('labels'), 'labels come after the remote');
+  assert.ok(keys.indexOf('remote') < keys.indexOf('codeowners'), 'the handle comes after the remote');
+});
+
 // #408: a session start asked git for core.hooksPath four times. In one doctor run the
 // answer is kept; the next run asks again, so a change in between is seen.
 test('road: inside one doctor run each git answer is kept; the next run asks git again (#408)', () => {
