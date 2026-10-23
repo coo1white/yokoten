@@ -111,11 +111,15 @@ function writeSharedSkill(linkFile: string, targetFile: string, content: string,
 /** The skills folder a skill file is in, for the report: `~/.claude/skills`. */
 export const skillsDir = (file: string): string => dirname(dirname(file));
 
+/** The example install prints when it asks the owner to type a mark (#525). */
+const MARK_EXAMPLE = 'for example: your city, a company domain, a server name';
+
 export const MARKS_HEADER = `# yokoten private marks: words that must never be published.
 # One per line, matched without case. A name or a city (letters and spaces) is found as
 # whole words: a letter next to it hides it, a digit or _ - . / @ does not. yokoten adds
 # your git name, git email and forge login by itself; \`yokoten marks add\` adds your city,
 # domain, server names, other account names.
+# ${MARK_EXAMPLE}
 # This file stays on this machine; never commit it or paste it anywhere.
 `;
 
@@ -343,10 +347,11 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ...trySafely('the marks from this machine', () => {
       const lines = filledLines(fillMarks(env, found), target.marks);
       // One answer, as doctor gives it (#522): no marks at all, or an optional offer.
+      // The next line is an example, and only install prints it (#525).
       const marks = loadMarks(env);
       const missing = missingMarkKinds(marks, found);
-      if (!marks.length) lines.push(`${target.marks} has no marks yet; ${EMPTY_MARKS_FIX}`);
-      else if (missing.length) lines.push(`${offerMarkKinds(missing)}; ${OFFER_MARKS_FIX}`);
+      if (!marks.length) lines.push(`${target.marks} has no marks yet; ${EMPTY_MARKS_FIX}`, MARK_EXAMPLE);
+      else if (missing.length) lines.push(`${offerMarkKinds(missing)}; ${OFFER_MARKS_FIX}`, MARK_EXAMPLE);
       return lines;
     }),
     ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
