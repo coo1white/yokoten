@@ -20,11 +20,17 @@ yokoten 之于 AI 写的代码，就像 UL 认证之于电器：它不造电器�
 
 ## 它做什么
 
-yokoten 在你已经在用的 agent 之上，多做三件事。钩子、沙箱和设置，用的都是每家 agent 自己的。yokoten 不另起一套。
+yokoten 是加在你已经在用的 agent 上的一道安全带。钩子、沙箱和设置，用的都是每家 agent 自己的。yokoten 不另起一套。
 
-1. **每个 agent，同一套规则。** 守卫会在命令和修改执行之前先看一遍。强推、打发版 tag、跳过提交检查、修 bug 的任务里改测试、agent 发出去的内容里带着密钥或个人信息，这些都会被拦住。它会告诉 agent 为什么，以及该怎么改。
-2. **按每家 agent 自己的方式写规则。** `yokoten init` 会给它支持的每个 agent 写好钩子，给 Claude Code、Codex、Gemini CLI 和 Grok 写好沙箱设置。就算没有 agent，提交检查和 CI 也会拦住有问题的改动。
-3. **一块看板，给一支 agent 团队。** 各家 agent 并排干活，各自待在围起来的工位里。你打开一页，就能看见每一个 agent。
+同样的五道保护对每个人、每个 agent 都成立，默认开着，不用任何设置：
+
+1. **agent 不能弄丢你的工作。** 不许直接 force push，不许硬重置，不许删 `.git` 或历史。
+2. **agent 不能泄露秘密。** 提交、issue 或 pull request 里不能有密钥、令牌、邮箱地址或家目录路径。
+3. **agent 不能替你发布。** 不许打 tag、发 release、发 npm 包，也不许把仓库改成公开。
+4. **agent 不能没读就运行网上的代码。** 不许把下载内容直接管道给 shell。
+5. **agent 不能拆掉安全带。** 不许关掉检查或钩子，也不许改 CI 或规则。
+
+`yokoten init` 在五道保护之上加项目规则，从不会去掉任何一道。它会给支持的每个 agent 写好钩子，给 Claude Code、Codex、Gemini CLI 和 Grok 写好沙箱设置。就算没有 agent，提交检查和 CI 也会拦住有问题的改动。为什么人人默认这一套，见[记录 0034](https://github.com/yokoten-labs/yokoten/blob/main/docs/records/0034-one-safeguard-for-everyone.md)。
 
 ## 安装
 
@@ -45,7 +51,7 @@ agent 试着强推。yokoten 拦住它，说清原因，给出改法。然后 `d
 
 <img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/demo.svg" width="680" alt="终端里，agent 执行 git push --force origin main。yokoten 的钩子把它拦下，说明发生了什么、为什么危险、该怎么改：改用 --force-with-lease。接着 yokoten doctor 显示现在是第 1 关，一共 5 关，下一步是加测试。">
 
-## 带一支 agent 团队
+## 带一支 agent 团队（预览）
 
 yokoten 自己就是这样一支团队做出来的。lead 负责计划和审查。各家的工程师，每人领一个 issue。
 
@@ -53,7 +59,7 @@ yokoten 自己就是这样一支团队做出来的。lead 负责计划和审查�
 - **bot 来开 PR。** 每个 PR 都写明风险有多大（tier A、B 或 C）。风险高的，要等你批准。检查通过了，才能合并。
 - **一块看板。** `yokoten board` 在你这台电脑上开一个页面。你能看到每个 agent 在做什么，每个 PR 走到哪一步（开发、检查、你（只有 tier A）、合并），还有什么在等你。手机上能看。有四种语言。页面不从网上加载任何东西。
 
-看板和工位已经在 `main` 上。下次发版，会一起上到 npm。
+看板和工位是预览：已经在 `main` 上，还没上 npm，也不在第一屏。团队命令在 v0.1.2 到来；v0.1.x 只有 CLI。
 
 ## 能配合什么
 
@@ -90,7 +96,7 @@ yokoten 自己就是这样一支团队做出来的。lead 负责计划和审查�
 
 ## 了解更多
 
-- **[使用指南](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 条规则、所有命令、它怎么工作，还有它做不到的事。
+- **[使用指南](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：五道保护、安装、所有命令，还有它做不到的事。
 - **[决定记录](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：为什么这样做。
 - **[更新记录](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[参与开发](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[安全](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[服务器设置](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 
