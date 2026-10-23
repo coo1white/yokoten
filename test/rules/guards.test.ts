@@ -189,6 +189,15 @@ test('release: creating a local tag is the owner\'s too, not only pushing it (#8
     'git tag -f v1.2.3',
     'git tag v1.2.3 HEAD~1',
     'git -C ../other tag v1.2.3',
+    // A listing option does not turn a named tag into a listing (#873).
+    'git tag -a v1.2.3 --sort=creatordate -m msg',
+    'git tag -a v1.2.3 --sort creatordate -m msg',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag -a v1.2.3 --format=%(refname) -m msg',
+    'git tag -a v1.2.3 --column -m msg',
+    'git tag --column=always v1.2.3',
+    'git tag --sort creatordate -- v1.2.3',
   ]) blocked(command);
   // Listing, and changing a tag that already exists, publish nothing.
   allowed('git tag');
@@ -196,6 +205,12 @@ test('release: creating a local tag is the owner\'s too, not only pushing it (#8
   allowed('git tag --contains HEAD');
   allowed('git tag -n v1');
   allowed('git tag -d old-tag');
+  allowed('git tag --sort=creatordate');
+  allowed('git tag --sort creatordate');
+  allowed('git tag --format=%(refname)');
+  allowed('git tag --format %(refname)');
+  allowed('git tag --column');
+  allowed('git tag -l --format=%(refname)');
   allowed('git tag v1.2.3', { YOKOTEN_RELEASE_APPROVAL: '1' });
 });
 

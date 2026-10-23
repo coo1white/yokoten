@@ -1533,8 +1533,12 @@ const release = (what: string) => finding('release', what, releaseFix());
 // (`-d`) and verifying one (`-v`) publish nothing. Every other `git tag` writes a tag,
 // which the owner alone creates (record 0028): `git push --follow-tags` would publish it.
 const TAG_READ_FLAGS = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify']);
-const TAG_READ_OPTIONS = ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at', '--sort', '--format', '--column'];
-const TAG_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--trailer']);
+// These choose what a listing matches, so git stays in listing mode after one.
+const TAG_READ_OPTIONS = ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at'];
+// `--sort`, `--format` and `--column` only change how a listing prints. With a name,
+// git still creates the tag, so they must not mark the command as a read (#873).
+// `--sort` and `--format` take their value as the next word, or after `=`.
+const TAG_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--trailer', '--sort', '--format']);
 const isTagRead = (arg: string) => TAG_READ_FLAGS.has(arg) || /^-n\d*$/.test(arg) || TAG_READ_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`));
 const TAG_WRITE_OPTIONS = new Set(['--annotate', '--sign', '--force']);
 
@@ -5914,6 +5918,15 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
       index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
+    } else if (character === '(' && word.endsWith('%')) {
+      // A git format such as `%(refname)` is one word, as the quote note above says: git
+      // reads it as the value of `--format`, and a shell refuses the unquoted form. Reading
+      // it whole keeps the tag name in the same command, so the release check sees it (#873).
+      const end = text.indexOf(')', index + 1);
+      const stop = end === -1 ? text.length : end + 1;
+      word += text.slice(index, stop);
+      inWord = true;
+      index = stop;
     } else if (character === '(' || (character === '{' && !inWord && /\s/.test(next ?? ''))) {
       // A subshell or a group cuts like a separator, and is open until its ) or }.
       endCommand();
