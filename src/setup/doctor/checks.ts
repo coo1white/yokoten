@@ -462,7 +462,7 @@ export function doubleInstallCheck(root: string | null, env: Env): Finding | nul
       : `\`yokoten install\` put these here too: ${pieces.join('; ')}`);
   }
   // `npx skills add` put this copy here, not install, so install gets no credit for it.
-  if (projectSkills.length) said.push(`\`npx skills add\` put a copy here too: ${projectList}`);
+  if (projectSkills.length) said.push(`\`npx skills add\` put a copy in this project too: ${projectList}`);
   const what = `the yokoten plugin is on, and ${said.join('; ')}`;
   const installsHooks = pieces.some((piece) => piece.startsWith('the SessionStart') || piece.startsWith('the agents'));
   const why = installsHooks

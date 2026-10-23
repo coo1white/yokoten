@@ -100,7 +100,7 @@ test('doctor: a home install and a project copy each get their own fix (#540)', 
   sandbox.write('.agents/skills/dispatch/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/dispatch/SKILL.md'), 'utf8'));
   sandbox.write('.claude/skills/rca/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8'));
   const out = (await sandbox.call(['doctor'])).stdout;
-  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; `npx skills add` put a copy here too: `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; remove the home copy with `yokoten uninstall` and delete `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; the plugin brings its own/m);
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; `npx skills add` put a copy in this project too: `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; remove the home copy with `yokoten uninstall` and delete `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; the plugin brings its own/m);
   assert.doesNotMatch(out, /delete `\.agents\/skills`(?!\/)|delete `\.claude\/skills`(?!\/)/, 'the fix never names a whole skills folder');
 });
 
@@ -112,7 +112,7 @@ test('doctor: a runtime-only home with a project copy says only which folder to 
   mkdirSync(join(sandbox.home, '.local/share/yokoten'), { recursive: true });
   sandbox.write('.agents/skills/rca/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8'));
   const out = (await sandbox.call(['doctor'])).stdout;
-  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: ~\/\.local\/share\/yokoten; `npx skills add` put a copy here too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: ~\/\.local\/share\/yokoten; `npx skills add` put a copy in this project too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
   assert.doesNotMatch(out, /plugin-and-install: .*remove the home copy/, 'the runtime is not a skill copy, so nothing at home is called one');
 });
 
@@ -124,7 +124,7 @@ test('doctor: a project skills-only copy is named, and the fix deletes it (#540)
   const skill = readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8');
   sandbox.write('.agents/skills/rca/SKILL.md', skill);
   const out = (await sandbox.call(['doctor'])).stdout;
-  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `npx skills add` put a copy here too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `npx skills add` put a copy in this project too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
 });
 
 // #211: Codex's and Gemini CLI's user hooks, only once the CLI's folder exists; a note
