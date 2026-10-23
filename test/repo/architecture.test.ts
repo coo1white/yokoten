@@ -921,6 +921,17 @@ test('assertLinear: a scan that counts nothing fails (#754)', () => {
   assert.throws(() => assertLinear('empty', (n) => 'x'.repeat(n), () => {}, 8), /counted no work/);
 });
 
+test('assertLinear: a scan that counts only its outer loop still passes (#754)', () => {
+  // The inner loop is quadratic and never calls noteWork. Record 0032: the count cannot see it.
+  const hidden = (input: string) => {
+    for (let i = 0; i < input.length; i++) {
+      noteWork(1);
+      for (let j = 0; j < input.length; j++) input.charCodeAt(j);
+    }
+  };
+  assertLinear('hidden quadratic', (n) => 'x'.repeat(n), hidden, 50);
+});
+
 test('wall-clock smoke: a 100x blow-up fails, one slow read is retried, and a hang fails at once (#754)', () => {
   const blow = simulated();
   const quadraticTime = (input: string) => blow.wait(input.length > 100 ? 100 : 1);

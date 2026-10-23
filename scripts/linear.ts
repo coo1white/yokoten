@@ -3,7 +3,7 @@
 import assert, { AssertionError } from 'node:assert/strict';
 import { measureWork } from '../src/rules/message.ts';
 
-/** How far the step count may grow for 8x the input. Linear is about 8x. Quadratic is about 64x. */
+/** How far the step count may grow for 8x the input. Linear is about 8x. A fully counted quadratic is about 64x. */
 const MAX_GROWTH = 12;
 
 /** One read this long, or longer, is a hang. It fails at once. */
@@ -13,9 +13,10 @@ const HANG_MS = 30_000;
 const SMOKE_GROWTH = 100;
 
 /**
- * Proves `read` does linear work (#754). It counts steps on an input of `size` and on
- * one of 8 times that. More than about 8 times fails. The count does not depend on the
- * runner. A scan that counts nothing fails.
+ * Proves `read` does linear counted work (#754). It counts steps at `size` and at 8 times
+ * that. More than about 8 times fails. The count only sees work that calls `noteWork`.
+ * A loop that never calls it stays invisible. A scan that counts nothing fails.
+ * The count does not depend on the runner.
  */
 export const assertLinear = (name: string, make: (n: number) => string, read: (input: string) => void, size = 1 << 16): void => {
   const steps = (n: number): number => {

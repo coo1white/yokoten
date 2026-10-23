@@ -20,12 +20,12 @@ keep the wall clock. This record replaces that bullet only. The rest of 0016 sta
 
 ## Decision
 
-- **The tests count work, not time.** Each scanner calls `noteWork`. The guard's
-  `spend` is one of those calls. Counting stays off until a test calls `measureWork`.
-  A real read then pays one null check.
-- **Eight times the input may cost about eight times the steps.** The limit is 12
-  after rounding. A quadratic scan is about 64 times and fails. A scan that counts
-  nothing fails too.
+- **The tests count work, not time.** The count only sees work that calls `noteWork`.
+  The guard's `spend` is one of those calls. Counting stays off until a test calls
+  `measureWork`. A real read then pays one null check.
+- **Eight times the input may cost about eight times the counted steps.** The limit
+  is 12 after rounding. A quadratic scan that calls `noteWork` on each inner step
+  costs about 64 times and fails. A scan that never calls `noteWork` fails too.
 - **One wall-clock smoke test remains.** Growth under 100 times passes. Over that,
   it measures once more and then fails. A read of 30 seconds or more fails at once.
   The other linear tests do not read the clock.
@@ -45,8 +45,12 @@ keep the wall clock. This record replaces that bullet only. The rest of 0016 sta
   the backstops for that.
 - A scan that hits its budget on the large input only can look linear. The budget
   stays the runtime backstop.
-- A new scanner that can multiply work calls `noteWork` inside the loop. A scan
-  that forgets fails the zero-work check.
+- A new scanner that can multiply work calls `noteWork` on every step that grows
+  with the input. A scan that never calls `noteWork` fails the zero-work check.
+- A scan that calls `noteWork` on its outer loop only still passes the count.
+  The inner loop is invisible. No check here covers that scan. The smoke test
+  fails at 100 times, or at a hang of 30 seconds, so about 64 times still passes.
+  The control runs that scan through `assertLinear` and expects a pass.
 - The count showed a real re-read: a quote and a backtick nested past the depth
   limit were scanned again on every repeat. The depth limit now says the closer
   was not found, so the caller reads that tail once.

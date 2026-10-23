@@ -696,7 +696,7 @@ export const formatFinding = (f: Finding): string =>
 //
 // The linear tests read this count, not the clock. A busy runner made an 8-times longer
 // text look 28 times slower, and eleven clock limits failed that way. Counting stays off
-// until a test asks, so a real read pays one check.
+// until a test asks, so a real read pays one check. The count only sees a call to noteWork.
 
 /** The steps counted while a test is measuring. Null the rest of the time. */
 let workCounter: { count: number } | null = null;
