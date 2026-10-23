@@ -8,6 +8,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
+import { identityLine } from '../../../src/agents/desk/team/who.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
 import { workerMarkAt } from '../../../src/rules/guards.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
@@ -156,6 +157,30 @@ test('proxyEnv: every proxy name in both cases, and Node told to read them', () 
   for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) assert.equal(names[name], 'http://127.0.0.1:3128');
   assert.equal(names.NODE_USE_ENV_PROXY, '1');
   assert.equal(names.NO_PROXY, '');
+});
+
+test('planDesk: a Codex config of another vendor names the model, and the brief starts with who it is (#748)', () => {
+  const { desk } = makeDesk();
+  const codexHome = makeTempDir('codex-');
+  const config = (text: string) => writeFileSync(join(codexHome, 'config.toml'), text);
+  const plan = () => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: codexHome }, markDesk: writeMark });
+  // A DeepSeek model through Codex: the board gets the real model, and the brief starts
+  // with who the agent is, so Codex's words about OpenAI are not its own.
+  config('model = "deepseek-flash"\nmodel_provider = "deepseek"\n\n[model_providers.deepseek]\nname = "DeepSeek"\n');
+  const deepseek = plan();
+  assert.equal(deepseek.env.YOKOTEN_MODEL, 'deepseek-flash');
+  assert.equal(deepseek.env.YOKOTEN_VENDOR, 'DeepSeek');
+  assert.match(identityLine('codex', deepseek.env), /^yokoten: you are DeepSeek \(deepseek-flash\), served through codex; /);
+  // The harness's own vendor needs no line: its prompt already tells the truth. The real
+  // model still reaches the board, so it shows the model rather than the harness default.
+  config('model = "gpt-6.1-sol"\nmodel_provider = "openai"\n');
+  const openai = plan();
+  assert.equal(openai.env.YOKOTEN_MODEL, 'gpt-6.1-sol');
+  assert.equal(openai.env.YOKOTEN_VENDOR, undefined);
+  assert.equal(identityLine('codex', openai.env), '');
+  // A provider whose name names its vendor counts when the model name does not.
+  config('model = "flash"\nmodel_provider = "deepseek"\n');
+  assert.equal(plan().env.YOKOTEN_VENDOR, 'DeepSeek');
 });
 
 test('planDesk: on a team, the team folder read-only, only the own outbox writable, the desk file locked (#674)', () => {

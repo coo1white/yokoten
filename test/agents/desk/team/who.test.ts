@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { deliveryFor } from '../../../../src/agents/desk/team/deliver.ts';
 import { appendMessage, keepReadState } from '../../../../src/agents/desk/team/outbox.ts';
 import { DESK_FILE, LEAD, makeTeam, outboxOf, prepareDeskTeam } from '../../../../src/agents/desk/team/team.ts';
-import { deskReadState, isFenced, isLockedMount, leadCheckout, whoAmI } from '../../../../src/agents/desk/team/who.ts';
+import { deskReadState, identityLine, isFenced, isLockedMount, leadCheckout, whoAmI } from '../../../../src/agents/desk/team/who.ts';
 import { fence, makeTeamFixture, makeTempDir, stopCheckoutWalk } from '../../../repo/helpers.ts';
 
 const locked = () => true;
@@ -146,4 +146,21 @@ test('keepReadState: a read state that is a link is never followed', () => {
   // A delivery whose read state can't be saved is not given: it would come again on every call.
   assert.equal(deliveryFor(main, {}, null), '');
   assert.equal(readFileSync(victim, 'utf8'), '{"keep":true}\n');
+});
+
+// #748: a harness's prompt names its own maker. A model of another vendor hears who it is
+// first, so it does not sign its work with the harness's vendor.
+test('identityLine: another vendor than the harness names the agent first (#748)', () => {
+  const line = identityLine('codex', { YOKOTEN_MODEL: 'deepseek-flash', YOKOTEN_VENDOR: 'DeepSeek' });
+  assert.equal(line, 'yokoten: you are DeepSeek (deepseek-flash), served through codex; codex is your harness, and what it says about its own maker is the tool, not you.');
+});
+
+test('identityLine: the harness own vendor, no vendor, or no model says nothing, and a long name is cut (#748)', () => {
+  assert.equal(identityLine('codex', { YOKOTEN_MODEL: 'gpt-6.1-sol', YOKOTEN_VENDOR: 'OpenAI' }), '', 'Codex on its own vendor');
+  assert.equal(identityLine('claude-code', { YOKOTEN_MODEL: 'opus', YOKOTEN_VENDOR: 'Anthropic' }), '', 'Claude Code on its own vendor');
+  assert.equal(identityLine('codex', { YOKOTEN_MODEL: 'deepseek-flash' }), '', 'a model, but no vendor');
+  assert.equal(identityLine('codex', { YOKOTEN_VENDOR: 'DeepSeek' }), '', 'a vendor, but no model');
+  assert.equal(identityLine('codex', {}), '', 'a desk that named nothing');
+  const long = identityLine('codex', { YOKOTEN_MODEL: `deepseek  ${'x'.repeat(100)}`, YOKOTEN_VENDOR: '  DeepSeek  ' });
+  assert.equal(/^yokoten: you are DeepSeek \(([^)]*)\)/.exec(long)?.[1], `deepseek ${'x'.repeat(55)}`, 'one line, with the model cut to 64 characters');
 });

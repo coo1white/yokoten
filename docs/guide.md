@@ -1672,6 +1672,12 @@ The fence is one contract. Each system builds it its own way:
 The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
 which the desk hides, so a worktree is refused.
 
+**Who the agent is.** The desk reads the model and provider from the agent's own config:
+for Codex, `model` and `model_provider` in `config.toml`. The board shows that model. When
+its vendor is not the harness's own, the session starts with one line that says who the
+agent is, and that the harness is its tool. A DeepSeek model runs through Codex, whose
+prompt names OpenAI; without the line, the worker signs its work as OpenAI.
+
 **The desk's state folder.** Each desk gets its own state folder for the agent, next to
 it: `<desk>.state/<agent>`. The desk points the agent there with the agent's own variable.
 Only the login file is copied in from yours. A newer login of yours is copied again on the
