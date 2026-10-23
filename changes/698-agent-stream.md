@@ -8,5 +8,6 @@ DeepSeek is read from its Codex log.
 A Codex shell, patch or search call becomes the same step, and a failed command shows as failed.
 The bottom bar shows how many seats are free, per vendor and in total.
 The seats come from `.git/yokoten-seats.json` when that file exists; without it the bar counts idle agents.
+A vendor with seats but no agent still shows its free seats.
 A vendor's square breathes while one of its agents is working.
 A stopped agent does not keep a seat.

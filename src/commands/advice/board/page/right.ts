@@ -3,7 +3,7 @@
 // and the board's own controls. The page does not mount this column (#737).
 
 import type { BoardIssue, BoardLimits, BoardRun } from '../controls.ts';
-import type { PullView } from '../view.ts';
+import { vendorOf, type PullView } from '../view.ts';
 import { el, foldHead, icon, localDay, say, type PageData, type PageState } from './browser/script.ts';
 
 function pullCard(state: PageState, pull: PullView): HTMLElement {
@@ -124,16 +124,8 @@ export function renderRight(state: PageState, data: PageData, now: number): HTML
 
 /** The bar at the bottom: free seats, or idle agents when no seats file is set (#698). */
 export function renderBar(state: PageState, data: PageData): HTMLElement[] {
-  // The names a hooks file may use for one vendor (#693), so `claude-code` holds Claude's seats.
-  const aliases: Record<string, string> = {
-    anthropic: 'claude',
-    'claude-code': 'claude',
-    xai: 'grok',
-    'codex-deepseek': 'deepseek',
-    'codex on deepseek': 'deepseek',
-    'deepseek-harness': 'deepseek',
-  };
-  const canonical = (key: string) => aliases[key] ?? key;
+  // `vendorOf` folds the runtime names a hooks file may use (#693), so `claude-code` holds Claude's seats.
+  const canonical = (key: string) => vendorOf(key).name.toLowerCase();
   const vendors = new Map<string, { name: string; color: string; count: number; working: number; idle: number }>();
   for (const agent of data.agents) {
     if (agent.dot === 'done') continue;
@@ -147,6 +139,14 @@ export function renderBar(state: PageState, data: PageData): HTMLElement[] {
   const seats = data.seats ?? null;
   const seatTotals = new Map<string, number>();
   if (seats) for (const [key, count] of Object.entries(seats)) seatTotals.set(canonical(key), (seatTotals.get(canonical(key)) ?? 0) + count);
+  // A vendor with seats and no agent still gets its own line, so the owner can see where the free seats are.
+  if (seats) {
+    for (const [key, count] of seatTotals) {
+      if (count <= 0) continue;
+      const look = vendorOf(key);
+      if (!vendors.has(look.name)) vendors.set(look.name, { name: look.name, color: look.color, count: 0, working: 0, idle: 0 });
+    }
+  }
   let free = 0;
   if (seats) {
     const used = new Set<string>();
@@ -174,4 +174,4 @@ export function renderBar(state: PageState, data: PageData): HTMLElement[] {
 }
 
 /** The right side's functions, in the order the page writes them. */
-export const RIGHT_FUNCTIONS = [pullCard, field, renderStart, renderLimits, runCard, renderRuns, renderOutput, githubNote, renderRight, renderBar];
+export const RIGHT_FUNCTIONS = [pullCard, field, renderStart, renderLimits, runCard, renderRuns, renderOutput, githubNote, renderRight, vendorOf, renderBar];
