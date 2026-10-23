@@ -6,8 +6,8 @@
   "team": {
     "seats": {
       "claude": { "lead": 1 },
-      "grok": { "manager": 2, "engineer": 6 },
-      "deepseek": { "manager": 3, "engineer": 9 }
+      "grok": { "manager": 1, "engineer": 3 },
+      "deepseek": { "manager": 4, "engineer": 12 }
     }
   },
   "commands": {
