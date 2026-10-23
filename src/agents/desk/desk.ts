@@ -217,11 +217,15 @@ export function planDesk(request: DeskRequest): DeskPlan {
   if (!request.command.length) throw new Error('no agent command after --');
   const { env } = request;
   // Who the agent really is (#748): the agent's own config may name a model of another
-  // vendor than the harness's. The model goes to the board; when the vendor differs, the
-  // brief also starts with one line saying so (identity.ts).
+  // vendor than the harness's. The command line wins, as the runtime does: `--model X`
+  // names the model for the board's roster and for the desk's env alike. The model goes to
+  // the board; when the vendor differs, the brief also starts with one line saying so
+  // (identity.ts).
   const named = runtime.identity?.(env) ?? null;
-  const vendor = named ? vendorOf(request.runtime, named.model, named.provider) : '';
-  const identity = named && vendor !== vendorOf(request.runtime, '') ? { model: named.model, vendor } : null;
+  const asked = modelOf(request.command);
+  const model = asked !== 'model not named' && asked.trim() ? asked.trim() : named?.model ?? '';
+  const vendor = model ? vendorOf(request.runtime, model, named?.provider) : '';
+  const identity = model && vendor !== vendorOf(request.runtime, '') ? { model, vendor } : null;
   const home = realOr(homeIn(env));
   const desk = realOr(resolve(request.desk));
   if (!existsSync(join(desk, '.git'))) throw new Error(`${desk} is not a git clone. Make the desk with \`git clone <repo> <folder>\`.`);
@@ -273,7 +277,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
   if (request.team) {
     const folder = realOr(resolve(request.team.folder));
     if (isTooWide(folder) || isInside(desk, folder) || isInside(folder, desk)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
-    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: named && modelOf(request.command) === 'model not named' ? named.model : modelOf(request.command), desk });
+    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: model || 'model not named', desk });
     if (!readable.includes(team.readable)) readable.push(team.readable);
     writable.push(team.writable);
     locked.push(team.locked);
@@ -287,7 +291,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
     hidden,
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(named ? { YOKOTEN_MODEL: named.model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }

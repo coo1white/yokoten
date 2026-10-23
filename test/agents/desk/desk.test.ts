@@ -183,6 +183,18 @@ test('planDesk: a Codex config of another vendor names the model, and the brief 
   assert.equal(plan().env.YOKOTEN_VENDOR, 'DeepSeek');
 });
 
+test('planDesk: a command model wins over the config, for the roster and the env (#748)', () => {
+  const { projects, desk } = makeDesk();
+  const team = join(projects, 'origin.team');
+  const codexHome = makeTempDir('codex-');
+  writeFileSync(join(codexHome, 'config.toml'), 'model = "gpt-6.1-sol"\nmodel_provider = "openai"\n');
+  const plan = planDesk({ runtime: 'codex', desk, command: ['node', '--model', 'deepseek-flash'], env: { ...env(), CODEX_HOME: codexHome }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: team, name: 'g1' } });
+  assert.equal(plan.env.YOKOTEN_MODEL, 'deepseek-flash');
+  assert.equal(plan.env.YOKOTEN_VENDOR, 'DeepSeek');
+  assert.match(identityLine('codex', plan.env), /^yokoten: you are DeepSeek \(deepseek-flash\)/);
+  assert.match(readFileSync(join(team, 'agents', 'g1.json'), 'utf8'), /"model": "deepseek-flash"/, 'the roster names the model the env names');
+});
+
 test('planDesk: on a team, the team folder read-only, only the own outbox writable, the desk file locked (#674)', () => {
   const { projects, desk } = makeDesk();
   const team = join(projects, 'origin.team');
