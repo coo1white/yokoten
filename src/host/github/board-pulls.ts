@@ -99,6 +99,45 @@ function reviewOf(decision: string): BoardPull['review'] {
 }
 
 /**
+ * The verdict on one review comment, or ''. Only a short line counts, such as
+ * "PR #7: request changes". A mention inside a paragraph does not.
+ */
+function verdictOf(body: string): '' | 'changes' | 'approve' {
+  const lines = body.split('\n').map((line) => line.replace(/[*_`]/g, '').trim()).filter(Boolean).slice(0, 8);
+  for (const line of lines) {
+    if (line.length > 80) continue;
+    const text = line.replace(/^pr\s*#\d+\s*:\s*/i, '').trim();
+    if (/^request changes\b/i.test(text)) return 'changes';
+    if (/^approv(?:e|ed)\b/i.test(text)) return 'approve';
+  }
+  return '';
+}
+
+/** The objects in a gh list. A connection with `nodes` counts too. */
+function noteList(value: unknown): Record<string, unknown>[] {
+  const list = Array.isArray(value) ? value : isObject(value) && Array.isArray(value.nodes) ? value.nodes : [];
+  return list.filter(isObject);
+}
+
+/** The newest review verdict, from comments and reviews. Empty when none names one. */
+function latestVerdict(row: Record<string, unknown>): '' | 'changes' | 'approve' {
+  const notes: { at: number; order: number; verdict: 'changes' | 'approve' }[] = [];
+  const take = (value: unknown) => {
+    for (const item of noteList(value)) {
+      const verdict = verdictOf(asText(item.body));
+      if (!verdict) continue;
+      const at = Date.parse(asText(item.createdAt) || asText(item.submittedAt));
+      notes.push({ at: Number.isNaN(at) ? 0 : at, order: notes.length, verdict });
+    }
+  };
+  take(row.comments);
+  take(row.reviews);
+  take(row.latestReviews);
+  notes.sort((left, right) => left.at - right.at || left.order - right.order);
+  return notes.at(-1)?.verdict ?? '';
+}
+
+/**
  * True when an Approve sits on the head commit. GitHub can still say APPROVED after
  * new commits. Without a matching commit, the Approve does not count.
  */
@@ -117,7 +156,9 @@ function approvedOnHead(row: Record<string, unknown>, review: BoardPull['review'
 /** One row of `gh pr list --json` as a board pull, or null when it has no number. */
 function parseBoardPull(row: unknown): BoardPull | null {
   if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number <= 0) return null;
-  const review = reviewOf(asText(row.reviewDecision));
+  let review = reviewOf(asText(row.reviewDecision));
+  // A comment can ask for changes while GitHub still says the review is waiting.
+  if (review !== 'changes' && latestVerdict(row) === 'changes') review = 'changes';
   return {
     number: row.number,
     title: asText(row.title),
@@ -138,7 +179,7 @@ function parseBoardPull(row: unknown): BoardPull | null {
  * The head commit and the latest reviews say whether an Approve is still current.
  */
 function boardPullQueries(repo: string): string[][] {
-  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,isDraft,statusCheckRollup,labels,url,mergedAt';
+  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,reviews,comments,isDraft,statusCheckRollup,labels,url,mergedAt';
   const quietJson = 'number,title,headRefName,state,url,mergedAt';
   return [
     ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_PULL_LIMIT), '--json', openJson],

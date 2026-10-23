@@ -10,6 +10,7 @@ import { hideHome } from '../../../rules/privacy.ts';
 import { ageText, BOARD_AGENT_FILE, parseBoardAgent, type BoardWorktree } from './agents.ts';
 import type { BoardAttention, BoardControls, BoardIssue, BoardRun, BoardSnapshot, BoardWaiting } from './controls.ts';
 import { dependsOf } from './feed/read/desk.ts';
+import { makeBoardMask } from './feed/route.ts';
 import { type AgentView, type BoardData, BOARD_ISSUE_LIMIT, type PullView } from './view.ts';
 
 /** How many of a run's output lines /data serves. */
@@ -189,16 +190,22 @@ function snapshotRuns(runs: BoardRun[], env: Env): BoardRun[] {
  * The waiting list as /data serves it: the latch time stays on the server, so the
  * rows hold what waits, who waits, how long, why, and where to act, and nothing else.
  */
-function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls: BoardControls, now: number = Date.now()): BoardWaiting[] {
-  return collectBoardWaiting(board, attention, controls.runs, controls.seen, now).map(
-    ({ latchedAt: _, ...row }) => row,
-  );
+function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls: BoardControls, env: Env, root: string, now: number = Date.now()): BoardWaiting[] {
+  const mask = makeBoardMask(env, root);
+  return collectBoardWaiting(board, attention, controls.runs, controls.seen, now).map(({ latchedAt: _, ...row }) => ({
+    ...row,
+    agent: mask(row.agent),
+    role: mask(row.role),
+    why: mask(row.why),
+    link: mask(row.link),
+  }));
 }
 
 /** The snapshot for /data: the waiting list, the open issues as last read, the runs, and the limits. */
-export function readBoardSnapshot(env: Env, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string, issues: BoardIssue[] | string): BoardSnapshot {
+export function readBoardSnapshot(env: Env, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string, issues: BoardIssue[] | string, root = ''): BoardSnapshot {
+  const folder = root || (typeof trees === 'string' ? '' : trees[0]?.path ?? '');
   return {
-    waiting: snapshotWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls),
+    waiting: snapshotWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls, env, folder),
     issues,
     runs: snapshotRuns(controls.runs, env),
     limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },

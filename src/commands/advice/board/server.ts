@@ -280,7 +280,7 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
           const issues = remote ? github.issues : BOARD_NO_REMOTE_ISSUES;
           const board = collectBoardWith(root, env, remote, remote ? github.pulls : BOARD_NO_REMOTE_PULLS, Date.now(), issueNumbersOf(issues));
           const trees = readBoardWorktrees(root, env);
-          const snapshot = readBoardSnapshot(env, controls, board, trees, issues);
+          const snapshot = readBoardSnapshot(env, controls, board, trees, issues, root);
           recordFeed(feeds, board.agents, board.updated);
           const fresh = githubState(remote ? github : null);
           return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ...board, feeds: feedsJson(feeds), ...snapshot, github: fresh }));

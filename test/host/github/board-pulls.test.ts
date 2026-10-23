@@ -28,7 +28,7 @@ test('readBoardPulls: each row as its stages; a row with no number is skipped', 
     { number: 2, title: 'steady tests', branch: 'linear', url: '', stage: 'merged', checks: 'running', tier: 'A', review: 'approved', isApprovedOnHead: false, mergedAt: '2026-10-22T09:00:00Z' },
     { number: 4, title: 'closed stays', branch: 'old', url: '', stage: 'closed', checks: 'fail', tier: '', review: 'changes', isApprovedOnHead: false, mergedAt: '' },
   ]);
-  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,isDraft,statusCheckRollup,labels,url,mergedAt';
+  const openJson = 'number,title,headRefName,headRefOid,state,reviewDecision,latestReviews,reviews,comments,isDraft,statusCheckRollup,labels,url,mergedAt';
   const quietJson = 'number,title,headRefName,state,url,mergedAt';
   assert.deepEqual(calls, [
     ['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '30', '--json', openJson],

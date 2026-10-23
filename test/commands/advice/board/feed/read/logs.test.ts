@@ -2,7 +2,7 @@
 
 import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../../../repo/helpers.ts';
@@ -111,7 +111,9 @@ test('board stream logs: a registered lead log wins, and a bad path falls back (
   const file = join(tree, '.git', LEAD_SESSION_FILE);
   const point = (path: string) => writeFileSync(file, `${path}\n`, { mode: 0o600 });
   point(live);
-  assert.equal(findClaudeLog(tree, env, new Map())?.file, live, 'the registered log, even when an older log in the repo folder is newer');
+  // macOS temp is a symlink, so the registered file's real path can differ from `live`.
+  const registered = findClaudeLog(tree, env, new Map());
+  assert.equal(registered ? realpathSync(registered.file) : '', realpathSync(live), 'the registered log, even when an older log in the repo folder is newer');
   const outside = join(home, 'escape.jsonl');
   put(outside, prompt('out'));
   point(`${projects}/../../escape.jsonl`);

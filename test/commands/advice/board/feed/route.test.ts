@@ -2,7 +2,7 @@
 
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -54,14 +54,18 @@ test('board feed route: a home path, an email, a token and a private mark never 
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
   writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), `${MARK}\n`);
   writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'claude-code', worktree: sandbox.repo, doing: 'reading' }));
-  const log = join(home, '.claude', 'projects', claudeFolder(sandbox.repo), 'one.jsonl');
-  mkdirSync(dirname(log), { recursive: true });
+  // git lists the real worktree path. On macOS that is /private/var when the test path is /var.
   const said = `Mail ${EMAIL} about ${MARK}, with ${TOKEN}, in ${sandbox.repo}/src/a.ts`;
-  writeFileSync(log, [
+  const lines = [
     { type: 'assistant', timestamp: '2026-10-22T10:00:00.000Z', message: { content: [{ type: 'text', text: said }] } },
     { type: 'assistant', timestamp: '2026-10-22T10:00:01.000Z', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: `cat ${sandbox.repo}/notes # ${EMAIL} ${TOKEN}` } }] } },
     { type: 'user', timestamp: '2026-10-22T10:00:02.000Z', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: `${home}/.ssh ${MARK.toUpperCase()} <script>alert(1)</script>` }] } },
-  ].map((record) => `${JSON.stringify(record)}\n`).join(''));
+  ].map((record) => `${JSON.stringify(record)}\n`).join('');
+  for (const tree of [...new Set([sandbox.repo, realpathSync(sandbox.repo)])]) {
+    const log = join(home, '.claude', 'projects', claudeFolder(tree), 'one.jsonl');
+    mkdirSync(dirname(log), { recursive: true });
+    writeFileSync(log, lines);
+  }
   const gh: Gh = () => '[]';
   const { server, url } = await startBoardServer(sandbox.repo, env, gh);
   try {

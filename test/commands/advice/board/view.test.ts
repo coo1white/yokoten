@@ -9,7 +9,9 @@ import { test } from 'node:test';
 import { makeSandbox, makeTempDir, runChild } from '../../../repo/helpers.ts';
 import type { BoardAgent } from '../../../../src/commands/advice/board/agents.ts';
 import { claudeFolder, LEAD_SESSION_FILE } from '../../../../src/commands/advice/board/feed/read/logs.ts';
-import { type AgentView, collectBoard, dotOf, issueNumbersOf, LEAD_ROW_CHARS, needsOf, nicknameId, nicknameOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
+import { createBoardControls } from '../../../../src/commands/advice/board/controls.ts';
+import { readBoardSnapshot } from '../../../../src/commands/advice/board/waiting.ts';
+import { type AgentView, collectBoard, collectBoardWith, dotOf, issueNumbersOf, LEAD_ROW_CHARS, needsOf, nicknameId, nicknameOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
 
 const NOW = Date.parse('2026-10-22T12:00:00Z');
@@ -19,7 +21,7 @@ const PULL: BoardPull = { number: 1, title: 't', branch: 'b', url: '', stage: 'o
 // #603: the dot says what the owner needs to know. The agent's own word wins, then its
 // checks, then how recently it wrote.
 test('board view: the dot is done, waiting, failing, working or idle', () => {
-  const recent = '2026-10-22T11:45:00Z';
+  const recent = '2026-10-22T11:55:00Z';
   assert.equal(dotOf({ ...AGENT, state: 'done', checks: 'failing', updated: recent }, NOW), 'done');
   assert.equal(dotOf({ ...AGENT, state: 'waiting', checks: 'failing' }, NOW), 'waiting');
   assert.equal(dotOf({ ...AGENT, checks: 'failing', updated: recent }, NOW), 'failing');
@@ -27,6 +29,14 @@ test('board view: the dot is done, waiting, failing, working or idle', () => {
   assert.equal(dotOf({ ...AGENT, updated: '2026-10-22T11:00:00Z' }, NOW), 'idle', 'an hour quiet');
   assert.equal(dotOf({ ...AGENT, updated: 'soon' }, NOW), 'idle', 'an odd time');
   assert.equal(dotOf({ ...AGENT, state: 'working', updated: '' }, NOW), 'idle', 'no time');
+});
+
+// The seat goes quiet at 15 minutes. The dot uses that same window (#693).
+test('board view: a working dot goes idle after 15 minutes', () => {
+  const at = (minutes: number) => new Date(NOW - minutes * 60 * 1000).toISOString();
+  assert.equal(dotOf({ ...AGENT, state: 'working', updated: at(5) }, NOW), 'working');
+  assert.equal(dotOf({ ...AGENT, state: 'working', updated: at(16) }, NOW), 'idle');
+  assert.equal(dotOf({ ...AGENT, state: 'working', updated: at(31) }, NOW), 'idle');
 });
 
 test('board view: the task names its pull request or issue, shown as a chip', () => {
@@ -210,10 +220,10 @@ test('board data: agents, needs, pulls and worktrees; gh runs only with a GitHub
 
 /** A shell call in each runtime's own shape, for its hook (#685). */
 const SHELL_CALLS: Record<string, (cwd: string) => unknown> = {
-  'claude-code': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } }),
-  grok: (cwd) => ({ cwd, hookEventName: 'PreToolUse', toolName: 'run_terminal_command', toolInput: { command: 'npm test' } }),
-  muse: (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command: 'npm test' } }),
-  'deepseek-harness': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' } }),
+  'claude-code': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } }),
+  grok: (cwd) => ({ cwd, hookEventName: 'PreToolUse', toolName: 'run_terminal_command', toolInput: { command: 'git status' } }),
+  muse: (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command: 'git status' } }),
+  'deepseek-harness': (cwd) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status' } }),
 };
 
 // #685: the board fills itself. Each vendor's hook writes its worker's file in its own
@@ -238,10 +248,10 @@ test('board data: agents from each vendor\'s hook, and a desk clone, with their 
   const board = collectBoard(sandbox.repo, sandbox.env, () => '[]');
   const shown = board.agents.map((agent) => [agent.key, agent.vendor.name, agent.vendor.color, agent.role, agent.doing]);
   assert.deepEqual(shown, [
-    [join(base, 'claude-code'), 'Claude', '#d97757', 'engineer', 'running npm test'],
-    [join(base, 'deepseek-harness'), 'DeepSeek', '#4d6bfe', 'engineer', 'running npm test'],
-    [join(base, 'muse'), 'Muse', '#0866ff', 'engineer', 'running npm test'],
-    [desk, 'Grok', '#9ca3af', 'engineer', 'running npm test'],
+    [join(base, 'claude-code'), 'Claude', '#d97757', 'engineer', 'running git status'],
+    [join(base, 'deepseek-harness'), 'DeepSeek', '#4d6bfe', 'engineer', 'running git status'],
+    [join(base, 'muse'), 'Muse', '#0866ff', 'engineer', 'running git status'],
+    [desk, 'Grok', '#9ca3af', 'engineer', 'running git status'],
   ]);
   assert.ok(typeof board.worktrees !== 'string' && board.worktrees.some((tree) => tree.path === desk && tree.branch === 'main'), 'the desk is listed with its branch');
   // A desk that is gone drops off.
@@ -364,4 +374,41 @@ test('board data: the lead line is the registered session\'s last words, masked 
   assert.equal(doing.includes('second line'), false);
   assert.equal(doing.includes('old stuck'), false);
   assert.equal(doing.includes('started'), false);
+});
+
+// #693: /data copies the status file. Agent text is masked, the same way /feed is.
+test('board data: a home path, an email, a token and a private mark never reach /data', () => {
+  const sandbox = makeSandbox();
+  const home = dirname(sandbox.repo);
+  const env = { ...sandbox.env, HOME: home };
+  const email = ['someone', 'personal-mail.com'].join('@');
+  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  const mark = 'zebracorn';
+  const link = `https://example.com/review?token=${token}`;
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), `${mark}\n`);
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({
+    name: 'w',
+    vendor: 'claude',
+    model: 'opus',
+    effort: 'high',
+    role: `helper ${home}/role`,
+    task: `PR #5 read ${home}/task`,
+    doing: `running cat ${home}/notes/secret.txt`,
+    state: 'waiting',
+    question: `Mail ${email} about ${mark}`,
+    link,
+    updated: '2026-10-22T11:50:00Z',
+  }));
+  const board = collectBoardWith(sandbox.repo, env, null, 'no remote');
+  const snapshot = readBoardSnapshot(env, createBoardControls(join(sandbox.repo, 'board.log')), board, [{ path: sandbox.repo, branch: 'main' }], [], sandbox.repo);
+  const text = JSON.stringify({ ...board, ...snapshot });
+  for (const secret of [home, email, token, mark]) assert.equal(text.includes(secret), false, 'a private value never reaches /data');
+  const waiting = snapshot.waiting.find((row) => row.kind === 'question');
+  assert.equal(waiting?.why, 'Mail <email> about <mark>');
+  assert.equal(waiting?.link, 'https://example.com/review?token=<secret>');
+  assert.match(board.agents[0]?.doing ?? '', /^running cat ~\/notes\/secret\.txt$/);
+  assert.match(board.agents[0]?.role ?? '', /^helper ~\/role$/);
+  assert.equal(board.agents[0]?.name, 'w');
+  assert.equal(board.agents[0]?.model, 'opus');
 });

@@ -10,16 +10,14 @@ import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
 import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees } from './agents.ts';
 import { buildNeeds } from './feed/needs.ts';
-import { makeFeedMask } from './feed/route.ts';
+import { makeBoardMask, makeFeedMask } from './feed/route.ts';
 import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/read/desk.ts';
 import { findAgentLog, lastAssistantLine, type LogCache } from './feed/read/logs.ts';
 
 /** Characters that fit on the lead row. The side column is 312px and the line is 12px. */
 export const LEAD_ROW_CHARS = 40;
 
-/** An agent that wrote within this time, and says nothing else, is working. */
-const WORKING_WINDOW_MS = 30 * 60 * 1000;
-/** A status file or session log older than this is not a live agent (#698). */
+/** An agent that wrote within this time is working. The same window as a live seat (#698). */
 const LIVE_WINDOW_MS = 15 * 60 * 1000;
 /** Merged pull requests older than this are not sent; the page keeps only today's. */
 const MERGED_WINDOW_MS = 36 * 60 * 60 * 1000;
@@ -33,7 +31,7 @@ export function dotOf(agent: BoardAgent, now: number): AgentDot {
   if (agent.state === 'waiting') return 'waiting';
   if (agent.checks === 'failing') return 'failing';
   const then = Date.parse(agent.updated);
-  return !Number.isNaN(then) && now - then < WORKING_WINDOW_MS ? 'working' : 'idle';
+  return !Number.isNaN(then) && now - then < LIVE_WINDOW_MS ? 'working' : 'idle';
 }
 
 /** The issue or pull request a task names. */
@@ -305,23 +303,25 @@ function workStarted(agent: BoardAgent, tree: string): string {
   return agent.updated;
 }
 
-/** One found agent as the page shows it. */
-function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string): AgentView {
+/** One found agent as the page shows it. Agent text is masked before it can reach /data. */
+function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string, mask: (text: string) => string): AgentView {
   const { agent, tree } = found;
+  const look = vendorOf(agent.vendor, agent.model);
+  const filed = agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing) : agent.doing;
   return {
     key: hideHome(tree.path, env),
-    name: agent.name,
+    name: mask(agent.name),
     nickname,
-    vendor: vendorOf(agent.vendor, agent.model),
-    model: agent.model,
-    effort: agent.effort,
-    role: agent.role,
+    vendor: { name: mask(look.name), color: look.color },
+    model: mask(agent.model),
+    effort: mask(agent.effort),
+    role: mask(agent.role),
     isMain,
     dot: dotOf(agent, now),
-    task: agent.task,
-    title: taskTitle(agent.task),
+    task: mask(agent.task),
+    title: mask(taskTitle(agent.task)),
     ref: refOf(agent.task),
-    doing: agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing) : agent.doing,
+    doing: mask(filed),
     checks: agent.checks,
     age: ageText(agent.updated, now),
     updated: agent.updated,
@@ -397,10 +397,11 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
   const found = typeof worktrees === 'string' ? [] : readBoardAgents(worktrees);
   const taken: string[] = [];
   const cache: LogCache = new Map();
+  const mask = makeBoardMask(env, root);
   const agents = found.map((item) => {
     const nickname = nicknameOf(nicknameId(item.tree.path, item.agent.name), taken);
     taken.push(nickname);
-    return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache, root);
+    return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache, root, mask);
   });
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {

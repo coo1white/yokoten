@@ -26,6 +26,19 @@ export function makeFeedMask(env: Env, root: string): (text: string) => string {
   );
 }
 
+/**
+ * The mask for agent text on /data. When the marks cannot be read, every field is
+ * empty, so a home path or a private word never leaves.
+ */
+export function makeBoardMask(env: Env, root: string): (text: string) => string {
+  try {
+    const mask = makeFeedMask(env, root);
+    return (text) => (text ? mask(text) : '');
+  } catch {
+    return () => '';
+  }
+}
+
 /** The board's streams, with masks read again every MASK_AGAIN_MS. Tests pass their own mask. */
 export function makeFeedStreams(env: Env, root: string, mask?: (text: string) => string): StreamStore {
   let built: { mask: (text: string) => string; at: number } | null = null;
