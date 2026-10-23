@@ -95,7 +95,7 @@ import {
   privacyNotes,
   upstreamNote,
   userAgentHooks,
-} from '../../src/setup/doctor.ts';
+} from '../../src/setup/doctor/index.ts';
 import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
