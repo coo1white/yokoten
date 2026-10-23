@@ -50,7 +50,7 @@ export const SERVER_TIMEOUT_MS = 3000;
 
 /** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
 const NO_REMOTE = 'there is no origin remote yet';
-const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
+const NO_REMOTE_FIX = 'make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again';
 
 /** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
 function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
@@ -313,7 +313,7 @@ function doctorRun(
     // This note only. The other privacy notes stay out of a session (#681).
     const claudeRules = museClaudeRules(env, root);
     if (claudeRules) blocks.push([`yokoten: ${formatFinding(claudeRules.finding)}`]);
-    const double = hasHome ? doubleInstallCheck(env) : null;
+    const double = hasHome ? doubleInstallCheck(root, env) : null;
     if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
@@ -465,7 +465,7 @@ function doctorRun(
     lines.push(`  note    plugin: ${stepText(stale)}`);
     notes.push(stale);
   }
-  const double = hasHome ? doubleInstallCheck(env) : null;
+  const double = hasHome ? doubleInstallCheck(root, env) : null;
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);
