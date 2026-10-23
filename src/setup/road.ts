@@ -29,7 +29,7 @@ import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
-import { gitConfig } from '../run/check.ts';
+import { gitConfig, remembered } from '../run/check.ts';
 import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { nodeTestsFix } from './advice/tests-job.ts';
@@ -647,6 +647,19 @@ const keptWorkflow = (root: string, name: string, args: string, after: string): 
   return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
 };
 
+/** True when origin has a branch from this repo: a push put one there. Reads local refs, never the network. */
+const hasPushedOrigin = (root: string, env: Env): boolean => {
+  if (!gitConfig(root, 'remote.origin.url', env)) return false;
+  // Only origin's own refs count: a branch pushed to another remote is not this repo on origin (#655).
+  return remembered('remote:origin:refs', () => {
+    try {
+      return execFileSync('git', ['--no-optional-locks', 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/origin'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
+    } catch {
+      return false;
+    }
+  });
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -743,6 +756,17 @@ export const ROAD: Step[] = [
     withoutCi: 'run the tests yourself before each merge',
   },
   {
+    // One order for a new project (#655): make the repo, add the remote, push, then the
+    // CODEOWNERS handle and the labels. This step is the first of those, so it is next.
+    stage: 2,
+    key: 'remote',
+    check: (root, env) => hasPushedOrigin(root, env),
+    what: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'the origin remote has no branch from this repo, so the work is only on this machine' : 'there is no origin remote, so the work is only on this machine'),
+    fix: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'push it: `git push -u origin --all`' : 'make the repo on your code host, add it as origin (`git remote add origin <url>`), and push (`git push -u origin --all`)'),
+    why: 'the code host keeps a copy, so a lost machine does not lose the work',
+    how: 'git has an origin remote, and a branch from this repo is on it',
+  },
+  {
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
@@ -785,7 +809,7 @@ export const ROAD: Step[] = [
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
     byHand: `the repo has the labels ${lackingLabels([]).map((l) => l.name).join(', ')}`,
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
-    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, security, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
