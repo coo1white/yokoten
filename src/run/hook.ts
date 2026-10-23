@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
 
@@ -85,7 +85,7 @@ export const DONE_WHEN_MS = 120_000;
 const CLOSE_GRACE_MS = 200;
 
 /** The file in a worktree's git folder that holds the task's done-when command. */
-export const DONE_WHEN_FILE = 'yokoten-done-when';
+export { DONE_WHEN_FILE };
 
 /**
  * The agent's status file, at a linked worktree's root. The lead reads it.
@@ -113,9 +113,12 @@ export function readDoneWhen(env: Env, folder: string): string | undefined {
   const fromEnv = env.YOKOTEN_DONE_WHEN?.trim();
   if (fromEnv) return fromEnv;
   const link = gitLinkAbove(folder);
-  if (!link || link.kind === 'broken') return undefined;
+  if (!link) return undefined;
+  // A broken link still fails closed: read the file on disk (#746). It runs, or the stop
+  // refuses when it fails. Never the parent's file, and never a silent skip.
+  const gitDir = link.kind === 'broken' ? join(link.top, '.git') : link.gitDir;
   try {
-    const text = readFileSync(join(link.gitDir, DONE_WHEN_FILE), 'utf8');
+    const text = readFileSync(join(gitDir, DONE_WHEN_FILE), 'utf8');
     const line = text.split('\n').find((row) => {
       const trimmed = row.trim();
       return trimmed !== '' && !trimmed.startsWith('#');
