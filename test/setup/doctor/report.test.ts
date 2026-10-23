@@ -978,7 +978,7 @@ test('doctor: a CODEOWNERS line that matches no file is a finding (#667)', () =>
   sandbox.write('.github/CODEOWNERS', 'src/gone.ts @lead\n');
   sandbox.git('add', '.');
   const full = doctor(sandbox.repo, { env: { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: () => { throw new Error('no gh in this test'); } });
-  const found = full.report.findings.find((f) => f.id === 'codeowners');
+  const found = full.report.findings.find((f) => f.id === 'stale-codeowners');
   assert.equal(found?.line, 1);
   assert.match(found?.what ?? '', /protects nothing; point it at the new path/);
 });

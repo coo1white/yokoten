@@ -130,7 +130,7 @@ const OWNED_FILES = ['.github/CODEOWNERS', 'docs/guide.md', 'src/app.ts', 'src/h
 test('codeowners: a line that names a removed file is reported (#667)', () => {
   const found = checkCodeOwners(OWNED_FILES, '# the owners\nsrc/host/github.ts @lead\n');
   assert.equal(found.length, 1);
-  assert.equal(found[0]?.id, 'codeowners');
+  assert.equal(found[0]?.id, 'stale-codeowners');
   assert.equal(found[0]?.file, '.github/CODEOWNERS');
   assert.equal(found[0]?.line, 2);
   assert.match(found[0]?.what ?? '', /^src\/host\/github\.ts matches no file: this rule protects nothing; point it at the new path$/);
