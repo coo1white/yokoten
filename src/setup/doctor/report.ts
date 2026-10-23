@@ -13,7 +13,7 @@ import { isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, hookPlaces, launcherCheck, machineChecks, missingHookFindings, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, hookPlaces, launcherCheck, machineChecks, mergeTimeZones, missingHookFindings, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -369,6 +369,13 @@ function doctorRun(
     lines.push(`  ${core.mark.padEnd(7)} core-rules${core.mark === 'ok' ? '' : `: ${stepText(core.finding)}`}`);
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
+  }
+  // A merge made in another zone stays in history (record 0027): a count to know, never a
+  // failure, and one command shows the merges (#760). Full doctor only: a session reads no history.
+  const zones = config.privacy.utc ? mergeTimeZones(root, env) : null;
+  if (zones) {
+    lines.push(`  note    time-zone: ${stepText(zones)}`);
+    notes.push(zones);
   }
   // Work only on this machine (#365): notes, never a failure, and read only. Read here, so
   // the state file is found in the git folder it names, as a session start finds it (#453).
