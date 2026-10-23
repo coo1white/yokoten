@@ -891,6 +891,7 @@ It puts three safe defaults in `.github/` too:
 | `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
+| `borrowed [--dry-run] [--json]` | Compares each file in `src/borrowed/` with upstream's default branch, through `gh`, and opens one issue per source that changed. A security fix is called out in the title. `--dry-run` shows the report and opens nothing; `--json` prints the report as data. See [Borrowed code](#borrowed-code) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
@@ -1297,6 +1298,75 @@ When they are not enough, `check` gives one note for the whole run. The note say
 many translations weren't checked, and there is no note for each file. That note never
 fails, even with `"fail": true`. `check` never fetches. In CI, use `fetch-depth: 0`; the
 kit's `yokoten.yml` does.
+
+### Borrowed code
+
+Record 0024 says when yokoten may copy code from another project. A copied piece is a
+**wheel**. A wheel lives in `src/borrowed/`, never as a dependency. It is small: only
+the part we need. The code under it is not the project's own, so a reader must see
+where it came from.
+
+Copy only under a permissive license: MIT, BSD-2-Clause, BSD-3-Clause, ISC or
+Apache-2.0. For any other license, use the clean-room road: one agent writes what the
+code does, and another agent, which has not seen the source, writes the code.
+
+Every wheel starts with a comment header, before any code:
+
+```ts
+// source: https://github.com/example/upstream/blob/3f2a1c9d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f/src/thing.ts
+// commit: 3f2a1c9d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f
+// license: MIT
+// copyright: Copyright (c) 2026 Example Authors
+// changes: renamed readThing to parseThing
+```
+
+| Field | Needed | What it holds |
+|-------|--------|---------------|
+| `source` | always | The upstream file URL, as a `github.com/<owner>/<repo>/blob/...` link |
+| `commit` | always | The full 40-character commit sha the code was taken from |
+| `license` | always | The SPDX name: `MIT`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC` or `Apache-2.0` |
+| `copyright` | always | The upstream copyright notice, word for word |
+| `notice` | Apache-2.0 | The upstream NOTICE text |
+| `changes` | no | What we changed, so a reader can tell our edits from upstream's |
+
+Each field is one line: `// field: value`. The header must come first, before the code.
+Only the first comment block counts. When a field is written twice, the first one wins.
+
+`yokoten check` reads the header of every file in `src/borrowed/`, in the whole tree and
+in the commit about to be made. It reports each field that is missing, with the file and
+the line to add. A commit with a bad header does not pass. A source that is not a GitHub
+file link, or a commit that is not a full sha, is refused too. The watch reads only
+`github.com/<owner>/<repo>/blob/...`, so the check refuses any other host with a fix.
+
+A license outside the five above is refused, even when the header is complete. The fix
+is `use the clean-room road in record 0024`. The same applies to a license name the
+check does not know.
+
+The `borrowed` workflow runs `yokoten borrowed` every Monday. For each wheel, the command
+asks GitHub for the commits on upstream's default branch that touched the source file. If
+a commit comes after the one we took, upstream has moved.
+
+The command opens **one issue per source**, not one per file. It looks for an open issue
+that already names the source, so a later run adds nothing. If the host cannot list the
+open issues, the run stops with an error; it never opens a second issue. The issue lists
+the local files, the commit we took, and the newer upstream commits. A commit message
+that names a security fix gets the title `check: take a borrowed security fix`; other
+changes get `check: review borrowed code upstream`.
+
+When files that share a source took different commits, the command compares each one. If
+the commit we took is not in the list the host gives, it compares dates instead of
+calling every listed commit newer: a snapshot commit that never touched the file opens
+no issue. When the host can give neither the list nor that date, the source is a gap.
+
+A source the host cannot answer for is a gap, not a pass. The job says which source, and
+fails, so nobody reads silence as "upstream did not change". To see the report without
+opening issues, run `yokoten borrowed --dry-run`.
+
+When upstream fixes a bug, take the new commit: update `source` and `commit`, re-apply
+our `changes`, and let the tests pass. When the change does not touch the part we use,
+say so in the issue and close it. To stop using a wheel, delete the file. The way back
+is also the way out: the code was small, and the tests show what it must do (record
+0014).
 
 ### Updating the rules
 

@@ -58,6 +58,8 @@ import {
 import { SECRET_CONTROL } from '../../src/rules/privacy/secrets.ts';
 import { parseChange } from '../../src/run/changelog.ts';
 import {
+  BORROWED_DIR,
+  borrowedProblems,
   check,
   checkHistory,
   GitReadError,
@@ -173,6 +175,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
   found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  // A wheel with no header (#676).
+  found.push(...borrowedProblems(`${BORROWED_DIR}thing.ts`, ''));
   translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
   add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // A git read a gate depends on, which git can't answer (#403).
