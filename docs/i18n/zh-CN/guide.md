@@ -449,6 +449,23 @@ Codex 0.163.0 已经不接受 `wire_api = "chat"`。它会提示找不到 `deeps
 下来的仓库跑）。选一种就行，别两种都装。yokoten 写进去的 hook 命令要在 POSIX shell 里跑，
 Windows 上请用 Git Bash。
 
+### 装哪个版本
+
+有三个发布通道。Stable 是稳妥的默认选择。
+
+| 通道 | 插件 | npm | 装到的是什么 | 适合谁 |
+|---|---|---|---|---|
+| Stable | `yokoten` | `latest` | 最新的正式发布标签，例如 v0.1.0，带更新日志 | 所有人 |
+| Beta | `yokoten-beta` | `next` | 最新的预发布标签，例如 v0.2.0-beta.1 | 想早点用新功能、出了问题愿意报告的人 |
+| Dev | `yokoten-dev` | 无 | 默认分支，每个合并的 pull request | 贡献者，以及我们自己的测试 |
+
+`/plugin install yokoten@yokoten` 装的是 Stable。Beta 用 `yokoten-beta@yokoten`，Dev 用
+`yokoten-dev@yokoten`。只装一个通道，不要同时装几个。要换通道，先运行
+`/plugin uninstall yokoten@yokoten`，再装另一个名字。在终端里，`claude plugin uninstall`
+和 `claude plugin install` 也一样。`doctor` 会在输出的最上面写出通道和版本。
+
+预发布版可能比正式版先出问题。Dev 每次合并都会变，而且没有更新日志。
+
 ### 用 Claude Code 插件装
 
 在 Claude Code 里输入：
@@ -478,8 +495,9 @@ Windows 上请用 Git Bash。
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
 在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
-`claude plugin update yokoten@yokoten` 也一样，跑完要重启 Claude Code。插件要是比跑 `doctor`
-的这份 yokoten 旧，`doctor` 会提醒你。
+`claude plugin update yokoten@yokoten` 也一样；Beta 或 Dev 要用 `yokoten-beta@yokoten` 或
+`yokoten-dev@yokoten`。跑完要重启 Claude Code。插件要是比跑 `doctor` 的这份 yokoten 旧，
+`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
 插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。

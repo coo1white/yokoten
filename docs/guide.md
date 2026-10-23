@@ -566,6 +566,25 @@ are two ways to install: the Claude Code plugin, or the `install` command, from 
 from a clone. Use one, not both. The hook commands that yokoten writes need a POSIX shell:
 on Windows, use Git Bash.
 
+### Which version to install
+
+There are three release channels. Stable is the safe default.
+
+| Channel | Plugin | npm | What you get | For |
+|---|---|---|---|---|
+| Stable | `yokoten` | `latest` | The latest release tag, such as v0.1.0, with a changelog | Everyone |
+| Beta | `yokoten-beta` | `next` | The latest pre-release tag, such as v0.2.0-beta.1 | People who want new features early and can report problems |
+| Dev | `yokoten-dev` | none | The default branch, every merged pull request | Contributors, and our own tests |
+
+`/plugin install yokoten@yokoten` gets Stable. Use `yokoten-beta@yokoten` for Beta, or
+`yokoten-dev@yokoten` for Dev. Install one channel, not several. To switch, run
+`/plugin uninstall yokoten@yokoten`, then install the other name. From a shell,
+`claude plugin uninstall` and `claude plugin install` do the same. `doctor` names the
+channel and version at the top of its output.
+
+A pre-release can break before the stable release. Dev changes on every merge and has
+no changelog.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -598,8 +617,9 @@ Claude Code runs the plugin's `.ts` files with `node`. Node can do this because 
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
 does not update on its own until you turn on auto-update for it. From your shell,
-`claude plugin update yokoten@yokoten` does the same; restart Claude Code after it. When the
-plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
+`claude plugin update yokoten@yokoten` does the same; for Beta or Dev, use
+`yokoten-beta@yokoten` or `yokoten-dev@yokoten`. Restart Claude Code after an update. When
+the plugin is older than the yokoten that runs `doctor`, `doctor` says so in a note.
 
 The plugin works in Claude Code only. It does not make the private-marks file: `doctor`
 names the file, and you make it. When the plugin is on in your user settings, `doctor`

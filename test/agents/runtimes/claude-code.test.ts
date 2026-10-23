@@ -53,23 +53,33 @@ test('claude-code addProjectStopHook: Stop and SubagentStop both run hook --stop
   assert.equal(addProjectStopHook(sandbox.repo, '.yokoten/bin/yokoten.mjs'), 'same');
 });
 
-test('plugin: the marketplace and the plugin have the documented fields', () => {
+test('plugin: the marketplace lists the three release channels and their refs (#632)', () => {
   const market = manifest('marketplace.json');
   const plugin = manifest('plugin.json');
   const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
   assert.match(market.name, idPattern);
   assert.equal(typeof market.owner?.name, 'string');
   assert.ok(market.owner.name.length > 0);
-  assert.equal(market.plugins.length, 1);
-  const [entry] = market.plugins;
-  assert.match(entry.name, idPattern);
-  // The entry name and the manifest name are the same, or an install by name fails.
-  assert.equal(entry.name, plugin.name);
-  assert.equal(entry.source, './', 'the repo root is the plugin');
+  // One repo serves all three channels; the entry name and the git ref pick the channel.
+  assert.deepEqual(market.plugins.map((entry: { name: string }) => entry.name), ['yokoten', 'yokoten-beta', 'yokoten-dev']);
+  const [stable, beta, dev] = market.plugins;
+  for (const entry of market.plugins) {
+    assert.match(entry.name, idPattern);
+    assert.equal(entry.source.source, 'github', 'Claude Code names a tag on a github source with source and ref');
+    assert.equal(entry.source.repo, 'yokoten-labs/yokoten');
+    assert.equal(typeof entry.description, 'string');
+    // No version in a marketplace entry: the git ref is the version users get.
+    assert.equal(entry.version, undefined);
+  }
+  // Stable follows a release tag, beta a pre-release tag (or the release when it is newer).
+  assert.match(stable.source.ref, /^v\d+\.\d+\.\d+$/, 'stable is a release tag');
+  assert.match(beta.source.ref, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, 'beta is a release or pre-release tag');
+  assert.equal(dev.source.ref, 'main', 'dev is the default branch');
+  // The stable entry and the manifest name are the same, so `yokoten@yokoten` finds it.
+  assert.equal(stable.name, plugin.name);
   assert.match(plugin.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'kebab-case');
-  // No version in either file: users get each commit, and package.json keeps the one version.
+  // No version in the manifest either: package.json keeps the one version.
   assert.equal(plugin.version, undefined);
-  assert.equal(entry.version, undefined);
 });
 
 test('plugin: every path it names exists inside the plugin, and the kit is not copied', () => {
