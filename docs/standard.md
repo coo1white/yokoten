@@ -508,7 +508,9 @@ A value shaped like a token is dropped.
 The backend sets `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`.
 It sets the same three names in lower case.
 It sets `NODE_USE_ENV_PROXY`.
-`NO_PROXY` and `no_proxy` are set empty.
+A program that talks to itself on `loopback` must not use the proxy.
+`NO_PROXY` and `no_proxy` name `127.0.0.1,localhost,::1`.
+A wildcard such as `127.*` is not understood.
 
 Linux and WSL2 use `bwrap`.
 macOS uses `sandbox-exec`, and the profile denies by default.

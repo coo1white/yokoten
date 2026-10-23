@@ -509,7 +509,9 @@ DeepSeek 通过 `codex` 来跑。
 后端会设置 `HTTPS_PROXY`、`HTTP_PROXY` 和 `ALL_PROXY`。
 这三个名字的小写也会设置。
 还会设置 `NODE_USE_ENV_PROXY`。
-`NO_PROXY` 和 `no_proxy` 设成空的。
+程序自己通过 `loopback` 和自己说话时，不能走代理。
+`NO_PROXY` 和 `no_proxy` 的值为 `127.0.0.1,localhost,::1`。
+像 `127.*` 这样的通配写法不被识别。
 
 Linux 和 WSL2 用 `bwrap`。
 macOS 用 `sandbox-exec`，规则从全部拒绝开始。
