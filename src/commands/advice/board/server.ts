@@ -22,7 +22,7 @@ import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
 import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssues, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
-import { feedAnswer, makeFeedStreams } from './feed/route.ts';
+import { feedAnswer, makeBoardMask, makeFeedStreams } from './feed/route.ts';
 import { feedsJson, makeFeedStore, recordFeed } from './feed/steps.ts';
 import { boardManifest, boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
 import { renderBoardText } from './page/text.ts';
@@ -222,6 +222,26 @@ export interface BoardServerOptions {
   feedMask?: (text: string) => string;
 }
 
+/**
+ * Every string value in a /data payload, masked once. Keys stay, so the page can
+ * still read them. A new field cannot skip this walk.
+ */
+export function maskBoardPayload(value: unknown, mask: (text: string) => string): unknown {
+  if (typeof value === 'string') return mask(value);
+  if (Array.isArray(value)) return value.map((item) => maskBoardPayload(item, mask));
+  if (value !== null && typeof value === 'object') {
+    const masked: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) masked[key] = maskBoardPayload(item, mask);
+    return masked;
+  }
+  return value;
+}
+
+/** The /data body. Every string is masked at this boundary, then sent as JSON. */
+export function boardDataBody(env: Env, root: string, payload: unknown): string {
+  return JSON.stringify(maskBoardPayload(payload, makeBoardMask(env, root)));
+}
+
 /** The /data fields that say how fresh the GitHub lists are: reading now, when last read, and why the last read failed. */
 function githubState(github: BoardGitHub | null): { isReading: boolean; readAt: string; failed: string } {
   return github ? { isReading: github.reading !== null, readAt: github.readAt, failed: github.failed } : { isReading: false, readAt: '', failed: '' };
@@ -283,7 +303,8 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
           const snapshot = readBoardSnapshot(env, controls, board, trees, issues, root);
           recordFeed(feeds, board.agents, board.updated);
           const fresh = githubState(remote ? github : null);
-          return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ...board, feeds: feedsJson(feeds), ...snapshot, github: fresh }));
+          const payload = { ...board, feeds: feedsJson(feeds), ...snapshot, github: fresh };
+          return serveText(res, 200, 'application/json; charset=utf-8', boardDataBody(env, root, payload));
         } catch {
           return serveText(res, 500, 'application/json; charset=utf-8', JSON.stringify({ error: 'the board could not be read: run it again' }));
         }

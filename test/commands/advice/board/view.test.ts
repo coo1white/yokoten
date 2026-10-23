@@ -10,6 +10,7 @@ import { makeSandbox, makeTempDir, runChild } from '../../../repo/helpers.ts';
 import type { BoardAgent } from '../../../../src/commands/advice/board/agents.ts';
 import { claudeFolder, LEAD_SESSION_FILE } from '../../../../src/commands/advice/board/feed/read/logs.ts';
 import { createBoardControls } from '../../../../src/commands/advice/board/controls.ts';
+import { boardDataBody } from '../../../../src/commands/advice/board/server.ts';
 import { readBoardSnapshot } from '../../../../src/commands/advice/board/waiting.ts';
 import { type AgentView, collectBoard, collectBoardWith, dotOf, issueNumbersOf, LEAD_ROW_CHARS, needsOf, nicknameId, nicknameOf, pullView, refOf, taskTitle, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { BoardPull, Gh } from '../../../../src/host/github/index.ts';
@@ -411,4 +412,44 @@ test('board data: a home path, an email, a token and a private mark never reach 
   assert.match(board.agents[0]?.role ?? '', /^helper ~\/role$/);
   assert.equal(board.agents[0]?.name, 'w');
   assert.equal(board.agents[0]?.model, 'opus');
+});
+
+// #693: /data masks every string once, at the server boundary. Run output is not a status field.
+test('board data: run output is masked with the rest of /data', () => {
+  const sandbox = makeSandbox();
+  const home = dirname(sandbox.repo);
+  const env = { ...sandbox.env, HOME: home };
+  const email = ['someone', 'personal-mail.com'].join('@');
+  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  const mark = 'zebracorn';
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), `${mark}\n`);
+  const controls = createBoardControls(join(sandbox.repo, 'board.log'));
+  controls.runs.push({
+    name: `runner ${home}/name`,
+    issue: '7',
+    vendor: 'claude',
+    model: 'opus',
+    worktree: `${home}/work`,
+    pid: 1,
+    status: 'running',
+    startedAt: '2026-10-23T00:00:00.000Z',
+    stoppedAt: '',
+    exitCode: null,
+    output: [`cat ${home}/notes/secret.txt`, `mail ${email} about ${mark}`, `token ${token}`],
+  });
+  const board = collectBoardWith(sandbox.repo, env, null, 'no remote');
+  const snapshot = readBoardSnapshot(env, controls, board, [{ path: sandbox.repo, branch: 'main' }], [], sandbox.repo);
+  const aside = `note ${home} ${email} ${token} ${mark}`;
+  const text = boardDataBody(env, sandbox.repo, { ...board, ...snapshot, aside });
+  for (const secret of [home, email, token, mark]) assert.equal(text.includes(secret), false);
+  const body = JSON.parse(text) as { runs: { name: string; output: string[] }[]; aside: string };
+  const output = body.runs[0]?.output.join('\n') ?? '';
+  assert.match(output, /~\/notes\/secret\.txt/);
+  assert.match(output, /<email>/);
+  assert.match(output, /<secret>/);
+  assert.match(output, /<mark>/);
+  assert.match(body.runs[0]?.name ?? '', /^runner ~\/name$/);
+  assert.equal(body.aside.includes(home), false);
+  assert.match(body.aside, /<email>/);
 });

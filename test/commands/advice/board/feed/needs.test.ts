@@ -5,6 +5,7 @@ import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildNeeds, isOlderThanDay, type NeedAgent } from '../../../../../src/commands/advice/board/feed/needs.ts';
+import { pullView } from '../../../../../src/commands/advice/board/view.ts';
 import { readBoardPulls } from '../../../../../src/host/github/board-pulls.ts';
 import type { BoardPull } from '../../../../../src/host/github/index.ts';
 
@@ -57,6 +58,30 @@ test('board needs: a latest review comment that says request changes is not an a
   assert.equal(asksApproval(cleared), true, 'a later approve comment lets the owner decide');
   const buried = listed([{ body: 'The note says request changes in the middle of a long paragraph about the old bug.', createdAt: '2026-10-23T02:00:00Z' }]);
   assert.equal(buried[0]?.review, 'waiting', 'a mention inside a paragraph is not the verdict');
+});
+
+// An old "request changes" comment must not beat a later APPROVED review on the head.
+test('board needs: a later approval clears an older request-changes comment', () => {
+  const head = 'c'.repeat(40);
+  const row = {
+    number: 7,
+    title: 'board',
+    headRefName: 'b',
+    headRefOid: head,
+    url: '',
+    state: 'OPEN',
+    reviewDecision: 'APPROVED',
+    isDraft: false,
+    statusCheckRollup: [{ conclusion: 'SUCCESS', status: 'COMPLETED' }],
+    labels: [{ name: 'tier A' }],
+    comments: [{ body: 'PR #7: request changes', createdAt: '2026-10-23T01:00:00Z' }],
+    latestReviews: [{ state: 'APPROVED', submittedAt: '2026-10-23T04:00:00Z', commit: { oid: head } }],
+  };
+  const pulls = readBoardPulls(() => JSON.stringify([row]), 'o/r') as BoardPull[];
+  assert.equal(pulls[0]?.review, 'approved');
+  assert.equal(pulls[0]?.isApprovedOnHead, true);
+  assert.equal(pullView(pulls[0]).label, 'Ready to merge');
+  assert.deepEqual(buildNeeds([], pulls), []);
 });
 
 test('board needs: a row leaves when the pull request is approved, merged or closed', () => {

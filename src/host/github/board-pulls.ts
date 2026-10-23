@@ -119,20 +119,30 @@ function noteList(value: unknown): Record<string, unknown>[] {
   return list.filter(isObject);
 }
 
-/** The newest review verdict, from comments and reviews. Empty when none names one. */
+/** The verdict GitHub stored on a review, or '' when the state is only a comment. */
+function stateVerdict(state: string): '' | 'changes' | 'approve' {
+  if (state === 'APPROVED') return 'approve';
+  if (state === 'CHANGES_REQUESTED') return 'changes';
+  return '';
+}
+
+/**
+ * The newest review verdict, from comments and reviews. A review's own state counts,
+ * so a later APPROVED review clears an older request-changes comment. Empty when none names one.
+ */
 function latestVerdict(row: Record<string, unknown>): '' | 'changes' | 'approve' {
   const notes: { at: number; order: number; verdict: 'changes' | 'approve' }[] = [];
-  const take = (value: unknown) => {
+  const take = (value: unknown, useState: boolean) => {
     for (const item of noteList(value)) {
-      const verdict = verdictOf(asText(item.body));
+      const verdict = (useState ? stateVerdict(asText(item.state)) : '') || verdictOf(asText(item.body));
       if (!verdict) continue;
       const at = Date.parse(asText(item.createdAt) || asText(item.submittedAt));
       notes.push({ at: Number.isNaN(at) ? 0 : at, order: notes.length, verdict });
     }
   };
-  take(row.comments);
-  take(row.reviews);
-  take(row.latestReviews);
+  take(row.comments, false);
+  take(row.reviews, true);
+  take(row.latestReviews, true);
   notes.sort((left, right) => left.at - right.at || left.order - right.order);
   return notes.at(-1)?.verdict ?? '';
 }
