@@ -50,8 +50,9 @@ test('layers: no module imports from a layer above its own', () => {
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
 // check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
-// and invoke.ts, which runs a command in-process (#475).
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts'];
+// invoke.ts, which runs a command in-process (#475), and real-home.ts, the preload a test's
+// child loads so it does not read the real private-marks file (#739).
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/real-home.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
@@ -978,6 +979,8 @@ test('assertLinearEach: a pause on every big read does not count, as on a busy r
 // with no HOME; then the CLI falls back to the system's home, the real one. In src, only
 // privacy.ts asks the system for the home folder; the rest reads HOME from the env it is given.
 const HOME_MODULE = 'repo/home.ts';
+// This preload must not import home.ts: that import would replace the child's HOME (#739).
+const HOME_PRELOAD = 'repo/real-home.ts';
 const RUNS_CHILD = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(/;
 
 /** The object literal that starts at `open` (a `{`), braces matched; the rest of the line when it runs on. */
@@ -994,7 +997,7 @@ function literalAt(line: string, open: number): string {
 function homeProblems(files: Record<string, string>): string[] {
   const problems: string[] = [];
   for (const [path, text] of Object.entries(files)) {
-    if (path === HOME_MODULE) continue;
+    if (path === HOME_MODULE || path === HOME_PRELOAD) continue;
     const rel = posix.relative(posix.dirname(path), HOME_MODULE);
     const wanted = `import '${rel.startsWith('.') ? rel : `./${rel}`}';`;
     const lines = text.split('\n');

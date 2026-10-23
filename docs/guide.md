@@ -1886,6 +1886,13 @@ the line too: `export`, `declare`, `read`, `printf -v`, a `for` loop or `${HOME:
 Before another program the setting passes: `HOME=$(mktemp -d) npm test` keeps a test away
 from your files. Reading `$HOME` is fine.
 
+A worker cannot set `HOME`, `USERPROFILE` or `XDG_CONFIG_HOME` before `git commit`,
+`yokoten check`, or a shell that runs them. `env` and `export` count the same way.
+In a desk, the runner commits for the worker.
+
+The commit check stops when its marks file is missing and the real home has one it cannot
+read. The real home comes from the password database. A missing file there is not an error.
+
 A mark of letters and spaces, such as a name or a city, is found as whole words. Only a
 letter next to it hides it: `sam` is found in `hi Sam`, `sam_dev`, `@sam` and `sam97`, but
 not in `sample`. A backslash escape such as `\n`, a URL-encoded `%2F`, `%5C` or `%20`, and a

@@ -7,7 +7,8 @@
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Variables that point into the real home folder, or at a file kept there. */
 export const HOME_VARIABLES = [
@@ -52,6 +53,17 @@ process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
  */
 export const COMPILE_CACHE = join(tmpdir(), 'node-compile-cache');
 process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;
+
+// The commit check reads the password-database home when $HOME has no marks file (#739).
+// Point that read at nothing, after HOME is set, so no test opens the real marks file.
+const { useRealHome } = await import('../../src/rules/privacy.ts');
+useRealHome(() => '');
+
+// A child does not import this file: that would point its HOME at a new empty folder.
+// real-home.ts only turns the same read off. Node loads it from NODE_OPTIONS (#739, #356).
+const preload = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'real-home.ts')).href;
+const flag = `--import ${JSON.stringify(preload)}`;
+process.env.NODE_OPTIONS = process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${flag}` : flag;
 
 // Tests call the guard without the hook. The host command list registers when its module
 // loads. Load it here, after HOME is set, so nothing it imports reads the real home folder.

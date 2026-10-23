@@ -29,6 +29,40 @@ export const systemHome = (): string => {
 };
 
 /**
+ * The home folder from the password database, never from `$HOME` (#739). `homedir()` follows
+ * `$HOME`, so a command that changes `HOME` would hide this folder. Empty when it can't tell.
+ */
+function passwordHome(): string {
+  try {
+    const home = userInfo().homedir;
+    return home && isAbsolute(home) ? home : '';
+  } catch {
+    return '';
+  }
+}
+
+// One slot on the process, so a vendored copy of this file (a project's .yokoten/) sees the
+// same stand-in as the copy the tests load (#739). A test sets it; production leaves it empty.
+const REAL_HOME = Symbol.for('yokoten.readRealHome');
+type RealHomeGlobal = typeof globalThis & { [REAL_HOME]?: () => string };
+
+/** The read of the real home: a test's stand-in, or the password database. */
+function realHomeRead(): () => string {
+  return (globalThis as RealHomeGlobal)[REAL_HOME] ?? passwordHome;
+}
+
+/** A test points the real-home read at a stand-in. The returned function puts the previous read back. */
+export function useRealHome(read: () => string): () => void {
+  const holder = globalThis as RealHomeGlobal;
+  const previous = holder[REAL_HOME];
+  holder[REAL_HOME] = read;
+  return () => {
+    if (previous === undefined) delete holder[REAL_HOME];
+    else holder[REAL_HOME] = previous;
+  };
+}
+
+/**
  * The home folder: $HOME when it is an absolute path. Null when it is not (#392): then there
  * is no place outside the repo, and a relative `.config` would land in the folder the
  * command runs in. Only the CLI's entry falls back to the system's home (withHome), so an
@@ -90,17 +124,48 @@ export function writtenMarksOnly(env: Env): Env {
   return homeOf(env) ? { ...env, YOKOTEN_PRIVATE_MARKS: '' } : env;
 }
 
+/** Said when the real home has a marks file the check cannot read (#739). No path: a home path can name a person. */
+const REAL_MARKS_UNREADABLE = 'the private-marks file in the real home folder cannot be read, so the check stops';
+
+/** Whether `file` is the default marks file under `$HOME`, not the one `YOKOTEN_PRIVATE_MARKS` adds. */
+function isDefaultMarks(env: Env, file: string): boolean {
+  const home = homeOf(env);
+  return home !== null && resolve(file) === resolve(join(home, '.config', 'yokoten', 'private-marks'));
+}
+
+/**
+ * When the default marks file is missing, look at the real home from the password database
+ * (#739). A missing file there is empty. Any other read error fails the check: changing
+ * `$HOME` must not turn an unreadable marks file into a pass. A file it can read is not
+ * loaded. `$HOME` before another program is still how a test keeps its own empty home.
+ */
+function checkRealMarks(env: Env): void {
+  const home = homeOf(env);
+  if (!home) return;
+  const real = realHomeRead()();
+  if (!real || !isAbsolute(real) || resolve(real) === resolve(home)) return;
+  try {
+    readFileSync(join(real, '.config', 'yokoten', 'private-marks'));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(REAL_MARKS_UNREADABLE);
+  }
+}
+
+/** The text of one marks file. A missing file is empty. Any other error throws, so the check fails closed. */
+function readMarksFile(env: Env, file: string): string {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (isDefaultMarks(env, file)) checkRealMarks(env);
+    return '';
+  }
+}
+
 /** The text of every private-marks file, one after the other. A missing file is empty; any other error throws, so the check fails closed. */
 function readMarksText(env: Env): string {
   return marksFiles(env)
-    .map((file) => {
-      try {
-        return readFileSync(file, 'utf8');
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
-        throw err;
-      }
-    })
+    .map((file) => readMarksFile(env, file))
     .map((text) => (text === '' || text.endsWith('\n') ? text : `${text}\n`))
     .join('');
 }
@@ -471,13 +536,8 @@ export interface Mark {
 export function loadMarkKinds(env: Env): Mark[] {
   const seen = new Set<string>();
   return marksFiles(env).flatMap((file) => {
-    let text = '';
-    try {
-      text = readFileSync(file, 'utf8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
     // Each file on its own, so a header in one never names the kind of a line in the next.
+    const text = readMarksFile(env, file);
     return markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : []));
   });
 }

@@ -1504,7 +1504,9 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null) ?? later;
+  // A worker's changed home, before the box: the box would answer first and hide this fix (#739).
+  const worker = env.YOKOTEN_ROLE === 'worker' ? (checkWorkerRealHome(commands) ?? checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null;
+  return worker ?? later;
 }
 
 /**
@@ -2039,13 +2041,18 @@ function settingsIn(words: string[]): Setting[] {
   return settings;
 }
 
-/** The settings in `words` whose name passes `isNamed`, that the rule refuses: see above. */
-function refusedSetting(words: string[], isNamed: (name: string) => boolean): string | null {
+/**
+ * The settings in `words` whose name passes `isNamed`, that the rule refuses: see above.
+ * `guards` replaces the usual program test (git, gh, yokoten, a shell). A setting for the
+ * rest of the line is refused when `includeRest` is set, which it is unless a caller says
+ * the script never reaches the check.
+ */
+function refusedSetting(words: string[], isNamed: (name: string) => boolean, guards?: (at: number) => boolean, includeRest = true): string | null {
   const settings = settingsIn(words).filter((setting) => isNamed(setting.name));
   if (settings.length === 0) return null;
   const lastYokoten = words.findLastIndex(isYokotenWord);
-  const runsGuarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
-  return settings.find((setting) => setting.program === null || runsGuarded(setting.program))?.name ?? null;
+  const runsGuarded = guards ?? ((at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at);
+  return settings.find((setting) => (includeRest && setting.program === null) || (setting.program !== null && runsGuarded(setting.program)))?.name ?? null;
 }
 
 // git's config variables (#361). GIT_CONFIG_PARAMETERS is read above, for core.hooksPath.
@@ -2134,13 +2141,56 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
 // HOME, or USERPROFILE on Windows when HOME is not set. `HOME=/tmp/x git commit` would make
 // them look in another folder, find no marks and pass. So the guard refuses these names
 // where the settings rule above does. Names on Windows ignore case, so `home=` counts too.
-// Reading $HOME is fine. XDG_CONFIG_HOME moves nothing yokoten's checks read, so it passes.
+// Reading $HOME is fine. For the lead, XDG_CONFIG_HOME moves nothing these checks read, so
+// it passes. A worker may not set it before the commit check: see checkWorkerRealHome (#739).
 const HOME_NAMES = new Set(['HOME', 'USERPROFILE']);
 const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
 
 function checkHomeSetting(words: string[]): Finding | null {
   const name = refusedSetting(words, (setting) => HOME_NAMES.has(setting.toUpperCase()));
   return name === null ? null : finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+}
+
+// A worker's home before the commit check (#739). HOME and USERPROFILE move the marks file.
+// XDG_CONFIG_HOME is the same door for a worker: the desk already refuses other settings, and
+// this one must say why, before git commit, yokoten check, or a shell that runs them. The
+// lead's XDG_CONFIG_HOME is left alone. The box still refuses every other setting.
+const REAL_HOME_NAMES = new Set(['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']);
+const REAL_HOME_FIX = 'the commit check needs the real home; in a desk, the runner commits for you (issue #736)';
+
+/** Whether the program at `at` is git commit, yokoten check, or a shell that can run them. */
+function runsCommitCheck(words: string[], at: number): boolean {
+  const program = words[at];
+  if (RUNS_LINES.test(programName(program))) return true;
+  if (isGit(program)) return gitParts(withoutShellRedirects(words, at + 1), null).sub === 'commit';
+  const tail = words.slice(at);
+  return tail.some(isYokotenWord) && tail.includes('check');
+}
+
+/** Whether any program in `words` is git commit, yokoten check, or a shell that can run them. */
+function commandReachesCheck(words: string[]): boolean {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (runsCommitCheck(words, at)) return true;
+  }
+  return false;
+}
+
+/**
+ * For a worker: a home setting that would hide the private marks from the commit check, or
+ * null. A setting for the rest of the line counts only when this script reaches that check,
+ * so `HOME+=x; rm` stays with the worker box (#591).
+ */
+function checkWorkerRealHome(commands: string[][]): Finding | null {
+  const reaches = commands.some(commandReachesCheck);
+  for (const words of commands) {
+    const name = refusedSetting(words, (setting) => REAL_HOME_NAMES.has(setting.toUpperCase()), (at) => runsCommitCheck(words, at), reaches);
+    if (name !== null) return finding('home-folder', `this command sets ${name}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+  }
+  return null;
 }
 
 // A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads

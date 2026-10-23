@@ -44,6 +44,7 @@ import {
   repoKey,
   repoMarkKinds,
   scanText,
+  useRealHome,
   withHome,
 } from '../../src/rules/privacy.ts';
 
@@ -250,6 +251,69 @@ test('private marks file: a default file that can not be read throws, whatever t
     assert.throws(() => loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
   } finally {
     chmodSync(own, 0o600);
+  }
+});
+
+test('private marks file: a missing default file fails closed when the real home has one it cannot read (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'mycity\n');
+  chmodSync(hidden, 0o000);
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'otherword\n');
+  const restore = useRealHome(() => real);
+  try {
+    assert.throws(() => loadMarks({ HOME: home }), /cannot be read/);
+    assert.throws(() => loadMarkKinds({ HOME: home }), /cannot be read/);
+    // The setting only adds. It does not hide an unreadable file in the real home.
+    assert.throws(() => loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), /cannot be read/);
+    assert.throws(() => repoMarkKinds({ HOME: home }, home), /cannot be read/);
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
+  }
+});
+
+test('private marks file: a missing real-home file stays empty, and a readable one is not loaded (#739)', () => {
+  const home = makeTempDir();
+  const real = makeTempDir();
+  const restore = useRealHome(() => real);
+  try {
+    assert.deepEqual(loadMarks({ HOME: home }), []);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), []);
+    mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'mycity\n');
+    assert.deepEqual(loadMarks({ HOME: home }), [], 'a readable real-home file is not merged');
+    // The same folder is the one $HOME already names: there is nothing further to read.
+    const same = useRealHome(() => home);
+    try {
+      assert.deepEqual(loadMarks({ HOME: home }), []);
+    } finally {
+      same();
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('private marks file: a readable default file does not read the real home (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'mycity\n');
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'otherword\n');
+  chmodSync(hidden, 0o000);
+  const restore = useRealHome(() => real);
+  try {
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity']);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), [{ value: 'mycity', kind: null }]);
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
   }
 });
 
