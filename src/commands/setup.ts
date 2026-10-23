@@ -29,16 +29,21 @@ export async function runStart(invocation: Invocation): Promise<number> {
     ], invocation.stderr);
     return 1;
   }
+  let didSetUp = false;
   if (!isMachineSetUp(env)) {
     print(invocation, ['yokoten is not installed on this machine yet: installing it once for every project.']);
     const done = install(env, { cwd, gh: ghIn(cwd, env, 3000), ask: askWhenTerminal(invocation) });
     print(invocation, done.lines);
+    didSetUp = true;
   }
   if (!hasProjectRules(root)) {
     print(invocation, ['This project has no yokoten rules yet: adding them now, and never overwriting a file of yours.']);
     const done = init(root, env, undefined, { ask: askWhenTerminal(invocation) });
     print(invocation, done.lines);
+    didSetUp = true;
   }
+  // After two reports, a reader needs to know that the road below is the point of it all.
+  if (didSetUp) print(invocation, ['Setup is done. Here is where this project is now:']);
   return (await import('./advice/doctor.ts')).runDoctor(invocation);
 }
 
