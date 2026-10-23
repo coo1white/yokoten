@@ -382,7 +382,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'board',
     summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
-    usage: '[--text] [--no-open]',
+    usage: '[--text] [--no-open] [--share <name>]',
     text: [
       'Serves a live page on this machine only, at http://<repo>.localhost:<port>/.',
       'The folder name is the host. The port stays with this repo. The first visit',
@@ -392,12 +392,17 @@ export const COMMANDS: Command[] = [
       'Chrome and Edge can install it as its own window. The page refreshes every 15',
       'seconds. Agents in this repo, its worktrees and its desks show by themselves:',
       'the hooks write .yokoten-agent.json for them.',
+      'Off for phones by default. --share <name> also answers the name your private',
+      'network gives this computer, over that network\'s HTTPS proxy. The board still',
+      'listens on 127.0.0.1 only, and the token and host check hold. Leave out --share',
+      'and the board is this computer only again.',
     ],
     options: [
       { name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' },
       { name: '--no-open', text: 'only print the link; do not open the browser' },
+      { name: '--share', value: 'name', text: "also answer the private network's name for this computer, over its HTTPS proxy (#623)" },
     ],
-    example: 'yokoten board --text',
+    example: 'yokoten board --share machine.example.ts.net',
   },
   {
     name: 'uninstall',

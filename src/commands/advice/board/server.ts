@@ -96,12 +96,27 @@ export function boardPort(root: string): number {
 }
 
 /**
- * True when the Host header names this server: `<repo>.localhost:<port>`,
- * `127.0.0.1:<port>` or `localhost:<port>`. Any other host gets a 403.
+ * The private network's name for this computer, as `--share` gives it (#623), or
+ * null when it is not a plain host name. A URL, a port or a loopback name is refused:
+ * the first two hide where the board goes, and the last one names no phone.
  */
-function isBoardHost(host: string | undefined, port: number, name: string): boolean {
+export function boardShareName(given: string): string | null {
+  const name = given.trim().toLowerCase().replace(/\.$/, '');
+  if (name.length === 0 || name.length > 253) return null;
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/.test(name)) return null;
+  if (name === 'localhost' || name.endsWith('.localhost') || /^\d+(?:\.\d+){3}$/.test(name)) return null;
+  return name;
+}
+
+/**
+ * True when the Host header names this server: `<repo>.localhost:<port>`,
+ * `127.0.0.1:<port>` or `localhost:<port>`. With `--share`, also the private name
+ * the HTTPS proxy sends, with no port or with 443. Any other host gets a 403.
+ */
+function isBoardHost(host: string | undefined, port: number, name: string, share: string | null): boolean {
   const clean = (host ?? '').trim().toLowerCase();
-  return clean === `${name}.localhost:${port}` || clean === `127.0.0.1:${port}` || clean === `localhost:${port}`;
+  if (clean === `${name}.localhost:${port}` || clean === `127.0.0.1:${port}` || clean === `localhost:${port}`) return true;
+  return share !== null && (clean === share || clean === `${share}:443`);
 }
 
 /** True when the given token matches, compared in constant time. A missing token, or one of another length, never reaches the compare. */
@@ -114,11 +129,13 @@ function isBoardToken(given: string | null, token: string): boolean {
 
 /**
  * True when the Origin names this page. A change without it gets a 403, so a page
- * elsewhere cannot start or stop agents through this board.
+ * elsewhere cannot start or stop agents through this board. With `--share`, the
+ * private name over HTTPS is the page's origin, with no port or with 443.
  */
-function isBoardOrigin(origin: string | undefined, port: number, name: string): boolean {
+function isBoardOrigin(origin: string | undefined, port: number, name: string, share: string | null): boolean {
   const clean = (origin ?? '').trim().toLowerCase();
-  return clean === `http://${name}.localhost:${port}` || clean === `http://127.0.0.1:${port}` || clean === `http://localhost:${port}`;
+  if (clean === `http://${name}.localhost:${port}` || clean === `http://127.0.0.1:${port}` || clean === `http://localhost:${port}`) return true;
+  return share !== null && (clean === `https://${share}` || clean === `https://${share}:443`);
 }
 
 /**
@@ -214,12 +231,18 @@ function stopRefuseStatus(reason: string): number {
   return 400;
 }
 
-/** What the options carry: the board's controls, and what it last read from GitHub. Tests pass their own. */
+/** What the options carry: the board's controls, what it last read from GitHub, and the private network's name for this computer. */
 export interface BoardServerOptions {
   controls?: BoardControls;
   github?: BoardGitHub;
   /** The mask for /feed. Tests pass their own; the board builds it from the private marks. */
   feedMask?: (text: string) => string;
+  /**
+   * The name a private network gives this computer (#623), as `--share` gives it.
+   * When set, the board answers that name over HTTPS through the network's proxy;
+   * when absent, only this computer's names are answered. Off is the default.
+   */
+  share?: string;
 }
 
 /**
@@ -254,12 +277,18 @@ function githubState(github: BoardGitHub | null): { isReading: boolean; readAt: 
  * The first visit sets a cookie and redirects to the address without the token.
  * Later requests must send that cookie. A wrong Host, a missing cookie or a wrong
  * cookie gets a 403. A change whose Origin is not the page gets a 403 too.
+ * With `share`, the private network's name is also a right Host (with no port or
+ * 443), and its HTTPS page is also a right Origin. The board still listens on
+ * 127.0.0.1: the private network's own proxy calls it, so no phone reaches the
+ * port directly and the token holds as it does here.
  * gh reads the pull requests and issues in the background: the first read starts
  * now, and /data never waits for it.
  */
-export function startBoardServer(root: string, env: Env, gh: GhLater, options: BoardServerOptions = {}): Promise<{ server: Server; url: string }> {
+export function startBoardServer(root: string, env: Env, gh: GhLater, options: BoardServerOptions = {}): Promise<{ server: Server; url: string; shareUrl?: string }> {
   const token = randomBytes(BOARD_TOKEN_BYTES).toString('hex');
   const hostName = boardHostName(root);
+  const share = options.share === undefined ? null : boardShareName(options.share);
+  if (share === null && options.share !== undefined) throw new Error('that is not a private network name: give the name alone, such as machine.example.ts.net');
   const controls = options.controls ?? createBoardControls(join(root, '.yokoten-board.log'));
   const github = options.github ?? createBoardGitHub();
   const stopReads = new AbortController();
@@ -279,7 +308,7 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
   const server = createServer((req, res) => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
-    if (!isBoardHost(req.headers.host, port, hostName)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+    if (!isBoardHost(req.headers.host, port, hostName, share)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
     const [path, queryText] = (req.url ?? '').split('?');
     const query = new URLSearchParams(queryText ?? '');
     // The query token only starts a visit. It never authorizes a page or a change.
@@ -329,7 +358,7 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
     if (path !== '/agents/start' && path !== '/agents/stop' && path !== '/agents/limits') {
       return serveText(res, 404, 'text/plain; charset=utf-8', 'not found');
     }
-    if (!isBoardOrigin(req.headers.origin, port, hostName)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
+    if (!isBoardOrigin(req.headers.origin, port, hostName, share)) return serveText(res, 403, 'text/plain; charset=utf-8', 'forbidden');
     readBoardBody(req).then((body) => {
       if (res.writableEnded) return;
       if (body === null) return serveText(res, 400, 'text/plain; charset=utf-8', 'the board could not read that: send it again');
@@ -395,7 +424,7 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
         }
         const address = server.address();
         const bound = typeof address === 'object' && address !== null ? address.port : 0;
-        done({ server, url: `http://${hostName}.localhost:${bound}/?token=${token}` });
+        done({ server, url: `http://${hostName}.localhost:${bound}/?token=${token}`, ...(share === null ? {} : { shareUrl: `https://${share}/?token=${token}` }) });
       });
     };
     listenAt(first);
@@ -434,7 +463,17 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
   if (!root) return 1;
   const gh = ghIn(root, invocation.env, BOARD_READ_TIMEOUT_MS);
   const controls = options.controls ?? createBoardControls(join(root, '.yokoten-board.log'));
+  const askedShare = parsed.values['--share'];
+  const share = askedShare === undefined ? undefined : boardShareName(askedShare);
+  if (askedShare !== undefined && share === null) {
+    print(invocation, ['yokoten board: --share needs the plain name your private network gives this computer, such as machine.tailnet-name.ts.net. Leave out the scheme and the port.'], invocation.stderr);
+    return 1;
+  }
   if (parsed.flags.has('--text')) {
+    if (share !== undefined) {
+      print(invocation, ['yokoten board: --text prints on this computer only. Leave out --share to read the team here.'], invocation.stderr);
+      return 1;
+    }
     const remote = repoOf(readOriginUrl(root, invocation.env));
     const openIssues = issueNumbersOf(remote ? readBoardIssues(gh, remote) : BOARD_NO_REMOTE_ISSUES);
     const board = collectBoard(root, invocation.env, gh, Date.now(), openIssues);
@@ -445,11 +484,22 @@ export function runBoard(invocation: Invocation, options: BoardServerOptions = {
     print(invocation, renderBoardText(board, waiting.length || runs.length ? { waiting, runs } : undefined));
     return 0;
   }
-  return startBoardServer(root, invocation.env, ghLaterIn(root, invocation.env, BOARD_READ_TIMEOUT_MS), { controls }).then(
-    ({ url }) => {
+  const shareOptions = share === undefined || share === null ? {} : { share };
+  return startBoardServer(root, invocation.env, ghLaterIn(root, invocation.env, BOARD_READ_TIMEOUT_MS), { controls, ...shareOptions }).then(
+    ({ url, shareUrl }) => {
       const isOpening = !parsed.flags.has('--no-open');
-      print(invocation, [`yokoten board: the team is live at ${url}`, `${isOpening ? 'It opens in your browser now. ' : ''}The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
-      if (isOpening) openInBrowser(url, invocation.env);
+      if (shareUrl === undefined) {
+        print(invocation, [`yokoten board: the team is live at ${url}`, `${isOpening ? 'It opens in your browser now. ' : ''}The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C.`]);
+        if (isOpening) openInBrowser(url, invocation.env);
+      } else {
+        print(invocation, [
+          `yokoten board: the team is live at ${shareUrl}`,
+          `${share} reaches this board over its HTTPS proxy; who can open that address is the proxy's call, not the board's. The browser needs the link once; the host check and the token hold as they do here.`,
+          `This board still listens on 127.0.0.1 only, so no phone reaches this computer directly. Here: ${url}`,
+          `${isOpening ? 'It opens in your browser now. ' : ''}The page refreshes every ${BOARD_REFRESH_SECONDS} seconds. Stop it with Ctrl-C; without --share the board is this computer only.`,
+        ]);
+        if (isOpening) openInBrowser(shareUrl, invocation.env);
+      }
       return new Promise<number>(() => {});
     },
     () => {
