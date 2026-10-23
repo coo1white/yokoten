@@ -1776,7 +1776,7 @@ const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, t
 // A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
 const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574). */
+/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574, #734, #745). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -1787,7 +1787,7 @@ function checkPipeToShell(command: string): Finding | null {
     for (const segment of segments) {
       const commands = commandWords(segment);
       const programs = commands.flatMap(findPrograms).map(programName);
-      const shell = findPipeShell(programs, commands);
+      const shell = findPipeShell(programs, commands, segment);
       if (shell !== undefined && downloader !== undefined) {
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
       }
@@ -1797,25 +1797,192 @@ function checkPipeToShell(command: string): Finding | null {
   return null;
 }
 
-/** The program that would run this segment, when that program is a shell. Case is folded here only (#574). */
-function findPipeShell(programs: string[], commands: string[][]): string | undefined {
+/**
+ * The program that would run this segment as a shell.
+ * A `$(…)`, backticks or `<(…)` inherits the pipe, so the nested command can run the download (#734).
+ * A program word that is not plain text can become a shell too, so it is refused (#745).
+ */
+function findPipeShell(programs: string[], commands: string[][], segment: string): string | undefined {
   const first = programs[0];
   if (first !== undefined && isPipeShell(first)) return first;
-  // A nested `$(sudo -s)` belongs to the outer program. That program reads the pipe.
-  for (const words of outerCommands(commands)) {
-    const shell = findShellRunner(words);
-    if (shell !== undefined) return shell;
+  // `sudo -s` reads stdin wherever it sits, including inside a substitution.
+  for (const words of commands) {
+    const runner = findShellRunner(words);
+    if (runner !== undefined) return runner;
+  }
+  const substitutions = scanSubstitutions(segment);
+  if (substitutions.live) {
+    // `bash -c "$(cat)"`: `$(cat)` is read first, so the shell is not the first program.
+    const nested = programs.find((program) => isPipeShell(program));
+    if (nested !== undefined) return nested;
+    // `$x`, or a substitution that never closes, may be a shell. The guard cannot tell, so it refuses.
+    const hidden = programs.find(isHiddenProgram);
+    if (hidden !== undefined) return hidden;
+    if (substitutions.unclosed) return 'sh';
+  }
+  // No shell name was written out. A prefix or a `$` name can still expand into one.
+  return findUnplainProgram(commands);
+}
+
+/** A program whose name is still a `$` value or a substitution, so it may be a shell. */
+const isHiddenProgram = (name: string) => name.startsWith('$') || name.includes('`') || name.includes('<(') || name.includes('>(');
+
+// After a download, a program word may hold only these characters. The guard allows
+// characters and does not read the shell's grammar: `s$(echo h)`, `$sh` and `sh*` are
+// not plain, so they are refused, and so is `eval` with any argument (#734, #745).
+const PLAIN_PROGRAM = /^[A-Za-z0-9._/-]+$/;
+// The inside of `$((1+2))`. commandWords lists it as its own command. It is math, not a program.
+const ARITHMETIC_BODY = /\$\(\(([0-9]+(?:[+\-*/%][0-9]+)*)\)\)/g;
+
+/** Program words `$((…))` lists beside the real command, such as `1+2` from `echo $((1+2))`. */
+function findArithmeticBodies(commands: string[][]): Set<string> {
+  const bodies = new Set<string>();
+  for (const words of commands) {
+    for (const word of words) {
+      spend(word.length);
+      ARITHMETIC_BODY.lastIndex = 0;
+      for (let match = ARITHMETIC_BODY.exec(word); match !== null; match = ARITHMETIC_BODY.exec(word)) bodies.add(match[1]);
+    }
+  }
+  return bodies;
+}
+
+/**
+ * A program word that is not plain text, or `eval` with an argument.
+ * The word is the text before expansion, path included, so `/bin/s$(echo h)` is refused.
+ */
+function findUnplainProgram(commands: string[][]): string | undefined {
+  const arithmetic = findArithmeticBodies(commands);
+  for (const words of commands) {
+    spend(words.length);
+    if (words.length === 1 && arithmetic.has(words[0])) continue;
+    for (const place of findProgramPlaces(words)) {
+      if (!PLAIN_PROGRAM.test(place.word)) return place.word;
+    }
+    if (hasEvalArgument(words)) return 'eval';
   }
   return undefined;
 }
 
-/** The segment's own commands. A list whose text sits in one word of another list belongs to that command. */
-function outerCommands(commands: string[][]): string[][] {
-  spend(commands.length);
-  return commands.filter((words, index) => {
-    const text = words.join(' ');
-    return text !== '' && !commands.some((other, otherIndex) => otherIndex !== index && other.some((word) => word.includes(text)));
-  });
+/** Whether `eval` has an argument, so it runs that argument as a command. A redirect is not one. */
+function hasEvalArgument(words: string[]): boolean {
+  for (const place of findProgramPlaces(words)) {
+    if (place.index < 0 || programName(place.word).toLowerCase() !== 'eval') continue;
+    let index = place.index + 1;
+    while (index < words.length && redirectLength(words, index) > 0) index += redirectLength(words, index);
+    if (index < words.length) return true;
+  }
+  return false;
+}
+
+// Whether a substitution in `text` runs, and whether one never closes.
+// Single quotes and `$'…'` hide it. `<(…)` and `>(…)` do not run inside `"…"`. `$((…))` is arithmetic.
+// A backslash and a newline inside `"…"` are removed before the shell parses.
+interface SubstitutionScan {
+  live: boolean;
+  unclosed: boolean;
+}
+
+/** The index after a backslash and a newline. The shell removes that pair before it parses. */
+function skipContinuation(text: string, index: number): number {
+  const start = index;
+  while (text[index] === '\\' && text[index + 1] === '\n') index += 2;
+  spend(index - start);
+  return index;
+}
+
+function scanSubstitutions(text: string): SubstitutionScan {
+  spend(text.length);
+  let live = false;
+  let quote = '';
+  let ansi = false;
+  let inWord = false;
+  let backtick = false;
+  const kinds: Array<'run' | 'skip'> = [];
+  // `at` stays on the last character of the opener. The loop then steps past it.
+  const open = (kind: 'run' | 'skip', at: number, width: number) => {
+    kinds.push(kind);
+    if (kind === 'run') live = true;
+    return at + width - 1;
+  };
+  for (let at = 0; at < text.length; at++) {
+    const character = text[at];
+    const next = text[at + 1] ?? '';
+    if (ansi) {
+      if (character === '\\') at++;
+      else if (character === "'") ansi = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") quote = '';
+      continue;
+    }
+    if (quote === '"') {
+      // `"$\⏎(sh)"` is `"$(sh)"`. The pair is not an escape of the next character.
+      if (character === '\\' && next === '\n') {
+        at++;
+        continue;
+      }
+      if (character === '\\' && '$`"\\'.includes(next)) {
+        at++;
+        continue;
+      }
+      if (character === '"') {
+        quote = '';
+        continue;
+      }
+      if (character === '`') {
+        live = true;
+        backtick = !backtick;
+      } else if (character === '$') {
+        const opened = skipContinuation(text, at + 1);
+        if (text[opened] === '(') {
+          if (text[opened + 1] === '(') {
+            kinds.push('skip', 'skip');
+            at = opened + 1;
+          } else at = open('run', opened, 1);
+        }
+      } else if (character === '(') kinds.push('skip');
+      else if (character === ')' && kinds.length > 0) kinds.pop();
+      continue;
+    }
+    if (character === ' ' || character === '\t' || character === '\n' || character === '\r') {
+      inWord = false;
+      continue;
+    }
+    if (!inWord && character === '#') {
+      while (at < text.length && text[at] !== '\n') at++;
+      continue;
+    }
+    if (character === '\\') {
+      at++;
+      inWord = true;
+      continue;
+    }
+    if (character === '$' && next === "'") {
+      ansi = true;
+      at++;
+      inWord = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      inWord = true;
+      continue;
+    }
+    if (character === '`') {
+      live = true;
+      backtick = !backtick;
+    } else if ((character === '$' || character === '<' || character === '>') && next === '(') {
+      if (character === '$' && text[at + 2] === '(') {
+        kinds.push('skip', 'skip');
+        at += 2;
+      } else at = open('run', at, 2);
+    } else if (character === '(') kinds.push('skip');
+    else if (character === ')' && kinds.length > 0) kinds.pop();
+    inWord = true;
+  }
+  return { live, unclosed: backtick || kinds.includes('run') };
 }
 
 /** Whether `name` is a shell. `powershell` stays beside `isShell`, which names `pwsh` (#574). */
@@ -4692,13 +4859,20 @@ function readDouble(text: string, index: number, depth: number, out: string[][],
       if (n && '$`"\\'.includes(n)) value += n;
       else if (n !== '\n') value += character + n;
       index += 2;
-    } else if ((character === '$' && text[index + 1] === '(') || character === '`') {
-      const from = character === '`' ? index + 1 : index + 2;
-      const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
-      if (end === -1) return RAN_OUT;
-      substitutions.push(text.slice(from, end - 1));
-      value += text.slice(index, end);
-      index = end;
+    } else if (character === '$' || character === '`') {
+      // A joined line hides the opener: `"$\⏎(sh)"` is `"$(sh)"` before parsing.
+      const opened = character === '`' ? index : skipContinuation(text, index + 1);
+      if (character === '`' || text[opened] === '(') {
+        const from = character === '`' ? index + 1 : opened + 1;
+        const end = read(text, from, character === '`' ? '`' : ')', depth + 1, out);
+        if (end === -1) return RAN_OUT;
+        substitutions.push(text.slice(from, end - 1));
+        value += character === '`' ? text.slice(index, end) : '$(' + text.slice(from, end);
+        index = end;
+      } else {
+        value += character;
+        index++;
+      }
     } else {
       value += character;
       index++;
