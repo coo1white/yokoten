@@ -76,10 +76,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      # yokoten as a released Action (#129), pinned to the first release by its full
+      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the
+      # released check, not the project's copy in .yokoten/; pr.yml and issue.yml still
+      # run the project's copy for their own events.
+      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0
         with:
-          node-version: '^22.23.4'
-      - run: node {{cli}} check
+          pr-check: 'false'
+          issue-check: 'false'
   # The workflows themselves: actionlint finds mistakes, zizmor finds security problems.
   lint:
     runs-on: ubuntu-latest
