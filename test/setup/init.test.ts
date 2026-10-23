@@ -1898,10 +1898,10 @@ const withTestsJob = (yml: string): string =>
 const oldYokotenYml = () =>
   kitWorkflow('yokoten.yml')
     .replace(
-      '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. A push to main never cancels a run: every commit stays in history,\n# and a cancelled run leaves a ✗ on it (#660).\n',
+      '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. Every other event gets a group of its own, so a run on main is never\n# cancelled, waiting or running: every commit stays in history (#660, #798).\n',
       '# A new push to a pull request cancels the run still going for it. A push to main gets\n# a group of its own, so a run on main is never cancelled.\n',
     )
-    .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}")
+    // The group is the same as before #451, so only the lines below differ.
     // Before #660, a push to main cancelled the run still going on main.
     .replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", 'cancel-in-progress: true')
     // Before #572, the kit set up Node by its line alone.
