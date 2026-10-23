@@ -1,6 +1,6 @@
 // `yokoten init` writes the `tests` job for the project's language (#550, #653): the setup
 // action pinned to a commit, the install step, and the runner. Node uses its lockfile's
-// package manager when no earlier language matches and package.json has a real test script.
+// package manager only when no other language is detected and package.json has a real test script.
 // No lockfile means `npm install`. It asks first, as install's writes do (record 0014), and
 // says how to undo it. doctor stays read-only: it reads a project and advises, never writes.
 
@@ -34,7 +34,7 @@ const VERSION_LINE = /^v?(\d+\.\d+(?:\.\d+)?)$/;
 
 /**
  * Languages `yokoten init` can write a job for. The first six follow the order in
- * test-commands.ts. Node.js is last, and only when none of those six is found.
+ * test-commands.ts. Node.js is last, and only when no other language is detected.
  * The Node pin is the same commit as action.yml. Its install here is the no-lockfile
  * command; `nodeCommands` replaces it from the lockfile.
  */
@@ -262,14 +262,19 @@ const nodeJob = (root: string): { job: TestsJob; runner: string } | null => {
   return { job: { ...base, inputValue: nodeVersion(root), install: commands.install }, runner: commands.runner };
 };
 
-/** The job init would write, or null when no covered language matches and there is no real test script. */
+/**
+ * The job init would write, or null when nothing matches. Node is chosen only when
+ * no other language is detected. Maven, Gradle, Deno, Swift and the rest have no job
+ * here; a Node job would hide their tests.
+ */
 const pickedJob = (root: string): { job: TestsJob; runner: string } | null => {
-  const found = testLanguages(root).find((named) => TESTS_JOBS.some((job) => job.language === named.language));
+  const detected = testLanguages(root);
+  const found = detected.find((named) => TESTS_JOBS.some((job) => job.language === named.language));
   if (found) {
     const job = TESTS_JOBS.find((named) => named.language === found.language);
     return job ? { job, runner: found.runner } : null;
   }
-  if (!testScript(root)) return null;
+  if (detected.length > 0 || !testScript(root)) return null;
   return nodeJob(root);
 };
 
@@ -307,9 +312,9 @@ export const nodeTestsLine = (root: string): string | null => {
 };
 
 /**
- * The fix doctor shows for a Node project with a test script. Null when a language in
- * TESTS_JOBS comes first, when there is no real test script, or when the workflow file
- * is missing: the caller then says to run `yokoten init`. The line has no newline.
+ * The fix doctor shows for a Node project with a test script. Null when another
+ * language is detected, when there is no real test script, or when the workflow file
+ * is missing. The caller then uses its own text. The line has no newline.
  */
 export const nodeTestsFix = (root: string): string | null => {
   const picked = pickedJob(root);
@@ -324,8 +329,9 @@ export const nodeTestsFix = (root: string): string | null => {
 
 /**
  * Write the `tests` job for the project's language into its workflow. Quiet (no lines)
- * when no covered language is found and package.json has no real test script. With `ask`
- * (a terminal), it asks once before it writes; without, it only says what it would do.
+ * when no language we write for is found. A test script is Node only when no other
+ * language is detected. With `ask` (a terminal), it asks once before it writes;
+ * without, it only says what it would do.
  * It never overwrites: a workflow that already runs the tests, or has a `tests` job of
  * its own, is kept. It copies the checkout step of the other jobs, and only when pinned.
  */

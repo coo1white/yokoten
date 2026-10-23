@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import { init } from '../../../src/setup/init.ts';
 import { ROAD } from '../../../src/setup/road.ts';
-import { testLanguages } from '../../../src/setup/advice/test-commands.ts';
+import { TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
 import { addTestsNeeds, nodeTestsFix, nodeVersion, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
 
 const WORKFLOW = '.github/workflows/yokoten.yml';
@@ -188,6 +188,12 @@ test('tests-job: Go wins over a Node test script, and a placeholder or a workspa
     'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
     [WORKFLOW]: workflowFile(),
   });
+  assert.equal(nodeTestsFix(mixed), null, 'Go: doctor does not paste a Node job');
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  const goAdvice = tests.fix(mixed, {}, undefined);
+  assert.equal(goAdvice.includes('setup-node'), false, 'Go: the tests step does not name setup-node');
+  assert.equal(goAdvice.includes('npm'), false, 'Go: the tests step does not name npm');
   assert.match(writeTestsJob(mixed, { ask: () => 'y' }).join('\n'), /wrote the tests job for Go/);
   const text = readFileSync(join(mixed, WORKFLOW), 'utf8');
   assert.ok(text.includes('- run: go test') && text.includes('go-version: stable'));
@@ -199,6 +205,42 @@ test('tests-job: Go wins over a Node test script, and a placeholder or a workspa
   assert.deepEqual(writeTestsJob(placeholder, { ask: () => 'y' }), []);
   const workspaces = project({ 'package.json': JSON.stringify({ workspaces: ['packages/*'] }), [WORKFLOW]: workflowFile() });
   assert.deepEqual(writeTestsJob(workspaces, { ask: () => 'y' }), []);
+});
+
+// A marker for each language the table detects and TESTS_JOBS does not write.
+// Flutter and Dart share pubspec.yaml; the sdk line is what tells them apart.
+const FLUTTER_PUBSPEC = 'name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n';
+const UNSUPPORTED_MARKERS: Record<string, Record<string, string>> = {
+  Maven: { 'pom.xml': '<project/>\n' },
+  Gradle: { 'build.gradle': '' },
+  Deno: { 'deno.json': '{}\n' },
+  Swift: { 'Package.swift': '' },
+  Elixir: { 'mix.exs': '' },
+  Flutter: { 'pubspec.yaml': FLUTTER_PUBSPEC },
+  Dart: { 'pubspec.yaml': 'name: demo\n' },
+  Makefile: { Makefile: 'test:\n\ttrue\n' },
+};
+
+test('tests-job: a detected language with no job is not given the Node job (#653)', () => {
+  const pkg = JSON.stringify({ scripts: { test: 'vitest run' } });
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  const unsupported = TEST_LANGUAGES.filter((language) => language.files.length > 0 && !TESTS_JOBS.some((job) => job.language === language.language));
+  assert.ok(unsupported.length >= 4);
+  for (const language of unsupported) {
+    const marker = UNSUPPORTED_MARKERS[language.language];
+    assert.ok(marker, `${language.language}: the test has a marker`);
+    const dir = project({ ...marker, 'package.json': pkg, [WORKFLOW]: workflowFile() });
+    const found = testLanguages(dir).map((named) => named.language);
+    assert.deepEqual(found, [language.language], `${language.language}: the marker is that language`);
+    const before = readFileSync(join(dir, WORKFLOW), 'utf8');
+    assert.deepEqual(writeTestsJob(dir, { ask: () => 'y' }), [], `${language.language}: init writes nothing`);
+    assert.equal(readFileSync(join(dir, WORKFLOW), 'utf8'), before, `${language.language}: the workflow stays`);
+    assert.equal(nodeTestsFix(dir), null, `${language.language}: doctor does not paste a Node job`);
+    const advice = tests.fix(dir, {}, undefined);
+    assert.equal(advice.includes('setup-node'), false, `${language.language}: the tests step does not name setup-node`);
+    assert.equal(advice.includes('npm'), false, `${language.language}: the tests step does not name npm`);
+  }
 });
 
 test('tests-job: a Node job installs with the lockfile it finds, and runs that manager\'s test command (#653)', () => {

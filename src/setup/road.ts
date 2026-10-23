@@ -295,8 +295,9 @@ const testsFix = (root: string) => {
   const node = nodeTestsFix(root);
   if (node) return node;
   const file = '.github/workflows/yokoten.yml';
-  const isNode = testScript(root) !== '' || isWorkspaces(root);
-  const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
+  // A test script does not make this Node when another language is already detected.
+  const isNode = testLanguages(root).length === 0 && (testScript(root) !== '' || isWorkspaces(root));
+  const command = !isNode ? '<your test command>' : isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : 'npm test';
   const install = isNode && existsSync(join(root, 'package-lock.json')) ? ', {run: npm ci}' : '';
   const uses = isNode ? 'the checkout and setup-node steps of the other jobs' : 'the checkout step of the other jobs';
   const steps = `[<${uses}>${install}, {run: ${command}}]`;
