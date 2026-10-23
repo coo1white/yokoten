@@ -49,7 +49,7 @@ export function visibleLength(text: string): number {
  * `documentation`. A label that is the type name itself always counts.
  */
 const TYPE_LABEL_ALIASES: Record<string, string[]> = {
-  fix: ['bug', 'hotfix', 'incident'],
+  fix: ['bug', 'hotfix', 'incident', 'security'],
   feat: ['feature', 'enhancement'],
   docs: ['documentation'],
 };
@@ -851,7 +851,7 @@ export interface CommandLabels {
 }
 
 // Aliases that say more than the type, so the bot never picks them for a person.
-const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident']);
+const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident', 'security']);
 
 /** The label names that say a title's type, best first: the shown one (`bug` for fix), the type, then its aliases. */
 function typeLabelNames(type: string): string[] {

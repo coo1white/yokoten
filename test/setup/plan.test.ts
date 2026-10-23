@@ -86,7 +86,7 @@ test('planning: says what it would do, and changes nothing without --yes (#10)',
   const f = fakeGh([standardBug, 'feat', 'Enhancement', 'wontfix']);
   const r = setUpPlanning(f.gh, REMOTE, DRY);
   assert.ok(r.ok);
-  assert.ok(r.lines.includes('- 1 of the 12 standard labels are there; kept'));
+  assert.ok(r.lines.includes('- 1 of the 13 standard labels are there; kept'));
   assert.ok(r.lines.includes('- not in the standard set: Enhancement, wontfix. yokoten deletes them only with --remove-default-labels'));
   assert.ok(r.lines.includes('- make label "hotfix" (Urgent: fix and release soon)'));
   assert.ok(r.lines.includes('- update label "feat" to the standard colour and description'));
@@ -125,7 +125,9 @@ test('planning: makes the tier labels the pull request check asks for, once (#22
     assert.ok(result.lines.some((line) => line.startsWith(`- done: make label "tier ${tier}"`)), `tier ${tier}: ${result.lines.join(' | ')}`);
     assert.equal(fake.held.filter((l) => l.name === `tier ${tier}`).length, 1);
   }
-  assert.match(fake.held.find((l) => l.name === 'tier A')!.description, /Owner reviews/);
+  assert.match(fake.held.find((l) => l.name === 'tier A')!.description, /The owner approves/);
+  assert.match(fake.held.find((l) => l.name === 'tier B')!.description, /another vendor approves/);
+  assert.equal(fake.held.find((l) => l.name === 'security')!.color, 'b60205');
   const before = fake.calls.length;
   result = setUpPlanning(fake.gh, REMOTE, APPLY);
   assert.equal(result.lines.at(-1), 'Nothing to change.');
