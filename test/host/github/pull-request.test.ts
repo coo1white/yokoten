@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import { GitReadError } from '../../../src/run/check.ts';
-import { annotation, annotations, readBranchFiles, readCodeOwners, stepSummary } from '../../../src/host/github/pull-request.ts';
+import { annotation, annotations, pullRequestNumber, readBranchFiles, readBranchPullRequest, readCodeOwners, stepSummary } from '../../../src/host/github/pull-request.ts';
 
 // #91: workflow commands, escaped as GitHub's runner decodes them
 // (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands).
@@ -108,4 +108,39 @@ test('annotations: an ignore a pull request adds is a notice, after the problems
   assert.match(lines[0], /^::error /);
   assert.equal(lines[1], '::notice file=a.ts,line=2,title=yokoten ignore-added::this pull request lets a secret hit through on this line [ignored: a fixture]. W. F.');
   assert.match(lines[2], /^::warning /);
+});
+
+// #615: a local run names the pull request by number or URL, and `check --pr` with no
+// number reads the one open on the current branch.
+test('pull request number: a number or a pull request URL, never anything else (#615)', () => {
+  assert.equal(pullRequestNumber('12'), '12');
+  assert.equal(pullRequestNumber(' 12 '), '12');
+  assert.equal(pullRequestNumber('https://github.com/octo/app/pull/12'), '12');
+  assert.equal(pullRequestNumber('https://github.com/octo/app/pull/12/'), '12');
+  for (const bad of ['0', 'main', 'https://github.com/octo/app/issues/12', 'ftp://github.com/octo/app/pull/12', 'not a url']) {
+    assert.equal(pullRequestNumber(bad), null, bad);
+  }
+});
+
+test('branch pull request: the open pull request of the current branch through gh (#615)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const answer = (fields: Record<string, unknown>) =>
+    JSON.stringify({ title: 'feat: a', body: 'tier: B\n', labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author: { login: 'octo' }, baseRefOid: base, headRefOid: head, ...fields });
+  const read = readBranchPullRequest(sandbox.repo, () => answer({}), process.env);
+  assert.equal(read && !('problem' in read) && read.title, 'feat: a');
+  assert.deepEqual(read && !('problem' in read) && read.files, ['src/a.ts']);
+  // A branch with no open pull request is null: the check says so and passes.
+  const none = readBranchPullRequest(sandbox.repo, () => { throw Object.assign(new Error('gh failed'), { stderr: 'no pull requests found for branch "feat/a"' }); }, process.env);
+  assert.equal(none, null);
+  // A commit this clone does not have is one finding, with the fetch to run.
+  const missing = readBranchPullRequest(sandbox.repo, () => answer({ headRefOid: 'f'.repeat(40) }), process.env);
+  assert.match(missing && 'problem' in missing ? missing.problem.fix : '', /git fetch origin/);
 });

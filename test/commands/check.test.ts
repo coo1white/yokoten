@@ -214,7 +214,7 @@ test('check --issue: an issue needs the type and tier labels its repo has (#544)
   const labelsFile = join(sandbox.home, 'labels.json');
   writeFileSync(
     join(bin, 'gh'),
-    `#!/usr/bin/env node\nconst fs = require("node:fs");\nif (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\nprocess.exit(1);\n`,
+    `#!/usr/bin/env node\nimport("node:fs").then(({ readFileSync }) => {\n  if (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\n  process.exit(1);\n});\n`,
     { mode: 0o755 },
   );
   const extra = { PATH: `${bin}:${process.env.PATH}` };
@@ -847,4 +847,114 @@ test('marks: the count names both files when the setting adds one (#656)', async
   assert.equal(counts.status, 0, counts.stderr);
   assert.match(counts.stdout, /^yokoten marks: 2 in ~\/\.config\/yokoten\/private-marks and the file YOKOTEN_PRIVATE_MARKS names \(the values are never shown\)$/m);
   assert.ok(!VALUES.test(counts.stdout + counts.stderr));
+});
+
+// #615: the same pull request, read locally by number, URL, or the current branch, gives
+// the same result, and a soft title warning never fails the run.
+test('check --pr: a number, a URL and the current branch give the same result (#615)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  const body = 'tier: B\nCloses #1\nNo changelog: a test\n## Why\nx\n## What changed\nx\n## How tested\nx\nMade with worker (opus)\n';
+  // 61 characters: over the soft 60, under the hard 72, so it warns and passes.
+  const title = `feat: ${'a'.repeat(55)}`;
+  assert.equal(title.length, 61);
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node
+if (process.argv[2] !== 'pr' || process.argv[3] !== 'view') process.exit(1);
+if (process.argv[4] !== undefined && process.argv[4] !== '--json' && process.argv[4] !== '12') process.exit(1);
+console.log(${JSON.stringify(JSON.stringify({ title, body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author: { login: 'octo' }, baseRefOid: base, headRefOid: head }))});
+`,
+    { mode: 0o755 },
+  );
+  const extra = { PATH: `${bin}:${process.env.PATH}` };
+  const numbered = await sandbox.call(['check', '--pr', '12'], { extra });
+  const url = await sandbox.call(['check', '--pr', 'https://github.com/octo/app/pull/12'], { extra });
+  const branch = await sandbox.call(['check', '--pr'], { extra });
+  assert.equal(numbered.status, 0, numbered.stderr);
+  assert.match(numbered.stdout, /warning: title: 61 characters, close to 72/);
+  assert.deepEqual([url.status, url.stdout, url.stderr], [numbered.status, numbered.stdout, numbered.stderr], 'the URL names the same pull request');
+  assert.deepEqual([branch.status, branch.stdout, branch.stderr], [numbered.status, numbered.stdout, numbered.stderr], 'the current branch names the same pull request');
+  // A branch with no open pull request says so and passes.
+  const noPr = join(sandbox.home, 'nopr');
+  mkdirSync(noPr);
+  writeFileSync(join(noPr, 'gh'), `#!/usr/bin/env node\nconsole.error('no pull requests found for branch "feat/a"'); process.exit(1);\n`, { mode: 0o755 });
+  const clean = await sandbox.call(['check', '--pr'], { extra: { PATH: `${noPr}:${process.env.PATH}` } });
+  assert.equal(clean.status, 0);
+  assert.match(clean.stdout, /no open pull request for this branch/);
+});
+
+// #615: the CI comment job makes one comment, edits it on the next run, and removes it
+// when the check passes. A local run never posts.
+test('check --pr --comment: one comment per pull request, edited, then removed (#615)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const goodBody = 'tier: B\nCloses #1\nNo changelog: a test\n## Why\nx\n## What changed\nx\n## How tested\nx\nMade with worker (opus)\n';
+  const event = (title: string) => {
+    const file = join(sandbox.home, `event-${title.length}.json`);
+    writeFileSync(file, JSON.stringify({ repository: { full_name: 'octo/app' }, pull_request: { number: 7, title, body: goodBody, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return file;
+  };
+  const comments: { id: number; body: string }[] = [];
+  const calls: string[] = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => (raw += chunk));
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : undefined;
+      calls.push(`${req.method} ${req.url}`);
+      res.setHeader('content-type', 'application/json');
+      if (req.method === 'GET') {
+        res.statusCode = 200;
+        res.end(JSON.stringify(comments));
+      } else if (req.method === 'POST') {
+        comments.push({ id: 1, body: body.body });
+        res.statusCode = 201;
+        res.end(JSON.stringify(comments[0]));
+      } else if (req.method === 'PATCH') {
+        comments[0] = { id: 1, body: body.body };
+        res.statusCode = 200;
+        res.end(JSON.stringify(comments[0]));
+      } else if (req.method === 'DELETE') {
+        comments.length = 0;
+        res.statusCode = 204;
+        res.end();
+      }
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const ci = (file: string) => ({ GITHUB_EVENT_PATH: file, GITHUB_ACTIONS: 'true', GITHUB_TOKEN: 'ghs_never_printed_615', YOKOTEN_GITHUB_API: api });
+  try {
+    let result = await sandbox.call(['check', '--pr', '--comment'], { extra: ci(event('a')) });
+    assert.equal(result.status, 1);
+    assert.equal(comments.length, 1, 'the first run makes one comment');
+    assert.match(comments[0].body, /<!-- yokoten check --pr -->/);
+    result = await sandbox.call(['check', '--pr', '--comment'], { extra: ci(event('a')) });
+    assert.equal(result.status, 1);
+    assert.equal(comments.length, 1, 'the second run edits, never adds');
+    assert.ok(calls.includes('PATCH /repos/octo/app/issues/comments/1'));
+    result = await sandbox.call(['check', '--pr', '--comment'], { extra: ci(event('feat: a')) });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(comments.length, 0, 'a clean run removes the comment');
+  } finally {
+    server.close();
+  }
 });

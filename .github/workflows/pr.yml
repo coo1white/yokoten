@@ -39,3 +39,27 @@ jobs:
         env:
           YOKOTEN_PR_LIVE: '1'
           GITHUB_TOKEN: ${{ github.token }}
+  # One comment per pull request (#615). This job runs the same check with a write
+  # token, so a red run edits the old comment instead of adding another, and a clean
+  # run removes it. The `pr` job above needs only read access. A pull request from a
+  # fork runs no code with a write token: its head may change anything.
+  comment:
+    needs: pr
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '^22.23.4'
+      - run: node bin/yokoten.ts check --pr --comment
+        env:
+          YOKOTEN_PR_LIVE: '1'
+          GITHUB_TOKEN: ${{ github.token }}

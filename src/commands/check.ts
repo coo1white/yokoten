@@ -14,10 +14,10 @@ import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, rena
 import { dirname } from 'node:path';
 
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
-import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
+import { checkComment, ghIn, isGitHubActions, readBranchPullRequest, readCodeOwners, readEvent, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames, repoOf, upsertPullRequestComment } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
-import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, issueTitleWarnings, largeDiff, longSentenceNote, longSentences, pullRequestTitleWarnings, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
@@ -34,28 +34,37 @@ export async function runCheck(invocation: Invocation): Promise<number> {
   const modes = ['--staged', '--history', '--pr', '--issue'].filter((m) => options.flags.has(m));
   if (modes.length > 1) return usage(invocation, `${modes.join(' and ')} can't be used together`);
   const mode = modes[0]?.slice(2) ?? 'tree';
-  // A number goes with --pr only (#377): that pull request, read through gh.
+  // A number or URL goes with --pr only (#377): that pull request, read through gh.
   const number = options.positional[0];
   if (number !== undefined && mode !== 'pr') return usage(invocation, `unexpected argument ${number}: a number goes with --pr`);
   const json = options.flags.has('--json');
+  const comment = options.flags.has('--comment');
   const root = requireRoot(invocation, invocation.cwd, json ? (missing) => ({ check: mode, ok: false, findings: [missing], notes: [] }) : undefined);
   if (!root) return 1;
   const config = loadConfig(root);
   const name = `yokoten check${mode === 'pr' || mode === 'issue' ? ` --${mode}` : ''}`;
   const notes: Finding[] = [];
+  const warnings: Finding[] = [];
   let problems: Finding[];
   try {
-    problems = await runMode(invocation, mode, root, config, notes, { name, json, number });
+    problems = await runMode(invocation, mode, root, config, notes, warnings, { name, json, number });
   } catch (err) {
     // A git read the check depends on gave no answer (#403): one finding, and the check fails.
     if (!(err instanceof GitReadError)) throw err;
     problems = [gitReadFinding(err)];
   }
   if (problems === SKIPPED) return 0;
-  if (json) printJson(invocation, { check: mode, ok: !problems.length, findings: problems, notes });
-  else if (!problems.length) print(invocation, [`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`]);
-  else print(invocation, [`${name}: ${problems.length} problem(s)`, ...bullets(problems), ...unstageLines(root, invocation.env, mode, problems)], invocation.stderr);
-  showOnPullRequest(invocation, `yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, notes, { json, isPlaceAFile: mode !== 'history' });
+  if (json) printJson(invocation, { check: mode, ok: !problems.length, findings: problems, warnings, notes });
+  else if (!problems.length) print(invocation, [`${name}: ok${mode === 'history' ? ' (every commit on every branch)' : ''}`, ...warnings.map((w) => `${name}: warning: ${formatFinding(w)}`)]);
+  else print(invocation, [`${name}: ${problems.length} problem(s)`, ...bullets(problems), ...warnings.map((w) => `${name}: warning: ${formatFinding(w)}`), ...unstageLines(root, invocation.env, mode, problems)], invocation.stderr);
+  showOnPullRequest(invocation, `yokoten check${mode === 'tree' ? '' : ` --${mode}`}`, problems, [...warnings, ...notes], { json, isPlaceAFile: mode !== 'history' });
+  // One comment per pull request (#615): only a CI comment job asks for it, so a local
+  // run never posts. A comment problem is said and never changes the check's result.
+  if (comment && mode === 'pr' && isGitHubActions(invocation.env)) {
+    const body = problems.length || warnings.length ? checkComment(name, problems, [...warnings, ...notes]) : null;
+    const outcome = await upsertPullRequestComment(invocation.env, body);
+    if (outcome.problem) say(invocation, `${name}: the comment was not posted: ${outcome.problem}\n`, invocation.stderr);
+  }
   return problems.length ? 1 : 0;
 }
 
@@ -73,8 +82,22 @@ function unstageLines(root: string, env: Invocation['env'], mode: string, proble
 /** Returned by `runMode` when there is nothing to check; it has already said so. */
 const SKIPPED: Finding[] = [];
 
+/**
+ * A local run can read the pull request of its own branch when there is no CI event and
+ * the origin remote is on GitHub. In Actions the event file is the answer, even a
+ * merge-group event with no pull request.
+ */
+function readsBranchPullRequest(root: string, env: Invocation['env']): boolean {
+  if (readEvent(env) !== null || isGitHubActions(env)) return false;
+  try {
+    return repoOf(readGit(root, ['config', '--get', 'remote.origin.url'], { env }).toString('utf8')) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
-async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Promise<Finding[]> {
+async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], warnings: Finding[], { name, json, number }: { name: string; json: boolean; number?: string }): Promise<Finding[]> {
   const { env } = invocation;
   let problems: Finding[];
   if (mode === 'issue') {
@@ -88,10 +111,21 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
     // An event that can't be read is one finding (#267), so --json and the summary still work.
     // The labels need the kinds the repo has, read through gh; when gh can't list
     // them, only the title is checked (#544).
-    problems =
-      'problem' in issue ? [issue.problem] : [...checkIssueTitle(issue.title, config, issue.labels), ...checkIssueLabels(issue.labels, readRepoLabelNames(ghIn(root, env, GH_TIMEOUT_MS)))];
+    if ('problem' in issue) {
+      problems = [issue.problem];
+    } else {
+      warnings.push(...issueTitleWarnings(issue.title));
+      problems = [...checkIssueTitle(issue.title, config, issue.labels), ...checkIssueLabels(issue.labels, readRepoLabelNames(ghIn(root, env, GH_TIMEOUT_MS)))];
+    }
   } else if (mode === 'pr') {
     let pr = number === undefined ? readPullRequest(root, env) : readNumberedPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), number, env);
+    // On a branch with an open pull request, no event file and a GitHub origin,
+    // `check --pr` reads that pull request through gh (#615). A CI run keeps the event.
+    let readBranch = false;
+    if (pr === null && number === undefined && readsBranchPullRequest(root, env)) {
+      readBranch = true;
+      pr = readBranchPullRequest(root, ghIn(root, env, GH_TIMEOUT_MS), env);
+    }
     // When the workflow asks for it (#645), the title, body, labels and milestone are the
     // ones the pull request has now, never the event file's. The commits stay the event's.
     if (pr && !('problem' in pr) && number === undefined && readsCurrentPullRequest(env)) {
@@ -99,7 +133,9 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       pr = 'problem' in now ? now : { ...pr, ...now };
     }
     if (!pr) {
-      const skipped = 'no pull request in this run (it reads the CI event); nothing to check';
+      const skipped = readBranch
+        ? 'no open pull request for this branch (push the branch, then open one); nothing to check'
+        : 'no pull request in this run (it reads the CI event); nothing to check';
       if (json) printJson(invocation, { check: mode, ok: true, skipped, findings: [], notes: [] });
       else print(invocation, [`${name}: ${skipped}`]);
       return SKIPPED;
@@ -157,6 +193,8 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
         if (!json) print(invocation, [`${name}: note: ${formatFinding(large)}`]);
       }
       problems = checkPullRequest(pr, config);
+      // A title close to the limit is a warning (#615): shown, never blocking.
+      warnings.push(...pullRequestTitleWarnings(pr.title));
       // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
       for (const file of pr.files.filter(isChangeFile)) {
         const text = readAtHead(file);

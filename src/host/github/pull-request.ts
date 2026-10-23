@@ -121,12 +121,41 @@ function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, 
 }
 
 /**
- * Pull request `number` read through gh (#377), so a lead can run `check --pr <number>` in a
- * repo without CI. The commits come from this clone; when one is missing, the fix says
- * what to fetch. What can't be read is one finding, as in CI.
+ * The pull request number in a number (`12`) or a pull request URL
+ * (`https://github.com/owner/name/pull/12`), or null. A URL is read only as data: its
+ * address is never printed.
  */
-export function readNumberedPullRequest(root: string, gh: Gh, number: string, env: Env): PullRequestRead | Unreadable {
-  if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
+export function pullRequestNumber(text: string): string | null {
+  const clean = text.trim();
+  if (/^[1-9]\d*$/.test(clean)) return clean;
+  try {
+    const url = new URL(clean);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return /^\/[^/]+\/[^/]+\/pull\/([1-9]\d*)\/?$/.exec(url.pathname)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The fields and diff of one gh answer, or one finding when it can't be read. */
+function pullRequestFromGh(root: string, pr: unknown, number: string, fix: string, env: Env): PullRequestRead | Unreadable {
+  if (!isObject(pr)) return { problem: finding('pr-read', `gh gave no pull request ${number}`, 'check the number, then run it again') };
+  const base = asText(pr.baseRefOid);
+  const head = asText(pr.headRefOid);
+  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fix);
+  if (problem) return { problem };
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
+}
+
+/**
+ * Pull request `reference` read through gh (#377), so a lead can run `check --pr <number>`
+ * in a repo without CI. The reference may be the number or the pull request's URL. The
+ * commits come from this clone; when one is missing, the fix says what to fetch. What
+ * can't be read is one finding, as in CI.
+ */
+export function readNumberedPullRequest(root: string, gh: Gh, reference: string, env: Env): PullRequestRead | Unreadable {
+  const number = pullRequestNumber(reference);
+  if (number === null) return { problem: finding('pr-read', `"${reference}" is not a pull request number or URL`, 'give the number alone, such as `yokoten check --pr 12`, or its URL') };
   let pr: unknown;
   try {
     pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
@@ -138,14 +167,25 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
     const why = unread(err);
     return { problem: finding('pr-read', `pull request ${number} can't be read: ${why.unread}`, why.fix) };
   }
-  if (!isObject(pr)) return { problem: finding('pr-read', `gh gave no pull request ${number}`, 'check the number, then run it again') };
-  const base = asText(pr.baseRefOid);
-  const head = asText(pr.headRefOid);
   // No branch name goes into the hint, so nothing in it needs quoting for a shell.
-  const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
-  const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fetch);
-  if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
+  return pullRequestFromGh(root, pr, number, `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`, env);
+}
+
+/**
+ * The pull request of the current branch read through gh, so `yokoten check --pr` can run
+ * the CI rules before a push (#615). Null when this branch has no open pull request.
+ */
+export function readBranchPullRequest(root: string, gh: Gh, env: Env): PullRequestRead | Unreadable | null {
+  let pr: unknown;
+  try {
+    pr = JSON.parse(gh(['pr', 'view', '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+  } catch (err) {
+    const said = String((err as { stderr?: string }).stderr || (err as Error).message);
+    if (/no (?:open )?pull requests? found|no pull requests? for branch/i.test(said)) return null;
+    const why = unread(err);
+    return { problem: finding('pr-read', `the pull request for this branch can't be read: ${why.unread}`, why.fix) };
+  }
+  return pullRequestFromGh(root, pr, 'this branch', 'run `git fetch origin`, then run it again', env);
 }
 
 /**

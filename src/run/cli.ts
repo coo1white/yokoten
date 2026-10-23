@@ -208,9 +208,10 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--staged', text: 'the next commit, as the git hook runs it' },
       { name: '--history', text: 'the privacy check over every commit; run it before going public' },
-      { name: '--pr', text: 'the title, tier, sections, issue and change file of the pull request: in CI, or by its number' },
+      { name: '--pr', text: 'the title, tier, sections, issue and change file of the pull request: in CI, the current branch, or by number or URL' },
       { name: '--issue', text: 'in CI: the issue title, `area: summary` in 60 characters at most' },
       { name: '--json', text: 'the findings as JSON on stdout' },
+      { name: '--comment', text: 'in CI: keep one comment on the pull request, and remove it when the check passes' },
     ],
     argument: 'number',
     example: 'yokoten check --staged',

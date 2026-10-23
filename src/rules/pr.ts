@@ -202,6 +202,16 @@ export function checkPullRequestTitle(rawTitle: string, config: Partial<Pick<Con
   return problems;
 }
 
+/**
+ * Soft warnings about a pull request title: a title close to the 72-character limit
+ * (#615). They never block a merge, so they go with the notes, not the problems.
+ */
+export function pullRequestTitleWarnings(rawTitle: string): Finding[] {
+  const titleLength = visibleLength(rawTitle.trim());
+  if (titleLength <= 60 || titleLength > 72) return [];
+  return [finding('pr-title', `title: ${titleLength} characters, close to 72`, 'shorten it now, before the limit stops the merge')];
+}
+
 /** Problems with a pull request. An empty list means it meets the standard. */
 export function checkPullRequest(pr: PullRequest, config: Pick<Config, 'tests'> & Partial<Pick<Config, 'areas'>>): Finding[] {
   const problems = [...checkPullRequestTitle(pr.title, config), ...checkPullRequestBody(pr, config)];
@@ -433,6 +443,13 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   if (/[.。]$/.test(text)) problems.push(finding('issue-title', 'title: a full stop at the end', 'remove the full stop', { why: 'a title is a name, not a sentence' }));
   if (/#\d/.test(text)) problems.push(finding('issue-title', 'title: an issue number', 'remove the number, and name the other issue in the body', { why: 'the host links issues from the body, not from the title' }));
   return problems;
+}
+
+/** Soft warnings about an issue title: a title close to the 60-character limit (#615). They never block. */
+export function issueTitleWarnings(title: string): Finding[] {
+  const textLength = visibleLength(title.trim());
+  if (textLength <= 50 || textLength > ISSUE_MAX) return [];
+  return [finding('issue-title', `title: ${textLength} characters, close to ${ISSUE_MAX}`, 'shorten it now, before the limit stops the issue')];
 }
 
 /**

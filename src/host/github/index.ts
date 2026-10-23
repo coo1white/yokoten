@@ -13,6 +13,7 @@
 export * from './approval.ts';
 export * from './board-pulls.ts';
 export * from './bot.ts';
+export * from './comment.ts';
 export * from './planning.ts';
 export * from './pull-request.ts';
 export * from './server.ts';
