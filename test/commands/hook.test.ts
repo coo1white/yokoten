@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {
+  delimiter,
   dirname,
   join,
   resolve,
@@ -1211,4 +1212,23 @@ test('session start: a lead registers its log path; a worker does not (#700)', a
   assert.equal((await start(sandbox.repo, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
   assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a worker leaves the lead path in place');
   assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the path stays in the git folder');
+});
+
+// The guard read the session's root twice: once for the call, and once more for the team
+// messages an allowed Claude Code call carries (#821). One git call, not two.
+test('hook: an allowed call asks git for the root once (#821)', { skip: process.platform === 'win32' && 'the fake git is a node script with no .cmd shim' }, async () => {
+  const sandbox = makeSandbox();
+  const bin = makeTempDir('yokoten-fake-git-');
+  const log = join(bin, 'git.log');
+  const realGit = (process.env.PATH ?? '').split(delimiter).map((dir) => join(dir, 'git')).find((file) => existsSync(file));
+  assert.ok(realGit, 'git is on PATH');
+  // A git that writes down its arguments, then runs the real one.
+  writeFileSync(join(bin, 'git'), `#!/usr/bin/env node\nimport { spawnSync } from 'node:child_process';\nimport { appendFileSync } from 'node:fs';\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nconst done = spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: 'inherit', env: process.env });\nprocess.exit(done.status ?? 1);\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'ls -la' } });
+  const result = await sandbox.call(['hook'], { input, extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0);
+  assert.ok(existsSync(log), 'the guard asked git');
+  const asked = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
+  assert.equal(asked.filter((args) => args.join(' ') === 'rev-parse --show-toplevel').length, 1);
 });
