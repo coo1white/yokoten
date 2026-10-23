@@ -212,18 +212,28 @@ export function windowsTreeKillArgs(pid: number): string[] {
 }
 
 /**
- * The done-when command, passed to the Windows job host in the environment and removed
- * before `cmd.exe` starts, so the command does not see its own text there (#735).
+ * The done-when command, as `cmd.exe` runs it after `/d /s /c`, passed to the Windows job
+ * host in the environment and removed before `cmd.exe` starts, so the command does not see
+ * its own text there (#735).
  */
 const DONE_COMMAND_ENV = 'YOKOTEN_DONE_COMMAND';
+
+/**
+ * The command text that follows `/d /s /c`. `/s` makes `cmd.exe` drop one pair of outer
+ * quotes, so a command that starts with a quote gets a pair of ours; any other command
+ * keeps its own text, and its quotes are never read as ours (#735).
+ */
+export function windowsCommandTail(command: string): string {
+  return command.trimStart().startsWith('"') ? `"${command}"` : command;
+}
 
 /**
  * PowerShell that puts `cmd.exe` in a job and closes the job when `cmd.exe` exits.
  * `taskkill /T` finds a tree only while its root is still running, and the root is already
  * gone by the time a passing check returns (#735). The job holds the tree. No native module:
  * Windows PowerShell compiles this once per check. If PowerShell is missing, blocked, or
- * cannot start the job, the check runs `cmd.exe` the old way. A program it left behind
- * can then keep running.
+ * cannot start the job, the check runs `cmd.exe` the old way and says on stderr when the job
+ * was the reason. A program it left behind can then keep running.
  */
 const WINDOWS_JOB_SCRIPT = `
 $ErrorActionPreference = 'Stop'
@@ -263,6 +273,9 @@ public class YokotenJob {
 
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool TerminateProcess(IntPtr process, uint code);
 
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool GetExitCodeProcess(IntPtr process, out uint code);
@@ -344,7 +357,7 @@ public class YokotenJob {
     SetHandleInformation(handle, 1, 1);
   }
 
-  static void TryKillOnClose(IntPtr job) {
+  static bool TryKillOnClose(IntPtr job) {
     JOBOBJECT_BASIC_LIMIT_INFORMATION basic = new JOBOBJECT_BASIC_LIMIT_INFORMATION();
     basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
@@ -353,18 +366,23 @@ public class YokotenJob {
     IntPtr ptr = Marshal.AllocHGlobal(length);
     try {
       Marshal.StructureToPtr(info, ptr, false);
-      SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length);
+      return SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length);
     } finally {
       Marshal.FreeHGlobal(ptr);
     }
   }
 
-  public static int Run(string comspec, string command) {
+  // Runs the command line in tail in a job, and stops the whole job once cmd.exe exits.
+  // A failed job is not guessed at: the caller runs the check without one and says so (#735).
+  public static int Run(string comspec, string tail) {
     IntPtr job = CreateJobObject(IntPtr.Zero, null);
-    bool haveJob = job != IntPtr.Zero;
-    if (haveJob) {
-      try { TryKillOnClose(job); }
-      catch { CloseHandle(job); haveJob = false; job = IntPtr.Zero; }
+    if (job == IntPtr.Zero) throw new InvalidOperationException("job");
+    bool ready;
+    try { ready = TryKillOnClose(job); }
+    catch { ready = false; }
+    if (!ready) {
+      CloseHandle(job);
+      throw new InvalidOperationException("job");
     }
     STARTUPINFO startup = new STARTUPINFO();
     startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
@@ -376,9 +394,9 @@ public class YokotenJob {
     MakeInheritable(startup.stdInput);
     MakeInheritable(startup.stdOutput);
     MakeInheritable(startup.stdError);
-    int capacity = (command == null ? 0 : command.Length) + (comspec == null ? 0 : comspec.Length) + 64;
+    int capacity = (tail == null ? 0 : tail.Length) + (comspec == null ? 0 : comspec.Length) + 32;
     StringBuilder line = new StringBuilder(capacity);
-    line.Append('"').Append(comspec).Append("\\" /d /s /c \\"").Append(command).Append('"');
+    line.Append('"').Append(comspec).Append("\\" /d /s /c ").Append(tail);
     PROCESS_INFORMATION info;
     bool created = CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED, IntPtr.Zero, null, ref startup, out info);
     if (!created) {
@@ -387,26 +405,36 @@ public class YokotenJob {
       startup.stdInput = IntPtr.Zero;
       startup.stdOutput = IntPtr.Zero;
       startup.stdError = IntPtr.Zero;
-      line.Length = 0;
-      line.Append('"').Append(comspec).Append("\\" /d /s /c \\"").Append(command).Append('"');
       created = CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED, IntPtr.Zero, null, ref startup, out info);
     }
     if (!created) {
-      if (haveJob) CloseHandle(job);
+      CloseHandle(job);
       throw new InvalidOperationException("create");
     }
+    if (!AssignProcessToJobObject(job, info.process)) {
+      // A parent job that takes no nested job cannot hold this tree. Stop the suspended
+      // start, and let the caller run the check without a job instead of claiming one.
+      TerminateProcess(info.process, 1);
+      CloseHandle(info.thread);
+      CloseHandle(info.process);
+      CloseHandle(job);
+      throw new InvalidOperationException("job");
+    }
     try {
-      if (haveJob) AssignProcessToJobObject(job, info.process);
-      ResumeThread(info.thread);
+      if (ResumeThread(info.thread) == uint.MaxValue) throw new InvalidOperationException("resume");
       WaitForSingleObject(info.process, uint.MaxValue);
       uint code;
       if (!GetExitCodeProcess(info.process, out code)) code = 1;
-      if (haveJob) TerminateJobObject(job, 1);
+      TerminateJobObject(job, 1);
       return unchecked((int)code);
+    } catch {
+      // The start never ran the command, so the caller can still run it another way.
+      TerminateProcess(info.process, 1);
+      throw;
     } finally {
       CloseHandle(info.thread);
       CloseHandle(info.process);
-      if (haveJob) CloseHandle(job);
+      CloseHandle(job);
     }
   }
 }
@@ -416,8 +444,16 @@ try {
   $codeExit = [YokotenJob]::Run($comspec, $command)
   exit $codeExit
 } catch {
-  & $comspec /d /s /c $command
-  exit $LASTEXITCODE
+  if ($_.Exception.InnerException -and $_.Exception.InnerException.Message -eq 'job') {
+    [Console]::Error.WriteLine('yokoten: the check could not be held in a job, so a program it leaves running may keep running')
+  }
+  $start = New-Object System.Diagnostics.ProcessStartInfo
+  $start.FileName = $comspec
+  $start.Arguments = '/d /s /c ' + $command
+  $start.UseShellExecute = $false
+  $run = [System.Diagnostics.Process]::Start($start)
+  $run.WaitForExit()
+  exit $run.ExitCode
 }
 `;
 
@@ -548,14 +584,24 @@ function killCommandTree(pid: number): void {
 
 /**
  * Start the done-when command. `powerShell` puts `cmd.exe` in a job. Null starts the
- * platform shell: a new session on POSIX, `cmd.exe` on Windows.
+ * platform shell: a new session on POSIX, `cmd.exe` on Windows. Both Windows paths build
+ * the command line with `windowsCommandTail`, so a quote is the command's own (#735).
  */
 function spawnDoneWhen(command: string, cwd: string, env: Record<string, string>, powerShell: string | null): ChildProcess {
   if (powerShell) {
     return spawn(powerShell, windowsJobArgs(), {
       cwd,
-      env: { ...env, [DONE_COMMAND_ENV]: command },
+      env: { ...env, [DONE_COMMAND_ENV]: windowsCommandTail(command) },
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+  if (process.platform === 'win32') {
+    return spawn(doneWhenShell(), ['/d', '/s', '/c', windowsCommandTail(command)], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsVerbatimArguments: true,
       windowsHide: true,
     });
   }
@@ -564,7 +610,7 @@ function spawnDoneWhen(command: string, cwd: string, env: Record<string, string>
     cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    detached: process.platform !== 'win32',
+    detached: true,
     windowsHide: true,
   });
 }

@@ -41,6 +41,7 @@ import {
   startGuard,
   wasRefusedRecently,
   powerShellBlocked,
+  windowsCommandTail,
   windowsJobArgs,
   windowsPowerShellPath,
   windowsTreeKillArgs,
@@ -404,11 +405,29 @@ test('done-when: Windows starts cmd.exe in a job that closes with the shell (#73
   const script = Buffer.from(encoded, 'base64').toString('utf16le');
   assert.equal(args.includes('-EncodedCommand'), true);
   assert.match(script, /TerminateJobObject/);
+  // A job that was not made, or that will not take the process, is not pretended: the
+  // suspended start is stopped, and the check runs without a job (#735).
+  assert.match(script, /if \(!AssignProcessToJobObject\(job, info\.process\)\)/);
+  assert.match(script, /return SetInformationJobObject/);
+  assert.match(script, /if \(!ready\)/);
+  assert.match(script, /TerminateProcess\(info\.process, 1\)/);
+  assert.match(script, /could not be held in a job/);
   assert.match(script, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000/);
   assert.match(script, /CREATE_SUSPENDED = 4/);
   assert.match(script, /YOKOTEN_DONE_COMMAND/);
   assert.match(script, /Remove-Item Env:\\YOKOTEN_DONE_COMMAND/);
   assert.match(script, /\/d \/s \/c/);
+});
+
+// `cmd.exe /d /s /c` with /s drops one pair of outer quotes. So the tail gets a pair of
+// ours only when the command starts with a quote; a quote inside the command is the
+// command's own, and the command still reaches cmd as one command (#735).
+test('done-when: a Windows command keeps its own quotes in the tail after /c (#735)', () => {
+  assert.equal(windowsCommandTail('node --test'), 'node --test');
+  assert.equal(windowsCommandTail('node -e "console.log(1)"'), 'node -e "console.log(1)"');
+  assert.equal(windowsCommandTail('echo "a & b"'), 'echo "a & b"', 'no outer pair, so no quote of ours to lose');
+  assert.equal(windowsCommandTail('"C:\\Program Files\\node.exe" --test'), '"\"C:\\Program Files\\node.exe" --test"');
+  assert.equal(windowsCommandTail(' "C:\\Program Files\\node.exe" --test'), '" "C:\\Program Files\\node.exe" --test"');
 });
 
 test('windowsPowerShellPath: only the real program, and a blocked start is ENOENT or EACCES (#735)', () => {
