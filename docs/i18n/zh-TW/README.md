@@ -7,6 +7,8 @@
 
 寫程式變便宜了。把程式管好，沒有一起變便宜。yokoten 要各家的 agent 都遵守你的規則，也讓你在同一塊看板上看見整個團隊。決定權始終在你。
 
+yokoten 之於 AI 寫的程式，就像 UL 認證之於電器：它不製造電器，只讓每家廠商都通過同一套安全標準。
+
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](https://github.com/yokoten-labs/yokoten/blob/main/README.md) | [简体中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/README.md) | 繁體中文 | [日本語](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
@@ -57,7 +59,7 @@ yokoten 就是由這樣的團隊做出來的。lead 負責規劃和審查，各�
 
 **Agent。** 守衛可以在這些環境執行：Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness 和 Grok CLI。Gemini CLI 有列出來，但還沒有從頭到尾確認過。[agent 表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)寫著每一種是怎麼測的。
 
-**語言。** 專案用哪種語言都可以。守衛、隱私和密鑰檢查、CI，以及 issue 和 PR 檢查，在每種語言裡都一樣。`doctor` 找得到測試指令的有 JavaScript 和 TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart，還有任何提供 `make test` 的專案。其中大多數，`init` 會寫好執行測試的 CI 工作。
+**語言。** 專案用哪種語言都可以。守衛、隱私和密鑰檢查、CI，以及 issue 和 PR 檢查，在每種語言裡都一樣。`doctor` 找得到測試指令的有 JavaScript 和 TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart，還有任何提供 `make test` 的專案。其中 Go、Python、Rust、.NET、Ruby 和 PHP，`init` 會寫好執行測試的 CI 工作。
 
 ## 為什麼要做
 

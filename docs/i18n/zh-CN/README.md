@@ -7,6 +7,8 @@
 
 AI 让写代码变便宜了，管代码却没有。哪家的 agent，yokoten 都让它守你的规则，并把整个团队放在一块看板上。拍板的永远是你。
 
+yokoten 之于 AI 写的代码，就像 UL 认证之于电器：它不造电器，只让每家厂商都过同一套安全标准。
+
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](https://github.com/yokoten-labs/yokoten/blob/main/README.md) | 简体中文 | [繁體中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-TW/README.md) | [日本語](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
@@ -57,7 +59,7 @@ yokoten 自己就是这样一支团队做出来的。lead 负责计划和审查�
 
 **Agent。** 守卫能在这些里面跑：Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness 和 Grok CLI。Gemini CLI 只是列在这里，还没有完整跑过。[agent 表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)写着每一种是怎么测的。
 
-**语言。** 项目用什么语言都可以。守卫、隐私和密钥检查、CI，还有 issue 和 PR 检查，在各种语言里都一样。`doctor` 能找到测试命令的，有 JavaScript 和 TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart，以及任何有 `make test` 的项目。其中大部分，`init` 会替你写好跑测试的 CI 任务。
+**语言。** 项目用什么语言都可以。守卫、隐私和密钥检查、CI，还有 issue 和 PR 检查，在各种语言里都一样。`doctor` 能找到测试命令的，有 JavaScript 和 TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart，以及任何有 `make test` 的项目。其中 Go、Python、Rust、.NET、Ruby 和 PHP，`init` 会替你写好跑测试的 CI 任务。
 
 ## 为什么做它
 

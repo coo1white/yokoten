@@ -7,6 +7,8 @@
 
 AI でコードを書くのは安くなりました。管理は違います。yokoten は、どのベンダーのエージェントにもあなたのルールを守らせ、チーム全体を一つのボードに出します。決めるのはあなたです。
 
+AI が書いたコードにとっての yokoten は、電気製品にとっての UL 認証のようなものです。製品は作らず、どのメーカーにも同じ安全基準を守らせます。
+
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](https://github.com/yokoten-labs/yokoten/blob/main/README.md) | [简体中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/README.md) | [繁體中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-TW/README.md) | 日本語
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
@@ -59,7 +61,7 @@ yokoten 自身も、このようなチームで作っています。リードの
 
 **エージェント。** 番人は、Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness、Grok CLI で動きます。Gemini CLI は一覧にありますが、端から端まではまだ確認していません。[エージェント表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)に、それぞれの試し方が書いてあります。
 
-**言語。** プロジェクトの言語は問いません。番人、個人情報と秘密情報のチェック、CI、issue とプルリクエストのチェックは、どの言語でも同じように動きます。`doctor` は、JavaScript と TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart、そして `make test` があるプロジェクトについて、テストのコマンドを見つけます。その多くでは、`init` がテストを走らせる CI のジョブを書きます。
+**言語。** プロジェクトの言語は問いません。番人、個人情報と秘密情報のチェック、CI、issue とプルリクエストのチェックは、どの言語でも同じように動きます。`doctor` は、JavaScript と TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart、そして `make test` があるプロジェクトについて、テストのコマンドを見つけます。Go、Python、Rust、.NET、Ruby、PHP では、`init` がテストを走らせる CI のジョブを書きます。
 
 ## なぜ作ったのか
 

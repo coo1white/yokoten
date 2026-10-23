@@ -7,6 +7,9 @@
 AI made writing code cheap, not managing it. yokoten holds every agent to your rules,
 from any vendor, and shows the whole team on one board. You make the calls.
 
+yokoten is to AI-written code what UL certification is to electrical appliances: it
+doesn't build the product, it holds every maker to the same safety rules.
+
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; English | [简体中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/README.md) | [繁體中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-TW/README.md) | [日本語](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/README.md)
 
 [![ci](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml/badge.svg)](https://github.com/yokoten-labs/yokoten/actions/workflows/yokoten.yml)
@@ -81,8 +84,8 @@ says how each one was tested.
 **Languages.** Your project can be in any language: the guard, the privacy and secrets
 check, CI and the issue and pull request checks work the same in all of them. `doctor`
 finds the test command for JavaScript and TypeScript, Python, Go, Rust, Java, .NET, Ruby,
-PHP, Swift, Elixir, Dart and any `make test`, and for most of them `init` writes the CI job
-that runs it.
+PHP, Swift, Elixir, Dart and any `make test`, and for Go, Python, Rust, .NET,
+Ruby and PHP `init` writes the CI job that runs it.
 
 ## Why
 
