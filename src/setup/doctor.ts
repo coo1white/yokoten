@@ -421,8 +421,8 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 
-/** The one command that updates the plugin, from a shell. */
-export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`, then restart Claude Code';
+/** The shell command that updates the plugin, and when the new guard runs. */
+export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart';
 
 /** The default branch refs doctor compares against, the first one present wins. Local only, no fetch. */
 const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/heads/main'];

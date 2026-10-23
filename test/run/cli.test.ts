@@ -17,6 +17,7 @@ import {
   join,
 } from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import {
   at,
   CLI,
@@ -387,7 +388,7 @@ test('hooks: a tool-call guard that fails refuses the call; the stop check does 
 // The plugin hook reads installed_plugins.json on every call (#706). A path is used only
 // when it is a real file inside Claude's plugin cache. Anything else falls back to the
 // session copy, or refuses when that file is gone too. The checks live in bin/launch.mjs.
-test('plugin launcher: a safe cache copy runs, and any other path does not (#706)', () => {
+test('plugin launcher: a safe cache copy runs, and any other path does not (#706)', async () => {
   const sandbox = makeSandbox();
   const home = sandbox.home;
   const rootDir = join(sandbox.repo, 'plugin-root');
@@ -422,11 +423,13 @@ test('plugin launcher: a safe cache copy runs, and any other path does not (#706
     rmSync(join(sandbox.repo, 'linked'), { recursive: true, force: true });
     rmSync(join(sandbox.repo, 'evil.mjs'), { force: true });
   };
-  // The resolver tests call the file. The mode is the first argument, then the fallback file.
+  // Resolver cases call runLaunch in this process (#475). The shell below is a child:
+  // only a shell runs the hook command.
+  const launch = await import(pathToFileURL(launchFile).href);
   const run = (command: string) => {
     const mode = command === sessionCommand ? 'session' : 'tool';
     const yokotenArgs = mode === 'session' ? ['doctor', '--session'] : ['hook', '--commands-only'];
-    return spawnSync(process.execPath, [launchFile, mode, rootBinary, ...yokotenArgs], { cwd: sandbox.repo, env: sandbox.env, input: '{}', encoding: 'utf8', timeout: 15000 });
+    return launch.runLaunch({ mode, fallback: rootBinary, args: yokotenArgs, env: sandbox.env, input: '{}', cwd: sandbox.repo });
   };
   const shell = (command: string, sh = '/bin/sh') => spawnSync(command, { shell: sh, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: rootDir }, input: '{}', encoding: 'utf8', timeout: 15000 });
   const withRoot = () => script(rootBinary, 'root');
