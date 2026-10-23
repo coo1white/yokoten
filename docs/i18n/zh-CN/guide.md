@@ -288,7 +288,7 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
 `~/.claude/settings.json`；有 `~/.codex`、`~/.gemini` 文件夹的话，也写进
 `~/.codex/hooks.json` 和 `~/.gemini/settings.json`。有 Muse 的配置文件夹的话，Muse Code 两个都装，写进
 `~/.config/muse/settings.json`（设了 `$XDG_CONFIG_HOME` 就写进 `$XDG_CONFIG_HOME/muse/settings.json`）。有 `~/.grok` 的话，Grok CLI 只装命令守卫，写进
-`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。有 `~/.config/opencode` 的话，OpenCode 只装命令守卫，写进 `~/.config/opencode/plugins/yokoten.ts`。Grok 的信任检查关掉时（设了 `GROK_FOLDER_TRUST=0`，或者 `~/.grok/config.toml` 里写了 `[folder_trust] enabled = false`），`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
+`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。有 `~/.gemini/config` 的话，Antigravity CLI 只装命令守卫，写进 `~/.gemini/config/hooks.json`。有 `~/.copilot` 的话，Copilot CLI 也装命令守卫，写进 `~/.copilot/hooks/yokoten.json`。两者都还没有收尾检查：agy 的 Stop 事件没有重入信号，Copilot 的钩子超时后会放行调用。有 `~/.config/opencode` 的话，OpenCode 只装命令守卫，写进 `~/.config/opencode/plugins/yokoten.ts`。Grok 的信任检查关掉时（设了 `GROK_FOLDER_TRUST=0`，或者 `~/.grok/config.toml` 里写了 `[folder_trust] enabled = false`），`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
 文件，守卫都会查，在 shell 里跑的也查。
 
 每个工具都要你先信任，项目钩子才会跑：

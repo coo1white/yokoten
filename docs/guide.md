@@ -321,7 +321,11 @@ guard. They go in `~/.claude/settings.json`, and in `~/.codex/hooks.json` and
 `~/.config/muse/settings.json` (`$XDG_CONFIG_HOME/muse/settings.json` when that is set),
 when its config folder exists. Grok CLI gets only the command guard,
 in `~/.grok/hooks/yokoten.json`, when `~/.grok` exists: it shows a session-start hook's
-output to you, not to the agent. OpenCode gets the command guard in
+output to you, not to the agent. Antigravity CLI gets only the command guard, in
+`~/.gemini/config/hooks.json`, when `~/.gemini/config` exists. Copilot CLI gets it in
+`~/.copilot/hooks/yokoten.json` when `~/.copilot` exists. Neither has a stop check yet:
+agy's Stop event has no re-entry signal, and Copilot lets a timed-out hook go on.
+OpenCode gets the command guard in
 `~/.config/opencode/plugins/yokoten.ts` when `~/.config/opencode` exists. `doctor` counts every folder as trusted when
 Grok's trust gate is off: `GROK_FOLDER_TRUST=0`, or `[folder_trust] enabled = false` in
 `~/.grok/config.toml`. In Codex, the guard checks the files

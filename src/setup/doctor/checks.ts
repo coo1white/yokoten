@@ -303,7 +303,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
  * yokoten there.
  */
 export function userAgentHooks(env: Env): Practice[] {
-  const report = (id: 'codex-user-hook' | 'gemini-user-hook' | 'grok-user-hook' | 'muse-user-hook' | 'opencode-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
+  const report = (id: 'antigravity-user-hook' | 'codex-user-hook' | 'copilot-user-hook' | 'gemini-user-hook' | 'grok-user-hook' | 'muse-user-hook' | 'opencode-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
     // Grok CLI has no session-start doctor: it shows that output only to the user.
     const named = [...(hooks.doctor === undefined ? [] : [['session-start doctor', hooks.doctor] as const]), ['command guard', hooks.guard] as const];
     const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
@@ -319,7 +319,9 @@ export function userAgentHooks(env: Env): Practice[] {
     return practice(id, id, !missing.length, `${missing.map((name) => `no ${name}`).join(' and ')} in ${file}`, `\`yokoten install\` adds ${them(missing)}`);
   };
   const checks: Practice[] = [];
+  if (antigravity.hasUserDir(env)) checks.push(report('antigravity-user-hook', antigravity.userHooksState(env, USER_CLI, USER_MISSING), antigravity.userHooksFile(env)));
   if (codex.hasUserDir(env)) checks.push(report('codex-user-hook', codex.userHooksState(env, USER_CLI, USER_MISSING), '~/.codex/hooks.json'));
+  if (copilot.hasUserDir(env)) checks.push(report('copilot-user-hook', copilot.userHooksState(env, USER_CLI, USER_MISSING), copilot.userHooksFile(env)));
   if (gemini.hasUserDir(env)) checks.push(report('gemini-user-hook', gemini.userHooksState(env, USER_CLI, USER_MISSING), '~/.gemini/settings.json'));
   if (grok.hasUserDir(env)) checks.push(report('grok-user-hook', grok.userHooksState(env, USER_CLI, USER_MISSING), grok.userHooksFile(env)));
   if (muse.hasUserDir(env)) checks.push(report('muse-user-hook', muse.userHooksState(env, USER_CLI, USER_MISSING), muse.userSettingsFile(env)));

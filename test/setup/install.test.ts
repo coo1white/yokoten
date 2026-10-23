@@ -254,6 +254,53 @@ test('install: the session doctor and the command guard for Codex and Gemini CLI
   assert.equal(shell(gemini.hooks.BeforeTool[1].hooks[0].command, { ...push, hook_event_name: 'BeforeTool', tool_name: 'run_shell_command' }).status, 2, 'Gemini CLI');
 });
 
+// #342: agy and Copilot CLI also read user-level hooks, outside any project. The positive
+// control is doctor's note before install, and the guard refusing a tag push through the
+// command install wrote.
+test('install: the user-level command guard for Antigravity CLI and Copilot CLI, safe twice (#342)', async () => {
+  const sandbox = makeSandbox();
+  const agyFile = join(sandbox.home, '.gemini', 'config', 'hooks.json');
+  const copilotFile = join(sandbox.home, '.copilot', 'hooks', 'yokoten.json');
+  mkdirSync(dirname(agyFile), { recursive: true });
+  mkdirSync(dirname(copilotFile), { recursive: true });
+  writeFileSync(agyFile, JSON.stringify({ lint: { PreToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] } }));
+  writeFileSync(copilotFile, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine' }] }] } }));
+  const before = await sandbox.call(['doctor']);
+  assert.match(before.stdout, /note {4}antigravity-user-hook: no command guard in ~\/\.gemini\/config\/hooks\.json; `yokoten install` adds it/);
+  assert.match(before.stdout, /note {4}copilot-user-hook: no command guard in ~\/\.copilot\/hooks\/yokoten\.json; `yokoten install` adds it/);
+  let result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^added the Antigravity CLI command guard in ~\/\.gemini\/config\/hooks\.json$/m);
+  assert.match(result.stdout, /^added the Copilot CLI command guard in ~\/\.copilot\/hooks\/yokoten\.json$/m);
+  result = await sandbox.call(['install']);
+  assert.match(result.stdout, /^same the Antigravity CLI command guard in ~\/\.gemini\/config\/hooks\.json$/m);
+  assert.match(result.stdout, /^same the Copilot CLI command guard in ~\/\.copilot\/hooks\/yokoten\.json$/m);
+  for (const id of ['antigravity-user-hook', 'copilot-user-hook']) assert.match((await sandbox.call(['doctor'])).stdout, new RegExp(`^  ok {6}${id}$`, 'm'));
+  const saved = JSON.parse(readFileSync(agyFile, 'utf8'));
+  assert.ok(saved.lint, "another entry stays");
+  assert.equal(saved.yokoten.PreToolUse[0].matcher, 'run_command');
+  const copilot = JSON.parse(readFileSync(copilotFile, 'utf8'));
+  assert.equal(copilot.hooks.PreToolUse[0].hooks[0].command, 'mine', "the user's hook stays");
+  assert.equal(copilot.hooks.PreToolUse[1].matcher, 'Bash');
+  // A real run through the shell install wrote: a tag push is refused in each shape.
+  const shell = (text: string, input: object) => spawnSync(text, { shell: '/bin/sh', cwd: sandbox.repo, env: sandbox.env, input: JSON.stringify(input), encoding: 'utf8' });
+  const agyPush = { toolCall: { name: 'run_command', args: { CommandLine: 'git push --tags', Cwd: sandbox.repo } }, workspacePaths: [sandbox.repo] };
+  const agy = shell(saved.yokoten.PreToolUse[0].hooks[0].command, agyPush);
+  assert.equal(agy.status, 0, 'agy reads the decision, not the exit code');
+  assert.match(JSON.parse(agy.stdout).reason, /git push --tags pushes tags/);
+  const copilotPush = { session_id: 's1', cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push --tags' } };
+  const cp = shell(copilot.hooks.PreToolUse[1].hooks[0].command, copilotPush);
+  assert.equal(cp.status, 2);
+  assert.match(cp.stderr, /git push --tags pushes tags/);
+  // uninstall takes the guard out and leaves the user's own entries.
+  const removed = sandbox.run(['uninstall']);
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.match(removed.stdout, /^removed the Antigravity CLI command guard in ~\/\.gemini\/config\/hooks\.json$/m);
+  assert.match(removed.stdout, /^removed the Copilot CLI command guard in ~\/\.copilot\/hooks\/yokoten\.json$/m);
+  assert.deepEqual(JSON.parse(readFileSync(agyFile, 'utf8')), { lint: { PreToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] } });
+  assert.deepEqual(JSON.parse(readFileSync(copilotFile, 'utf8')), { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine' }] }] } });
+});
+
 // #248: a hooks file that won't parse, or where a key yokoten edits has the wrong type, is
 // named and skipped, byte for byte as it was; the other CLI still gets its hooks, and install
 // fails. A parse error asks for valid JSON; a wrong shape names the key instead.

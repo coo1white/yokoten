@@ -390,6 +390,12 @@ export const RULES = {
     check: "`doctor` looks for this folder, or a folder above it, in `trustedFolders` in Copilot's config.json (read-only); a note, not a missing step",
     docs: guide('works-with'),
   },
+  'copilot-user-hook': {
+    rule: "Copilot CLI runs yokoten's command guard in every folder",
+    why: 'without it, a tag push, force push or skipped check by Copilot CLI in a repo without yokoten is not stopped',
+    check: "when ~/.copilot (or $COPILOT_HOME) is a folder, `doctor` compares the PreToolUse hook in ~/.copilot/hooks/yokoten.json with what `yokoten install` writes; a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
   'codex-hook': {
     rule: "the project has Codex's tool-call guard and stop check, and Codex trusts the folder and both hooks",
     why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file. Codex skips an untrusted hook without a word",
@@ -407,6 +413,12 @@ export const RULES = {
     rule: "the project has Antigravity CLI's tool-call guard",
     why: "without it, Antigravity CLI's commands and edits in this project are not checked",
     check: '`doctor` reads .agents/hooks.json for the `yokoten` PreToolUse hook that runs `yokoten hook --agent antigravity`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
+  'antigravity-user-hook': {
+    rule: "Antigravity CLI runs yokoten's command guard in every workspace",
+    why: 'without it, a tag push, force push or skipped check in a workspace without yokoten is not stopped',
+    check: "when ~/.gemini/config is a folder, `doctor` compares the PreToolUse hook in ~/.gemini/config/hooks.json with what `yokoten install` writes; a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'muse-hook': {

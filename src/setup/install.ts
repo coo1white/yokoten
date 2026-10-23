@@ -8,7 +8,9 @@
 // - PreToolUse (BeforeTool in Gemini CLI) runs `hook --commands-only`: no tag pushes, no
 //   force pushes, no skipped checks, in every repo, adopted or not.
 //
-// Grok CLI gets the PreToolUse guard only, in ~/.grok/hooks/yokoten.json.
+// Grok CLI, Antigravity CLI and Copilot CLI get the PreToolUse guard only, in
+// ~/.grok/hooks/yokoten.json, ~/.gemini/config/hooks.json and
+// ~/.copilot/hooks/yokoten.json.
 //
 // `yokoten uninstall` takes back what install wrote and marked as its own, for a machine
 // that moves to the Claude Code plugin (#300): the plugin brings the same pieces, and both
@@ -26,9 +28,11 @@ import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
+import * as copilot from '../agents/copilot.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
+import * as antigravity from '../agents/runtimes/small/antigravity.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import * as opencode from '../agents/runtimes/small/opencode.ts';
@@ -340,6 +344,23 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ok &&= geminiHooks.ok;
     report.push(...geminiHooks.lines);
   } else report.push('skipped Gemini CLI: ~/.gemini not found (run `yokoten install` again after installing Gemini CLI)');
+  // Antigravity CLI and Copilot CLI have user-level hooks too: agy in ~/.gemini/config,
+  // Copilot in ~/.copilot/hooks. Either guards a repo without yokoten (#342). Both get the
+  // command guard alone: agy has no session-start event, and Copilot's file builds on
+  // Claude Code's shape but no real run has shown its SessionStart. Neither gets a stop
+  // check: agy's Stop has no `stop_hook_active`, and Copilot lets a timed-out hook go on.
+  if (antigravity.hasUserDir(env)) {
+    const file = antigravity.userHooksFile(env);
+    const agyHooks = agentHooks('Antigravity CLI', file, () => [`${antigravity.addUserHooks(env, USER_CLI, USER_MISSING).guard} the Antigravity CLI command guard in ${file}`]);
+    ok &&= agyHooks.ok;
+    report.push(...agyHooks.lines);
+  } else report.push('skipped Antigravity CLI: ~/.gemini/config not found (run `yokoten install` again after installing Antigravity CLI)');
+  if (copilot.hasUserDir(env)) {
+    const file = copilot.userHooksFile(env);
+    const copilotHooks = agentHooks('Copilot CLI', file, () => [`${copilot.addUserHooks(env, USER_CLI, USER_MISSING).guard} the Copilot CLI command guard in ${file}`]);
+    ok &&= copilotHooks.ok;
+    report.push(...copilotHooks.lines);
+  } else report.push('skipped Copilot CLI: ~/.copilot not found (run `yokoten install` again after installing Copilot CLI)');
   // Grok CLI gets the command guard alone: it shows a session-start hook's output only to
   // the user, never to the agent (#407).
   if (grok.hasUserDir(env)) {
@@ -463,6 +484,14 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const hooks = removeUserHooks(env);
   if (hooks) report.push(`${hooks.doctor} the SessionStart doctor`, `${hooks.guard} the user-level command guard`);
   else report.push(`kept ${settings}: it is not JSON, so the two hooks are still in it; take them out by hand`);
+  // The user-level guards outside Claude Code's settings (#342).
+  for (const [name, file, removed] of [
+    ['Antigravity CLI', antigravity.userHooksFile(env), antigravity.hasUserDir(env) ? antigravity.removeUserHooks(env) : 'not there'],
+    ['Copilot CLI', copilot.userHooksFile(env), copilot.hasUserDir(env) ? copilot.removeUserHooks(env) : 'not there'],
+  ] as const) {
+    if (removed === null) report.push(`kept ${file}: it is not JSON, so the ${name} command guard is still in it; take it out by hand`);
+    else if (removed === 'removed') report.push(`removed the ${name} command guard in ${file}`);
+  }
 
   report.push(...trySafely('the launcher', () => removeLauncher(homeIn(env), platform)));
   const hadRuntime = existsSync(target.runtime);
