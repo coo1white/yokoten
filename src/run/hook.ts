@@ -798,10 +798,18 @@ type JudgeOptions = Parameters<typeof judge>[1];
 // It starts as plain JavaScript: this module's imports are compiled before any of its
 // code runs, and the cache must be on by then. An error from the cache is ignored, as in
 // bin/yokoten.mjs.
+// The worker code uses no `require`: an eval worker is plain CommonJS on some Node versions
+// and an ES module on others, and `import()` works in both. A `require` there failed the
+// whole guard with "require is not defined in ES module scope" on Node 26.12.1.
 const workerStart = (cacheDir = module.getCompileCacheDir?.()) => `
-const { enableCompileCache } = require('node:module');
-try { enableCompileCache?.(${cacheDir === undefined ? '' : JSON.stringify(cacheDir)}); } catch {}
-import(${JSON.stringify(import.meta.url)});
+const start = async () => {
+  try {
+    const { enableCompileCache } = await import('node:module');
+    enableCompileCache?.(${cacheDir === undefined ? '' : JSON.stringify(cacheDir)});
+  } catch {}
+  await import(${JSON.stringify(import.meta.url)});
+};
+start();
 `;
 
 /** The guard worker's stack, in MB: about the main thread's. */

@@ -5,6 +5,7 @@ import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { claudeItems, codexItems, cut, describeCall, grokItems, museItems } from '../../../../../src/commands/advice/board/feed/items.ts';
+import { finding, formatRefusal } from '../../../../../src/rules/message.ts';
 
 const TREE = '/work/repo';
 
@@ -19,6 +20,10 @@ test('board stream: a call reads in a few words, and the whole call opens on cli
   // A guard's refusal stands out from the other output.
   const [stop] = claudeItems({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', is_error: true, content: 'yokoten: `rm -rf` is blocked in this project.' }] } }, TREE);
   assert.equal(stop.kind, 'stop');
+  // #707: the same four parts a person reads, so the board never draws a wall of text.
+  const refusal = formatRefusal(finding('force-push', 'git push --force forces the push', 'pull first, then push'));
+  const [refused] = claudeItems({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', is_error: true, content: refusal }] } }, TREE);
+  assert.deepEqual([refused?.refusal?.id, refused?.refusal?.why, refused?.refusal?.fix], ['force-push', 'A plain force push can throw away work that someone else pushed.', 'Pull first, then push.']);
   assert.deepEqual(museItems('not a record', TREE), []);
   assert.deepEqual(grokItems({ type: 'user', content: 'the task' }, TREE), [], 'the prompts stay out');
   const [failed] = claudeItems({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', is_error: true, content: 'no such file' }] } }, TREE);

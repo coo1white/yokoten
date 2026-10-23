@@ -133,7 +133,7 @@ test('hook --stop: sends the agent back once with the findings in changed files,
   result = await sandbox.call(['hook', '--commands-only'], { cwd: away, input: JSON.stringify({ cwd: away, tool_name: 'Bash', tool_input: { command: 'git push --tags' } }) });
   assert.equal(result.status, 2);
   assert.doesNotMatch(result.stderr, /fatal|not a git repository/);
-  assert.match(result.stderr, /^yokoten: git push --tags pushes tags\..*`YOKOTEN_RELEASE_APPROVAL=1 claude` \(or your agent's command\)/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: Only the owner decides when to release\.\nDo instead: .*`YOKOTEN_RELEASE_APPROVAL=1 claude` \(or your agent's command\)/);
   // A broken config is an internal error: the turn ends, with one line on stderr.
   sandbox.write('yokoten.json', '{ broken');
   result = await sandbox.call(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo }) });
@@ -221,7 +221,7 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
   };
   for (const [agent, [input, fix]] of Object.entries(agents)) {
     const result = await sandbox.call(['hook', '--agent', agent], { input: JSON.stringify(input) });
-    assert.match(result.stderr, /^yokoten: git push --tags pushes tags\. Only the owner decides when to release\./, agent);
+    assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: Only the owner decides when to release\./, agent);
     assert.match(result.stderr, fix, agent);
     // --json carries the same fix.
     const json = JSON.parse((await sandbox.call(['hook', '--agent', agent, '--json'], { input: JSON.stringify(input) })).stdout);
@@ -231,6 +231,35 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
     assert.match(force.stderr, /git push --force/, `${agent}: a force push`);
     assert.doesNotMatch(force.stderr, /RELEASE_APPROVAL/, `${agent}: a force push`);
   }
+});
+
+// #707: Claude Code gets a deny in JSON on exit 0, so its "hook error" line and the shell
+// wrapper go away. GitHub Copilot CLI reads the same hook file and refuses on exit 2 alone,
+// so it keeps the old answer. No answer holds an ANSI code.
+test('hook: a refusal is the four parts, as JSON for Claude Code and exit 2 as the fallback (#707)', async () => {
+  const sandbox = makeSandbox();
+  const input = JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push --force' } });
+  const claude = await sandbox.call(['hook', '--agent', 'claude-code'], { input, extra: { CLAUDECODE: '1' } });
+  assert.equal(claude.status, 0, 'Claude Code reads the reason from JSON');
+  const answer = JSON.parse(claude.stdout);
+  assert.equal(answer.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(answer.hookSpecificOutput.permissionDecision, 'deny');
+  const reason = answer.hookSpecificOutput.permissionDecisionReason as string;
+  assert.match(reason, /^yokoten stopped this: git push --force forces the push \[force-push\]\nWhy: .+\nDo instead: .+\nMore: https:\/\/\S+$/);
+  assert.ok(claude.stderr.includes(reason), 'stderr keeps the reason too');
+  // No Claude Code marker: the reader may be Copilot CLI, which needs exit 2.
+  const fallback = await sandbox.call(['hook', '--agent', 'claude-code'], { input });
+  assert.equal(fallback.status, 2);
+  assert.equal(JSON.parse(fallback.stdout).permissionDecision, 'deny');
+  // The way back: an explicit old answer, even inside Claude Code.
+  const old = await sandbox.call(['hook', '--agent', 'claude-code'], { input, extra: { CLAUDECODE: '1', YOKOTEN_HOOK_DENIAL: 'exit2' } });
+  assert.equal(old.status, 2);
+  // A terminal never adds a code to a hook answer; --json still holds only data.
+  const tty = await invoke(['hook'], { env: sandbox.env, cwd: sandbox.repo, stdin: input, isTTY: true });
+  assert.equal(tty.code, 2);
+  const json = await sandbox.call(['hook', '--json'], { input });
+  assert.equal(json.status, 2);
+  assert.ok(!`${claude.stdout}${claude.stderr}${fallback.stdout}${fallback.stderr}${tty.stdout}${tty.stderr}${json.stdout}${json.stderr}`.includes('\u001b'), 'no ANSI code in a hook answer');
 });
 
 // ---- Commands that print account details (#390) ----
@@ -346,7 +375,7 @@ test("hook: an agent that can't rewrite runs the command, or with privacy.output
   const result = await codexCall();
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /^yokoten: `git remote` prints remote URLs, and this agent can't filter it\./);
+  assert.match(result.stderr, /^yokoten stopped this: `git remote` prints remote URLs, and this agent can't filter it \[[\w-]+\]\nWhy: /);
   assert.match(result.stderr, /Run it as `set -o pipefail # yokoten-redact\n\(\ngit remote -v\n\) 2>&1 \| \{ "[^"]+" "[^"]+" redact \|\| cat; \}`\./);
   // A push still runs: only plain reads are ever stopped.
   assert.deepEqual(pick(await codexCall('git push origin main')), [0, '', '']);
@@ -368,7 +397,7 @@ test('hook: in-process, the tool call and the end-of-turn event come from the gi
   const call = (command: string) => JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
   const force = await run([], call('git push --force'));
   assert.equal(force.code, 2);
-  assert.match(force.stderr, /^yokoten: git push --force forces the push\./);
+  assert.match(force.stderr, /^yokoten stopped this: git push --force forces the push \[force-push\]/);
   assert.deepEqual(await run([], call('git status')), { code: 0, stdout: '', stderr: '' });
   assert.deepEqual(await run(['--json'], 'not json'), { code: 0, stdout: `${JSON.stringify({ blocked: false, toolCall: false }, null, 2)}\n`, stderr: '' });
   // The stop check: a secret in a changed file sends the agent back, once.

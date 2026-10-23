@@ -30,12 +30,25 @@ export function readToolCall(input: unknown): Action {
 }
 
 /**
- * How a refusal reaches the agent: the reason on stderr and exit 2, as Claude Code reads it.
- * GitHub Copilot CLI reads this file's hooks too (checked with 1.0.98 on 2026-10-19). It
- * refuses on exit 2 but tells the agent only "hook exited with code 2", unless stdout
- * names the reason. Claude Code ignores stdout on exit 2.
+ * Whether the hook runs inside Claude Code itself. GitHub Copilot CLI reads this file's
+ * hooks too (checked with 1.0.98 on 2026-10-19), and it refuses on exit 2 but tells the
+ * agent only "hook exited with code 2", unless stdout names the reason. So the newer
+ * structured answer goes to Claude Code alone; every other reader keeps exit 2, the
+ * fallback yokoten always had, so a refusal can never turn into an allowed call.
  */
-export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
+export const isClaudeCode = (env: Env): boolean => env.YOKOTEN_HOOK_DENIAL !== 'exit2' && (env.CLAUDECODE === '1' || (env.CLAUDE_CODE_ENTRYPOINT !== undefined && env.CLAUDE_CODE_ENTRYPOINT !== ''));
+
+/**
+ * How a refusal reaches the agent (#707). Claude Code's PreToolUse takes a `deny` in
+ * `hookSpecificOutput` on exit 0, and shows its reason to the agent as it is: no
+ * "PreToolUse:Bash hook error:" line and no shell wrapper around it. GitHub Copilot CLI
+ * gets the old answer on stdout and exit 2, because it refuses on the exit code alone.
+ * `YOKOTEN_HOOK_DENIAL=exit2` puts Claude Code back on that old answer too.
+ */
+export const formatDenial = (reason: string, env: Env): { stdout: string; exitCode: number } =>
+  isClaudeCode(env)
+    ? { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }), exitCode: 0 }
+    : { stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 };
 
 /**
  * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`

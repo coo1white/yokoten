@@ -125,7 +125,7 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', asy
   const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
   let result = await sandbox.call(['hook'], { input, extra: late });
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten: the guard took longer than 1 ms to read this command\. .*Split the command into smaller ones\./);
+  assert.match(result.stderr, /^yokoten stopped this: the guard took longer than 1 ms to read this command \[unreadable-command\]\nWhy: .*\nDo instead: .*Split the command into smaller ones\./);
   result = await sandbox.call(['hook', '--json'], { input, extra: late });
   assert.equal(result.status, 2);
   const out = JSON.parse(result.stdout);
@@ -163,7 +163,7 @@ test('hook: bad JSON in yokoten.json gives the defaults and one line, and check 
   let result = await call('git push --force');
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, line);
-  assert.match(result.stderr, /\nyokoten: [^\n]*force/);
+  assert.match(result.stderr, /\nyokoten stopped this: [^\n]*force/);
   assert.ok(!result.stderr.includes(sandbox.repo), 'no absolute path');
   result = await call('git status');
   assert.equal(result.status, 0, result.stderr);

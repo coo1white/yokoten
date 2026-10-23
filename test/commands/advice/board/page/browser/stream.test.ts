@@ -10,6 +10,7 @@ import { makeStreamStore, readStream } from '../../../../../../src/commands/advi
 import { boardPage, boardScript } from '../../../../../../src/commands/advice/board/page/page.ts';
 import { loadUi, type PageData, type PageState, renderCenter } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
 import { addStream, emptyStream, newStreamNode, renderStream } from '../../../../../../src/commands/advice/board/page/browser/stream.ts';
+import { finding, formatRefusal } from '../../../../../../src/rules/message.ts';
 import { makeRedactor } from '../../../../../../src/rules/privacy.ts';
 import { SECRET } from '../../../../../../src/rules/secrets.ts';
 import { makeTempDir } from '../../../../../repo/helpers.ts';
@@ -94,6 +95,22 @@ test('board stream page: a tool is one line, a long run folds, and a result open
   assert.equal(node().find('gstop')[0].textContent, 'The guard stopped this call.yokoten: blocked');
   assert.equal(node().find('step-more').length, 1, 'a message ends the run; the next step does not join the fold');
   assert.deepEqual(node().find('msg')[0].children.filter((child) => child.tag === 'p').map((child) => child.textContent), ['First.', 'Second line.']);
+});
+
+// #707: a refusal is drawn by its parts (title, why, do instead, more), not as one block.
+test('board stream page: a refusal shows its title, why and do instead (#707)', () => {
+  const state = makeState();
+  const stream = { ...emptyStream('~/w'), source: 'claude' as const };
+  stream.node = newStreamNode(state);
+  state.stream = stream;
+  const text = formatRefusal(finding('force-push', 'git push --force forces the push', 'pull first, then push'));
+  addStream(state, stream, [{ kind: 'stop', text, refusal: { id: 'force-push', title: 'yokoten stopped this: git push --force forces the push [force-push]', why: 'A plain force push can throw away work that someone else pushed.', fix: 'Pull first, then push.', docs: 'https://example.com/docs#force' }, time: '' }]);
+  const stop = (stream.node as unknown as FakeNode).find('gstop')[0];
+  assert.match(stop.textContent, /^yokoten stopped this: git push --force forces the push \[force-push\]/, 'the title');
+  assert.match(stop.textContent, /Why: A plain force push can throw away work/, 'the why');
+  assert.match(stop.textContent, /Do instead: Pull first, then push\./, 'the safe way');
+  assert.match(stop.textContent, /More: https:\/\/example\.com\/docs#force/, 'the link');
+  assert.equal((stream.node as unknown as FakeNode).find('pre').length, 0, 'no wall of text');
 });
 
 test('board stream page: the middle shows the stream when a log is found, else the doing steps', () => {
