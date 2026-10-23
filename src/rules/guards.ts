@@ -1679,10 +1679,14 @@ const REMOVE_GIT_FIX = 'delete only the files you mean (a tracked file with `git
 function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding | null {
   const home = homeOf(env);
   let from = 0;
+  // A find's arguments run to the end of this command. The parse reads every find
+  // nested in them. Parsing those again would re-read the tail once per find (#744).
+  let coveredUntil = 0;
   for (const program of findPrograms(words)) {
     const at = words.indexOf(program, from);
     if (at === -1) continue;
     from = at + 1;
+    if (at < coveredUntil) continue;
     const name = programName(program);
     const args = withoutShellRedirects(words, at + 1);
     if (REMOVE_PROGRAMS.has(name)) {
@@ -1691,8 +1695,11 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
         return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
       }
     }
-    if (name === 'find' && findRemovesGit(args, cwd, home)) {
-      return finding('remove-git', '`find` deletes files, and nothing keeps it out of the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+    if (name === 'find') {
+      if (findRemovesGit(args, cwd, home)) {
+        return finding('remove-git', '`find` deletes files, and nothing keeps it out of the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+      }
+      coveredUntil = words.length;
     }
   }
   return null;
@@ -1748,6 +1755,8 @@ interface FindParsed {
   maxDepth: number | null;
   minDepth: number | null;
   pathPatterns: string[];
+  /** Finds run by `-exec` and its kin. Each is parsed once, inside this walk (#744). */
+  innerFinds: FindParsed[];
 }
 
 /** One sample under `.git`, as find would print it. */
@@ -1795,8 +1804,16 @@ function findRemovesGit(args: string[], cwd: string | null, home: string | null)
   } catch {
     return looksLikeGitDelete(args);
   }
+  return findParsedRemoves(parsed, args, cwd, home);
+}
+
+/** Whether this parsed find, or a find it runs, can remove the history. */
+function findParsedRemoves(parsed: FindParsed, args: string[], cwd: string | null, home: string | null): boolean {
   if (!parsed.ok) return looksLikeGitDelete(args);
   if (parsed.targetsGit) return true;
+  for (const inner of parsed.innerFinds) {
+    if (findParsedRemoves(inner, args, cwd, home)) return true;
+  }
   if (parsed.unsure) return startMayHold(parsed.starts, cwd, home);
   if (!parsed.harms) return false;
   return expressionSpares(parsed, cwd, home, 'history') !== true;
@@ -2144,12 +2161,28 @@ function combineEffects(left: FindEffect, right: FindEffect, isTrue: boolean | n
 
 interface FindCursor { at: number }
 
+/** One empty parse, before any word is read. */
+function blankFindParsed(): FindParsed {
+  return {
+    ok: true, starts: [], node: { kind: 'pass' }, forcesDepth: false, harms: false, unsure: false, targetsGit: false, maxDepth: null, minDepth: null, pathPatterns: [], innerFinds: [],
+  };
+}
+
 /** The find expression in `args`, or `ok: false` when a word does not fit. */
 function parseFindArgs(args: string[], mode: 'history' | 'tree'): FindParsed {
-  const parsed: FindParsed = {
-    ok: true, starts: [], node: { kind: 'pass' }, forcesDepth: false, harms: false, unsure: false, targetsGit: false, maxDepth: null, minDepth: null, pathPatterns: [],
-  };
+  const parsed = blankFindParsed();
   const cursor: FindCursor = { at: 0 };
+  const node = readFind(args, cursor, parsed, mode);
+  if (!parsed.ok || node === null || cursor.at !== args.length) parsed.ok = false;
+  else parsed.node = node;
+  return parsed;
+}
+
+/**
+ * The find at `cursor`, through its expression. A nested find stops before the
+ * `-exec` terminator that belongs to the find which runs it.
+ */
+function readFind(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
   while (cursor.at < args.length && parsed.ok) {
     const word = args[cursor.at];
     if (FIND_LEAD_OPTIONS.test(word)) cursor.at++;
@@ -2160,13 +2193,27 @@ function parseFindArgs(args: string[], mode: 'history' | 'tree'): FindParsed {
       cursor.at++;
     } else break;
   }
-  while (cursor.at < args.length && !isExprWord(args[cursor.at])) parsed.starts.push(args[cursor.at++]);
+  while (cursor.at < args.length && !isExprWord(args[cursor.at]) && !isActionTerminator(args, cursor.at)) parsed.starts.push(args[cursor.at++]);
   if (parsed.starts.length === 0) parsed.starts.push('.');
-  if (!parsed.ok || cursor.at >= args.length) return parsed;
+  if (!parsed.ok) return null;
+  if (cursor.at >= args.length || isActionTerminator(args, cursor.at)) return parsed.node;
   const node = parseComma(args, cursor, parsed, mode);
-  if (!parsed.ok || node === null || cursor.at !== args.length) parsed.ok = false;
-  else parsed.node = node;
-  return parsed;
+  if (!parsed.ok || node === null) return null;
+  parsed.node = node;
+  return node;
+}
+
+/** A find run by `-exec`, parsed in place. `ok` is false when its words do not end on the terminator. */
+function parseNestedFind(args: string[], cursor: FindCursor, mode: 'history' | 'tree'): FindParsed {
+  const inner = blankFindParsed();
+  const node = readFind(args, cursor, inner, mode);
+  if (!inner.ok || node === null) {
+    inner.ok = false;
+    return inner;
+  }
+  inner.node = node;
+  if (!isAtActionEnd(args, cursor.at)) inner.ok = false;
+  return inner;
 }
 
 /** Whether `word` begins a test or an action, not a start folder. */
@@ -2359,6 +2406,20 @@ function parseFileAction(args: string[], cursor: FindCursor, parsed: FindParsed,
 /** The command after `-exec` and its kin, up to `;` or `{} +`, with nested finds kept whole. */
 function parseExec(args: string[], cursor: FindCursor, parsed: FindParsed, mode: 'history' | 'tree'): FindNode | null {
   cursor.at++;
+  const findAt = indexOfLaunchedFind(args, cursor.at);
+  if (findAt !== -1) {
+    // The program is find. Parse it in this walk. A chain of `find -exec find`
+    // is then one read, not a fresh read of the tail for every find (#744).
+    cursor.at = findAt + 1;
+    const inner = parseNestedFind(args, cursor, mode);
+    if (!inner.ok) {
+      parsed.ok = false;
+      return null;
+    }
+    parsed.innerFinds.push(inner);
+    if (cursor.at < args.length) cursor.at++;
+    return { kind: 'exec', harms: false, recursive: false };
+  }
   const command = readAction(args, cursor);
   if (command === null) {
     parsed.ok = false;
@@ -2369,6 +2430,38 @@ function parseExec(args: string[], cursor: FindCursor, parsed: FindParsed, mode:
   if (removal.targetsGit) parsed.targetsGit = true;
   if (removal.harmsMatch) parsed.harms = true;
   return { kind: 'exec', harms: removal.harmsMatch, recursive: removal.recursive };
+}
+
+/** Whether `words[index]` ends an `-exec` action: `;`, or `+` right after `{}`. */
+function isActionTerminator(words: string[], index: number): boolean {
+  const word = words[index];
+  return word === ';' || (word === '+' && words[index - 1] === '{}');
+}
+
+/** Whether the action's command is over: no words left, or the terminator is next. */
+function isAtActionEnd(words: string[], index: number): boolean {
+  return index >= words.length || isActionTerminator(words, index);
+}
+
+/**
+ * The index of `find` when the action at `start` is launchers and then `find`.
+ * `-1` when the program is anything else, so the ordinary action reader runs.
+ */
+function indexOfLaunchedFind(args: string[], start: number): number {
+  let index = start;
+  while (index < args.length && !isActionTerminator(args, index)) {
+    const name = programName(args[index]);
+    if (name === 'command' && /^-[a-zA-Z]*[vV]/.test(args[index + 1] ?? '')) return -1;
+    if (!Object.hasOwn(LAUNCHERS, name)) return name === 'find' ? index : -1;
+    const launcher = LAUNCHERS[name];
+    index++;
+    while (index < args.length && !isActionTerminator(args, index) && args[index].startsWith('-')) {
+      index += launcher.options.includes(args[index]) ? 2 : 1;
+    }
+    const operands = launcher.operands ?? 0;
+    for (let count = 0; count < operands && index < args.length && !isActionTerminator(args, index); count++) index++;
+  }
+  return -1;
 }
 
 /** The words of one find action. Null when the terminator is missing. Inner actions keep theirs. */
@@ -2383,7 +2476,7 @@ function readAction(words: string[], cursor: FindCursor): string[] | null {
       cursor.at++;
       continue;
     }
-    const closes = word === ';' || (word === '+' && words[cursor.at - 1] === '{}');
+    const closes = isActionTerminator(words, cursor.at);
     if (closes && nested > 0) {
       nested--;
       command.push(word);
