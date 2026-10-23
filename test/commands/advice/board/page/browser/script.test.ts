@@ -434,6 +434,20 @@ test('board script: the top bar shows the main folder', () => {
   assert.equal(nodes.get('repo')?.textContent, 'yokoten');
 });
 
+// #779: a vendor with seats but no look of its own is one line, counted by its key.
+test('board script: an unknown vendor with seats shows one line (#779)', () => {
+  const data = makeData({ agents: [agent({ vendor: vendorOf('ollama'), isLive: true, dot: 'working' })], seats: { ollama: 3 } });
+  const state = makeState(data);
+  const bar = renderBar(state, data).map((node) => (node as unknown as FakeNode).textContent).join('\n');
+  assert.equal((bar.match(/ollama/gi) ?? []).length, 1, 'one line names the vendor');
+  assert.match(bar, /Ollama · 1 of 3/);
+  assert.match(bar, /2 free/);
+  const unseated = makeData({ agents: [agent({ vendor: vendorOf('ollama'), isLive: true, dot: 'working' })], seats: { claude: 1 } });
+  const unseatedBar = renderBar(makeState(unseated), unseated).map((node) => (node as unknown as FakeNode).textContent).join('\n');
+  assert.match(unseatedBar, /ollama · 1 agent · 0 idle/i, 'a vendor with no seats shows its agent count');
+  assert.doesNotMatch(unseatedBar, /ollama · 1 of 0/i);
+});
+
 // #698: a working chip breathes. The bar shows free seats, or idle agents when no file is set.
 test('board script: a working chip breathes, and the bar counts free seats', () => {
   const live = agent({ key: '~/a', name: 'Live', vendor: vendorOf('grok'), isLive: true, dot: 'working' });
@@ -463,6 +477,41 @@ test('board script: a working chip breathes, and the bar counts free seats', () 
   const clamped = renderBar(state, { ...data, seats: { grok: 0 } }).map((node) => (node as unknown as FakeNode).textContent).join('\n');
   assert.match(clamped, /Grok · 1 of 0/);
   assert.match(clamped, /^0 free/m);
+});
+
+// #779: an archived desk can be cleared, and put back, from its own row.
+test('board script: an archived desk is cleared and put back from the list (#779)', () => {
+  Object.assign(globalThis, { localStorage: { getItem: () => null, setItem: () => undefined }, matchMedia: () => ({ matches: false }), fetch: () => new Promise(() => undefined), window: { setTimeout: () => 0 } });
+  const nodes = new Map<string, FakeNode>();
+  for (const id of ['live', 'live-text', 'lang-name', 'lang', 'lang-menu', 'github', 'theme', 'pinned', 'agents', 'center', 'bar', 'repo', 'toast', 'needs', 'needs-count', 'needs-menu']) {
+    const node = new FakeNode(id === 'needs' || id === 'lang' || id === 'theme' ? 'button' : 'div');
+    node.setAttribute('id', id);
+    nodes.set(id, node);
+  }
+  fakeDocument.documentElement = new FakeNode('html');
+  fakeDocument.getElementById = (id: string) => nodes.get(id) ?? null;
+  fakeDocument.querySelector = () => null;
+  const done = agent({ key: '~/d', name: 'Done one', dot: 'done', isLive: false, updated: 'u1' });
+  const stale = agent({ key: '~/s', name: 'Stale one', dot: 'idle', isLive: false, updated: 'u2' });
+  const data = makeData({ agents: [agent({ key: '~/l', role: 'lead', name: 'Lead', isMain: true }), done, stale] });
+  const state = makeState(data);
+  const click = (target: FakeNode) => onClick(state, { target } as unknown as Event);
+  render(state);
+  const list = nodes.get('agents') as FakeNode;
+  assert.match(list.textContent, /2 archived agents/);
+  const show = list.all().find((node) => node.getAttribute('data-show-cleared') === '1');
+  assert.ok(show, 'the archived list opens');
+  click(show);
+  const actions = () => list.all().filter((node) => node.getAttribute('data-clear') !== null || node.getAttribute('data-restore') !== null);
+  assert.deepEqual(actions().map((node) => node.getAttribute('data-clear')), [clearedId(done), clearedId(stale)], 'every archived row has Clear');
+  const clear = actions()[0];
+  click(clear);
+  assert.deepEqual(state.ui.cleared, [clearedId(done)], 'Clear keeps the id, so the row stays hidden until it writes again');
+  assert.ok(list.all().some((node) => node.getAttribute('data-restore') === clearedId(done)), 'a cleared row offers Put back');
+  assert.ok(list.textContent.includes('Done one'));
+  click(list.all().find((node) => node.getAttribute('data-restore') === clearedId(done)) as FakeNode);
+  assert.deepEqual(state.ui.cleared, [], 'Put back returns the row');
+  assert.ok(list.all().some((node) => node.getAttribute('data-clear') === clearedId(done)), 'Clear comes back with the row');
 });
 
 // #779: 21 seats, and 30 old desks. The footer shows who is working, of those seats.

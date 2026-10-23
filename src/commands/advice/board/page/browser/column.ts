@@ -151,11 +151,17 @@ export function renderSide(state: PageState, data: PageData): [HTMLElement, HTML
     const kept = new Set(cleared);
     list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'archivedCount', { n: archived.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
     if (state.ui.showCleared) {
-      list.append(...archived.map((agent) => el('div', { class: 'item' },
-        el('button', { class: 'row done-row still', 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
-          el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}` }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
-          el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name))),
-        kept.has(clearedId(agent)) ? el('button', { class: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack')) : null)));
+      list.append(...archived.map((agent) => {
+        const id = clearedId(agent);
+        const action = kept.has(id)
+          ? el('button', { class: 'act', 'data-restore': id }, say(state, 'putBack'))
+          : el('button', { class: 'x', 'data-clear': id, title: say(state, 'clearOne'), 'aria-label': say(state, 'clearOne') }, icon('x', true));
+        return el('div', { class: 'item' },
+          el('button', { class: 'row done-row still', 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
+            el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}` }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
+            el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name))),
+          action);
+      }));
     }
   }
   if (!others.length) list.append(el('p', { class: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));

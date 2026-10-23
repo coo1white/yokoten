@@ -1,4 +1,4 @@
-Fixed
+Added
 
 The team board counts seats from `team.seats` in yokoten.json (#779).
 The footer shows how many are working, of those seats.

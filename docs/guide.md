@@ -1815,7 +1815,9 @@ The page has two columns. Needs you is a bell in the header, next to Live.
 The footer shows one line per vendor.
 With no seats set, that line counts the agents on the board.
 `team.seats` in yokoten.json sets the seats: a vendor, a role, then a count.
+The counts of one vendor's roles add up to one total.
 The footer then shows how many are working, of those seats.
+A vendor with agents but no seats shows its agent count.
 A filed vendor name maps to its vendor, so `deepseek-harness` seats show as DeepSeek.
 A table of zeros is no seats.
 A desk with no write for 15 minutes does not add to the count.
