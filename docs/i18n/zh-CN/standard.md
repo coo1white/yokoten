@@ -179,8 +179,8 @@ agent 离开以后，它的列表也丢掉。
 怎么检查。`recordFeed` 拿上一份视图和这一份比。
 版本 1。这条记录没有版本字段。
 
-代码：[src/commands/advice/board/feed.ts](../../../src/commands/advice/board/feed.ts) 和 [src/commands/advice/board/page/script.ts](../../../src/commands/advice/board/page/script.ts)。
-测试：[test/commands/advice/board/feed.test.ts](../../../test/commands/advice/board/feed.test.ts) 和 [test/commands/advice/board/page/script.test.ts](../../../test/commands/advice/board/page/script.test.ts)。
+代码：[src/commands/advice/board/feed/steps.ts](../../../src/commands/advice/board/feed/steps.ts) 和 [src/commands/advice/board/page/browser/script.ts](../../../src/commands/advice/board/page/browser/script.ts)。
+测试：[test/commands/advice/board/feed/steps.test.ts](../../../test/commands/advice/board/feed/steps.test.ts) 和 [test/commands/advice/board/page/browser/script.test.ts](../../../test/commands/advice/board/page/browser/script.test.ts)。
 
 ## 一次工具调用
 
@@ -285,6 +285,7 @@ agent 离开以后，它的列表也丢掉。
 | `worktree` | agent | 文本 |
 | `doing` | agent | 文本 |
 | `updated` | agent，还有停止 hook | 文本。hook 写成没有毫秒的 UTC 时间，例如 `2026-10-23T00:00:00Z`。 |
+| `started` | agent | 文本，格式和 `updated` 一样：这份工作开始的时间。没有就用文件创建的时间，再没有就用 `updated`。 |
 | `role` | agent | `lead`、`engineer`、`reviewer`、`verifier` 或 `helper`。别的词，包括 `worker`，都变成空。 |
 | `state` | agent | `working`、`waiting` 或 `done` |
 | `checks` | 停止 hook | `passing` 或 `failing` |
@@ -297,9 +298,9 @@ agent 离开以后，它的列表也丢掉。
 agent 旁边的点是 `working`、`waiting`、`failing`、`idle` 或 `done`。
 `done` 和 `waiting` 来自 `state`。
 `failing` 来自 `checks`。
-其余情况下，`updated` 在 `30 minutes` 以内就显示 `working`。
+其余情况下，`updated` 在 `15 minutes` 以内就显示 `working`。
 `updated` 缺了，或者不是一个时间，就显示 `idle`。
-安静满 `30 minutes` 才显示 `idle`，而且 `state` 不是 `done` 或 `waiting`，`checks` 也不是 `failing`。
+安静满 `15 minutes` 才显示 `idle`，而且 `state` 不是 `done` 或 `waiting`，`checks` 也不是 `failing`。
 下面这些点的规则，是看板今天在做的事。
 这个点现在还不读 `alive` 或 `outcome`。
 
