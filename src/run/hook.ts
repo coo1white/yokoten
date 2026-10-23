@@ -427,9 +427,9 @@ export function windowsJobArgs(): string[] {
 }
 
 /** `powershell.exe` on Windows, or null so the caller starts `cmd.exe` itself. */
-function windowsPowerShell(): string | null {
+function windowsPowerShell(env: Record<string, string>): string | null {
   if (process.platform !== 'win32') return null;
-  const root = process.env.SystemRoot;
+  const root = env.SystemRoot;
   if (!root) return 'powershell.exe';
   const path = join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   return existsSync(path) ? path : 'powershell.exe';
@@ -535,7 +535,7 @@ function killCommandTree(pid: number): void {
 
 /** Start the done-when command. On Windows the host is a job; elsewhere it is a new session. */
 function spawnDoneWhen(command: string, cwd: string, env: Record<string, string>): ChildProcess {
-  const powershell = windowsPowerShell();
+  const powershell = windowsPowerShell(env);
   if (powershell) {
     return spawn(powershell, windowsJobArgs(), {
       cwd,
