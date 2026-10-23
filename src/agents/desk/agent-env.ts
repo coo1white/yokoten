@@ -17,7 +17,7 @@
 // They pass only to that runtime's agent. YOKOTEN_NAMES skip the first.
 
 import type { Env } from '../../rules/config.ts';
-import { findSecrets } from '../../rules/secrets.ts';
+import { findSecrets } from '../../rules/privacy/secrets.ts';
 import { AGENT_ENV as COPILOT } from '../copilot.ts';
 import { AGENT_ENV as ANTIGRAVITY } from '../runtimes/small/antigravity.ts';
 import { AGENT_ENV as CLAUDE_CODE } from '../runtimes/claude-code.ts';
