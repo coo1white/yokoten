@@ -742,7 +742,8 @@ export function judge(
   const ruled = commandsOnly || !root ? repos : [{ root, config }, ...repos];
   // A command may also edit files (Codex runs apply_patch through the shell): check both.
   // The command runs in the call's folder: a hooks setting is judged in that repo (#217).
-  const commands = action.commands !== undefined ? action.commands : action.command !== undefined ? [action.command] : [];
+  // Every command the call carries is judged: `commands` and `command` both, so an empty list never hides one.
+  const commands = [...(action.commands ?? []), ...(action.command !== undefined && !action.commands?.includes(action.command) ? [action.command] : [])];
   if (commands.length > 0) {
     // Titles follow a project's own rules: only its hook checks them, never the user-level one (#391).
     const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));

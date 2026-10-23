@@ -221,6 +221,8 @@ test('OpenCode readToolCall: v1 tools, and an evaluate event read from resources
     worker: false,
   });
   assert.deepEqual(readToolCall({ action: 'edit', resources: [push], directory: '/work' }), { command: push, paths: [push], cwd: '/work', worker: false });
+  // Code in an edit is judged too, as in any other call (rb16 review).
+  assert.deepEqual(readToolCall({ action: 'edit', resources: ['a.ts'], metadata: { input: { code: push } } }), { command: push, paths: ['a.ts'], cwd: undefined, worker: false });
   assert.deepEqual(readToolCall({ action: 'read', resources: ['.git/config'], directory: '/work' }), { command: undefined, paths: [], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ action: 'custom', resources: ['.git/config'], directory: '/work' }), { command: '.git/config', paths: ['.git/config'], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ action: 'code', resources: ['main.ts'], metadata: { input: { code: push } } }), {

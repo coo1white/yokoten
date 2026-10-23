@@ -151,7 +151,7 @@ function readEvaluate(call: Record<string, unknown>): ReadEvent {
   if (EDITS.has(name)) {
     const paths = pathList(resources, metadata, true);
     // A shell line filed as a path is still judged as a command.
-    const command = commandText([], metadata) ?? paths.find(hasShellMark);
+    const command = commandText([], metadata) ?? textOf(asRecord(metadata.input).code) ?? paths.find(hasShellMark);
     const kind = paths.length === 0 && command === undefined ? 'deny' : 'ask';
     return { command, paths, cwd, kind };
   }
