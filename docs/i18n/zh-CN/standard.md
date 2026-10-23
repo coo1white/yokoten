@@ -463,7 +463,7 @@ CI 里从基础分支读 CODEOWNERS。
 | `hidden` | 这些目录如果存在就藏起来：`/home`、`/root`、`/mnt`、`/media`、`/run`，再加上家目录和工位的上一级。在 `darwin` 上是 `/Users`、`/Volumes`，再加上家目录和上一级。 |
 | `locked` | `.git/config`、`.git/hooks` 和 `.git/yokoten-worker` 保持只读。在团队里，`.git/yokoten-desk.json` 也锁上。 |
 | `hosts` | 只能到 API 主机，而且要经过外面的代理。只接受 CONNECT。端口是 `443`，除非主机那一项自己写了端口。隧道最多 `64` 条。`10 minutes` 没有数据就关掉。代理不读隧道里的内容。 |
-| `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。 |
+| `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。运行环境能说出模型时，`YOKOTEN_MODEL` 和 `YOKOTEN_VENDOR` 告诉 agent 它实际是哪个模型、哪家厂商。 |
 | `command` | lead 传进来的那条命令。 |
 
 `/run` 要藏起来，因为那里的 socket 能在栅栏外面启动程序。

@@ -348,7 +348,7 @@ function collectWords(): string[] {
   const wanted = /const wanted = \[([\s\S]*?)\];/.exec(desk);
   if (!wanted) throw new Error('desk readable list changed');
   words.push(...quotedStrings(wanted[1]));
-  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,120}?TZ: '([^']+)'/.exec(desk);
+  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,300}?TZ: '([^']+)'/.exec(desk);
   if (!roleSet) throw new Error('desk role env changed');
   words.push('YOKOTEN_ROLE', roleSet[1], 'TZ', roleSet[2]);
   for (const match of desk.matchAll(/\b(YOKOTEN_[A-Z0-9_]+)\b/g)) words.push(match[1]);
