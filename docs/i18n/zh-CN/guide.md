@@ -686,6 +686,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `learn --upstream "<发生了什么>" [--area <name>] [--fix <idea>]` | 记下 yokoten 自己的一个毛病，项目和你本人的信息都先藏掉。`--list` 列出这些记录，`--done <id>` 删掉一条。见下面的「问题出在 yokoten 自己身上」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
+| `check --push <remote-sha> <local-sha>` | 对这次 push 送出的提交做完整的隐私检查。pre-push 钩子传入两个 sha。工位里的提交用加盐哈希。这条检查读私有词表。见[工位](#工位) |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `explain [<id>] [--json]` | 讲一条规则或者路上的一步：它是什么、为什么要有、yokoten 怎么检查 |
@@ -711,7 +712,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 拿 `id` 去跑 `yokoten explain` 就能看到详细说明。任何字段里都不会有隐私内容。
 
 - `check --json`：`{ check, ok, findings, notes }`。`check` 是 `tree`、`staged`、`history`、
-  `pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
+  `push`、`pr` 或 `issue`，说明查的是哪一种。`notes` 只是提醒，不会让检查失败。CI 这次跑的不是
   PR 或 issue 时，`check --pr` 和 `check --issue` 直接算通过，多一个 `skipped` 写明原因。
 - `doctor --json`：`{ version, ok, selfTest, repo, stage, stages, next, findings, steps,
   notes, server, lessons }`。教训查出来的问题放在 `notes` 里，第一次见到的教训带 `isNew: true`。加 `--session` 时只给下一步、私有词表缺失的提醒，以及核心规则落后时的 `core-rules`；有只在这台机器上的活，或者会话刚听到的某一课查出的问题时，放在 `notes` 里。
@@ -1303,15 +1304,13 @@ yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
 | agent | `<agent>` | 用哪个变量指到状态文件夹 | 复制的登录文件 | API 主机 | 在工位里跑的命令 |
 |---|---|---|---|---|---|
 | Claude Code | `claude-code` | `CLAUDE_CONFIG_DIR` | `.credentials.json` | `api.anthropic.com`，还有续登录用的 `platform.claude.com` | `claude -p "<任务说明>"` |
-| Codex，以及通过 Codex 用 DeepSeek | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`、`api.deepseek.com` | `codex exec --sandbox danger-full-access "<任务说明>"` |
+| Codex，以及通过 Codex 用 DeepSeek | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`、`api.deepseek.com` | `codex exec "<任务说明>"` |
 | Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<任务说明>"` |
 | Muse Code | `muse` | `XDG_CONFIG_HOME`、`XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<任务说明>"` |
 
 - **Claude Code** 到 `platform.claude.com` 续登录。用 `claude setup-token` 拿的 token 放在
   `CLAUDE_CODE_OAUTH_TOKEN` 里，或者用 API key，就不用续，它们会作为登录变量传进去。
-- **Codex** 在工位里要用 `--sandbox danger-full-access`。它自己的 `workspace-write` 沙箱会把
-  `.git` 设成只读，还会挡住测试要用的管道。工位本身就是围栏，用不着它那一层。你的 `config.toml`
-  不带进来：模型提供方用命令里的 `-c` 给。用 ChatGPT 登录的话，还要加 `--host chatgpt.com,auth.openai.com`。
+- **Codex** 仍用自己的 `workspace-write` 沙箱。工位把这个克隆的 `.git` 加进可写根，所以只能在这里提交，别的克隆不行。你的 `config.toml` 不带进来：模型提供方用命令里的 `-c` 给。用 ChatGPT 登录的话，还要加 `--host chatgpt.com,auth.openai.com`。
 - **Grok**：如果 `--sandbox` 挡住了提交或测试，在工位里把它关掉。
 - **加主机**：`--host <主机>` 让 agent 多连一个 API 主机（443 端口）。几个主机用逗号隔开。
 - **加文件**：`--read <路径>` 多放一个路径进来，只能读。会露出主目录、藏起来的文件夹或你自己 agent
@@ -1333,10 +1332,7 @@ git diff main refs/desks/42
 工位里的 `.git/config` 和 `.git/hooks` 只能读，worker 没法在那里埋钩子或别名。upstream 之类的
 设置，在启动工位之前从外面设好。
 
-**提交检查和你的私有词表。** 提交检查要读你的私有词表。agent 能读这个文件，就能把它打印出来。
-所以工位默认把它藏起来，工位里的检查看不到你的词。在词表改成存哈希之前（#665），请你自己在工位
-外面检查：在你自己的检出里切到取回来的分支，跑 `yokoten check`，它会查整个目录树。
-`--marks` 会把这个文件放进工位，只能读。只有你放心让它看到这些词的 agent，才这样用。
+**提交检查和你的私有词表。** 工位把私有词表藏起来。lead 在围栏启动前，把加盐哈希写进工位的 `.git`。这个文件只能读。工位里的提交检查用词的窗口去对这些哈希，并打印一条说明。它从不打印词本身。没有哈希文件时，worker 的提交会说明：私有词检查留到 lead 的 push。从这样的工位 push 会停下来，因为它读不到私有词表。词和词之间没有字符，或者词只是更长一段里的一部分时，工位里的检查可能放行。lead 的 push 对明文词表做完整检查，这些情况仍会被拒绝。`--marks` 把明文文件放进工位，只能读。只有你放心让它看到这些词的 agent，才这样用。
 
 **系统。**
 

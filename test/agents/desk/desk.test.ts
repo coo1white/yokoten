@@ -3,14 +3,14 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
 import { workerMarkAt } from '../../../src/rules/guards.ts';
-import { makeTempDir } from '../../repo/helpers.ts';
+import { CLI, makeTempDir } from '../../repo/helpers.ts';
 import { TEST_HOME } from '../../repo/home.ts';
 
 /** A desk: a clone of a fresh repo, in a projects folder of its own. */
@@ -80,7 +80,7 @@ test('planDesk: the desk and its own state writable, a token dropped, role and t
   assert.equal(plan.env.TZ, 'UTC');
   assert.equal(plan.env.GH_TOKEN, undefined);
   assert.equal(plan.env.SECRET_THING, undefined);
-  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')], "git's config and hooks, and the worker mark, stay read-only");
+  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker'), join(desk, '.git', 'yokoten-mark-hashes')], "git's config and hooks, the worker mark, and the mark hashes stay read-only");
   // #672: the desk clone carries the worker mark, so a runtime that drops YOKOTEN_ROLE (Muse Code) is a worker there.
   assert.equal(workerMarkAt(desk, {}), 'mark');
 });
@@ -129,7 +129,7 @@ test('planDesk: the marks file only with --marks; the worker mark is locked', ()
   assert.ok(!planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark }).readable.includes(realpathSync(marks)));
   const plan = planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark, marks });
   assert.ok(plan.readable.includes(realpathSync(marks)));
-  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')]);
+  assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker'), join(desk, '.git', 'yokoten-mark-hashes')]);
   // Positive control: a link in place of .git/config would show the lead's file, so it is refused.
   rmSync(join(desk, '.git', 'config'));
   symlinkSync(marks, join(desk, '.git', 'config'));
@@ -171,4 +171,61 @@ test('planDesk: on a team, the team folder read-only, only the own outbox writab
   planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) });
   assert.ok(!readdirSync(join(desk, '.git')).includes('yokoten-desk.json'));
   assert.throws(() => planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: projects, name: 'g1' } }), /would open a hidden folder or the desk/);
+});
+
+// Each vendor's desk commits with salted hashes, and still refuses a mark (#736).
+test('planDesk: each vendor commits with salted hashes, and a mark is still refused (#736)', () => {
+  const mark = [['s', 'am'].join(''), ['exa', 'mple'].join('')].join(' ');
+  const shaped = mark.split(' ').join('_');
+  const home = makeTempDir('lead-');
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), `${mark}\n`);
+  const lead = { ...env(), HOME: home, PATH: process.env.PATH ?? '' };
+  for (const runtime of Object.keys(DESK_RUNTIMES)) {
+    const { projects, desk } = makeDesk();
+    const plan = planDesk({ runtime, desk, command: ['node'], env: lead, markDesk: writeMark });
+    const hashFile = join(desk, '.git', 'yokoten-mark-hashes');
+    assert.equal(plan.env.YOKOTEN_MARK_HASHES, hashFile, runtime);
+    assert.ok(plan.locked.includes(hashFile), runtime);
+    const text = readFileSync(hashFile, 'utf8');
+    assert.match(text, /^# yokoten mark hashes: salt and hashes only\nsalt [0-9a-f]{32}\n(?:[0-9a-f]{64}\n)+$/);
+    assert.equal(text.includes(mark), false, runtime);
+    assert.equal(text.includes(shaped), false, runtime);
+    const gitDir = join(desk, '.git');
+    if (runtime === 'codex') {
+      assert.deepEqual(plan.command, ['node', '-c', `sandbox_workspace_write.writable_roots=[${JSON.stringify(gitDir)}]`]);
+      assert.equal(plan.command.join(' ').includes(join(projects, 'origin')), false, 'only this clone\'s git folder is writable');
+    } else assert.deepEqual(plan.command, ['node'], runtime);
+
+    const empty = makeTempDir('desk-home-');
+    const commitEnv = {
+      PATH: process.env.PATH ?? '',
+      HOME: empty,
+      TZ: 'UTC',
+      YOKOTEN_MARK_HASHES: hashFile,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: join(empty, 'none'),
+    };
+    execFileSync('git', ['-C', desk, 'config', 'user.name', 'Test'], { env: commitEnv });
+    execFileSync('git', ['-C', desk, 'config', 'user.email', 'test@example.com'], { env: commitEnv });
+    const hook = join(desk, '.git', 'hooks', 'pre-commit');
+    writeFileSync(hook, `#!/bin/sh\nexec "${process.execPath}" "${CLI}" check --staged\n`);
+    chmodSync(hook, 0o755);
+    writeFileSync(join(desk, 'note.txt'), 'a clean note\n');
+    execFileSync('git', ['-C', desk, 'add', 'note.txt'], { env: commitEnv });
+    const checked = spawnSync(process.execPath, [CLI, 'check', '--staged'], { cwd: desk, env: commitEnv, encoding: 'utf8' });
+    assert.equal(checked.status, 0, `${runtime}: ${checked.stderr}`);
+    assert.match(checked.stdout, /salted hashes/);
+    assert.equal(`${checked.stdout}${checked.stderr}`.includes(mark), false, runtime);
+    const committed = spawnSync('git', ['-C', desk, 'commit', '-qm', 'note'], { env: commitEnv, encoding: 'utf8' });
+    assert.equal(committed.status, 0, `${runtime}: ${committed.stderr}`);
+    writeFileSync(join(desk, 'note.txt'), `${shaped}\n`);
+    execFileSync('git', ['-C', desk, 'add', 'note.txt'], { env: commitEnv });
+    const refused = spawnSync('git', ['-C', desk, 'commit', '-qm', 'mark'], { env: commitEnv, encoding: 'utf8' });
+    assert.notEqual(refused.status, 0, runtime);
+    const said = `${refused.stdout}${refused.stderr}`;
+    assert.match(said, /private-marks file/);
+    assert.equal(said.includes(mark), false, runtime);
+    assert.equal(said.includes(shaped), false, runtime);
+  }
 });
