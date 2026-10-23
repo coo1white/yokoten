@@ -330,21 +330,38 @@ export function isWorkingTreeClean(folder: string, env: Env): boolean {
 }
 
 /**
+ * Why an anchor was or was not recorded (#711, #792). The caller tells the worker a
+ * different thing for each kind: only a dirty tree asks for a checkpoint commit.
+ */
+export type AnchorOutcome =
+  | { kind: 'recorded'; anchor: Anchor }
+  | { kind: 'already'; anchor: Anchor }
+  | { kind: 'dirty' }
+  | { kind: 'no-checkout' }
+  | { kind: 'no-commit' }
+  | { kind: 'write-failed' };
+
+/**
  * Record the commit at HEAD as an anchor, when the tree is clean and git can answer
  * (#711). A dirty tree is not an anchor: going back to it would lose the uncommitted
- * work. Returns the anchor, or null.
+ * work. A commit that is already the newest anchor is `already`, not a new anchor.
  */
-export function recordAnchor(folder: string, env: Env, check: string): Anchor | null {
-  if (!isWorkingTreeClean(folder, env)) return null;
+export function recordAnchor(folder: string, env: Env, check: string): AnchorOutcome {
   const link = gitLinkAbove(folder);
-  if (!link || link.kind === 'broken') return null;
+  if (!link || link.kind === 'broken') return { kind: 'no-checkout' };
+  if (!isWorkingTreeClean(folder, env)) return { kind: 'dirty' };
   const commit = gitText(folder, env, ['rev-parse', 'HEAD'])?.trim();
-  if (!commit || !/^[0-9a-f]{7,64}$/.test(commit)) return null;
+  if (!commit || !/^[0-9a-f]{7,64}$/.test(commit)) return { kind: 'no-commit' };
   // The same commit is one anchor, however many times the check passes.
   try {
     const rows = readFileSync(join(link.gitDir, ANCHORS_FILE), 'utf8').split('\n').filter((line) => line.trim() !== '');
     const last = rows.at(-1);
-    if (last !== undefined && (JSON.parse(last) as Partial<Anchor>).commit === commit) return null;
+    if (last !== undefined) {
+      const value = JSON.parse(last) as Partial<Anchor>;
+      if (value.commit === commit && typeof value.at === 'string' && typeof value.check === 'string') {
+        return { kind: 'already', anchor: { commit, at: value.at, check: value.check } };
+      }
+    }
   } catch {
     // No file yet, or a line the hook did not write: the anchor is recorded below.
   }
@@ -352,9 +369,9 @@ export function recordAnchor(folder: string, env: Env, check: string): Anchor | 
   try {
     appendFileSync(join(link.gitDir, ANCHORS_FILE), `${JSON.stringify(anchor)}\n`);
   } catch {
-    return null;
+    return { kind: 'write-failed' };
   }
-  return anchor;
+  return { kind: 'recorded', anchor };
 }
 
 /** The anchors recorded in the checkout at `folder`, newest first. Bad lines are skipped. */

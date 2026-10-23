@@ -394,6 +394,16 @@ test('hook --stop: a worker is done only when the done-when check passes (#614)'
   let result = await stop('true');
   assert.deepEqual([result.status, result.stdout], [0, '']);
   assert.match(result.stderr, /^yokoten: tests pass\. Anchor [0-9a-f]{12} saved; go back with: git switch -c try-2 [0-9a-f]{40}\n$/);
+  // The same clean HEAD is already an anchor: no second anchor, and no second commit asked
+  // for (#792). A dirty tree is the one case that asks for the checkpoint commit.
+  result = await stop('true');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /^yokoten: tests pass\. HEAD [0-9a-f]{12} is already your anchor; go back with: git switch -c try-2 [0-9a-f]{40}\n$/);
+  assert.doesNotMatch(result.stderr, /Make a checkpoint commit/);
+  sandbox.write('b.md', 'changed\n');
+  result = await stop('true');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /Make a checkpoint commit now/);
   // A failing check refuses, with the reason in short.
   result = await stop('echo fail-614 >&2; exit 1');
   assert.equal(result.status, 2);

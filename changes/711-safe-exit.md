@@ -8,7 +8,9 @@ yokoten's config folder and is never a reason to trap a session.
 
 A worker records an anchor when its checks pass and its tree is clean. An anchor is a
 commit. `yokoten anchor` lists them, newest first, and says the way back:
-`git switch -c try-2 <commit>`. Nothing is reset or deleted.
+`git switch -c try-2 <commit>`. Nothing is reset or deleted. A second passing check on
+the same clean HEAD says that HEAD is already the anchor. Only a dirty tree asks for a
+checkpoint commit (#792).
 
 The board stops a worker it starts after three hours unless yokoten.json sets
 `worker.timeLimitMinutes`. The board writes `REPORT-<issue>.md` from the last output

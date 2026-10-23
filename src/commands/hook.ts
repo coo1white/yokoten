@@ -18,6 +18,7 @@ import { checkChanged, readGit } from '../run/check.ts';
 import {
   type Action,
   type Anchor,
+  type AnchorOutcome,
   bumpDoneTries,
   bumpRepeat,
   canKeepStatus,
@@ -260,14 +261,12 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
       forgetDoneTries(env, key);
       clearRefusedMarker(folder, key);
       recordChecks(invocation, folder, 'passing', agent);
-      // The tests pass: a clean tree becomes an anchor, and the worker hears to commit one.
+      // The tests pass: a clean tree becomes an anchor. Only a dirty tree asks for a
+      // checkpoint commit; an anchored HEAD and a folder without git each get their own line.
       const passing = doneWhen?.ok === true ? doneWhen.command : 'the changed-file check';
-      anchor = root ? recordAnchor(ranIn, { ...env, YOKOTEN_ROLE: 'worker' }, passing) : null;
-      if (!json) {
-        print(invocation, [anchor
-          ? `yokoten: tests pass. Anchor ${anchor.commit.slice(0, 12)} saved; go back with: git switch -c try-2 ${anchor.commit}`
-          : 'yokoten: tests pass. Make a checkpoint commit now; that commit is your anchor. If you get lost, go back with: git switch -c try-2 <anchor>'], invocation.stderr);
-      }
+      const outcome = root ? recordAnchor(ranIn, { ...env, YOKOTEN_ROLE: 'worker' }, passing) : null;
+      anchor = outcome && (outcome.kind === 'recorded' || outcome.kind === 'already') ? outcome.anchor : null;
+      if (!json) print(invocation, [anchorMessage(outcome)], invocation.stderr);
     } else noteLeadStop(folder, agent);
     if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
     // The checks pass: unread messages send the turn on once, and the next stop is checked again.
@@ -296,6 +295,24 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   }
   if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
   return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
+}
+
+/** What a passing worker hears about its anchor. Only a dirty tree asks for a commit (#792). */
+function anchorMessage(outcome: AnchorOutcome | null): string {
+  if (outcome === null) return 'yokoten: tests pass. No anchor: there is no project root here.';
+  if (outcome.kind === 'dirty') {
+    return 'yokoten: tests pass. Make a checkpoint commit now; that commit is your anchor. If you get lost, go back with: git switch -c try-2 <anchor>';
+  }
+  if (outcome.kind === 'no-checkout') return 'yokoten: tests pass. No anchor: this folder is not a git checkout.';
+  if (outcome.kind === 'no-commit') return 'yokoten: tests pass. No anchor: this checkout has no commit yet.';
+  if (outcome.kind === 'write-failed') {
+    return 'yokoten: tests pass. No anchor: the anchor file could not be written. A checkpoint commit still holds your work.';
+  }
+  const { commit } = outcome.anchor;
+  if (outcome.kind === 'already') {
+    return `yokoten: tests pass. HEAD ${commit.slice(0, 12)} is already your anchor; go back with: git switch -c try-2 ${commit}`;
+  }
+  return `yokoten: tests pass. Anchor ${commit.slice(0, 12)} saved; go back with: git switch -c try-2 ${commit}`;
 }
 
 /** A refusal at the end of a turn, with the unread team messages after it (#674). */

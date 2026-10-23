@@ -150,16 +150,28 @@ test('anchor: lists commits, and going back keeps every commit (#711)', async ()
   const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   assert.equal(isWorkingTreeClean(sandbox.repo, sandbox.env), true);
   const first = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
-  assert.equal(first?.commit, base);
+  assert.equal(first.kind, 'recorded');
+  assert.equal(first.kind === 'recorded' ? first.anchor.commit : null, base);
   sandbox.write('src/a.ts', 'export const a = 1;\n');
   sandbox.git('add', '-A');
   sandbox.git('commit', '-q', '-m', 'work');
   const work = sandbox.git('rev-parse', 'HEAD').stdout.trim();
   const second = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
-  assert.equal(second?.commit, work);
-  assert.equal(recordAnchor(sandbox.repo, sandbox.env, 'node --test'), null, 'the same commit is one anchor');
+  assert.equal(second.kind, 'recorded');
+  assert.equal(second.kind === 'recorded' ? second.anchor.commit : null, work);
+  // The same commit is one anchor, and the outcome says so (#792).
+  const repeat = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
+  assert.equal(repeat.kind, 'already');
+  assert.equal(repeat.kind === 'already' ? repeat.anchor.commit : null, work);
   sandbox.write('src/dirty.ts', 'export const dirty = 1;\n');
-  assert.equal(recordAnchor(sandbox.repo, sandbox.env, 'node --test'), null, 'a dirty tree is not an anchor');
+  assert.equal(recordAnchor(sandbox.repo, sandbox.env, 'node --test').kind, 'dirty', 'a dirty tree is not an anchor');
+  // A folder without git, and a checkout with no commit, each say so (#792).
+  const outside = makeTempDir('yokoten-anchor-');
+  stopCheckoutWalk(outside);
+  assert.equal(recordAnchor(outside, sandbox.env, 'node --test').kind, 'no-checkout');
+  const empty = makeTempDir('yokoten-anchor-empty-');
+  runChild('git', ['init'], { cwd: empty, env: sandbox.env });
+  assert.equal(recordAnchor(empty, sandbox.env, 'node --test').kind, 'no-commit');
   assert.deepEqual(listAnchors(sandbox.repo).map((anchor) => anchor.commit), [work, base]);
   // Going back is a new branch: the later commit is still there.
   sandbox.git('switch', '-c', 'try-2', base);
