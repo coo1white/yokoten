@@ -247,8 +247,8 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
     ['make -C flags', (n) => `- run: make ${'-Cx '.repeat(n / 4)}`],
     ['npm workspaces flags', (n) => `- run: npm -w ${'-a b '.repeat(n / 5)}`],
   ];
-  // From 4096 characters to 32,768, the shapes taking turns (#474). A reader that goes over the text
-  // again for each character is thousands of times over at that size.
+  // From 4096 characters to 8 times that. A reader that goes over the text again
+  // for each character is thousands of times over at that size.
   assertLinearEach(
     inputs.flatMap(([name, make]) =>
       [false, true].map((workspaces) => ({ name: `${name}, workspaces ${workspaces}`, make, read: (ci: string) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name) })),

@@ -51,7 +51,7 @@ import {
 } from '../../src/rules/guards.ts';
 import { judge } from '../../src/run/hook.ts';
 import { invoke } from '../repo/invoke.ts';
-import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
+import { assertLinear, assertLinearEach, assertWallSmoke } from '../../scripts/linear.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { cwd: process.cwd(), env }), `should block: ${command}`);
 
@@ -1523,7 +1523,7 @@ test('bash: what looked like a case pattern but holds a cut or two words is comm
 });
 
 test('blocked commands: a find inside a find is read once, fast, and a huge list is refused (#226)', () => {
-  // Read once, the time grows with the depth, from 18 finds deep to 144.
+  // Read once. The work grows with the depth, from 18 finds deep to 144.
   const chain = (inner: string, depth: number) => `find . ${'-exec find . '.repeat(depth)}${inner}${'\\; '.repeat(depth + 1)}`;
   assertLinear('a find chain then a force push', (depth) => `${chain('', depth)}&& ${force}`, (command) => blocked(command), 18);
   assertLinear('a find chain that ends in python', (depth) => chain(`-exec ${py} {} `, depth), (command) => assert.ok(isBlockedByList(command), 'the program at the end of the chain'), 18);
@@ -1532,6 +1532,21 @@ test('blocked commands: a find inside a find is read once, fast, and a huge list
   const many = `find . ${'-exec echo {} \\; '.repeat(300)}`;
   assert.equal(checkCommand(many, { cwd: process.cwd(), env: {}, config: pythonBlocked })?.id, 'unreadable-command');
   assert.equal(checkCommand(many, { cwd: process.cwd(), env: {} }), null, 'without a block list, nothing to look for');
+});
+
+test('blocked commands: one find chain stays under a wide wall-clock budget (#754)', () => {
+  // The other linear checks count steps. This one reads the clock, so a hang or a
+  // 100x blow-up still fails. The small chain is read enough times to take tens of ms.
+  const chain = (inner: string, depth: number) => `find . ${'-exec find . '.repeat(depth)}${inner}${'\\; '.repeat(depth + 1)}`;
+  const repeats = 40;
+  assertWallSmoke(
+    'a find chain then a force push',
+    (depth) => `${chain('', depth)}&& ${force}`,
+    (command) => {
+      for (let i = 0; i < repeats; i++) blocked(command);
+    },
+    64,
+  );
 });
 
 test('bash: a quoted or escaped case is no keyword, so nothing after it is a pattern (#226)', () => {
@@ -1574,7 +1589,7 @@ test('bash: a command of 100k words is read in linear time (#226)', () => {
     ['sudo', (n) => `${'sudo '.repeat(n)}echo`],
     ['GIT_CONFIG_PARAMETERS', (n) => `${'GIT_CONFIG_PARAMETERS=x '.repeat(n)}git status`],
   ];
-  // The shapes take turns, and a noisy first round grows to a 20 ms base (#594).
+  // From 3125 words to 8 times that.
   assertLinearEach(
     commands.map(([name, make]) => ({
       name: `${name} words`,
@@ -1603,7 +1618,7 @@ test('bash: the core rules read the string env -S runs, in every spelling (#226)
 // one budget covers every read of a command.
 test('bash: an unclosed $( is read once, not again at each level (#226)', () => {
   blocked(`${'echo $(a '.repeat(30)}; ${force}`);
-  // From 1250 repeats to 10k, the time grows like the text.
+  // From 1250 repeats to 10k, the work grows like the text.
   for (const shape of ['echo $(a ', 'echo "$(a ', 'cat <(a ', '((', 'echo `a ']) {
     assertLinear(`${shape} unclosed`, (n) => `${shape.repeat(n)}; ${force}`, (command) => assert.ok(checkCommand(command, { cwd: process.cwd(), env: {} }), `${shape} unclosed then a force push should block`), 1250);
   }
@@ -1653,9 +1668,8 @@ const nestedCases = nestedShapes.flatMap((shape) =>
 );
 
 test('bash: nested constructs are read in linear time and never throw (#226)', () => {
-  // From 256 repeats to 2048, the shapes taking turns (#442). A loop that reads the text again
-  // for each character is many times over 24x here; see the pull request of #442.
-  // Four times the start size, so a noisy first round grows to a 20 ms base within the cap (#605).
+  // From 256 repeats to 2048. A loop that reads the text again for each character
+  // counts many times over 8x here.
   assertLinearEach(nestedCases, 256);
 });
 
@@ -1663,7 +1677,7 @@ test('bash: nested constructs up to 1000 repeats never throw, and a force push b
   // At 1000 repeats some shapes already run out of the work budget and are refused (more do at
   // 8000, which took 10 s here): that path, too, must not throw. The reader goes only 8 levels
   // deep (MAX_DEPTH), so more repeats than this test the budget again, not the stack. One read
-  // each; the time is proved at the sizes above.
+  // each; the work is proved at the sizes above.
   for (const { make, read } of nestedCases) read(make(1000));
 });
 
@@ -1808,12 +1822,10 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
   }
 });
 
-// The fourth review of #226. The shapes run in a node of their own, which a slow read cannot
-// hold up for long. There each is read at 512 and 4096 repeats, all taking turns, and its time
-// must grow like the text (#316, #442). A shape gives what it should at 4096 repeats, or, for
-// one with a size of its own, at that size: 100k substitutions are refused. The cases go in on
-// stdin: their parts, a part in brackets repeated n times.
-// Four times the start size, so a noisy first round grows to a 20 ms base within the cap (#605).
+// The fourth review of #226. The shapes run in a node of their own. There each is read
+// at 512 repeats and at 8 times that, and the steps must grow like the text (#754).
+// A shape gives what it should at 8 times 512, or, for one with a size of its own, at
+// that size: 100k substitutions are refused. The cases go in on stdin.
 test('bash and hooks: loops that never spent the budget read a thousand repeats in linear time (#226)', () => {
   const guards = join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts');
   const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
@@ -1831,7 +1843,7 @@ test('bash and hooks: loops that never spent the budget read a thousand repeats 
     "const make = (parts, n) => parts.map((part) => (typeof part === 'string' ? part : part[0].repeat(n))).join('');",
     "const read = (mode, text) => (mode === 'hook' ? String(runsCheck(text)) : (checkCommand(text, { env: {}, config, cwd })?.id ?? 'allow'));",
     'const name = (parts) => JSON.stringify(parts).slice(0, 60);',
-    // The helper grows a shape that reads fast, so what the text at 8n gives is checked on its own.
+    // The count is at `repeats` and at 8 times that. What 8n gives is checked on its own.
     'assertLinearEach(cases.map(({ mode, parts }) => ({ name: name(parts), make: (n) => make(parts, n), read: (text) => void read(mode, text) })), repeats);',
     'for (const { mode, parts, want, size } of cases) if (size === undefined) assert.equal(read(mode, make(parts, 8 * repeats)), want, name(parts));',
     'for (const { mode, parts, want, size } of cases) if (size !== undefined) assert.equal(read(mode, make(parts, size)), want, name(parts));',

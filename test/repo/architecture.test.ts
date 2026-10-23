@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
-import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
+import { noteWork } from '../../src/rules/message.ts';
+import { assertLinear, assertLinearEach, assertWallSmoke } from '../../scripts/linear.ts';
 import { judgeSuite, readReport, SUITE_BUDGET } from '../../scripts/time/suite.ts';
 import { clearYokotenEnv, TEST_HOME } from './home.ts';
 
@@ -880,99 +881,60 @@ test('split tests: an import it cannot place stops it with a list, and nothing i
   assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
 });
 
-// A slow spell of real work: a busy wait until the process has spent `ms` of CPU time. The check
-// reads CPU time (#648), so a wait by the wall clock would shrink when the runner pauses the process.
-const busyWait = (ms: number) => {
-  const spent = () => {
-    const { user, system } = process.cpuUsage();
-    return (user + system) / 1000;
-  };
-  const end = spent() + ms;
-  while (spent() < end);
-};
-
-// A simulated clock for the controls (#493): a wait adds to the time instead of spinning, so a control gives
-// the same result on every run, however busy the runner, and takes no real time.
+// A simulated clock for the smoke control: a wait adds to the time instead of spinning.
 const simulated = () => {
   let now = 0;
   return { clock: { now: () => now }, wait: (ms: number) => void (now += ms) };
 };
 
-test('assertLinear: a quadratic read fails; a slow spell in one round does not (#343)', () => {
-  const { clock, wait } = simulated();
-  // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic. The time is simulated.
-  const quadratic = (input: string) => wait(0.6 * (input.length / 1000) ** 2);
-  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000, clock), /linear is about 8x/);
-  // Linear, but every big read of the first round is 200 ms slower, as on a busy runner. A round
-  // has as many reads as fit in 20 ms, from one timed read, so a busy runner cuts the count
-  // (#359). A 7 ms read is past 20 / 3 ms: every round has 3 reads, however busy the runner.
-  let bigReads = 0;
-  const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 3) wait(200);
-    wait(7 * (input.length / 1000));
+test('assertLinear: a quadratic scan fails every time; a linear scan passes (#754)', () => {
+  // n * n counted steps. The old control counted pairs and hoped the clock noticed.
+  const quadratic = (input: string) => {
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) noteWork(1);
   };
-  assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000, clock);
+  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 200), /linear is about 8x/);
+  const linear = (input: string) => {
+    for (let i = 0; i < input.length; i++) noteWork(1);
+  };
+  assertLinear('linear', (n) => 'x'.repeat(n), linear, 200);
 });
 
-test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
-  const { clock, wait } = simulated();
-  // 2 ms per 1000 chars when linear, on a simulated clock. The controls ask for a base of 2 ms, not 20: a quadratic read grown to 20 ms would take 64x that per big read.
-  const linear = (input: string) => wait(2 * (input.length / 1000));
-  const quadratic = (input: string) => wait(2 * (input.length / 1000) ** 2);
+test('assertLinearEach: one quadratic shape among linear ones fails (#442)', () => {
+  const linear = (input: string) => {
+    for (let i = 0; i < input.length; i++) noteWork(1);
+  };
+  const quadratic = (input: string) => {
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) noteWork(1);
+  };
   const shapes = (read: (input: string) => void) => [
     { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
     { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
     { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
   ];
-  assert.throws(() => assertLinearEach(shapes(quadratic), 1000, 2, clock), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
-  // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
-  let bigReads = 0;
-  const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 1) wait(200);
-    linear(input);
-  };
-  assertLinearEach(shapes(noisy), 1000, 2, clock);
+  assert.throws(
+    () => assertLinearEach(shapes(quadratic), 200),
+    (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'),
+  );
 });
 
-test('assertLinearEach: a real nested loop over the input fails, and a slow spell sends a linear one to a grown second round (#474)', () => {
-  // Counts pairs of equal characters: n * n steps, with no wait in it.
-  const nested = (input: string) => {
-    let pairs = 0;
-    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) if (input.charCodeAt(i) === input.charCodeAt(j)) pairs++;
-    assert.ok(pairs > 0);
-  };
-  const linear = (input: string) => {
-    let sum = 0;
-    for (let i = 0; i < input.length; i++) sum += input.charCodeAt(i);
-    assert.ok(sum > 0);
-  };
-  assert.throws(() => assertLinearEach([{ name: 'nested', make: (n) => 'x'.repeat(n), read: nested }], 1000, 2), (error: Error) => /^nested: .* \d+x; linear is about 8x$/.test(error.message));
-  // A linear read that a slow spell sends to the second round is grown there, and passes.
-  const sizes = new Set<number>();
-  let slow = 0;
-  const spell = (input: string) => {
-    sizes.add(input.length);
-    if (input.length === 8000 && ++slow <= 3) busyWait(30);
-    linear(input);
-  };
-  assertLinearEach([{ name: 'summed', make: (n) => 'x'.repeat(n), read: spell }], 1000);
-  assert.ok(Math.max(...sizes) > 8000, 'the shape was grown past its starting size');
+test('assertLinear: a scan that counts nothing fails (#754)', () => {
+  assert.throws(() => assertLinear('empty', (n) => 'x'.repeat(n), () => {}, 8), /counted no work/);
 });
 
-test('assertLinearEach: a pause on every big read does not count, as on a busy runner (#648)', () => {
-  // The thread sleeps 60 ms in each big read, the one that follows its small read: its wall time
-  // grows far past 24x, its CPU time does not. By wall-clock time this failed, in both rounds; the
-  // nested-loop control above shows the CPU time still catches a quadratic read.
-  const pause = new Int32Array(new SharedArrayBuffer(4));
-  let last = 0;
-  const paused = (input: string) => {
-    if (input.length === 8 * last) Atomics.wait(pause, 0, 0, 60);
-    last = input.length;
-    let sum = 0;
-    for (let i = 0; i < input.length; i++) sum += input.charCodeAt(i);
-    assert.ok(sum > 0);
+test('wall-clock smoke: a 100x blow-up fails, one slow read is retried, and a hang fails at once (#754)', () => {
+  const blow = simulated();
+  const quadraticTime = (input: string) => blow.wait(input.length > 100 ? 100 : 1);
+  assert.throws(() => assertWallSmoke('blow', (n) => 'x'.repeat(n), quadraticTime, 100, blow.clock), /100x blow-up/);
+  // The first big read is slow. The retry is linear, so the smoke passes.
+  const noisy = simulated();
+  let slowReads = 0;
+  const oneSlowRead = (input: string) => {
+    if (input.length > 100 && slowReads++ === 0) noisy.wait(5_000);
+    noisy.wait(input.length / 100);
   };
-  assertLinearEach([{ name: 'paused', make: (n) => 'x'.repeat(n), read: paused }], 1000, 2);
+  assertWallSmoke('noisy', (n) => 'x'.repeat(n), oneSlowRead, 100, noisy.clock);
+  const hung = simulated();
+  assert.throws(() => assertWallSmoke('hung', (n) => 'x'.repeat(n), () => hung.wait(30_000), 100, hung.clock), /a hang/);
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an

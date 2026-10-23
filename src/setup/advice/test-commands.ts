@@ -6,6 +6,7 @@
 
 import { type Dirent, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { noteWork } from '../../rules/message.ts';
 
 // ---- Command patterns. road.ts builds its npm and workspaces patterns from these too. ----
 
@@ -57,6 +58,7 @@ const repeated =
     };
     const found: number[] = [];
     for (let i = at[0]; i <= last; i++) {
+      noteWork(1);
       if (!isReached[i]) continue;
       found.push(i);
       step(words, i, reach);
@@ -306,6 +308,7 @@ export const runLines = (ci: string): string[] => {
   const lines: string[] = [];
   const text = ci.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const key = /^([ \t]*(?:-[ \t]+)?)run:(?:[ \t]+(.*))?$/.exec(text[i]);
     if (!key) continue;
     const value = (key[2] ?? '').trim();
@@ -313,6 +316,7 @@ export const runLines = (ci: string): string[] => {
       // A block: the lines indented more than the `run` key, with `\` continuations joined.
       let line = '';
       for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t]*/.exec(text[i + 1])![0].length > key[1].length); i++) {
+        noteWork(text[i + 1].length + 1);
         const next = text[i + 1].trim();
         if (!next) continue;
         line = line ? `${line} ${next}` : next;
@@ -336,10 +340,17 @@ const prefixEnd = (command: string) => {
   for (;;) {
     PREFIX.lastIndex = at;
     const prefix = PREFIX.exec(command);
-    if (!prefix) return at;
+    if (!prefix) {
+      noteWork(command.length - at);
+      return at;
+    }
+    noteWork(PREFIX.lastIndex - at);
     at = PREFIX.lastIndex;
     // `env` may take flags before the command: env -i node --test.
-    for (ENV_FLAG.lastIndex = at; prefix[1] && ENV_FLAG.exec(command); ) at = ENV_FLAG.lastIndex;
+    for (ENV_FLAG.lastIndex = at; prefix[1] && ENV_FLAG.exec(command); ) {
+      noteWork(ENV_FLAG.lastIndex - at);
+      at = ENV_FLAG.lastIndex;
+    }
   }
 };
 /**

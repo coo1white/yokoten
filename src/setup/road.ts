@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
-import { docsLink, type Finding, finding, type RuleId } from '../rules/message.ts';
+import { docsLink, type Finding, finding, noteWork, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
@@ -185,7 +185,10 @@ const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) ||
  * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
  * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
  */
-const ciRuns = (ci: string, command: CommandTest) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const ciRuns = (ci: string, command: CommandTest) => {
+  noteWork(ci.length);
+  return command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+};
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
 // The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).
@@ -197,11 +200,14 @@ const usesYokoten = (line: string) => {
   const head = USES_HEAD.exec(line);
   if (!head) return false;
   REF_WORD.lastIndex = head[0].length;
-  if (!REF_WORD.exec(line)) return false;
+  const first = REF_WORD.exec(line);
+  if (!first) return false;
+  noteWork(first[0].length);
   let at = REF_WORD.lastIndex;
   for (REF_GAP.lastIndex = at; REF_GAP.exec(line); REF_GAP.lastIndex = at) {
     REF_WORD.lastIndex = REF_GAP.lastIndex;
-    REF_WORD.exec(line);
+    const word = REF_WORD.exec(line);
+    noteWork(word ? word[0].length : 1);
     at = REF_WORD.lastIndex;
   }
   const quote = head[1];
@@ -218,12 +224,16 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
   const found: { prCheck: boolean }[] = [];
   const text = workflow.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const item = /^([ \t]*)-[ \t]+(.*)$/.exec(text[i]);
     if (!item) continue;
     // The item's keys sit two past the dash; its first key is on the dash line.
     const keyIndent = item[1].length + 2;
     const lines = [' '.repeat(keyIndent) + item[2]];
-    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) {
+      noteWork(text[i + 1].length + 1);
+      lines.push(text[i + 1]);
+    }
     const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
     if (!keys.some(usesYokoten)) continue;
     let inWith = false;
@@ -241,10 +251,14 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
 export const onPullRequest = (workflow: string): boolean => {
   const text = workflow.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const on = /^(?:on|"on"|'on'):(.*)$/.exec(text[i]);
     if (!on) continue;
     const block = [on[1]];
-    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) block.push(text[i + 1]);
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) {
+      noteWork(text[i + 1].length + 1);
+      block.push(text[i + 1]);
+    }
     if (block.some((l) => /(?:^|[\s[,{])pull_request(?:_target)?(?=[\s:,\]}]|$)/.test(l.replace(/#.*/, '')))) return true;
   }
   return false;

@@ -4,7 +4,7 @@
 // A hit names the kind of secret, never the secret: the output may land in a CI log.
 
 import type { Env } from './config.ts';
-import type { FindingGrade } from './message.ts';
+import { noteWork, type FindingGrade } from './message.ts';
 
 /** What `yokoten redact` writes in place of a secret (#390). */
 export const SECRET = '<secret>';
@@ -113,6 +113,7 @@ function findCandidateMask(line: string): number {
   let mask = 0;
   let node = 0;
   for (let index = 0; index < line.length; index++) {
+    noteWork(1);
     const code = line.charCodeAt(index);
     node = code < ANCHOR_ALPHABET ? ANCHOR_MATCHER.transitions[node * ANCHOR_ALPHABET + code] : 0;
     mask |= ANCHOR_MATCHER.masks[node];

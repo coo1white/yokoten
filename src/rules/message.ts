@@ -691,3 +691,33 @@ export const formatFindingMarks = (f: Finding): string => {
  */
 export const formatFinding = (f: Finding): string =>
   `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
+
+// ---- Steps a scan takes (#754) ----
+//
+// The linear tests read this count, not the clock. A busy runner made an 8-times longer
+// text look 28 times slower, and eleven clock limits failed that way. Counting stays off
+// until a test asks, so a real read pays one check.
+
+/** The steps counted while a test is measuring. Null the rest of the time. */
+let workCounter: { count: number } | null = null;
+
+/** Counts `amount` steps of a scan. Nothing while no test is measuring. */
+export function noteWork(amount: number): void {
+  if (workCounter !== null) workCounter.count += amount;
+}
+
+/**
+ * The steps `read` counts, from zero. Counting is off again after it. A measure inside a
+ * measure counts on its own, then the outer count resumes. A throw does not leave counting on.
+ */
+export function measureWork(read: () => void): number {
+  const previous = workCounter;
+  const counter = { count: 0 };
+  workCounter = counter;
+  try {
+    read();
+    return counter.count;
+  } finally {
+    workCounter = previous;
+  }
+}
