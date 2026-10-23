@@ -1622,6 +1622,15 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const gone = pushed?.find((name) => isDefaultBranch(name, directory, env));
     if (gone !== undefined) return deleteBranchFinding(`\`git push\` deletes the default branch \`${gone}\` on the remote`);
   }
+  if (sub === 'tag') {
+    const tag = tagToCreate(withoutShellRedirects(words, argsAt));
+    if (tag !== null && !env.YOKOTEN_RELEASE_APPROVAL) {
+      return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${tag}\` themselves; do not look for another way`);
+    }
+  }
+  if (sub === 'reset' && args.some((arg) => arg === '--hard')) {
+    return finding('hard-reset', 'git reset --hard throws away uncommitted work', 'commit or stash the work first; to undo a commit, use `git revert`');
+  }
   if (sub === 'branch') {
     const names = findDeletedBranches(withoutShellRedirects(words, argsAt));
     const gone = names?.find((name) => isDefaultBranch(name, directory, env));
@@ -2660,6 +2669,22 @@ function findDeletedRef(args: string[]): string | null {
   if (!args.includes('-d')) return null;
   const refs = plainArgs(args, ['-m', '--message']);
   return refs.length > 0 ? refs[0] : null;
+}
+
+/**
+ * The tag a `git tag` command creates, or null when it only reads or deletes tags (#812).
+ * The name is the first word that is not an option and not the value of one.
+ */
+function tagToCreate(args: string[]): string | null {
+  const reads = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify', '-n', '--column', '--sort', '--format', '--points-at', '--contains', '--merged', '--no-merged', '--omit-empty']);
+  const values = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user']);
+  for (let at = 0; at < args.length; at++) {
+    const word = args[at];
+    if (reads.has(word) || [...reads].some((read) => word.startsWith(`${read}=`))) return null;
+    if (values.has(word)) at++;
+    else if (!word.startsWith('-')) return word;
+  }
+  return null;
 }
 
 /** The default branch: what refs/remotes/origin/HEAD names, else main and master. */
@@ -3955,6 +3980,11 @@ function checkPublish(words: string[], env: Env): Finding | null {
   const gh = after(['gh']);
   const sub = gh.indexOf('release');
   if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
+  const repo = gh.indexOf('repo');
+  if (repo !== -1 && gh[repo + 1] === 'create' && gh.includes('--public')) return release('creating a public repo');
+  if (repo !== -1 && gh[repo + 1] === 'edit' && gh.some((a) => a === '--visibility=public' || (a === '--visibility' && gh[gh.indexOf(a) + 1] === 'public'))) {
+    return release('making the repo public');
+  }
   if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;
 }

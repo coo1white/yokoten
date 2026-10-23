@@ -14,6 +14,7 @@ import {
   stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
+import { finding } from '../../src/rules/message.ts';
 import { SECRET } from '../../src/rules/secrets.ts';
 import {
   AGENT_STATUS_FILE,
@@ -23,6 +24,7 @@ import {
   DONE_TRY_LIMIT,
   doneTryKey,
   doneWhenShell,
+  formatRefusal,
   guardDeadline,
   isSameFile,
   isWorkerType,
@@ -41,6 +43,38 @@ import {
   windowsTreeKillArgs,
   writeAgentChecks,
 } from '../../src/run/hook.ts';
+
+test('a refusal is four plain lines: what, why, what to do, then the rule (#816)', () => {
+  const text = formatRefusal(finding('release', 'creating the tag v1.2.0', 'run `git tag v1.2.0` yourself'));
+  assert.equal(text, [
+    'yokoten stopped this: creating the tag v1.2.0.',
+    'Why: only the owner decides when to release.',
+    'What to do: run `git tag v1.2.0` yourself.',
+    '(rule release \u00b7 more: docs/guide.md#the-core-rules)',
+  ].join('\n'));
+});
+
+test('a refusal keeps the four lines in order, with a full stop and no double stop (#816)', () => {
+  const lines = formatRefusal(finding('force-push', 'git push --force forces the push', 'use --force-with-lease')).split('\n');
+  assert.equal(lines.length, 4);
+  assert.match(lines[0] ?? '', /^yokoten stopped this: /);
+  assert.match(lines[1] ?? '', /^Why: /);
+  assert.match(lines[2] ?? '', /^What to do: /);
+  assert.match(lines[3] ?? '', /^\(rule force-push/);
+  for (const line of lines) assert.ok(!line.endsWith('..'), line);
+});
+
+test('a refusal with no docs link still names the rule (#816)', () => {
+  const text = formatRefusal(finding('remove-git', 'deleting the .git folder throws away every commit', 'delete only the files you mean'));
+  assert.ok(text.endsWith('(rule remove-git)'), text);
+});
+
+test('a secret in the stopped action reads <hidden>, never the secret (#816)', () => {
+  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  const text = formatRefusal(finding('release', `pushing with the token ${token}`, 'run it yourself'));
+  assert.ok(!text.includes(token));
+  assert.match(text, /<hidden>/);
+});
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   const sandbox = makeSandbox();
@@ -66,9 +100,9 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   // A worker subagent is a worker even in a lead session.
   result = await sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'worker', tool_input: { file_path: 'CLAUDE.md' } }) });
   assert.equal(result.status, 2);
-  // The user-level guard leaves files to the project.
+  // The user-level guard applies the safeguard's defaults in a repo without yokoten.json (#816).
   result = await sandbox.call(['hook', '--commands-only'], { input: tool({ file_path: 'CLAUDE.md' }), extra: { YOKOTEN_ROLE: 'worker' } });
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 2);
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
 });
 
@@ -126,7 +160,7 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', asy
   const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
   let result = await sandbox.call(['hook'], { input, extra: late });
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten: the guard took longer than 1 ms to read this command\. .*Split the command into smaller ones\./);
+  assert.match(result.stderr, /^yokoten stopped this: the guard took longer than 1 ms to read this command\.\nWhy: [^\n]+\nWhat to do: split the command into smaller ones\./);
   result = await sandbox.call(['hook', '--json'], { input, extra: late });
   assert.equal(result.status, 2);
   const out = JSON.parse(result.stdout);
@@ -164,7 +198,7 @@ test('hook: bad JSON in yokoten.json gives the defaults and one line, and check 
   let result = await call('git push --force');
   assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, line);
-  assert.match(result.stderr, /\nyokoten: [^\n]*force/);
+  assert.match(result.stderr, /\nyokoten stopped this: [^\n]*force/);
   assert.ok(!result.stderr.includes(sandbox.repo), 'no absolute path');
   result = await call('git status');
   assert.equal(result.status, 0, result.stderr);

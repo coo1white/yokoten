@@ -15,6 +15,29 @@ import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFold
 import { type Finding, finding } from '../rules/message.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/secrets.ts';
 
+/** The start of a docs link, so a refusal shows a short path instead of the whole URL. */
+const DOCS_PREFIX = 'https://github.com/yokoten-labs/yokoten/blob/main/';
+const noFullStop = (text: string): string => text.replace(/[.\s]+$/, '');
+const shortDocs = (url: string | undefined): string | undefined =>
+  url === undefined ? undefined : url.startsWith(DOCS_PREFIX) ? url.slice(DOCS_PREFIX.length) : url;
+
+/**
+ * A finding as the four lines a refusal prints (#816): what was stopped, why, what to do,
+ * and the rule id with its link last. Every runtime's hook uses this one function, so a
+ * person reads the same plain words under Claude Code, Codex, Grok and OpenCode. A secret
+ * in a field reads `<hidden>`, never the secret.
+ */
+export function formatRefusal(f: Finding): string {
+  const plain = (text: string) => noFullStop(makeSecretHider()(text).replaceAll(SECRET, '<hidden>'));
+  const docs = shortDocs(f.docs);
+  return [
+    `yokoten stopped this: ${plain(f.what)}.`,
+    `Why: ${plain(f.why)}.`,
+    `What to do: ${plain(f.fix)}.`,
+    `(rule ${f.id}${docs === undefined ? '' : ` \u00b7 more: ${docs}`})`,
+  ].join('\n');
+}
+
 /** What an agent is about to do, in no runtime's terms. */
 export interface Action {
   /** A shell command, as the agent wrote it. */

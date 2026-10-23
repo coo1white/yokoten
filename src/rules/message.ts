@@ -70,6 +70,12 @@ export const RULES = {
     check: 'the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock',
     docs: guide('the-core-rules'),
   },
+  'hard-reset': {
+    rule: 'no hard reset: it throws away work (record 0034)',
+    why: 'a hard reset drops every change you have not committed, and git cannot bring it back',
+    check: 'the tool-call guard stops `git reset --hard`; `git reset` without `--hard` and `git revert` pass',
+    docs: guide('the-safeguard'),
+  },
   'skip-check': {
     rule: 'never skip the commit check (core rule 6)',
     why: 'the commit check is the inspection step, and a skipped check makes a broken commit look reviewed',

@@ -29,7 +29,7 @@ test('hook --agent deepseek-harness: lowercase bash by command, write and edit b
   let result = await call('bash', { command: 'git push --tags origin', description: 'Push all tags to origin' });
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '', 'the bridge reads the reason from stderr');
-  assert.match(result.stderr, /^yokoten: git push --tags pushes tags\. Only the owner decides when to release/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags\.\nWhy: only the owner decides when to release/);
   assert.equal((await call('pwsh', { command: 'git push --tags origin' })).status, 2, 'the Windows shell too');
   result = await call('bash', { command: 'git status', description: 'Status' });
   assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);

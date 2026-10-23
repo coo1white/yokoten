@@ -68,6 +68,21 @@ yokoten turns those lessons into something that checks itself:
 
 All of this is on from the start, for everyone: you don't answer a question or edit a file to be safe. Every setting that changes it has a way back to the default. [Record 0014](records/0014-safe-by-default.md) says how yokoten decides what it does by itself, what it asks first, and what it never does.
 
+## The safeguard
+
+The same five protections are on from the start, for every person and every agent. They
+hold with no `yokoten init` and no setting.
+
+1. **Lose your work**: no force push, no hard reset, no deleting `.git` or its history.
+2. **Leak a secret**: no key, token, email address or home path in a commit or a post.
+3. **Publish for you**: no tag, no release, no package publish, no making a repo public.
+4. **Run code from the internet unread**: no download piped into a shell.
+5. **Take the safeguard apart**: no turning off a check or a hook, and no editing CI or the rules.
+
+When it stops something, it says what it stopped, why, and what to do. The rule id and a
+link come last, for people who want them. Only the owner makes the changes in the fifth
+line; an agent asks the owner to make them.
+
 ## Three checks and a lock
 
 ```mermaid

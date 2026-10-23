@@ -26,6 +26,7 @@ import {
   DONE_TRY_LIMIT,
   doneTryKey,
   findStatusCheckout,
+  formatRefusal,
   registerDesk,
   type Guard,
   guardDeadline,
@@ -150,16 +151,23 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
   const rootByFolder = new Map<string, string | null>([[base, session?.root ?? null]]);
   const repos = new Map<string, Repo | null>();
   // In the full hook, the session's root already has its rules.
-  if (session) repos.set(session.root, commandsOnly && existsSync(join(session.root, 'yokoten.json')) ? session : null);
+  if (session) repos.set(session.root, commandsOnly ? session : null);
   for (const path of action.paths) {
     let folder = dirname(resolve(base, path));
     while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
     if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder, invocation.env));
     const root = rootByFolder.get(folder);
     if (!root || repos.has(root)) continue;
-    repos.set(root, existsSync(join(root, 'yokoten.json')) ? { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) } : null);
+    repos.set(root, repoAt(invocation, root));
   }
-  return [...repos.values()].filter((repo) => repo !== null);
+  // A repo without yokoten.json still gets the safeguard (#816): the defaults, which stop
+  // the five protections from turning off. No init and no setting is needed.
+  return [...repos.values()].filter((repo): repo is Repo => repo !== null);
+}
+
+/** A repo's rules: its yokoten.json, or the defaults when it has none. */
+function repoAt(invocation: Invocation, root: string): Repo {
+  return { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) };
 }
 
 /**
@@ -493,7 +501,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     }
     if (!found) return 0;
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
-    const reason = `yokoten: ${formatFinding(found)}`;
+    // Every refusal uses the same four lines, whatever the runtime and whether the repo ran init.
+    const reason = formatRefusal(found);
     say(invocation, `${reason}\n`, invocation.stderr);
     const denial = Object.hasOwn(DENIALS, agent) ? DENIALS[agent](reason) : { stdout: '', exitCode: 2 };
     if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
