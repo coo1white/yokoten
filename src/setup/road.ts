@@ -785,7 +785,7 @@ export const ROAD: Step[] = [
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
     byHand: `the repo has the labels ${lackingLabels([]).map((l) => l.name).join(', ')}`,
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
-    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, security, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
