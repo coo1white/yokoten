@@ -10,7 +10,12 @@ import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
 import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees } from './agents.ts';
 import { buildNeeds } from './feed/needs.ts';
-import { findAgentLog, type LogCache } from './feed/logs.ts';
+import { makeFeedMask } from './feed/route.ts';
+import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/read/desk.ts';
+import { findAgentLog, lastAssistantLine, type LogCache } from './feed/read/logs.ts';
+
+/** Characters that fit on the lead row. The side column is 312px and the line is 12px. */
+export const LEAD_ROW_CHARS = 40;
 
 /** An agent that wrote within this time, and says nothing else, is working. */
 const WORKING_WINDOW_MS = 30 * 60 * 1000;
@@ -167,6 +172,8 @@ export interface AgentView {
   checks: BoardAgent['checks'];
   age: string;
   updated: string;
+  /** When this work started. The file's `started`, else the file's birth, else `updated`. */
+  started: string;
   branch: string;
   /** True when it says working and its status file or session log changed within 15 minutes. */
   isLive?: boolean;
@@ -268,8 +275,38 @@ function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], e
   return log !== null && now - log.mtime < LIVE_WINDOW_MS;
 }
 
+/**
+ * The lead row's one line (#700): the first line of what the lead last said, masked as
+ * the stream masks it, then cut to the row. No log, or no mask: the status file's line.
+ */
+function leadLine(tree: string, vendor: string, env: Env, root: string, cache: LogCache, fallback: string): string {
+  const log = findAgentLog(tree, vendor, env, cache);
+  if (!log) return fallback;
+  const text = lastAssistantLine(log.file, log.source, tree);
+  if (!text) return fallback;
+  try {
+    const masked = makeFeedMask(env, root)(text).split('\n')[0]?.trim() ?? '';
+    if (!masked) return fallback;
+    return masked.length <= LEAD_ROW_CHARS ? masked : masked.slice(0, LEAD_ROW_CHARS);
+  } catch {
+    return fallback;
+  }
+}
+
+/** When the work started: the filed time, else the status file's birth, else the last write. */
+function workStarted(agent: BoardAgent, tree: string): string {
+  if (!Number.isNaN(Date.parse(agent.started))) return agent.started;
+  try {
+    const born = statSync(join(tree, BOARD_AGENT_FILE)).birthtimeMs;
+    if (born > 0) return new Date(born).toISOString();
+  } catch {
+    // No file time: the last write stands in.
+  }
+  return agent.updated;
+}
+
 /** One found agent as the page shows it. */
-function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache): AgentView {
+function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string): AgentView {
   const { agent, tree } = found;
   return {
     key: hideHome(tree.path, env),
@@ -284,10 +321,11 @@ function agentView(found: FoundAgent, env: Env, now: number, nickname: string, i
     task: agent.task,
     title: taskTitle(agent.task),
     ref: refOf(agent.task),
-    doing: agent.doing,
+    doing: agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing) : agent.doing,
     checks: agent.checks,
     age: ageText(agent.updated, now),
     updated: agent.updated,
+    started: workStarted(agent, tree.path),
     branch: tree.branch,
     isLive: isAgentLive(tree.path, agent.vendor, agent.state, env, cache, now),
   };
@@ -306,6 +344,8 @@ export interface BoardData {
   pulls: PullView[] | string;
   merged: MergedView[];
   worktrees: BoardWorktree[] | string;
+  /** The lead's desk: what it is doing, the decisions, and its last reply (#701). */
+  desk: LeadDesk;
   /** When the data was read. */
   updated: string;
   /** Seats per vendor, or null when `.git/yokoten-seats.json` is missing or bad. */
@@ -336,6 +376,14 @@ export function collectBoard(root: string, env: Env, gh: Gh, now: number = Date.
   return collectBoardWith(root, env, remote, remote ? readBoardPulls(gh, remote) : BOARD_NO_REMOTE_PULLS, now, openIssues);
 }
 
+/** The lead's desk for this read: the file when it is good, and the reply from its session. */
+function leadDesk(root: string, env: Env, found: FoundAgent[]): LeadDesk {
+  const filed = readLeadDesk(root, env);
+  const lead = found.find((one) => one.agent.role === 'lead');
+  const reply = lead ? readLeadReply(lead.tree.path, lead.agent.vendor, env, root) : { reply: '', rest: '' };
+  return { ...(filed ?? EMPTY_DESK), reply: reply.reply, rest: reply.rest };
+}
+
 /**
  * The board's data with pull requests already read, or why there are none (#688). Only
  * the local parts are read here: the status files and `git worktree list`. `openIssues`
@@ -352,7 +400,7 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
   const agents = found.map((item) => {
     const nickname = nicknameOf(nicknameId(item.tree.path, item.agent.name), taken);
     taken.push(nickname);
-    return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache);
+    return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache, root);
   });
   const rows = typeof pulls === 'string' ? [] : pulls;
   return {
@@ -366,6 +414,7 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
       .filter((pull) => pull.stage === 'merged' && now - Date.parse(pull.mergedAt) < MERGED_WINDOW_MS)
       .map((pull) => ({ number: pull.number, title: pull.title, url: webUrl(pull.url), mergedAt: pull.mergedAt })),
     worktrees: typeof worktrees === 'string' ? worktrees : worktrees.map((tree) => ({ path: hideHome(tree.path, env), branch: tree.branch })),
+    desk: leadDesk(root, env, found),
     updated: new Date(now).toISOString(),
     seats: readBoardSeats(root),
   };

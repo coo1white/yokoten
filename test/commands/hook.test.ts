@@ -1107,3 +1107,33 @@ test('hook: the lead keeps the main checkout\'s file; a worker and a repo withou
   assert.equal((await plain.call(['hook'], { input: JSON.stringify(SHELL_CALLS['claude-code'](plain.repo, 'npm test')), extra: lead })).status, 0);
   assert.equal(existsSync(join(plain.repo, '.yokoten-agent.json')), false, 'no yokoten.json, no file');
 });
+
+// #700: a lead session records its log path in the repo's git folder. A worker never does.
+// A later lead session replaces the path. The file is one line and readable only by this user.
+test('session start: a lead registers its log path; a worker does not (#700)', async () => {
+  const { sandbox, tree } = makeBoardRepo();
+  const file = join(sandbox.repo, '.git', 'yokoten-lead-session');
+  const start = (cwd: string, transcriptPath: string, extra: Record<string, string> = {}) =>
+    sandbox.call(['doctor', '--session'], {
+      cwd,
+      input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'lead-700', source: 'startup', transcript_path: transcriptPath }),
+      extra: { CLAUDE_PROJECT_DIR: cwd, ...extra },
+    });
+  assert.equal((await sandbox.call(['doctor', '--session'])).status, 0);
+  assert.equal(existsSync(file), false, 'no transcript path, no registration');
+  const workerLog = join(sandbox.home, '.claude', 'projects', 'worker', 'w.jsonl');
+  assert.equal((await start(sandbox.repo, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
+  assert.equal((await start(tree, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
+  assert.equal(existsSync(file), false, 'a worker does not register');
+  const live = join(sandbox.home, '.claude', 'projects', 'parent', 'live.jsonl');
+  assert.equal((await start(sandbox.repo, live)).status, 0);
+  assert.equal(readFileSync(file, 'utf8'), `${live}\n`);
+  assert.equal(lstatSync(file).mode & 0o777, 0o600);
+  const next = join(sandbox.home, '.claude', 'projects', 'parent', 'next.jsonl');
+  assert.equal((await start(sandbox.repo, next)).status, 0);
+  assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a new lead session overwrites it');
+  assert.equal(lstatSync(file).mode & 0o777, 0o600);
+  assert.equal((await start(sandbox.repo, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
+  assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a worker leaves the lead path in place');
+  assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the path stays in the git folder');
+});

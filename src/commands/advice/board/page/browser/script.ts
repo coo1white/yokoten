@@ -3,13 +3,16 @@
 // into the page, so it uses only other functions here, its arguments and the browser.
 // Tests call the plain ones. Every word from a status file goes in as text.
 
-import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../controls.ts';
-import type { FeedEvent } from '../feed/steps.ts';
-import type { AgentView, BoardData, NeedView } from '../view.ts';
-import { isCheckoutLead, roleGroup } from './groups.ts';
-import { githubNote, renderBar, renderLimits, renderOutput, renderRight, renderRuns, renderStart, RIGHT_FUNCTIONS } from './right.ts';
+import type { BoardIssue, BoardLimits, BoardRun, BoardWaiting } from '../../controls.ts';
+import type { FeedEvent } from '../../feed/steps.ts';
+import type { AgentView, BoardData } from '../../view.ts';
+import { ageOfNeed, fillNeeds, foldHead, idOfNeed, noteNewNeeds, refChip, renderNeedItem, renderSide, vendorChip } from './column.ts';
+import { renderTimeline } from './desk.ts';
+import { isCheckoutLead, roleGroup } from '../groups.ts';
+import { githubNote, renderBar, renderLimits, renderOutput, renderRight, renderRuns, renderStart, RIGHT_FUNCTIONS } from '../right.ts';
 import { followStream, renderStream, type StreamView } from './stream.ts';
 
+export { ageOfNeed, fillNeeds, foldHead, idOfNeed, noteNewNeeds, renderNeedItem, renderSide };
 export { githubNote, isCheckoutLead, renderBar, renderLimits, renderOutput, renderRight, renderRuns, renderStart, roleGroup };
 
 /** The page's data: what /data sends. The waiting list, the open issues, the board's own runs, and its limits ride with the board. */
@@ -117,70 +120,6 @@ export function ageOf(state: PageState, agent: AgentView, now: number): string {
   return minutes < 1440 ? format.format(-Math.floor(minutes / 60), 'hour') : format.format(-Math.floor(minutes / 1440), 'day');
 }
 
-/** How old a Needs you row is. A day or more says so, in the page's language. */
-export function ageOfNeed(state: PageState, at: string, now: number): string {
-  const then = Date.parse(at);
-  if (!at || Number.isNaN(then)) return '';
-  const minutes = Math.max(0, Math.floor((now - then) / 60000));
-  if (minutes >= 1440) return say(state, 'olderThanADay');
-  if (minutes < 1) return say(state, 'justNow');
-  const format = new Intl.RelativeTimeFormat(state.ui.lang, { style: 'short' });
-  return minutes < 60 ? format.format(-minutes, 'minute') : format.format(-Math.floor(minutes / 60), 'hour');
-}
-
-/** The id a row is remembered by, so a new one can pulse and a done one can leave. */
-export function idOfNeed(need: NeedView): string {
-  return `${need.kind}:${need.pull}:${need.issue ?? 0}:${need.agentKey}`;
-}
-
-/** Remember the rows. A new one, while the panel is closed, pulses the badge once. */
-export function noteNewNeeds(state: PageState, needs: NeedView[]): void {
-  const ids = needs.map(idOfNeed);
-  const seen = state.seenNeedIds ?? [];
-  const hasNew = state.hasSeenNeeds === true && state.isNeedsOpen !== true && ids.some((id) => !seen.includes(id));
-  state.seenNeedIds = ids;
-  state.hasSeenNeeds = true;
-  if (hasNew) state.pulseNeeds = true;
-}
-
-/** An http(s) address, or '': a status file cannot hand the page a script link. */
-function webLink(url: string): string {
-  return /^https?:\/\//i.test(url.trim()) ? url.trim() : '';
-}
-
-/** The title and the Act here address for one row, from the pull request, the issue, or the agent's link. */
-function readNeedTarget(state: PageState, need: NeedView): { title: string; link: string } {
-  const pulls = state.data?.pulls;
-  const pull = need.pull && Array.isArray(pulls) ? pulls.find((each) => each.number === need.pull) : undefined;
-  if (pull) return { title: pull.title, link: webLink(pull.url) };
-  const issues = state.data?.issues;
-  const issue = need.issue && Array.isArray(issues) ? issues.find((each) => each.number === need.issue) : undefined;
-  if (issue) return { title: issue.title, link: webLink(issue.url) };
-  const name = state.data?.agents.find((each) => each.key === need.agentKey)?.name;
-  const waiting = name ? state.data?.waiting.find((row) => row.agent === name && webLink(row.link)) : undefined;
-  return { title: '', link: waiting ? webLink(waiting.link) : '' };
-}
-
-/** One Needs you row: what it is, which pull request or issue, how old, and one Act here link. */
-export function renderNeedItem(state: PageState, need: NeedView, now: number): HTMLElement {
-  const target = readNeedTarget(state, need);
-  const what = need.kind === 'approve' ? say(state, 'pull.approve') : (need.why || say(state, 'noReason'));
-  const number = need.issue && !need.pull ? need.issue : need.pull;
-  const which = number ? say(state, need.issue && !need.pull ? 'needIssue' : 'needPull', { n: number }) : '';
-  const age = ageOfNeed(state, need.at ?? '', now);
-  const line = [which, target.title].filter(Boolean).join(' ');
-  const link = target.link ? el('a', { class: 'go', href: target.link, target: '_blank', rel: 'noopener noreferrer' }, say(state, 'actHere')) : null;
-  return el('div', { class: 'need-item', role: 'listitem', tabindex: '0' }, el('span', { class: 'ttl' }, what), line ? el('span', { class: 'meta' }, line) : null, age ? el('span', { class: 'age' }, age) : null, link);
-}
-
-/** Fill the header panel from the latest rows. A finished row is already gone from the data. */
-export function fillNeeds(state: PageState, data: PageData): void {
-  const menu = document.getElementById('needs-menu');
-  if (!menu) return;
-  menu.hidden = state.isNeedsOpen !== true;
-  const rows = data.needs.length ? data.needs.map((need) => renderNeedItem(state, need, Date.now())) : [el('p', { class: 'quiet' }, say(state, 'nothingNeeds'))];
-  menu.replaceChildren(el('div', { role: 'list' }, ...rows));
-}
 
 /** Fold three or more routine steps in a row into one group. Waits, failures and the end never fold, and the latest step always shows. */
 export function groupFeed(events: FeedEvent[]): FeedItem[] {
@@ -251,68 +190,6 @@ export function saveUi(ui: PageUi): void {
   }
 }
 
-function vendorChip(agent: AgentView): HTMLElement {
-  const mark = el('span', { class: agent.isLive ? 'vm live' : 'vm' });
-  mark.style.background = agent.vendor.color;
-  return el('span', { class: 'chip' }, mark, agent.vendor.name);
-}
-
-function refChip(agent: AgentView): HTMLElement | null {
-  if (!agent.ref) return null;
-  return el('span', { class: 'ref' }, icon(agent.ref.kind === 'pr' ? 'pr' : 'issue', true), `${agent.ref.kind === 'pr' ? 'PR' : 'Issue'} #${agent.ref.number}`);
-}
-
-/** A fold header: a button with the chevron, name, count and, when folded, what it hides; then an optional action beside it. */
-export function foldHead(state: PageState, key: string, dots: string[], extra: HTMLElement | null = null): HTMLElement {
-  const isOpen = !state.ui.fold[key];
-  return el('div', { class: 'sh' },
-    el('button', { class: `f${isOpen ? ' open' : ''}`, 'data-fold': key, 'aria-expanded': String(isOpen) }, icon('chev', true), say(state, key), el('span', { class: 'n' }, String(dots.length)), isOpen ? null : el('span', { class: 'sum' }, summaryOf(state, dots))),
-    extra);
-}
-
-/** One agent in the left column. A finished one gets a clear button beside it. */
-function agentRow(state: PageState, agent: AgentView): HTMLElement {
-  const isDone = agent.dot === 'done';
-  const row = el('button', { class: `row${isDone ? ' done-row' : ''}${isCheckoutLead(agent) ? ' lead-row' : ''}`, 'data-pick': agent.key, 'aria-current': String(agent.key === state.ui.current) },
-    el('span', { class: 'r1' }, el('span', { class: `dot ${agent.dot}`, title: say(state, `dot.${agent.dot}`) }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
-    el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name), refChip(agent)),
-    agent.doing ? el('span', { class: 'r3' }, el('span', {}, agent.doing)) : null);
-  const clear = isDone ? el('button', { class: 'x', 'data-clear': clearedId(agent), title: say(state, 'clearOne'), 'aria-label': say(state, 'clearOne') }, icon('x', true)) : null;
-  return el('div', { class: 'item' }, row, clear);
-}
-
-/** The left column: the lead, then the agents by role, then the finished ones. Needs you is the header bell. */
-export function renderSide(state: PageState, data: PageData): [HTMLElement, HTMLElement] {
-  const lead = data.agents.find((agent) => isCheckoutLead(agent));
-  const pinned = el('div', { class: 'pinned' }, el('h2', { class: 'sh lead-h' }, icon('msg', true), say(state, 'lead')));
-  pinned.append(lead ? agentRow(state, lead) : el('div', { class: 'row lead-row still' }, el('span', { class: 'r1' }, el('span', { class: 'dot idle' }), el('span', { class: 'ttl' }, say(state, 'noLead'))), el('span', { class: 'r3 wrap' }, say(state, 'noLeadHow', { file: state.agentFile }))));
-  const list = el('div', { class: 'agents' });
-  const cleared = new Set(state.ui.cleared);
-  const others = data.agents.filter((agent) => agent !== lead);
-  const live = others.filter((agent) => agent.dot !== 'done');
-  for (const group of ['group.manager', 'group.engineer', 'group.reviewer', 'group.verifier', 'group.helper']) {
-    const members = live.filter((agent) => roleGroup(agent.role) === group);
-    if (!members.length) continue;
-    list.append(foldHead(state, group, members.map((agent) => agent.dot)));
-    if (!state.ui.fold[group]) list.append(...members.map((agent) => agentRow(state, agent)));
-  }
-  const finished = others.filter((agent) => agent.dot === 'done' && !cleared.has(clearedId(agent)));
-  if (finished.length) {
-    list.append(foldHead(state, 'group.finished', finished.map((agent) => agent.dot), el('button', { class: 'act', 'data-clear-all': '1', title: say(state, 'clearAllHint') }, say(state, 'clearAll'))));
-    if (!state.ui.fold['group.finished']) list.append(...finished.map((agent) => agentRow(state, agent)));
-  }
-  const hidden = others.filter((agent) => cleared.has(clearedId(agent)));
-  if (hidden.length) {
-    list.append(el('div', { class: 'arch' }, icon('archive', true), say(state, 'clearedCount', { n: hidden.length }), el('button', { class: 'act', 'data-show-cleared': '1', 'aria-expanded': String(state.ui.showCleared) }, say(state, state.ui.showCleared ? 'hide' : 'show'))));
-    if (state.ui.showCleared) {
-      list.append(...hidden.map((agent) => el('div', { class: 'row done-row still' },
-        el('span', { class: 'r1' }, el('span', { class: 'dot done' }), el('span', { class: 'ttl' }, agent.title || agent.name), el('span', { class: 'age' }, ageOf(state, agent, Date.now()))),
-        el('span', { class: 'r2' }, vendorChip(agent), el('span', { class: 'who' }, agent.nickname || agent.name), el('button', { class: 'act', 'data-restore': clearedId(agent) }, say(state, 'putBack'))))));
-    }
-  }
-  if (!others.length) list.append(el('p', { class: 'quiet' }, say(state, 'noAgents', { file: state.agentFile })));
-  return [pinned, list];
-}
 
 /** One step in the feed. A step is the agent's own words; the other kinds are the board's. */
 function feedEvent(state: PageState, event: FeedEvent): HTMLElement {
@@ -340,6 +217,8 @@ export function renderCenter(state: PageState, data: PageData): HTMLElement {
   const foot = agent.dot === 'done'
     ? el('div', { class: 'ro' }, icon('done', true), say(state, 'finishedNote'))
     : el('div', { class: 'ro' }, icon('lock', true), say(state, isLead ? 'leadNote' : 'otherNote'));
+  // The lead's middle is the timeline (#701). Another agent's session is unchanged (#694).
+  if (isLead) return el('section', { class: 'center-in' }, head, renderTimeline(state, data), foot);
   // The agent's own session when its log is found (#694); else the steps the board saw.
   const stream = renderStream(state, agent);
   if (stream) {
@@ -453,7 +332,7 @@ export function onClick(state: PageState, event: Event): void {
     state.isNeedsOpen = false;
     closedNeeds = true;
   }
-  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
+  const target = hit?.closest('[data-fold],[data-clear],[data-clear-all],[data-show-cleared],[data-restore],[data-group],[data-clear-merged],[data-undo],[data-pick],[data-reply],[data-lang],[data-start],[data-limits],[data-stop],#lang,#theme,#needs') ?? null;
   const fieldValue = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
   const ui = state.ui;
   if (state.isMenuOpen && target?.id !== 'lang' && !target?.hasAttribute('data-lang')) {
@@ -495,6 +374,7 @@ export function onClick(state: PageState, event: Event): void {
   else if (ask('data-show-cleared')) ui.showCleared = !ui.showCleared;
   else if (ask('data-restore')) ui.cleared = ui.cleared.filter((id) => id !== ask('data-restore'));
   else if (ask('data-group')) ui.open[ask('data-group') as string] = !ui.open[ask('data-group') as string];
+  else if (ask('data-reply')) ui.open['lead-reply'] = !ui.open['lead-reply'];
   else if (ask('data-clear-merged')) {
     ui.mergedCleared = localDay(Date.now());
     showToast(state, 'mergedHidden', [], true);
@@ -588,4 +468,4 @@ export function startPage(state: PageState): void {
 }
 
 /** The page's functions, in the order page.ts writes them. */
-export const PAGE_FUNCTIONS = [el, icon, say, pickLang, ageOf, ageOfNeed, idOfNeed, noteNewNeeds, webLink, readNeedTarget, renderNeedItem, fillNeeds, groupFeed, localDay, clearedId, roleGroup, isCheckoutLead, summaryOf, loadUi, saveUi, vendorChip, refChip, foldHead, agentRow, renderSide, feedEvent, renderCenter, ...RIGHT_FUNCTIONS, renderTop, render, showToast, onClick, onMenuKey, postForm, loadData, startPage];
+export const PAGE_FUNCTIONS = [el, icon, say, pickLang, ageOf, groupFeed, localDay, clearedId, roleGroup, isCheckoutLead, summaryOf, loadUi, saveUi, feedEvent, renderCenter, ...RIGHT_FUNCTIONS, renderTop, render, showToast, onClick, onMenuKey, postForm, loadData, startPage];

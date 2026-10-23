@@ -3,10 +3,11 @@
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { EMPTY_DESK } from '../../../../../src/commands/advice/board/feed/read/desk.ts';
 import { renderBoardText } from '../../../../../src/commands/advice/board/page/text.ts';
 import { type AgentView, type BoardData, pullView, vendorOf } from '../../../../../src/commands/advice/board/view.ts';
 
-const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', nickname: '', isMain: false, vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', branch: '', ...fields });
+const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', nickname: '', isMain: false, vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', started: '', branch: '', ...fields });
 
 test('board text: needs, agents, pulls and worktrees in plain words; a part that cannot be read says why', () => {
   const board: BoardData = {
@@ -25,6 +26,7 @@ test('board text: needs, agents, pulls and worktrees in plain words; a part that
       { path: '/repo', branch: 'main' },
       { path: '/repo/.worktrees/601', branch: '' },
     ],
+    desk: EMPTY_DESK,
     updated: '',
   };
   assert.deepEqual(renderBoardText(board), [
@@ -47,7 +49,7 @@ test('board text: needs, agents, pulls and worktrees in plain words; a part that
     '- /repo (main)',
     '- /repo/.worktrees/601',
   ]);
-  assert.deepEqual(renderBoardText({ repo: '/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: 'gh failed', merged: [], worktrees: 'git failed', updated: '' }), [
+  assert.deepEqual(renderBoardText({ repo: '/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: 'gh failed', merged: [], worktrees: 'git failed', desk: EMPTY_DESK, updated: '' }), [
     'yokoten board: /repo',
     '0 agents, 0 open pull requests, 0 worktrees.',
     '',
@@ -67,7 +69,7 @@ test('board text: needs, agents, pulls and worktrees in plain words; a part that
 
 // #603: agents write the status files, so --text never sends their control codes to the terminal.
 test('board text: control and bidi characters in agent text show escaped', () => {
-  const board: BoardData = { repo: '/repo', repoName: 'repo', repoUrl: '', agents: [agent({ name: 'bad\u001b]0;owned\u0007', doing: 'x\u202ey' })], needs: [], pulls: [], merged: [], worktrees: [], updated: '' };
+  const board: BoardData = { repo: '/repo', repoName: 'repo', repoUrl: '', agents: [agent({ name: 'bad\u001b]0;owned\u0007', doing: 'x\u202ey' })], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '' };
   const text = renderBoardText(board).join('\n');
   assert.ok(!/[\u001b\u0007\u202e]/.test(text), 'no raw control or bidi character');
   assert.match(text, /bad\\u001b/, 'the code shows as text');
@@ -75,7 +77,7 @@ test('board text: control and bidi characters in agent text show escaped', () =>
 
 // #603 findings: board --text showed none of the waiting and runs data.
 test('board text: the waiting list and the started runs', () => {
-  const board: BoardData = { repo: '/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' };
+  const board: BoardData = { repo: '/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '' };
   const lines = renderBoardText(
     board,
     {

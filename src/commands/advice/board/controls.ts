@@ -87,11 +87,17 @@ export interface BoardRun {
   output: string[];
 }
 
-/** One open issue to start an agent on: its number, title, and link. */
+/** One open issue to start an agent on: its number, title, link, and what it waits for. */
 export interface BoardIssue {
   number: number;
   title: string;
   url: string;
+  /** When it was opened, or ''. */
+  createdAt: string;
+  /** When it last changed, or ''. */
+  updatedAt: string;
+  /** Issue numbers on a "Depends on" line. The timeline shows them on the row. */
+  dependsOn: number[];
 }
 
 /** One hold-up an agent reports in its status file: a guard stop or a question. */

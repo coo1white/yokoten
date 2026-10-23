@@ -4,9 +4,15 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { type Env } from '../../../rules/config.ts';
 import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
+
+/** The repo's main folder. Every worktree shares it, and the lead's log path is kept there. */
+export function boardHome(root: string): string {
+  const common = commonGitDir(root);
+  return common && basename(common) === '.git' ? dirname(common) : root;
+}
 
 /** How long the board waits for `gh pr list` or `git worktree list`, at most. */
 export const BOARD_READ_TIMEOUT_MS = 15000;
@@ -32,6 +38,8 @@ export interface BoardAgent {
   doing: string;
   /** When the agent last wrote, as filed, or '' when unknown. */
   updated: string;
+  /** When this work started, as filed, or '' when the file does not say. */
+  started: string;
   role: BoardRole;
   /** What the agent says of itself: still working, waiting for the owner, or done. */
   state: '' | 'working' | 'waiting' | 'done';
@@ -70,6 +78,7 @@ export function parseBoardAgent(text: string, worktree: string): BoardAgent | nu
     worktree: fieldText(fields, 'worktree'),
     doing: fieldText(fields, 'doing'),
     updated: fieldText(fields, 'updated'),
+    started: fieldText(fields, 'started'),
     role: fieldText(fields, 'role').trim(),
     state: pickWord(fields, 'state', ['working', 'waiting', 'done'] as const),
     checks: pickWord(fields, 'checks', ['passing', 'failing'] as const),

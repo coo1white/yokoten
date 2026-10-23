@@ -9,6 +9,7 @@ import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { ageText, BOARD_AGENT_FILE, parseBoardAgent, type BoardWorktree } from './agents.ts';
 import type { BoardAttention, BoardControls, BoardIssue, BoardRun, BoardSnapshot, BoardWaiting } from './controls.ts';
+import { dependsOf } from './feed/read/desk.ts';
 import { type AgentView, type BoardData, BOARD_ISSUE_LIMIT, type PullView } from './view.ts';
 
 /** How many of a run's output lines /data serves. */
@@ -16,7 +17,7 @@ const BOARD_OUTPUT_SHOWN = 30;
 
 /** The gh query for the open issues. */
 function boardIssueQuery(repo: string): string[] {
-  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_ISSUE_LIMIT), '--json', 'number,title,url'];
+  return ['issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(BOARD_ISSUE_LIMIT), '--json', 'number,title,url,body,createdAt,updatedAt'];
 }
 
 /** The open issues, gh's order, or why gh cannot read them. */
@@ -55,7 +56,15 @@ function boardIssuesOf(text: string): BoardIssue[] | string {
     const fields = row as Record<string, unknown>;
     const number = fields.number;
     if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return [];
-    return [{ number, title: typeof fields.title === 'string' ? fields.title : '', url: typeof fields.url === 'string' ? fields.url : '' }];
+    const body = typeof fields.body === 'string' ? fields.body : '';
+    return [{
+      number,
+      title: typeof fields.title === 'string' ? fields.title : '',
+      url: typeof fields.url === 'string' ? fields.url : '',
+      createdAt: typeof fields.createdAt === 'string' ? fields.createdAt : '',
+      updatedAt: typeof fields.updatedAt === 'string' ? fields.updatedAt : '',
+      dependsOn: dependsOf(body),
+    }];
   });
 }
 

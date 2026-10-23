@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
+import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import {
   boardBrief,
   boardGuardReady,
@@ -141,7 +142,7 @@ test('board controls: an exited run frees its slot and answers already-stopped',
   assert.equal(stopBoardAgent(controls, first.name), `${first.name} already stopped`);
   const second = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a' });
   assert.ok(typeof second !== 'string', `the slot is free: ${second}`);
-  assert.deepEqual(collectBoardWaiting({ repo: 'r', repoName: 'r', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' }, [], controls.runs, []), [], 'a stopped run clears its rows');
+  assert.deepEqual(collectBoardWaiting({ repo: 'r', repoName: 'r', repoUrl: '', desk: EMPTY_DESK, agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' }, [], controls.runs, []), [], 'a stopped run clears its rows');
 });
 
 // Board hygiene: the start log line holds the whole brief, so it must stay one line.

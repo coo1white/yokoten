@@ -95,6 +95,27 @@ test('board page: the sink check catches each sink', () => {
   assert.deepEqual(findUnsafeSinks('node.textContent = name; setTimeout(() => go(), 1)'), []);
 });
 
+// #701: the desk and the timeline use the light colours, the dark colours, and one column on a phone.
+test('board page: the desk and the timeline fit light, dark and a phone', () => {
+  const page = boardPage('bm9uY2U=');
+  const light = page.slice(0, page.indexOf('@media (prefers-color-scheme:dark)'));
+  assert.match(light, /:root\{color-scheme:light;[^}]*--bg:#fff/);
+  assert.match(light, /--track:#ececec/);
+  assert.match(page, /@media \(prefers-color-scheme:dark\)\{:root:not\(\[data-theme=light\]\)\{[^}]*--bg:#0a0a0a/);
+  assert.match(page, /@media \(prefers-color-scheme:dark\)\{:root:not\(\[data-theme=light\]\)\{[^}]*--track:#2a2a2a/);
+  assert.match(page, /:root\[data-theme=dark\]\{[^}]*--bg:#0a0a0a/);
+  assert.match(page, /:root\[data-theme=dark\]\{[^}]*--track:#2a2a2a/);
+  const deskAt = page.indexOf('.lead-desk{');
+  assert.ok(deskAt > page.indexOf('prefers-color-scheme:dark'), 'the desk is in the base sheet, so light uses it too');
+  assert.ok(page.indexOf('.gantt{') > deskAt);
+  assert.match(page, /@keyframes desk-breathe/);
+  assert.match(page, /@media \(prefers-reduced-motion:reduce\)\{[\s\S]*?\.gantt-bar\.live\{animation:none\}/);
+  const phone = page.slice(page.indexOf('@media (max-width:700px)'), page.indexOf('</style>'));
+  assert.match(phone, /\.gantt\{padding:8px\}/);
+  assert.match(phone, /\.gantt-row\{grid-template-columns:minmax\(0,1fr\)\}/);
+  assert.match(phone, /\.lead-desk \.ans\{min-height:40px/);
+});
+
 // A positive control: the break check catches each way out of the script tag.
 test('board page: the break check catches a closing tag and a comment', () => {
   assert.equal(findScriptBreaks('const a = "</SCRIPT><!--";').length, 2);

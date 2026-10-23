@@ -3,7 +3,8 @@
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { loadUi, type PageData, type PageState } from '../../../../../src/commands/advice/board/page/script.ts';
+import { EMPTY_DESK } from '../../../../../src/commands/advice/board/feed/read/desk.ts';
+import { loadUi, type PageData, type PageState } from '../../../../../src/commands/advice/board/page/browser/script.ts';
 import { renderRight, RIGHT_FUNCTIONS } from '../../../../../src/commands/advice/board/page/right.ts';
 import { LANG_NAMES, WORDS } from '../../../../../src/commands/advice/board/page/words.ts';
 import { pullView } from '../../../../../src/commands/advice/board/view.ts';
@@ -52,6 +53,7 @@ test('board right: Needs you is not listed here, and a pull request still shows'
     pulls: [pullView({ number: 7, title: 'work', branch: 'board-fast', url: 'https://example.com/pull/7', stage: 'open', checks: 'pass', tier: 'A', review: 'waiting', isApprovedOnHead: false, mergedAt: '' })],
     merged: [],
     worktrees: [],
+    desk: EMPTY_DESK,
     updated: '',
     feeds: {},
     waiting: [

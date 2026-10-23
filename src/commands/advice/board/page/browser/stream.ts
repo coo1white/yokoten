@@ -5,9 +5,9 @@
 // /feed for the items after its cursor and adds them at the bottom; it never draws the
 // whole session again. Every word goes in as text: nothing here parses HTML.
 
-import type { StreamAnswer } from '../feed/tail.ts';
-import type { StreamItem } from '../feed/shape.ts';
-import type { AgentView } from '../view.ts';
+import type { StreamAnswer } from '../../feed/tail.ts';
+import type { StreamItem } from '../../feed/shape.ts';
+import type { AgentView } from '../../view.ts';
 import { el, icon, type PageState, render, say } from './script.ts';
 
 /** How many tool steps stay open before the rest fold (#698). */

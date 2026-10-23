@@ -8,15 +8,16 @@ import { test } from 'node:test';
 import { makeTempDir } from '../../../repo/helpers.ts';
 import type { BoardWaiting } from '../../../../src/commands/advice/board/controls.ts';
 import { collectBoardWaiting, readBoardAttention, readBoardIssues, readBoardSnapshot } from '../../../../src/commands/advice/board/waiting.ts';
+import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import { type AgentView, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 import type { Gh } from '../../../../src/host/github/index.ts';
 
-const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', nickname: '', isMain: false, vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', branch: '', ...fields });
+const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', nickname: '', isMain: false, vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', started: '', branch: '', ...fields });
 
 // #603: the open issues as rows, or why gh cannot read them.
 test('board waiting: the open issues', () => {
-  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }, { number: 'x' }, null]);
-  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }]);
+  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603', body: 'Depends on #601.', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z' }, { number: 'x' }, null]);
+  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603', createdAt: '2026-10-22T10:00:00Z', updatedAt: '2026-10-22T11:00:00Z', dependsOn: [601] }]);
   assert.equal(readBoardIssues(() => { throw new Error('no net'); }, 'octo/demo'), 'gh could not list the open issues: run it again');
   assert.equal(readBoardIssues(() => 'oops', 'octo/demo'), 'gh gave no open issue list: run it again');
 });
@@ -40,7 +41,7 @@ test('board waiting: the attention in the status files', () => {
 // #603: the waiting list latches an agent row while the agent is here, and drops it
 // when it leaves; Approve rows follow the pulls.
 test('board waiting: the waiting list latches while the agent is here', () => {
-  const board = { repo: 'r', repoName: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
+  const board = { repo: 'r', repoName: 'r', repoUrl: '', desk: EMPTY_DESK, agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
   const held = [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated: '2026-10-22T10:00:00Z', kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
   const seen: BoardWaiting[] = [];
   assert.deepEqual(collectBoardWaiting(board, held, [], seen).map((row) => row.kind), ['guard']);
@@ -51,7 +52,7 @@ test('board waiting: the waiting list latches while the agent is here', () => {
 // #603 re-inspection (LOW): a waiting row counted from the agent's last write, so a
 // rewrite reset the wait. The wait counts from when the row first showed instead.
 test('board waiting: the wait counts from when the row first showed', () => {
-  const board = { repo: 'r', repoName: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
+  const board = { repo: 'r', repoName: 'r', repoUrl: '', desk: EMPTY_DESK, agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
   const seen: BoardWaiting[] = [];
   const at = Date.parse('2026-10-22T10:00:00Z');
   const held = (updated: string) => [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated, kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
@@ -64,7 +65,7 @@ test('board waiting: the wait counts from when the row first showed', () => {
 // /data keeps the latch time on the server and shows only the tail of a run's output.
 test('board waiting: the snapshot hides the latch time and the home folder', () => {
   const home = makeTempDir();
-  const board = { repo: 'r', repoName: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer' })], needs: [], pulls: [], merged: [], worktrees: [], updated: '' };
+  const board = { repo: 'r', repoName: 'r', repoUrl: '', desk: EMPTY_DESK, agents: [agent({ key: 'p', name: 'w', role: 'engineer' })], needs: [], pulls: [], merged: [], worktrees: [], updated: '' };
   const seen: BoardWaiting[] = [{ kind: 'guard', agent: 'w', role: 'engineer', wait: '', why: 'stopped', link: '', latchedAt: '2026-10-22T10:00:00Z' }];
   const lines = Array.from({ length: 31 }, (_, index) => `line ${index}`);
   const controls = {
@@ -75,11 +76,11 @@ test('board waiting: the snapshot hides the latch time and the home folder', () 
     logPath: '',
     spawner: () => ({ pid: null, kill: () => undefined }),
   };
-  const snapshot = readBoardSnapshot({ HOME: home }, controls, board, [], [{ number: 9, title: 'open', url: '' }]);
+  const snapshot = readBoardSnapshot({ HOME: home }, controls, board, [], [{ number: 9, title: 'open', url: '', createdAt: '', updatedAt: '', dependsOn: [] }]);
   assert.equal('latchedAt' in snapshot.waiting[0], false, 'the latch time stays on the server');
   assert.equal(snapshot.runs[0].output.length, 30, 'only the tail of the output');
   assert.equal(snapshot.runs[0].output[0], 'line 1');
   assert.equal(snapshot.runs[0].worktree, '~/repo/.worktrees/1', 'the home folder stays hidden');
-  assert.deepEqual(snapshot.issues, [{ number: 9, title: 'open', url: '' }]);
+  assert.deepEqual(snapshot.issues, [{ number: 9, title: 'open', url: '', createdAt: '', updatedAt: '', dependsOn: [] }]);
   assert.deepEqual(snapshot.limits, { maxAgents: 3, byModel: { 'model-a': 1 } });
 });

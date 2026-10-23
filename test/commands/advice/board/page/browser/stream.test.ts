@@ -1,20 +1,21 @@
-// Tests for src/commands/advice/board/page/stream.ts, on a small fake document that keeps every node it is given.
+// Tests for src/commands/advice/board/page/browser/stream.ts, on a small fake document that keeps every node it is given.
 
-import '../../../../repo/home.ts';
+import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { StreamItem } from '../../../../../src/commands/advice/board/feed/items.ts';
-import { makeStreamStore, readStream } from '../../../../../src/commands/advice/board/feed/tail.ts';
-import { boardPage, boardScript } from '../../../../../src/commands/advice/board/page/page.ts';
-import { loadUi, type PageData, type PageState, renderCenter } from '../../../../../src/commands/advice/board/page/script.ts';
-import { addStream, emptyStream, newStreamNode, renderStream } from '../../../../../src/commands/advice/board/page/stream.ts';
-import { makeRedactor } from '../../../../../src/rules/privacy.ts';
-import { SECRET } from '../../../../../src/rules/secrets.ts';
-import { makeTempDir } from '../../../../repo/helpers.ts';
-import { LANG_NAMES, WORDS } from '../../../../../src/commands/advice/board/page/words.ts';
-import { type AgentView, vendorOf } from '../../../../../src/commands/advice/board/view.ts';
+import type { StreamItem } from '../../../../../../src/commands/advice/board/feed/items.ts';
+import { makeStreamStore, readStream } from '../../../../../../src/commands/advice/board/feed/tail.ts';
+import { boardPage, boardScript } from '../../../../../../src/commands/advice/board/page/page.ts';
+import { loadUi, type PageData, type PageState, renderCenter } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
+import { addStream, emptyStream, newStreamNode, renderStream } from '../../../../../../src/commands/advice/board/page/browser/stream.ts';
+import { makeRedactor } from '../../../../../../src/rules/privacy.ts';
+import { SECRET } from '../../../../../../src/rules/secrets.ts';
+import { makeTempDir } from '../../../../../repo/helpers.ts';
+import { LANG_NAMES, WORDS } from '../../../../../../src/commands/advice/board/page/words.ts';
+import { EMPTY_DESK } from '../../../../../../src/commands/advice/board/feed/read/desk.ts';
+import { type AgentView, vendorOf } from '../../../../../../src/commands/advice/board/view.ts';
 
 /** One node of the fake document. */
 class FakeNode {
@@ -57,8 +58,8 @@ Object.assign(globalThis, {
   },
 });
 
-const agent: AgentView = { key: '~/w', name: 'w', nickname: '', isMain: false, vendor: vendorOf('claude'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: 'the task', ref: null, doing: 'reading the issue', checks: '', age: '', updated: 'u1', branch: '' };
-const data: PageData = { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} } };
+const agent: AgentView = { key: '~/w', name: 'w', nickname: '', isMain: false, vendor: vendorOf('claude'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: 'the task', ref: null, doing: 'reading the issue', checks: '', age: '', updated: 'u1', started: '', branch: '' };
+const data: PageData = { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} } };
 
 function makeState(): PageState {
   const ui = loadUi(false);

@@ -1728,6 +1728,7 @@ The page has two columns. Needs you is a bell in the header, next to Live.
   A new vendor needs one reader, and nothing else.
   The board reads Claude, Grok, Muse and Codex logs. DeepSeek runs on Codex.
   With no log, you see the agent's `doing` steps.
+  Pick the lead and the middle is the 24-hour timeline.
 
 The bell's badge is grey at zero and orange when something needs you.
 A click opens the list under the bell.
@@ -1744,6 +1745,21 @@ A pull request stays off the list while its review is still open.
 The right column is gone, so the session is wider.
 Pull requests still show in `yokoten board --text` and in `/data`.
 Start and stop stay on those paths too.
+
+The lead box is a short desk. One line says what the lead is doing now.
+Up to three decisions follow. Each one shows the lead's recommendation and one-word answers.
+The last line is the first sentence of the lead's newest reply. Click it to read the rest.
+
+Pick the lead and the middle becomes a timeline of the last 24 hours.
+One row is one agent, or one open issue nobody has taken.
+A bar runs from when the work started to now, or to when it finished.
+The colour is the vendor's. The bar breathes while the work is going on.
+A row names what it waits for, such as "after #697".
+
+The lead writes the now line and the decisions to `.git/yokoten-lead-desk.json` in the main folder.
+The file holds `now`, `decisions` and `updated`. Each decision has a question, a recommendation and answers.
+The board reads that file the same way it reads a status file. A bad file is ignored.
+The words are masked like a session.
 
 The top bar has the language (English, 简体中文, 繁體中文 or 日本語; it starts in your
 browser's language), a link to the repo on GitHub, and light or dark. What agents write
@@ -1792,8 +1808,9 @@ or in a desk (`yokoten desk`), and yokoten's hooks keep its status in
 `.yokoten-agent.json` at that checkout's root. This works for every vendor:
 
 - The session start writes `vendor`, `model`, `role` (`lead` in the main
-  checkout, `engineer` for a worker, by the guard's own rule), `worktree` and
-  `state: working`. Grok has no session-start hook: its first call writes them.
+  checkout, `engineer` for a worker, by the guard's own rule), `worktree`,
+  `state: working` and `started`. `started` is written once, so the bar does not
+  move. Grok has no session-start hook: its first call writes them.
 - Each allowed tool call sets `doing` and `updated`, at most once every 5 seconds.
 - A refused call sets `blocked`. The next allowed call clears it; the board keeps the row.
 - The stop sets `state`: `done` with `checks` for a worker, `waiting` for the lead.
@@ -1820,6 +1837,7 @@ open: other tools may read it too. One file per worktree.
 | `state` | `working`, `waiting` (it needs you) or `done` |
 | `checks` | `passing` or `failing`, from its last test run |
 | `updated` | When it last wrote, such as `2026-10-22T10:00:00Z`. Quiet for 30 minutes shows as idle |
+| `started` | When this work started, such as `2026-10-22T08:00:00Z`. Without it, the file's birth time is used, then `updated` |
 | `blocked` | A guard stop that needs a decision, in one line. It joins Waiting for you |
 | `question` | One line the agent asks the owner. It joins Waiting for you |
 | `link` | Where the owner acts, http(s) only. Anything else stays plain text |

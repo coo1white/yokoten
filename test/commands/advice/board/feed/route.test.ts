@@ -7,7 +7,7 @@ import { request } from 'node:http';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { makeSandbox } from '../../../../repo/helpers.ts';
-import { claudeFolder } from '../../../../../src/commands/advice/board/feed/logs.ts';
+import { claudeFolder } from '../../../../../src/commands/advice/board/feed/read/logs.ts';
 import { startBoardServer } from '../../../../../src/commands/advice/board/server.ts';
 import type { Gh } from '../../../../../src/host/github/index.ts';
 

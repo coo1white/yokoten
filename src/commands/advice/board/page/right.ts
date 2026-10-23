@@ -4,7 +4,7 @@
 
 import type { BoardIssue, BoardLimits, BoardRun } from '../controls.ts';
 import type { PullView } from '../view.ts';
-import { el, foldHead, icon, localDay, say, type PageData, type PageState } from './script.ts';
+import { el, foldHead, icon, localDay, say, type PageData, type PageState } from './browser/script.ts';
 
 function pullCard(state: PageState, pull: PullView): HTMLElement {
   const steps = el('div', { class: 'steps' }, ...pull.steps.map((mark, index) => el('i', { class: mark, title: say(state, `step.${index}`) })));

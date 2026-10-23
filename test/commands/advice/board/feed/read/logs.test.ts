@@ -1,12 +1,12 @@
-// Tests for src/commands/advice/board/feed/logs.ts: each runtime's log is found from the worktree.
+// Tests for src/commands/advice/board/feed/read/logs.ts: each runtime's log is found from the worktree.
 
-import '../../../../repo/home.ts';
+import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { claudeFolder, claudeTask, findAgentLog, findClaudeLog, findGrokLog, findMuseLog, museRoot, namesTree } from '../../../../../src/commands/advice/board/feed/logs.ts';
-import { makeTempDir } from '../../../../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../../../../../repo/helpers.ts';
+import { claudeFolder, claudeTask, findAgentLog, findClaudeLog, findGrokLog, findMuseLog, LEAD_SESSION_FILE, museRoot, namesTree } from '../../../../../../src/commands/advice/board/feed/read/logs.ts';
 
 /** A file with its folders, last changed `age` ms ago. */
 function put(file: string, text: string, age = 0): void {
@@ -92,4 +92,47 @@ test('board stream logs: a Codex rollout by its cwd, for Codex and DeepSeek', ()
   const deepseek = findAgentLog(tree, 'deepseek', env, new Map());
   assert.equal(deepseek?.source, 'codex', 'DeepSeek does not take another runtime\'s log');
   assert.equal(deepseek?.file, join(desk, 'rollout-desk.jsonl'));
+});
+
+// #700: the main checkout's lead log is the registered path, when that path stays inside
+// Claude's projects folder. A path that escapes, a symlink out, or a non-jsonl file is
+// refused, and the folder search runs as before. A missing file does the same.
+test('board stream logs: a registered lead log wins, and a bad path falls back (#700)', () => {
+  const sandbox = makeSandbox();
+  const home = sandbox.home;
+  const tree = sandbox.repo;
+  const env = sandbox.env;
+  const projects = join(home, '.claude', 'projects');
+  const own = join(projects, claudeFolder(tree), 'old.jsonl');
+  put(own, prompt('old'), 0);
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, own, 'no registration file: the folder search');
+  const live = join(projects, claudeFolder(join(home, 'parent')), 'live.jsonl');
+  put(live, prompt('live'), 60000);
+  const file = join(tree, '.git', LEAD_SESSION_FILE);
+  const point = (path: string) => writeFileSync(file, `${path}\n`, { mode: 0o600 });
+  point(live);
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, live, 'the registered log, even when an older log in the repo folder is newer');
+  const outside = join(home, 'escape.jsonl');
+  put(outside, prompt('out'));
+  point(`${projects}/../../escape.jsonl`);
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, own, 'a .. path that leaves the projects folder');
+  const link = join(projects, 'link.jsonl');
+  symlinkSync(outside, link);
+  point(link);
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, own, 'a symlink that points out');
+  const notes = join(projects, 'notes.txt');
+  put(notes, 'notes');
+  point(notes);
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, own, 'not a jsonl file');
+  point(join(projects, 'gone.jsonl'));
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, own, 'a path that is not there');
+  rmSync(file);
+  assert.equal(findClaudeLog(tree, env, new Map())?.file, own, 'no registration file');
+  point(live);
+  sandbox.write('a.md', 'a\n');
+  sandbox.git('add', '.');
+  assert.equal(sandbox.git('commit', '-qm', 'start').status, 0);
+  const worktree = join(makeTempDir('yokoten-wt-'), 'wt');
+  assert.equal(sandbox.git('worktree', 'add', '-q', '-b', 'lead-700', worktree).status, 0);
+  assert.notEqual(findClaudeLog(worktree, env, new Map())?.file, live, 'a worktree does not take the main checkout\'s lead log');
 });
