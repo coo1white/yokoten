@@ -631,6 +631,28 @@ test('workflows: the required checks run on merge_group, with the same jobs as a
   }
 });
 
+// ---- A merge to main never cancels the run before it (#660) ----
+//
+// Cancelling an older run is right for a pull request: only its newest commit can
+// merge. A push to main is not: every commit stays in history, so each one is tested on
+// its own, and a cancelled run leaves a ✗ on it. So only a pull request cancels.
+const readCancel = (text: string) => inBraces(text, /^ {2}cancel-in-progress: (?:\$\{\{ )?(.+?)(?: \}\})?$/m);
+
+test('workflows: only a pull request cancels the run still going for it (#660)', () => {
+  const cancels = (text: string, event_name: string) => evaluate(readCancel(text), {}, { event_name }) === true;
+  for (const dir of ['.github/workflows', 'kit/project/.github/workflows']) {
+    const text = readFileSync(join(ROOT, dir, 'yokoten.yml'), 'utf8');
+    assert.equal(cancels(text, 'pull_request'), true, `${dir}/yokoten.yml: a new push to a pull request runs beside the old one`);
+    assert.equal(cancels(text, 'push'), false, `${dir}/yokoten.yml: a push to main cancels the run before it`);
+    assert.equal(cancels(text, 'merge_group'), false, `${dir}/yokoten.yml cancels a merge queue run`);
+    // The group is the workflow and the ref, so two pull requests never cancel each other.
+    assert.match(text, /^ {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}$/m, `${dir}/yokoten.yml: the group is not the workflow and the ref`);
+  }
+  // The positive control: the old `true` cancels on a push, and this read says so.
+  const old = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8').replace(/^ {2}cancel-in-progress: .+$/m, '  cancel-in-progress: true');
+  assert.equal(cancels(old, 'push'), true, 'the read misses the old setting');
+});
+
 // ---- Names (#109, record 0006) ----
 //
 // The names we declare in src/, bin/ and test/ follow the rule in AGENTS.md. The reader lives
