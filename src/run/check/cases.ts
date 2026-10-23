@@ -523,7 +523,147 @@ function hideBranch(body: string, at: number, limit: number, hide: Uint8Array): 
   return end;
 }
 
-function markBlock(body: string, from: number, limit: number, hide: Uint8Array, functions: FnSpan[], called: Set<string>): void {
+/** A `process.exit` or `process.abort` call at `at`, or null. The call ends the process. */
+function processCall(body: string, at: number, limit: number): { open: number; end: number } | null {
+  let index = gap(body, at);
+  if (index >= limit) return null;
+  if (namedAt(body, index, 'void')) index = gap(body, index + 'void'.length);
+  if (namedAt(body, index, 'globalThis') || namedAt(body, index, 'global')) {
+    const globalName = namedAt(body, index, 'globalThis') ? 'globalThis' : 'global';
+    const dot = gap(body, index + globalName.length);
+    if (body[dot] !== '.') return null;
+    index = gap(body, dot + 1);
+  }
+  const root = namedAt(body, index, 'process') ? 'process' : namedAt(body, index, 'Deno') ? 'Deno' : '';
+  if (!root) return null;
+  const dot = gap(body, index + root.length);
+  if (body[dot] !== '.') return null;
+  const method = readIdent(body, gap(body, dot + 1));
+  const ends = root === 'process' ? method.text === 'exit' || method.text === 'abort' : method.text === 'exit';
+  if (!ends) return null;
+  const open = gap(body, method.end);
+  if (open >= limit || body[open] !== '(') return null;
+  const close = matchClose(body, open);
+  if (close < 0 || close > limit) return null;
+  return { open, end: close + 1 };
+}
+
+/** True or false when every value of the condition is the same. Null when it may vary. */
+function constantTruth(body: string, from: number, limit: number): boolean | null {
+  const read = readTruth(body, from, limit);
+  if (!read) return null;
+  if (read.end >= limit || gap(body, read.end) === limit) return read.truth;
+  return null;
+}
+
+function readTruth(body: string, at: number, limit: number): { truth: boolean; end: number } | null {
+  const first = readTruthAtom(body, at, limit);
+  if (!first) return null;
+  let truth = first.truth;
+  let end = first.end;
+  const opAt = gap(body, end);
+  const op = body.startsWith('&&', opAt) ? '&&' : body.startsWith('||', opAt) ? '||' : '';
+  if (!op) return first;
+  while (gap(body, end) < limit && body.startsWith(op, gap(body, end))) {
+    const atOp = gap(body, end);
+    if ((op === '||' && truth) || (op === '&&' && !truth)) {
+      const rest = skipExpr(body, atOp + 2);
+      return { truth, end: rest > limit ? limit : rest };
+    }
+    const right = readTruthAtom(body, atOp + 2, limit);
+    if (!right) return null;
+    truth = op === '||' ? truth || right.truth : truth && right.truth;
+    end = right.end;
+  }
+  const next = gap(body, end);
+  if (next < limit && (body.startsWith('&&', next) || body.startsWith('||', next))) return null;
+  return { truth, end };
+}
+
+function readTruthAtom(body: string, at: number, limit: number): { truth: boolean; end: number } | null {
+  const index = gap(body, at);
+  if (index >= limit) return null;
+  if (body[index] === '!' && body[index + 1] !== '=') {
+    const inner = readTruthAtom(body, index + 1, limit);
+    if (!inner) return null;
+    return { truth: !inner.truth, end: inner.end };
+  }
+  if (body[index] === '(') {
+    const close = matchClose(body, index);
+    if (close < 0 || close > limit) return null;
+    const inner = readTruth(body, index + 1, close);
+    if (!inner || gap(body, inner.end) !== close) return null;
+    return { truth: inner.truth, end: close + 1 };
+  }
+  if (namedAt(body, index, 'true')) return { truth: true, end: index + 4 };
+  if (namedAt(body, index, 'false')) return { truth: false, end: index + 5 };
+  if (namedAt(body, index, 'null')) return { truth: false, end: index + 4 };
+  if (namedAt(body, index, 'undefined')) return { truth: false, end: index + 9 };
+  if (body[index] >= '0' && body[index] <= '9') {
+    const match = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?/.exec(body.slice(index, limit));
+    const after = body[index + (match?.[0].length ?? 0)];
+    if (!match || (after !== undefined && /[A-Za-z0-9_$]/.test(after))) return null;
+    return { truth: Number(match[0]) !== 0, end: index + match[0].length };
+  }
+  const quoted = scanQuote(body, index);
+  if (quoted && quoted.value !== null && quoted.end <= limit) return { truth: quoted.value.length > 0, end: quoted.end };
+  return null;
+}
+
+/** True when a return, a throw, or a process exit runs on every path. */
+function stops(body: string, from: number, limit: number): boolean {
+  let index = from;
+  while (index < limit) {
+    index = gap(body, index);
+    if (index >= limit) break;
+    if (quoteOf(body[index])) {
+      const read = scanQuote(body, index);
+      index = read ? read.end : index + 1;
+      continue;
+    }
+    if (namedAt(body, index, 'return') || namedAt(body, index, 'throw')) return true;
+    if (processCall(body, index, limit)) return true;
+    if (namedAt(body, index, 'if')) {
+      const open = gap(body, index + 2);
+      const close = body[open] === '(' ? matchClose(body, open) : -1;
+      if (close < 0 || close > limit) return false;
+      const truth = constantTruth(body, open + 1, close);
+      const thenStart = gap(body, close + 1);
+      const thenEnd = skipStatement(body, thenStart, limit);
+      const elseAt = gap(body, thenEnd);
+      const hasElse = namedAt(body, elseAt, 'else');
+      const elseStart = hasElse ? gap(body, elseAt + 4) : -1;
+      const elseEnd = hasElse ? skipStatement(body, elseStart, limit) : thenEnd;
+      const thenStops = stops(body, thenStart, thenEnd);
+      const elseStops = hasElse ? stops(body, elseStart, elseEnd) : false;
+      const branchStops = truth === true ? thenStops : truth === false ? elseStops : thenStops && elseStops;
+      if (branchStops) return true;
+      index = hasElse ? elseEnd : thenEnd;
+      if (index <= close) return false;
+      continue;
+    }
+    if (body[index] === '{') {
+      const close = matchClose(body, index);
+      if (close < 0 || close > limit) return false;
+      if (stops(body, index + 1, close)) return true;
+      index = close + 1;
+      continue;
+    }
+    if (namedAt(body, index, 'function') || body.startsWith('async ', index) || body.startsWith('async\n', index)) {
+      const span = readFunction(body, index, limit);
+      if (span) {
+        index = span.end;
+        continue;
+      }
+    }
+    const end = skipStatement(body, index, limit);
+    if (end <= index) return false;
+    index = end;
+  }
+  return false;
+}
+
+function markBlock(body: string, from: number, limit: number, hide: Uint8Array, functions: FnSpan[], called: Set<string>): boolean {
   let index = from;
   while (index < limit) {
     const start = index;
@@ -541,15 +681,37 @@ function markBlock(body: string, from: number, limit: number, hide: Uint8Array, 
         const end = markExpression(body, exprAt, limit, hide, called, true);
         fillHide(hide, end, limit);
       } else fillHide(hide, exprAt, limit);
-      return;
+      return true;
     }
     if (namedAt(body, index, 'if')) {
       const open = gap(body, index + 2);
       const close = body[open] === '(' ? matchClose(body, open) : -1;
-      if (close >= 0) markExpression(body, open + 1, close, hide, called, true);
-      let cursor = close < 0 ? index + 2 : hideBranch(body, close + 1, limit, hide);
+      if (close < 0) {
+        index += 1;
+        continue;
+      }
+      markExpression(body, open + 1, close, hide, called, true);
+      const truth = constantTruth(body, open + 1, close);
+      const thenStart = gap(body, close + 1);
+      const thenEnd = skipStatement(body, thenStart, limit);
+      fillHide(hide, thenStart, thenEnd);
+      let cursor = thenEnd;
+      let elseStart = -1;
+      let elseEnd = -1;
       const elseAt = gap(body, cursor);
-      if (namedAt(body, elseAt, 'else')) cursor = hideBranch(body, elseAt + 4, limit, hide);
+      if (namedAt(body, elseAt, 'else')) {
+        elseStart = gap(body, elseAt + 4);
+        elseEnd = skipStatement(body, elseStart, limit);
+        fillHide(hide, elseStart, elseEnd);
+        cursor = elseEnd;
+      }
+      const thenStops = stops(body, thenStart, thenEnd);
+      const elseStops = elseStart >= 0 && stops(body, elseStart, elseEnd);
+      const branchStops = truth === true ? thenStops : truth === false ? elseStops : thenStops && elseStops;
+      if (branchStops) {
+        fillHide(hide, cursor, limit);
+        return true;
+      }
       index = cursor;
       continue;
     }
@@ -583,8 +745,8 @@ function markBlock(body: string, from: number, limit: number, hide: Uint8Array, 
         continue;
       }
       const close = matchClose(body, brace);
-      if (close < 0) return;
-      markBlock(body, brace + 1, close, hide, functions, called);
+      if (close < 0) return false;
+      const stopped = markBlock(body, brace + 1, close, hide, functions, called);
       index = close + 1;
       const catchAt = gap(body, index);
       if (namedAt(body, catchAt, 'catch')) {
@@ -596,23 +758,32 @@ function markBlock(body: string, from: number, limit: number, hide: Uint8Array, 
         index = hideBranch(body, cursor, limit, hide);
       }
       const finallyAt = gap(body, index);
+      let finalStops = false;
       if (namedAt(body, finallyAt, 'finally')) {
         const finalBrace = gap(body, finallyAt + 7);
         if (body[finalBrace] === '{') {
           const end = matchClose(body, finalBrace);
           if (end >= 0) {
-            markBlock(body, finalBrace + 1, end, hide, functions, called);
+            finalStops = markBlock(body, finalBrace + 1, end, hide, functions, called);
             index = end + 1;
           }
         }
+      }
+      if (stopped || finalStops) {
+        fillHide(hide, index, limit);
+        return true;
       }
       continue;
     }
     if (body[index] === '{') {
       const close = matchClose(body, index);
-      if (close < 0) return;
-      markBlock(body, index + 1, close, hide, functions, called);
+      if (close < 0) return false;
+      const stopped = markBlock(body, index + 1, close, hide, functions, called);
       index = close + 1;
+      if (stopped) {
+        fillHide(hide, index, limit);
+        return true;
+      }
       continue;
     }
     const fnAt = body.startsWith('async ', index) || body.startsWith('async\n', index) ? index : namedAt(body, index, 'function') ? index : -1;
@@ -642,10 +813,19 @@ function markBlock(body: string, from: number, limit: number, hide: Uint8Array, 
         continue;
       }
     }
+    const call = processCall(body, index, limit);
+    if (call) {
+      markExpression(body, call.open + 1, call.end - 1, hide, called, true);
+      let after = call.end;
+      if (body[after] === ';') after++;
+      fillHide(hide, after, limit);
+      return true;
+    }
     const end = markExpression(body, index, limit, hide, called, true);
     index = body[end] === ';' ? end + 1 : end;
     if (index <= start) index = start + 1;
   }
+  return false;
 }
 
 /** Blank a refusal the test may skip, so the reader does not count it as sure. */
@@ -867,7 +1047,181 @@ function addTest(source: string, at: number, file: string, bindings: Map<string,
   return close + 1;
 }
 
-/** The tests and the refusal helpers in one test file. */
+function flatText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function bindingName(source: string, at: number): string {
+  const start = gap(source, at);
+  if (source[start] === '{' || source[start] === '[') {
+    const close = matchClose(source, start);
+    return close < 0 ? 'binding' : flatText(source.slice(start, close + 1));
+  }
+  return isIdentStart(source[start]) ? readIdent(source, start).text : 'binding';
+}
+
+/** The end of a `const`, `let` or `var` statement. Commas join several names. */
+function bindingEnd(source: string, nameAt: number): number {
+  let cursor = gap(source, nameAt);
+  while (cursor < source.length) {
+    const end = skipExpr(source, cursor);
+    if (source[end] === ',') {
+      cursor = gap(source, end + 1);
+      continue;
+    }
+    return source[end] === ';' ? end + 1 : end;
+  }
+  return source.length;
+}
+
+interface Declaration {
+  name: string;
+  line: number;
+  text: string;
+  end: number;
+  /** Where the first name starts, or -1 when the value is not a binding. */
+  bindAt: number;
+}
+
+function importEnd(source: string, at: number): number {
+  let depth = 0;
+  let seenSpecifier = false;
+  for (let index = at; index < source.length; index++) {
+    if (quoteOf(source[index])) {
+      const read = scanQuote(source, index);
+      if (!read) return source.length;
+      if (depth === 0 && read.value !== null) seenSpecifier = true;
+      index = read.end - 1;
+      continue;
+    }
+    const pair = source.slice(index, index + 2);
+    if (pair === '//' || pair === '/*') {
+      const next = gap(source, index);
+      if (next === index) return source.length;
+      index = next - 1;
+      continue;
+    }
+    const char = source[index];
+    if (char === '{' || char === '(' || char === '[') depth++;
+    else if ((char === '}' || char === ')' || char === ']') && depth > 0) depth--;
+    else if (char === ';' && depth === 0) return index + 1;
+    else if (char === '\n' && depth === 0 && seenSpecifier) return index + 1;
+  }
+  return source.length;
+}
+
+function importName(text: string): string {
+  const from = /\bfrom\s*(['"])([^'"]+)\1/.exec(text);
+  if (from) return `import ${from[2]}`;
+  const side = /^import\s*(['"])([^'"]+)\1/.exec(text);
+  return side ? `import ${side[2]}` : 'import';
+}
+
+/** The end of a class, including `extends`. Null when the body is missing. */
+function classEnd(source: string, at: number): number | null {
+  let depth = 0;
+  for (let index = at; index < source.length; index++) {
+    if (quoteOf(source[index])) {
+      const read = scanQuote(source, index);
+      if (!read) return null;
+      index = read.end - 1;
+      continue;
+    }
+    const pair = source.slice(index, index + 2);
+    if (pair === '//' || pair === '/*') {
+      const next = gap(source, index);
+      if (next === index) return null;
+      index = next - 1;
+      continue;
+    }
+    const char = source[index];
+    if (char === '(' || char === '[' || char === '<') depth++;
+    else if ((char === ')' || char === ']' || char === '>') && depth > 0) depth--;
+    else if (char === '{' && depth === 0) {
+      const end = matchClose(source, index);
+      if (end < 0) return null;
+      return source[end + 1] === ';' ? end + 2 : end + 1;
+    }
+  }
+  return null;
+}
+
+/** One top-level value declaration, or null when `at` is not one. Type-only forms are skipped. */
+function readDeclaration(source: string, at: number): Declaration | null {
+  let index = at;
+  if (source.startsWith('export ', index) || source.startsWith('export\n', index)) {
+    const next = gap(source, index + 6);
+    if (namedAt(source, next, 'type') || namedAt(source, next, 'interface')) return null;
+    if (source[next] === '{' || source[next] === '*') {
+      const end = clauseEnd(source, index);
+      const text = flatText(source.slice(index, end));
+      return { name: text, line: lineAt(source, index), text, end, bindAt: -1 };
+    }
+    if (namedAt(source, next, 'default')) {
+      const exprAt = gap(source, next + 7);
+      const fn = readFunction(source, exprAt, source.length);
+      if (fn) {
+        const name = functionName(source, exprAt) || 'default';
+        return { name, line: lineAt(source, at), text: flatText(source.slice(at, fn.end)), end: fn.end, bindAt: -1 };
+      }
+      if (namedAt(source, exprAt, 'class')) {
+        const end = classEnd(source, exprAt);
+        if (end === null) return null;
+        return { name: 'default', line: lineAt(source, at), text: flatText(source.slice(at, end)), end, bindAt: -1 };
+      }
+      const end = bindingEnd(source, exprAt);
+      return { name: 'default', line: lineAt(source, at), text: flatText(source.slice(at, end)), end, bindAt: -1 };
+    }
+    index = next;
+  }
+  if (index === at && namedAt(source, index, 'import')) {
+    const next = gap(source, index + 6);
+    if (namedAt(source, next, 'type')) return null;
+    const end = importEnd(source, index);
+    const text = flatText(source.slice(index, end));
+    return { name: importName(text), line: lineAt(source, index), text, end, bindAt: -1 };
+  }
+  if (namedAt(source, index, 'const') || namedAt(source, index, 'let') || namedAt(source, index, 'var')) {
+    const keyword = namedAt(source, index, 'const') ? 'const'.length : namedAt(source, index, 'var') ? 'var'.length : 'let'.length;
+    const nameAt = gap(source, index + keyword);
+    const end = bindingEnd(source, nameAt);
+    return { name: bindingName(source, nameAt), line: lineAt(source, at), text: flatText(source.slice(at, end)), end, bindAt: nameAt };
+  }
+  if (namedAt(source, index, 'function') || source.startsWith('async ', index) || source.startsWith('async\n', index)) {
+    if (namedAt(source, index, 'function') || namedAt(source, gap(source, index + 5), 'function')) {
+      const span = readFunction(source, index, source.length);
+      if (!span) return null;
+      const name = functionName(source, index) || 'function';
+      return { name, line: lineAt(source, at), text: flatText(source.slice(at, span.end)), end: span.end, bindAt: -1 };
+    }
+  }
+  if (namedAt(source, index, 'class')) {
+    const end = classEnd(source, index);
+    if (end === null) return null;
+    const nameAt = gap(source, index + 5);
+    const name = isIdentStart(source[nameAt]) ? readIdent(source, nameAt).text : 'class';
+    return { name, line: lineAt(source, at), text: flatText(source.slice(at, end)), end, bindAt: -1 };
+  }
+  return null;
+}
+
+/** Remember string and object bindings a later refusal may read. */
+function bindDeclarators(source: string, nameAt: number, end: number, bindings: Map<string, Value>): void {
+  let cursor = gap(source, nameAt);
+  while (cursor < end) {
+    if (!isIdentStart(source[cursor])) return;
+    const name = readIdent(source, cursor);
+    const eq = gap(source, name.end);
+    if (source[eq] !== '=') return;
+    const value = evaluate(source, eq + 1, bindings);
+    if (value.value.kind !== 'unknown') bindings.set(name.text, value.value);
+    cursor = gap(source, value.end);
+    if (source[cursor] !== ',') return;
+    cursor = gap(source, cursor + 1);
+  }
+}
+
+/** The tests and the top-level declarations in one test file. */
 export function parseTests(file: string, source: string): { tests: TestShape[]; helpers: HelperShape[] } {
   const bindings = new Map<string, Value>();
   const helpers: HelperShape[] = [];
@@ -881,19 +1235,12 @@ export function parseTests(file: string, source: string): { tests: TestShape[]; 
       index = read ? read.end : index + 1;
       continue;
     }
-    if (depth === 0 && (source.startsWith('const ', index) || source.startsWith('let ', index))) {
-      const name = readIdent(source, gap(source, index + (source.startsWith('const ', index) ? 6 : 4)));
-      const eq = gap(source, name.end);
-      if (HELPERS.has(name.text) && source[eq] === '=') {
-        const end = skipExpr(source, eq + 1);
-        helpers.push({ name: name.text, line: lineAt(source, index), text: source.slice(index, source[end] === ';' ? end + 1 : end).replace(/\s+/g, ' ').trim() });
-        index = source[end] === ';' ? end + 1 : end;
-        continue;
-      }
-      if (source[eq] === '=') {
-        const value = evaluate(source, eq + 1, bindings);
-        if (value.value.kind !== 'unknown') bindings.set(name.text, value.value);
-        index = value.end;
+    if (depth === 0) {
+      const declaration = readDeclaration(source, index);
+      if (declaration) {
+        if (declaration.name) helpers.push({ name: declaration.name, line: declaration.line, text: declaration.text });
+        if (declaration.bindAt >= 0) bindDeclarators(source, declaration.bindAt, declaration.end, bindings);
+        index = declaration.end > index ? declaration.end : index + 1;
         continue;
       }
     }

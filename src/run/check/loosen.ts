@@ -267,11 +267,13 @@ function compareHelpers(base: Map<string, HelperShape>, head: Map<string, Helper
     // A move inside the watched folders keeps the helper. A change in place does not.
     if (!next && headTexts.has(`${helper.name}\0${helper.text}`)) continue;
     const file = key.slice(0, key.indexOf('\0'));
+    const role = HELPER_NAMES.includes(helper.name) ? 'helper' : 'declaration';
+    const uses = role === 'helper' ? 'calls' : 'uses';
     reasons.push({
       kind: 'looser',
       file,
       line: next?.line ?? helper.line,
-      text: next ? `the helper ${helper.name} changed, so a test that calls it may no longer refuse` : `the helper ${helper.name} was removed`,
+      text: next ? `the ${role} ${helper.name} changed, so a test that ${uses} it may no longer refuse` : `the ${role} ${helper.name} was removed`,
     });
   }
   return reasons;
@@ -281,7 +283,12 @@ function helperMap(files: Map<string, string>): Map<string, HelperShape> {
   const map = new Map<string, HelperShape>();
   for (const [file, source] of files) {
     if (!isWatchedTest(file)) continue;
-    for (const helper of parseTests(file, source).helpers) map.set(`${file}\0${helper.name}`, helper);
+    for (const helper of parseTests(file, source).helpers) {
+      const key = `${file}\0${helper.name}`;
+      const previous = map.get(key);
+      if (!previous) map.set(key, helper);
+      else map.set(key, { name: helper.name, line: previous.line, text: `${previous.text}\n${helper.text}` });
+    }
   }
   return map;
 }

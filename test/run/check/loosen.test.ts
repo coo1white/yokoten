@@ -270,6 +270,32 @@ test('a changed helper is looser (#697)', () => {
   assertLooser(box.judge(), /the helper blocked changed/);
 });
 
+test('a top-level binding that disables a helper is looser (#697)', () => {
+  const source = TEST.replace(
+    'const blocked = (command: string) => command;',
+    'let active = true;\nconst blocked = (command: string) => (active ? command : undefined);',
+  );
+  const box = setup({ [SPEC]: source });
+  box.write({ [SPEC]: source.replace('let active = true;', 'let active = false;') });
+  assertLooser(box.judge(), /the declaration active changed/);
+});
+
+test('a process exit before a refusal is looser (#697)', () => {
+  for (const form of ['process.exit(0);', 'process.abort();']) {
+    const box = setup();
+    box.write({ [SPEC]: TEST.replace("blocked('git push --force');", `${form}\n  blocked('git push --force');`) });
+    assertLooser(box.judge(), /no longer refuses `git push --force`/);
+  }
+});
+
+test('a constant return before a refusal is looser (#697)', () => {
+  for (const form of ['if (true) return;', 'if (1) return;', 'if (!false) return;', "if ('yes') return;"]) {
+    const box = setup();
+    box.write({ [SPEC]: TEST.replace("blocked('git push --force');", `${form}\n  blocked('git push --force');`) });
+    assertLooser(box.judge(), /no longer refuses `git push --force`/);
+  }
+});
+
 test('a new test or a new refusal id is stricter, and that is a note (#697)', () => {
   const addedTest = setup();
   addedTest.write({ [SPEC]: `${TEST}test('also refused', () => {\n  blocked('rm -rf .git');\n});\n` });

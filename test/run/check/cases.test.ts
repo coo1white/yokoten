@@ -53,7 +53,7 @@ test('flag', () => { assert.equal(refused, true); });
   const { tests, helpers } = parseTests(FILE, source);
   const byName = (name: string) => tests.find((item) => item.name === name);
   const commands = (keys: string[] | undefined) => (keys ?? []).map((key) => key.split('\0')[0]);
-  assert.equal(helpers.length, 2);
+  assert.deepEqual(helpers.map((item) => item.name).sort(), ['allowed', 'blocked', 'worker']);
   assert.deepEqual(commands(byName('force')?.refuses), ['git push --force']);
   assert.deepEqual(commands(byName('ok')?.allows), ['git status']);
   assert.deepEqual(commands(byName('table')?.refuses), ['git push --force', 'git push --delete']);
@@ -91,6 +91,18 @@ test('a refusal the reader cannot reach is opaque (#697)', () => {
     "const hide = () => { blocked('git push --force'); };",
     "function hide() { blocked('git push --force'); }",
     "return; blocked('git push --force');",
+    "if (true) return; blocked('git push --force');",
+    "if (1) return; blocked('git push --force');",
+    "if (!false) return; blocked('git push --force');",
+    "if ('yes') return; blocked('git push --force');",
+    "if (true) { return; } blocked('git push --force');",
+    "if (true) process.exit(0); blocked('git push --force');",
+    "process.exit(0); blocked('git push --force');",
+    "process.abort(); blocked('git push --force');",
+    "void process.exit(0); blocked('git push --force');",
+    "{ return; } blocked('git push --force');",
+    "try { return; } finally { } blocked('git push --force');",
+    "if (flag) return; else return; blocked('git push --force');",
   ];
   for (const form of forms) {
     const { tests } = parseTests(FILE, `test('force', () => { ${form} });\n`);
@@ -103,11 +115,26 @@ test('a refusal the reader cannot reach is opaque (#697)', () => {
     "const hide = () => { blocked('git push --force'); }; hide();",
     "blocked('git push --force') && later;",
     "if (false) blocked('git push --delete'); blocked('git push --force');",
+    "if (false) return; blocked('git push --force');",
+    "if (0) return; blocked('git push --force');",
+    "if (!true) return; blocked('git push --force');",
+    "if ('') return; blocked('git push --force');",
+    "if (flag) return; blocked('git push --force');",
   ];
   for (const form of reached) {
     const { tests } = parseTests(FILE, `test('force', () => { ${form} });\n`);
     assert.equal(tests[0]?.refuses[0]?.split('\0')[0], 'git push --force', form);
   }
+});
+
+test('every top-level declaration is kept, not only a helper (#697)', () => {
+  const source = "import { test } from 'node:test';\nimport type { Foo } from './types.ts';\nlet active = true;\nfunction hide() { return active; }\nconst blocked = (command: string) => command;\n";
+  const names = parseTests(FILE, source).helpers.map((item) => item.name);
+  assert.ok(names.includes('active'), names.join(', '));
+  assert.ok(names.includes('hide'), names.join(', '));
+  assert.ok(names.includes('blocked'), names.join(', '));
+  assert.ok(names.some((name) => name.includes('node:test')), names.join(', '));
+  assert.equal(names.some((name) => name.includes('types.ts')), false);
 });
 
 test('a wrapper the reader cannot see makes the test opaque (#697)', () => {
