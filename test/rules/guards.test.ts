@@ -200,12 +200,20 @@ test('release: creating a local tag is the owner\'s too, not only pushing it (#8
     'git tag -a v1.2.3 --column -m msg',
     'git tag --column=always v1.2.3',
     'git tag --sort creatordate -- v1.2.3',
+    // The word reader keeps a git format atom whole without hiding what follows it (#873).
+    'echo %(git push --tags)',
+    'git tag --format=%(refname; git push --tags)',
+    'git tag --format=%(refname\ngit push --tags',
+    // A short-flag group with a writing letter still writes.
+    'git tag -an v1.2.3 -m msg',
   ]) blocked(command);
   // Listing, and changing a tag that already exists, publish nothing.
   allowed('git tag');
   allowed('git tag -l');
   allowed('git tag --contains HEAD');
   allowed('git tag -n v1');
+  allowed('git tag -ln v1');
+  allowed('git tag -nl v1');
   allowed('git tag -d old-tag');
   allowed('git tag --sort=creatordate');
   allowed('git tag --sort creatordate');

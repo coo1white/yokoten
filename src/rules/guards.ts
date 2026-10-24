@@ -1585,7 +1585,14 @@ const TAG_READ_OPTIONS = ['--contains', '--no-contains', '--merged', '--no-merge
 // git still creates the tag, so they must not mark the command as a read (#873).
 // `--sort` and `--format` take their value as the next word, or after `=`.
 const TAG_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--trailer', '--sort', '--format']);
-const isTagRead = (arg: string) => TAG_READ_FLAGS.has(arg) || /^-n\d*$/.test(arg) || TAG_READ_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`));
+// A combined short flag keeps its letters: `git tag -ln v1` lists, because `-n` only shapes
+// the listing. A writing letter in the group (`-af`) still makes the command a write (#873).
+const TAG_SHORT_GROUP = /^-[a-zA-Z]{2,}$/;
+function isTagRead(arg: string): boolean {
+  if (TAG_READ_FLAGS.has(arg) || /^-n\d*$/.test(arg)) return true;
+  if (TAG_READ_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`))) return true;
+  return TAG_SHORT_GROUP.test(arg) && /[ldv]/.test(arg.slice(1)) && !/[asf]/.test(arg.slice(1));
+}
 const TAG_WRITE_OPTIONS = new Set(['--annotate', '--sign', '--force']);
 
 function createsTag(args: string[]): boolean {
@@ -5770,6 +5777,15 @@ interface Group {
   reads: boolean;
 }
 
+// `%(refname)`, `%(refname:short)`: a git format atom, which git reads as the value of
+// `--format`. Only this shape is one word. A space, a `;` or a missing `)` means the `(` is a
+// subshell after all, and the words after it must be read as commands (#873).
+const GIT_FORMAT_ATOM = /^\*?[A-Za-z][A-Za-z0-9_.:*,=/@+-]*$/;
+function isGitFormatAtom(text: string, open: number): boolean {
+  const close = text.indexOf(')', open + 1);
+  return close !== -1 && GIT_FORMAT_ATOM.test(text.slice(open + 1, close));
+}
+
 // Reads commands from `start` until `closer` (`)` or a backtick) or the end, and adds them
 // to `out`. Returns the index after the closer, or -1 if a closer was wanted and not found.
 function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
@@ -6035,12 +6051,13 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
       index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
-    } else if (character === '(' && word.endsWith('%')) {
+    } else if (character === '(' && word.endsWith('%') && isGitFormatAtom(text, index)) {
       // A git format such as `%(refname)` is one word, as the quote note above says: git
       // reads it as the value of `--format`, and a shell refuses the unquoted form. Reading
       // it whole keeps the tag name in the same command, so the release check sees it (#873).
-      const end = text.indexOf(')', index + 1);
-      const stop = end === -1 ? text.length : end + 1;
+      // Only an atom is read whole. Anything else, such as `%(git push --tags)` or an
+      // unclosed `%(`, falls to the group arm below and still reads as the command it is.
+      const stop = text.indexOf(')', index + 1) + 1;
       word += text.slice(index, stop);
       inWord = true;
       index = stop;
