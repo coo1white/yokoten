@@ -2,11 +2,12 @@
 // the launcher, and the wording of a command. Practice is shared with the other parts.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
+import { readGit } from '../../run/check.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
 import { enabledPluginChannel, hasPlugin, hasProjectHook, hasSessionDoctor, type PluginChannel, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
@@ -549,5 +550,61 @@ export function commandWording(env: Env): ((text: string) => string) | null {
   if (!isNpx && (!existsSync(runtime) || isOnPath(env, runtime))) return null;
   if (isNpx && isOnPath(env, runtime)) return null;
   return (text) => text.replace(/(?<!\\)`yokoten((?: [^`]*)?)`/g, '`npx yokoten$1`');
+}
+
+/**
+ * Where a clone keeps the conflict map (#909): MAP_FILE in
+ * src/commands/merge/conflicts/types.ts. This layer sits below `commands`, so it reads the
+ * file itself and never imports the builder; map.test.ts holds the two names together.
+ */
+export const CONFLICT_MAP_PATH = 'yokoten/conflicts.json';
+
+/** How old a map may be before the doctor calls it stale. MAP_MAX_AGE_MS, kept in step by map.test.ts. */
+export const CONFLICT_MAP_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * One line at session start, when open changes collide or the map is old (#909). It reads
+ * the map the `conflicts` command wrote, and nothing else: building a map runs git for
+ * every open change, and a session start has a time budget. Null when there is nothing to
+ * say, and null for a map this yokoten does not know.
+ */
+export function conflictNote(root: string, env: Env, now: number = Date.now()): string | null {
+  let file: string;
+  try {
+    const common = readGit(root, ['rev-parse', '--git-common-dir'], { env }).toString('utf8').trim();
+    if (!common) return null;
+    file = resolve(root, common, CONFLICT_MAP_PATH);
+  } catch {
+    return null;
+  }
+  if (!existsSync(file)) return null;
+  let map: unknown;
+  try {
+    map = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (typeof map !== 'object' || map === null) return null;
+  const { version, builtAt, changes, collisions } = map as Record<string, unknown>;
+  if (version !== 1 || typeof builtAt !== 'string') return null;
+  const built = Date.parse(builtAt);
+  if (Number.isNaN(built)) return null;
+  const fix = 'run `yokoten conflicts` to see what to merge first';
+  const age = now - built;
+  if (age > CONFLICT_MAP_AGE_MS || age < -60_000) {
+    const hours = Math.max(1, Math.round(Math.abs(age) / (60 * 60 * 1000)));
+    return `the conflict map is ${hours} hour${hours === 1 ? '' : 's'} old, so it may be wrong: ${fix}`;
+  }
+  const colliding = (Array.isArray(changes) ? changes : []).filter((change) => {
+    const conflicts = (change as Record<string, unknown> | null)?.mainConflicts;
+    return Array.isArray(conflicts) && conflicts.length > 0;
+  }).length;
+  const pairs = Array.isArray(collisions) ? collisions.length : 0;
+  if (!colliding && !pairs) return null;
+  const said = [
+    colliding ? `${colliding} open change${colliding === 1 ? '' : 's'} collide${colliding === 1 ? 's' : ''} with main` : '',
+    pairs ? `${pairs} pair${pairs === 1 ? '' : 's'} of open changes collide` : '',
+  ].filter(Boolean);
+  return `${said.join(', and ')}: ${fix}`;
 }
 

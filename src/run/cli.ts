@@ -599,6 +599,23 @@ export const COMMANDS: Command[] = [
     example: 'yokoten board --text',
   },
   {
+    name: 'conflicts',
+    summary: 'which open changes collide, and what to merge first',
+    usage: '[--json] [--rebuild <id>]',
+    text: [
+      'Reads every open pull request, or every local branch when there is no host, and',
+      'says which changes collide with main and with each other. It names the pairs that',
+      'touch one file, and which of the two to merge first. It checks nothing out and',
+      'merges nothing. The answer is kept in the git folder, so the guard reads it',
+      'without running git.',
+    ],
+    options: [
+      { name: '--json', text: 'the whole map as data on stdout, for an agent or a script' },
+      { name: '--rebuild', value: 'id', text: 'offer to rebuild one change in a fresh worktree instead of merging it' },
+    ],
+    example: 'yokoten conflicts',
+  },
+  {
     name: 'uninstall',
     summary: 'take back what install wrote, for example to use the plugin instead',
     usage: '',

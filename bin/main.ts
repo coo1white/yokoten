@@ -108,6 +108,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/check.ts').then((m) => m.runPr(invocation));
     case 'train':
       return import('../src/commands/merge/train.ts').then((m) => m.runTrain(invocation));
+    case 'conflicts':
+      return import('../src/commands/merge/conflicts/report.ts').then((m) => m.runConflicts(invocation));
     case 'board':
       return import('../src/commands/advice/board/server.ts').then((m) => m.runBoard(invocation));
     case 'install':
