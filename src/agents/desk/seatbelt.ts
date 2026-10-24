@@ -9,7 +9,9 @@
 //   and every home stay closed, but for the scratch folder.
 // - Writes: only the desk, its state folder, the scratch folder and a few devices. The
 //   locked paths (`.git/config`, `.git/hooks`, the worker mark) are denied again.
-// - Network: only to the proxy's port on 127.0.0.1; the proxy runs outside.
+// - Network: only to the proxy's port on 127.0.0.1; the proxy runs outside. A desk whose
+//   agent needs a loopback port its own server picks (OpenCode 2 --standalone) opens all of
+//   loopback, and only when the lead accepted that (start.ts, deskProblem).
 // - Processes may fork and exec, but never `open` or `osascript`, and nothing may ask
 //   Launch Services or send Apple events: those start programs outside the fence.
 // - Mach services: a short list that programs need to look up users, log, check TLS
@@ -110,9 +112,11 @@ export function seatbeltProfile(plan: DeskPlan, port: number, scratch: string): 
     '; 5. No network but the proxy on this machine.',
     `(allow network-outbound (remote ip "localhost:${port}"))`,
     // OpenCode 2's private server picks a loopback port at start, so the port is not known
-    // here. It may listen and connect only on loopback; no host outside this machine.
-    ...(plan.loopback ? [
-      '; A private server on a loopback port (OpenCode 2 --standalone).',
+    // here. Seatbelt shares this machine's loopback, so opening it lets the agent reach any
+    // local service and any local process reach a port it binds. That is a loosening, so it
+    // happens only when the lead accepted it (`--allow-loopback`, deskProblem in start.ts).
+    ...(plan.loopback && plan.allowLoopback ? [
+      '; A private server on a loopback port (OpenCode 2 --standalone), allowed by the lead.',
       '(allow network-bind (local ip "localhost:*"))',
       '(allow network-inbound (local ip "localhost:*"))',
       '(allow network-outbound (remote ip "localhost:*"))',
@@ -123,6 +127,7 @@ export function seatbeltProfile(plan: DeskPlan, port: number, scratch: string): 
 
 export const SEATBELT: DeskBackend = {
   name: 'sandbox-exec',
+  ownNetwork: false,
   problem: (env: Env) => {
     const tried = spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true'], { env, encoding: 'utf8' });
     return tried.status === 0 ? null : "sandbox-exec can't run here. It ships with macOS; check that /usr/bin/sandbox-exec is there.";
@@ -137,7 +142,7 @@ export const SEATBELT: DeskBackend = {
     return {
       file: '/usr/bin/sandbox-exec',
       args: ['-f', profile, ...plan.command],
-      env: { ...plan.env, ...proxyEnv(`http://127.0.0.1:${port}`), TMPDIR: work },
+      env: { ...plan.env, ...proxyEnv(`http://127.0.0.1:${port}`, plan.loopback === true), TMPDIR: work },
     };
   },
 };

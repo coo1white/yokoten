@@ -120,8 +120,8 @@ test('planDesk: the OpenCode desk keeps its XDG folders and only the login rows 
   const data = join(xdg, 'data');
   mkdirSync(join(data, 'opencode'), { recursive: true });
   const lead = new DatabaseSync(join(data, 'opencode', 'opencode.db'));
-  lead.exec('CREATE TABLE credential (id text PRIMARY KEY, value text); CREATE TABLE session_v2 (id text PRIMARY KEY, text text);');
-  lead.exec("INSERT INTO credential VALUES ('c1', 'the login'); INSERT INTO session_v2 VALUES ('s1', 'a private prompt');");
+  lead.exec('CREATE TABLE credential (id text PRIMARY KEY, value text); CREATE TABLE session_v2 (id text PRIMARY KEY, text text); CREATE TABLE kv (key text PRIMARY KEY, value text);');
+  lead.exec("INSERT INTO credential VALUES ('c1', 'the login'); INSERT INTO session_v2 VALUES ('s1', 'a private prompt'); INSERT INTO kv VALUES ('job.background/msg_1', 'a private message');");
   lead.close();
   const plan = planDesk({ runtime: 'opencode', desk, command: ['node', 'x.js'], env: { ...env(), XDG_DATA_HOME: data }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) });
   const state = join(`${desk}.state`, 'opencode');
@@ -131,29 +131,53 @@ test('planDesk: the OpenCode desk keeps its XDG folders and only the login rows 
   assert.equal(plan.env.OPENCODE_DB, join(state, 'data', 'opencode', 'opencode.db'));
   assert.deepEqual(plan.hosts, ['opencode.ai', 'api.opencode.ai', 'models.opencode.ai']);
   assert.equal(plan.loopback, true, 'its private server talks on loopback');
+  assert.equal(plan.allowLoopback, false, 'opening loopback is the lead\'s choice, not the desk\'s');
   assert.ok(plan.hidden.includes(join(data, 'opencode')), "the lead's OpenCode data is hidden");
   const copied = new DatabaseSync(join(state, 'data', 'opencode', 'opencode.db'), { readOnly: true });
   try {
     assert.equal(copied.prepare('SELECT value FROM credential').get()?.value, 'the login');
     assert.equal(copied.prepare('SELECT count(*) AS count FROM session_v2').get()?.count, 0, 'no session text comes along');
+    assert.equal(copied.prepare('SELECT count(*) AS count FROM kv').get()?.count, 0, 'kv holds no login: its rows stay out too');
   } finally {
     copied.close();
   }
+});
+
+test('planDesk: the OpenCode program folder is shown, not the whole ~/.opencode (#770)', () => {
+  const { projects, desk } = makeDesk();
+  const home = realpathSync(makeTempDir('home-'));
+  mkdirSync(join(home, '.opencode', 'bin'), { recursive: true });
+  writeFileSync(join(home, '.opencode', 'bin', 'opencode'), '');
+  writeFileSync(join(home, '.opencode', 'secret-note.txt'), 'private');
+  const plan = planDesk({ runtime: 'opencode', desk, command: ['node', 'x.js'], env: { ...env(), HOME: home }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) });
+  assert.ok(plan.readable.includes(join(home, '.opencode', 'bin')), 'the program folder is shown');
+  // Positive control: the file next to it would be visible if the whole folder were shown.
+  assert.ok(!plan.readable.includes(join(home, '.opencode')), 'the rest of ~/.opencode is hidden');
+});
+
+test('planDesk: --allow-loopback is the lead\'s answer to a loopback agent, and only that agent\'s (#770)', () => {
+  const { projects, desk } = makeDesk();
+  const mark = (folder: string) => markWorktree(join(projects, 'origin'), folder, gitEnv());
+  assert.equal(planDesk({ runtime: 'opencode', desk, command: ['node', 'x.js'], env: env(), allowLoopback: true, markDesk: mark }).allowLoopback, true);
+  assert.equal(planDesk({ runtime: 'grok', desk, command: ['node', 'x.js'], env: env(), allowLoopback: true, markDesk: mark }).allowLoopback, undefined, 'a desk that needs no loopback keeps it shut');
 });
 
 test('planDesk: the OpenCode login copy never follows a link out of the desk state (#770)', () => {
   const { projects, desk } = makeDesk();
   const xdg = realpathSync(makeTempDir('xdg-'));
   const data = join(xdg, 'data');
+  const outside = realpathSync(makeTempDir('outside-'));
   mkdirSync(join(data, 'opencode'), { recursive: true });
   writeFileSync(join(data, 'opencode', 'opencode.db'), 'not a database');
   const state = join(`${desk}.state`, 'opencode');
   mkdirSync(state, { recursive: true });
-  symlinkSync(data, join(state, 'data'));
+  symlinkSync(outside, join(state, 'data'));
   assert.throws(
     () => planDesk({ runtime: 'opencode', desk, command: ['node'], env: { ...env(), XDG_DATA_HOME: data }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()) }),
     /is a link or not a folder/,
   );
+  // Positive control: the folders are checked before anything is made, so the link's target stays empty.
+  assert.deepEqual(readdirSync(outside), []);
 });
 
 test('planDesk: a desk that cannot be marked does not start, with the plain reason (#672)', () => {
@@ -226,6 +250,12 @@ test('proxyEnv: every proxy name in both cases, and Node told to read them', () 
   const names = proxyEnv('http://127.0.0.1:3128');
   for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy']) assert.equal(names[name], 'http://127.0.0.1:3128');
   assert.equal(names.NODE_USE_ENV_PROXY, '1');
+  assert.equal(names.NO_PROXY, '', 'an agent with no server of its own keeps every name on the proxy');
+  assert.equal(names.no_proxy, '');
+});
+
+test('proxyEnv: an agent that talks to itself on loopback gets the loopback names (#770)', () => {
+  const names = proxyEnv('http://127.0.0.1:3128', true);
   assert.equal(names.NO_PROXY, '127.0.0.1,localhost,::1');
   assert.equal(names.no_proxy, names.NO_PROXY);
 });

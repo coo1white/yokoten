@@ -58,7 +58,8 @@ export interface RuntimeDesk {
   hosts: readonly string[];
   /**
    * Whether the agent starts a private server on a loopback port and talks to it
-   * (OpenCode 2's `--standalone`). A sandbox that keeps loopback closed must open it.
+   * (OpenCode 2's `--standalone`). A fence that keeps loopback closed can open it only
+   * when the lead says so (`--allow-loopback`): see `deskProblem` in start.ts.
    */
   loopback?: boolean;
   /** The model and provider the agent's own config names (#748), or null when it names none. */
@@ -90,6 +91,11 @@ export interface DeskPlan {
   hosts: string[];
   /** Whether the sandbox must let the agent listen on, and reach, a loopback port. */
   loopback?: boolean;
+  /**
+   * Whether the lead accepted opening loopback for this desk. A fence with its own network
+   * (Linux, WSL2) needs no such choice; macOS does, and says so before it starts.
+   */
+  allowLoopback?: boolean;
   /** The agent's environment. The backend adds the proxy names. */
   env: Record<string, string>;
   /** The agent command and its words. */
@@ -106,6 +112,11 @@ export interface DeskRequest {
   extraReadable?: string[];
   /** Extra API hosts (`--host`), for example a DeepSeek host for Codex. */
   extraHosts?: string[];
+  /**
+   * Whether the lead accepted that a fence without its own network opens loopback for this
+   * desk (`--allow-loopback`), because the agent's private server picks the port itself.
+   */
+  allowLoopback?: boolean;
   /** yokoten runtime folders to show read-only: this copy and the installed one. */
   runtimes?: string[];
   /** The private-marks file, shown read-only only when the lead asks (`--marks`). Off by default until #665. */
@@ -349,19 +360,24 @@ export function planDesk(request: DeskRequest): DeskPlan {
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
     loopback: runtime.loopback,
+    allowLoopback: runtime.loopback ? request.allowLoopback === true : undefined,
     env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }
 
-/** The names that point an agent at the proxy. Upper and lower case: programs read either. */
-export function proxyEnv(url: string): Record<string, string> {
+/**
+ * The names that point an agent at the proxy. Upper and lower case: programs read either.
+ * `loopback` adds the loopback names to `NO_PROXY`, for an agent whose own server listens
+ * on a loopback port (OpenCode's private server). Other agents keep it empty.
+ */
+export function proxyEnv(url: string, loopback = false): Record<string, string> {
   const names = ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY'];
   // NODE_USE_ENV_PROXY: Node's own fetch reads the names above only with it (Node 22.21 and 24).
   // NO_PROXY: a program that talks to itself on loopback (OpenCode 2's `--standalone`
   // server) must not send that call through the proxy. A wildcard such as `127.*` is not
-  // understood; the names are listed as they are.
-  const noProxy = '127.0.0.1,localhost,::1';
+  // understood; the names are listed as they are. Every other desk keeps it empty.
+  const noProxy = loopback ? '127.0.0.1,localhost,::1' : '';
   return { ...Object.fromEntries(names.flatMap((name) => [[name, url], [name.toLowerCase(), url]])), NODE_USE_ENV_PROXY: '1', NO_PROXY: noProxy, no_proxy: noProxy };
 }
 
@@ -378,6 +394,12 @@ export interface DeskBackend {
   name: string;
   /** Null when the backend can run here; else the reason, in one line. */
   problem: (env: Env) => string | null;
+  /**
+   * Whether the fence gives the desk its own network (bwrap's `--unshare-all`), so a
+   * loopback port inside reaches nothing on this machine. False when the sandbox shares
+   * this machine's network, as Seatbelt does.
+   */
+  ownNetwork: boolean;
   /** Where the proxy listens outside: a socket path in `scratch`, or a port (0 for any). */
   proxyAddress: (scratch: string) => string | number;
   /** The command that starts `plan` inside the fence, with the proxy at `address` and a private scratch folder. */

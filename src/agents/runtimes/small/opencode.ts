@@ -32,7 +32,7 @@
 // A crash, a signal or a timeout denies.
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
 import { homeIn, homeOf } from '../../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
@@ -452,20 +452,13 @@ const loginFile = (env: Env): string => env.OPENCODE_DB || join(dataDir(env), 'o
 
 /**
  * The tables in OpenCode 2's database that hold a login (probed on 2.1.2). Every other
- * row, sessions and prompts above all, stays out of the desk.
+ * row, sessions and prompts above all, stays out of the desk. `kv` holds no login: on 2.1.2
+ * it kept the model catalog and background job messages, so it stays out too.
  */
-const LOGIN_TABLES = new Set(['account', 'account_state', 'control_account', 'credential', 'kv', 'migration']);
+const LOGIN_TABLES = new Set(['account', 'account_state', 'control_account', 'credential', 'migration']);
 
 /** A SQL string: a single quote is doubled, so a path can't end the text. */
 const sqlText = (text: string): string => `'${text.replace(/'/g, "''")}'`;
-
-/** Refuse a link where the login copy writes: a worker could point it at the lead's data. */
-function requireRealFolders(path: string): void {
-  for (const folder of [dirname(dirname(path)), dirname(path)]) {
-    const entry = lstatSync(folder);
-    if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error(`${folder} is a link or not a folder. Remove it, then run the desk again.`);
-  }
-}
 
 /** Whether `path` is a link, even one that points nowhere. */
 function isLink(path: string): boolean {
@@ -477,13 +470,29 @@ function isLink(path: string): boolean {
 }
 
 /**
+ * Make the folders from `root` down to `folder`, refusing a link on the way. A worker
+ * could leave one in its state folder, and the copy would then write into the lead's files.
+ * Every step is checked before the next is made, so nothing is created in a link's target.
+ * `root` is the desk's own state folder, which the desk made and checked.
+ */
+function makeRealFolders(root: string, folder: string): void {
+  let at = root;
+  if (isLink(at) || !lstatSync(at).isDirectory()) throw new Error(`${at} is a link or not a folder. Remove it, then run the desk again.`);
+  for (const name of relative(root, folder).split(sep)) {
+    if (name === '' || name === '.') continue;
+    at = join(at, name);
+    if (isLink(at) || (existsSync(at) && !lstatSync(at).isDirectory())) throw new Error(`${at} is a link or not a folder. Remove it, then run the desk again.`);
+    if (!existsSync(at)) mkdirSync(at);
+  }
+}
+
+/**
  * Copy OpenCode's login from its database, and nothing else. The copy is a clean snapshot
  * (VACUUM INTO), then every table but the login's is emptied and the file is vacuumed
- * again, so no session text is left in a page the worker could read.
+ * again, so no session text is left in a page the worker could read. The folder is made by
+ * `makeRealFolders` first, so the write here follows no link.
  */
 function copyLoginDatabase(from: string, to: string): void {
-  mkdirSync(dirname(to), { recursive: true });
-  requireRealFolders(to);
   rmSync(to, { force: true });
   rmSync(`${to}-wal`, { force: true });
   rmSync(`${to}-shm`, { force: true });
@@ -510,9 +519,10 @@ function copyLoginDatabase(from: string, to: string): void {
 
 /**
  * What a desk (#770) gives OpenCode. Its data, state and config folders point into the
- * desk's own state folder, and only the login rows of `opencode.db` come along. Hosts:
- * the site, the Go plan's API, and the model list. NO_PROXY lets its `--standalone`
- * server talk to itself on loopback (desk.ts, proxyEnv).
+ * desk's own state folder, and only the login rows of `opencode.db` come along. Hosts: the
+ * site, the Go plan's API, and the model list. Its program folder, `~/.opencode/bin`, is
+ * shown; nothing else of `~/.opencode`. NO_PROXY lets its `--standalone` server talk to
+ * itself on loopback (desk.ts, proxyEnv).
  */
 export const DESK: RuntimeDesk = {
   leadState: (env) => [dataDir(env), stateDir(env), configDir(env), cacheDir(env)],
@@ -521,8 +531,7 @@ export const DESK: RuntimeDesk = {
     const from = loginFile(env);
     if (!existsSync(from)) return;
     const to = join(state, 'data', 'opencode', 'opencode.db');
-    mkdirSync(dirname(to), { recursive: true });
-    requireRealFolders(to);
+    makeRealFolders(state, dirname(to));
     // A worker could leave a link at the login file itself. Remove the link, never follow it.
     if (isLink(to)) rmSync(to, { force: true });
     else if (existsSync(to) && statSync(to).mtimeMs >= statSync(from).mtimeMs) return;
@@ -534,7 +543,7 @@ export const DESK: RuntimeDesk = {
     XDG_CONFIG_HOME: join(state, 'config'),
     OPENCODE_DB: join(state, 'data', 'opencode', 'opencode.db'),
   }),
-  programParts: (env) => [join(homeIn(env), '.opencode')],
+  programParts: (env) => [join(homeIn(env), '.opencode', 'bin')],
   hosts: ['opencode.ai', 'api.opencode.ai', 'models.opencode.ai'],
   loopback: true,
 };

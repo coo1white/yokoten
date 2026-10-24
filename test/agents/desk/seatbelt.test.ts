@@ -64,11 +64,15 @@ test('seatbeltProfile: an OpenCode desk writes in all three XDG folders (#770)',
   }
 });
 
-test('seatbeltProfile: an OpenCode desk may listen on, and reach, a loopback port (#770)', () => {
-  const profile = seatbeltProfile({ ...PLAN, loopback: true }, 3128, '/private/var/folders/xy/scratch');
-  assert.match(profile, /\(allow network-bind \(local ip "localhost:\*"\)\)/);
-  assert.match(profile, /\(allow network-inbound \(local ip "localhost:\*"\)\)/);
-  assert.match(profile, /\(allow network-outbound \(remote ip "localhost:\*"\)\)/);
+test('seatbeltProfile: an OpenCode desk opens loopback only when the lead allowed it (#770)', () => {
+  const allowed = seatbeltProfile({ ...PLAN, loopback: true, allowLoopback: true }, 3128, '/private/var/folders/xy/scratch');
+  assert.match(allowed, /\(allow network-bind \(local ip "localhost:\*"\)\)/);
+  assert.match(allowed, /\(allow network-inbound \(local ip "localhost:\*"\)\)/);
+  assert.match(allowed, /\(allow network-outbound \(remote ip "localhost:\*"\)\)/);
+  // Positive control: the same desk without the lead's yes keeps every loopback port shut.
+  const shut = seatbeltProfile({ ...PLAN, loopback: true }, 3128, '/private/var/folders/xy/scratch');
+  assert.doesNotMatch(shut, /localhost:\*/);
+  assert.doesNotMatch(shut, /network-bind|network-inbound/);
   assert.doesNotMatch(seatbeltProfile(PLAN, 3128, '/private/var/folders/xy/scratch'), /localhost:\*/);
 });
 
@@ -104,7 +108,11 @@ test('SEATBELT.fence: sandbox-exec with the written profile, the proxy names and
   assert.deepEqual(fenced.args, ['-f', join(scratch, 'desk.sb'), ...PLAN.command]);
   assert.equal(readFileSync(join(scratch, 'desk.sb'), 'utf8'), seatbeltProfile(PLAN, 49152, scratch));
   assert.equal(fenced.env.HTTPS_PROXY, 'http://127.0.0.1:49152');
-  assert.equal(fenced.env.NO_PROXY, '127.0.0.1,localhost,::1');
+  assert.equal(fenced.env.NO_PROXY, '', 'an agent with no server of its own keeps every name on the proxy');
   assert.equal(fenced.env.TMPDIR, join(scratch, 'tmp'));
   assert.equal(SEATBELT.proxyAddress(scratch), 0);
+  // An OpenCode desk talks to itself on loopback, so its calls there skip the proxy (#770).
+  const loopback = SEATBELT.fence({ ...PLAN, loopback: true }, 49152, scratch);
+  assert.equal(loopback.env.NO_PROXY, '127.0.0.1,localhost,::1');
+  assert.equal(SEATBELT.ownNetwork, false, 'Seatbelt shares this machine\'s network');
 });

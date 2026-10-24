@@ -465,6 +465,8 @@ CI 里从基础分支读 CODEOWNERS。
 | `hidden` | 这些目录如果存在就藏起来：`/home`、`/root`、`/mnt`、`/media`、`/run`，再加上家目录和工位的上一级。在 `darwin` 上是 `/Users`、`/Volumes`，再加上家目录和上一级。 |
 | `locked` | `.git/config`、`.git/hooks` 和 `.git/yokoten-worker` 保持只读。在团队里，`.git/yokoten-desk.json` 也锁上。 |
 | `hosts` | 只能到 API 主机，而且要经过外面的代理。只接受 CONNECT。端口是 `443`，除非主机那一项自己写了端口。隧道最多 `64` 条。`10 minutes` 没有数据就关掉。代理不读隧道里的内容。 |
+| `loopback` | agent 自己启动服务、端口由服务自己挑的工位会带上它。这样的工位在 macOS 上要加 `--allow-loopback`。 |
+| `allowLoopback` | lead 同意为这个工位打开 loopback。`--allow-loopback` 会设上它。 |
 | `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。知道模型时，`YOKOTEN_MODEL` 写出模型。只有当厂商不是运行环境自己的厂商时，才设置 `YOKOTEN_VENDOR`，让 agent 知道自己实际是谁。 |
 | `command` | lead 传进来的那条命令。 |
 
@@ -510,9 +512,16 @@ DeepSeek 通过 `codex` 来跑。
 后端会设置 `HTTPS_PROXY`、`HTTP_PROXY` 和 `ALL_PROXY`。
 这三个名字的小写也会设置。
 还会设置 `NODE_USE_ENV_PROXY`。
-程序自己通过 `loopback` 和自己说话时，不能走代理。
-`NO_PROXY` 和 `no_proxy` 的值为 `127.0.0.1,localhost,::1`。
+`NO_PROXY` 和 `no_proxy` 设成空的。
+程序自己通过 `loopback` 和自己说话时，不走代理。
+只有这样的 agent，`NO_PROXY` 和 `no_proxy` 才是 `127.0.0.1,localhost,::1`。
 像 `127.*` 这样的通配写法不被识别。
+
+agent 自己启动服务、端口由它自己挑的工位，需要 loopback。
+Linux 和 WSL2 给工位自己的网络，那里的 loopback 连不到本机。
+macOS 和本机共用 loopback，没法只开一个端口。
+所以在 macOS 上，工位什么都不启动，直到 lead 加上 `--allow-loopback`。
+这个开关会打开所有 loopback 端口：agent 就能连到本机的服务。
 
 Linux 和 WSL2 用 `bwrap`。
 macOS 用 `sandbox-exec`，规则从全部拒绝开始。

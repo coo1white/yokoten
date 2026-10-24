@@ -57,6 +57,9 @@ test('BWRAP.fence: the bridge starts first, then the agent, with the proxy names
   assert.deepEqual(fenced.args.slice(start + 2, start + 4), ['desk', '--bridge']);
   assert.deepEqual(fenced.args.slice(start + 4), [INSIDE_SOCKET, String(INSIDE_PORT), '--', ...PLAN.command]);
   assert.equal(fenced.env.HTTPS_PROXY, `http://127.0.0.1:${INSIDE_PORT}`);
-  assert.equal(fenced.env.NO_PROXY, '127.0.0.1,localhost,::1');
+  assert.equal(fenced.env.NO_PROXY, '', 'an agent with no server of its own keeps every name on the proxy');
   assert.equal(fenced.env.YOKOTEN_ROLE, 'worker');
+  // An OpenCode desk talks to itself on loopback, so its calls there skip the proxy (#770).
+  assert.equal(BWRAP.fence({ ...PLAN, loopback: true }, '/tmp/scratch/proxy.sock', '/tmp/scratch').env.NO_PROXY, '127.0.0.1,localhost,::1');
+  assert.equal(BWRAP.ownNetwork, true, 'bwrap gives the desk its own network, so loopback inside is the desk\'s');
 });

@@ -409,7 +409,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'desk',
     summary: "start a worker's agent in its own fenced desk: its clone, no network but its API",
-    usage: '<agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>',
+    usage: '<agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] [--allow-loopback] -- <command>',
     text: [
       'Starts the command after -- in a sandbox around <folder>, which must be its own git clone.',
       "The agent writes only in the folder and the desk's own state folder, <folder>.state, which",
@@ -418,6 +418,9 @@ export const COMMANDS: Command[] = [
       '.git/config and .git/hooks stay read-only. YOKOTEN_ROLE=worker and TZ=UTC; tokens stay out.',
       'Agents: claude-code, codex (DeepSeek too), grok, muse, opencode. Linux and WSL2 use',
       'bwrap; macOS uses sandbox-exec; native Windows is not built yet. Run the commit check outside until #665.',
+      'OpenCode needs a loopback port its server picks itself. On macOS that opens every loopback',
+      'port, so the desk refuses until --allow-loopback says the owner accepts it. On Linux and',
+      'WSL2 the loopback is the desk\'s own.',
       'The agent joins the team of the project you run it from, by the desk folder\'s name or --name: see `yokoten msg`.',
     ],
     options: [
@@ -425,6 +428,7 @@ export const COMMANDS: Command[] = [
       { name: '--read', value: 'paths', text: 'more paths to show read-only, joined by commas' },
       { name: '--host', value: 'hosts', text: "more API hosts the agent may reach, joined by commas" },
       { name: '--marks', text: 'show the private-marks file read-only (off: the agent could read it until #665)' },
+      { name: '--allow-loopback', text: 'macOS only: open every loopback port for an agent that needs one it picks itself' },
     ],
     arguments: ['agent', 'folder'],
     example: 'yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"',
