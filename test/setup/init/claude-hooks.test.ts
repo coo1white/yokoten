@@ -37,6 +37,9 @@ test("init: a CLAUDE.md gets one line that imports AGENTS.md, and doctor's rules
   assert.equal(readFileSync(join(sandbox.repo, 'CLAUDE.md'), 'utf8'), claude);
 });
 
+const HOOK_ON_LINE = 'git hook: on (the commit check runs from .githooks)';
+
+
 test('init: a CLAUDE.md that already imports AGENTS.md is left as it is (#206)', async () => {
   for (const text of [`# rules\n${at}AGENTS.md\n`, `# rules\nRead ${at}./AGENTS.md first.\n`, `# rules\r\n${at}AGENTS.md\r\n`, `# rules\n${at}AGENTS.md`]) {
     const sandbox = makeSandbox();
@@ -291,7 +294,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.match(result.stdout, /wrote \.husky\/pre-merge-commit: the commit check \(kept core\.hooksPath \(husky\)/, 'a merge commit is checked too (#239)');
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-merge-commit'), 'utf8'), `#!/bin/sh\n${checkLines('.yokoten/bin/yokoten.ts').join('\n')}\n`);
   assert.ok(statSync(join(sandbox.repo, '.husky/pre-merge-commit')).mode & 0o100, 'executable');
-  assert.doesNotMatch(result.stdout, /set git core\.hooksPath/);
+  assert.doesNotMatch(result.stdout, /git hook: on/);
+  assert.match(result.stdout.split('\n')[0], /^added the check to \.husky\/pre-commit:/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.husky', 'the project\'s hooks folder stays');
   assert.ok(!existsSync(join(sandbox.repo, '.githooks')), 'no second hooks folder that git never runs');
   const hook = readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8');
@@ -300,8 +304,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = await sandbox.call(['init']);
-  assert.match(result.stdout, /same \.husky\/pre-commit/);
-  assert.match(result.stdout, /same \.husky\/pre-merge-commit/);
+  assert.match(result.stdout, /kept \.husky\/pre-commit/);
+  assert.match(result.stdout, /kept \.husky\/pre-merge-commit/);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
   // A real commit runs both: the project's hook and the yokoten check.
   sandbox.git('add', '.');
@@ -331,7 +335,7 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   // A hook that init changed before the runtime guard (#204) already runs the check.
   const before = '# yokoten: the commit check\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\nnpm test\n';
   sandbox.write('.husky/pre-commit', before);
-  assert.match((await sandbox.call(['init'])).stdout, /^same \.husky\/pre-commit/m);
+  assert.match((await sandbox.call(['init'])).stdout, /^kept \.husky\/pre-commit/m);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), before);
   assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
   assert.match((await sandbox.call(['doctor'])).stdout, /run `npm install` so husky sets core\.hooksPath/);
@@ -395,6 +399,8 @@ test('init: a core.hooksPath outside the repo is kept, and the advice is the lin
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   const [, checkLine] = checkLines('.yokoten/bin/yokoten.ts');
+  assert.ok(result.stdout.startsWith('kept core.hooksPath:'), result.stdout);
+  assert.doesNotMatch(result.stdout, /git hook: on/);
   assert.ok(result.stdout.includes(`Add this line to its pre-commit and pre-merge-commit: ${checkLine}\n`), result.stdout);
 });
 
@@ -451,7 +457,7 @@ test('init: a pre-commit in .git/hooks keeps running, after the check, from .git
   assert.match(result.stdout, /^kept your \.git\/hooks\/pre-commit: \.githooks\/pre-commit runs it after the check$/m);
   assert.match(result.stdout, /^kept your \.git\/hooks\/pre-merge-commit: \.githooks\/pre-merge-commit runs it after the check$/m);
   assert.match(result.stdout, /^note: lefthook\.yml is here; \.githooks runs these hooks in \.git\/hooks: \.git\/hooks\/pre-commit \(after the check\), \.git\/hooks\/pre-merge-commit \(after the check\)\. /m);
-  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
   assert.ok(existsSync(join(gitDir, 'hooks', 'pre-commit')), 'the old hook stays where it was');
   assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
@@ -512,7 +518,7 @@ test('init: a pre-commit in .git/hooks that git skips does not hold the check ba
   assert.ok(doctor.includes(`commit-check (OSPS-BR-07.01): commits are not checked: core.hooksPath is not set; \`yokoten init\` sets it up; ${note}\n`), doctor);
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
   assert.ok(result.stdout.includes(`\n${note}\n`), result.stdout);
   assert.doesNotMatch(result.stdout, /kept your/);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '.githooks');
@@ -585,6 +591,8 @@ test('init: an old hook that reads stdin, next to a .githooks one of the project
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^left core\.hooksPath unset, so the commit check is not on yet: \.githooks\/pre-push is the project's own and reads stdin, as \.git\/hooks\/pre-push does, so yokoten can't run both from one file\. To keep \.git\/hooks\/pre-push, make \.githooks\/pre-push save stdin to a file and give it to both: its own lines, and \.git\/hooks\/pre-push with the same arguments; then run `git config core\.hooksPath \.githooks`$/m);
+  assert.ok(result.stdout.startsWith('left core.hooksPath unset, so the commit check is not on yet:'));
+  assert.doesNotMatch(result.stdout, /git hook: on/);
   assert.equal(readFileSync(join(sandbox.repo, '.githooks', 'pre-push'), 'utf8'), before);
   assert.equal(sandbox.git('config', 'core.hooksPath').stdout.trim(), '');
   assert.match((await sandbox.call(['doctor'])).stdout, /commits are not checked: core\.hooksPath is not set; \.githooks\/pre-push is the project's own and reads stdin/);
@@ -658,6 +666,8 @@ test('init: the reviewer\'s own hook with the check in an `if` is kept as it is,
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), own);
   assert.match(result.stdout, /^a hook this clone had is switched off: \.githooks\/pre-commit is the project's own, and yokoten can't tell where its check ends\. To keep \.git\/hooks\/pre-commit, add this line after the check: yokoten_old=/m);
+  assert.ok(result.stdout.startsWith('a hook this clone had is switched off:'));
+  assert.doesNotMatch(result.stdout, /git hook: on/);
 });
 
 test('init: with a global core.hooksPath, the files in .git/hooks are dead and are not handed off to (#256)', { skip: NO_EXEC_BIT }, async () => {
@@ -676,7 +686,7 @@ test('init: with a global core.hooksPath, the files in .git/hooks are dead and a
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /kept your|note:/);
-  assert.match(result.stdout, /^set git core\.hooksPath to \.githooks/m);
+  assert.equal(result.stdout.split('\n')[0], HOOK_ON_LINE);
   assert.doesNotMatch(readFileSync(join(sandbox.repo, '.githooks', 'pre-commit'), 'utf8'), /git-common-dir/);
   assert.ok(!existsSync(join(sandbox.repo, '.githooks', 'commit-msg')));
   sandbox.git('add', '.');

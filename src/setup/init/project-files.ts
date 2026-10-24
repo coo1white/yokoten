@@ -84,7 +84,7 @@ export function writeCodeOwners(root: string, gh: Gh, env: Env): string {
   if (org) return `wrote .github/CODEOWNERS (the lead-only paths; @${remote} is an organization, so put a person or @${remote}/<team> in place of ${OWNER_PLACEHOLDER})`;
   return owner
     ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
-    : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
+    : `wrote .github/CODEOWNERS (the lead-only paths; make the repo, add the remote and push, then put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
 }
 
 // ---- Dependabot for the project's own packages (#379) ----

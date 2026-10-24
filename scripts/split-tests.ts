@@ -38,7 +38,7 @@ const MAPPING: [string, string[]][] = [
   ['rules/message.test.ts', ['rules:messages', 'rules:docs']],
   ['rules/pr.test.ts', ['rules:pull request', 'rules:pull request title', 'rules:CODEOWNERS', 'rules:issue title', 'rules:titles', 'rules:large pull request', 'rules:plain English']],
   ['rules/privacy.test.ts', ['privacy:positive control', 'privacy:emails', 'privacy:IPs', 'privacy:web strings', 'privacy:private marks', 'privacy:private marks file', 'privacy:commit times', 'privacy:output']],
-  ['rules/secrets.test.ts', ['privacy:secrets']],
+  ['rules/privacy/secrets.test.ts', ['privacy:secrets']],
   ['run/changelog.test.ts', ['rules:changes', 'cli:changelog']],
   [
     'run/check.test.ts',

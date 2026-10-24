@@ -61,7 +61,7 @@ import {
   readState,
   saveState,
   seenAfter,
-} from '../../src/setup/doctor.ts';
+} from '../../src/setup/doctor/index.ts';
 
 // `yokoten learn` (#77): an incident issue becomes a check draft, from the issue's own
 // sections. The issue text is stubbed here; nothing reaches the network.
@@ -105,7 +105,7 @@ function makeModuleDir(prefix: string): string {
 test('lessons: full doctor notes a new lesson on the first run only; a session, not now and a broken state', async () => {
   const sandbox = makeSandbox();
   const stateFile = join(sandbox.repo, '.git', 'yokoten', 'state.json');
-  const newNote = /\n {2}note {4}new lesson: incident-138 \(a test calls a server on this machine and does not set NO_PROXY\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
+  const newNote = /\n {2}note {4}a new check ran: ok \(incident-138\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
   // The entry, through the real binary; the rest runs in this process.
   let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0, result.stderr);
@@ -490,7 +490,7 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
   const checks = lessonChecks(clean, { 'incident-3': 'not for us' }, place, ['incident-2']);
   assert.deepEqual(checks.map(({ id, isNew }) => `${id} ${isNew === true}`), ['incident-1 true', 'incident-2 false', 'incident-3 false']);
   assert.deepEqual(formatLessonChecks(checks), [
-    '  note    new lesson: incident-1 (a .env file is in the repo); doctor now runs it in this project',
+    '  note    a new check ran: ok (incident-1); doctor now runs it in this project',
     '  ok      lesson incident-1',
     '  ok      lesson incident-2',
     '  not now lesson incident-3: not for us',

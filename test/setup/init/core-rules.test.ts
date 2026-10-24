@@ -175,9 +175,6 @@ test('core rules: the kit version mark tells older from newer; no mark compares 
 
 // #377: a private repo pays for its Actions minutes. init says so and never chooses for
 // the owner; `init --no-ci` keeps CI off, and the road can still be finished.
-
-// ---- The core rules into an AGENTS.md the project already has (#378) ----
-
 const KIT_RULES = '<!-- yokoten kit 1.0.0 -->\n# How work is done here\n\n## Core rules\n\n1. a rule\n\n## This project\n\n<!-- yours here -->\n';
 const KIT_CORE = KIT_RULES.slice(0, KIT_RULES.indexOf('## This project'));
 

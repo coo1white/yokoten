@@ -1,12 +1,14 @@
 // The gh command, the repo address, and the planning setup: labels, milestones and
 // boards. Everything here reads or changes GitHub through `gh`, so yokoten uses the
-// owner's own sign-in and holds no token.
+// owner's own sign-in and holds no token. The end of the file reads the commits on a
+// borrowed file's default branch, for the watch of record 0024.
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeOf } from '../../rules/privacy.ts';
+import type { BorrowedHost, UpstreamCommit } from '../../run/check.ts';
 
 export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 export const asText = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -30,6 +32,28 @@ export const ghIn =
   (cwd: string, env: Env, timeout?: number): Gh =>
   (args) =>
     execFileSync('gh', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+
+/**
+ * gh that may answer later, so a server keeps answering while GitHub is slow (#688). A
+ * Gh that answers at once fits too. `signal` stops a call nobody waits for any more.
+ */
+export type GhLater = (args: string[], signal?: AbortSignal) => string | Promise<string>;
+
+/**
+ * Runs the real gh in `cwd`, with `env`, without blocking. With `timeout` (ms), a call
+ * that takes longer is stopped. A failed call rejects with gh's code and stderr, as
+ * ghIn throws them.
+ */
+export const ghLaterIn =
+  (cwd: string, env: Env, timeout?: number): GhLater =>
+  (args, signal) =>
+    new Promise((done, failed) => {
+      const child = execFile('gh', args, { cwd, env, encoding: 'utf8', timeout, signal, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) failed(Object.assign(err, { stderr }));
+        else done(stdout);
+      });
+      child.stdin?.end();
+    });
 
 /** Why a part could not be read, and what to do. */
 export interface Unread {
@@ -265,3 +289,103 @@ export function setFieldOptions(gh: Gh, fieldId: string, options: string[]): voi
   const list = options.map((name, index) => `{name: ${JSON.stringify(name)}, color: ${OPTION_COLORS[index % OPTION_COLORS.length]}, description: ""}`).join(', ');
   gh(['api', 'graphql', '-f', `query=${SET_OPTIONS.replace('OPTIONS', list)}`, '-f', `field=${fieldId}`]);
 }
+
+// ---- Borrowed code (record 0024): the commits on a wheel's default branch ----
+/** The repository and file path a source URL names. */
+export interface BorrowedSource {
+  repo: string;
+  path: string;
+}
+
+/**
+ * "owner/name" and the file path from a GitHub blob URL
+ * (`https://github.com/owner/name/blob/<ref>/src/file.ts`), or null for any other address.
+ */
+export function parseBorrowedSource(source: string): BorrowedSource | null {
+  let url: URL;
+  try {
+    url = new URL(source);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  if (host !== 'github.com') return null;
+  const parts = url.pathname.split('/').filter(Boolean).map(decodePart);
+  // owner, name, "blob", then a ref and at least one path segment.
+  if (parts.length < 5 || parts[2] !== 'blob') return null;
+  const [owner, name, , , ...rest] = parts;
+  if (!owner || !name) return null;
+  return { repo: `${owner}/${name}`, path: rest.join('/') };
+}
+
+const decodePart = (part: string): string => {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+};
+
+/** The commits in gh's answer to `repos/<repo>/commits?path=…`, newest first; null when it is not a list. */
+export function parseCommits(text: string): UpstreamCommit[] | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(json)) return null;
+  const commits: UpstreamCommit[] = [];
+  for (const item of json) {
+    if (!isObject(item) || typeof item.sha !== 'string') continue;
+    const commit = isObject(item.commit) ? item.commit : {};
+    const author = isObject(commit.author) ? commit.author : {};
+    const date = asText(author.date);
+    commits.push({ sha: item.sha, message: asText(commit.message), ...(date ? { date } : {}) });
+  }
+  return commits;
+}
+
+/** The date on gh's answer to `repos/<repo>/commits/<sha>`; null when it is not there. */
+export function parseCommitDate(text: string): string | null {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObject(json)) return null;
+  const commit = isObject(json.commit) ? json.commit : {};
+  const author = isObject(commit.author) ? commit.author : {};
+  const date = asText(author.date);
+  return date || null;
+}
+
+/**
+ * The watch's host: GitHub's default branch answers `sha=`-less reads, so the newest
+ * commits that touched the borrowed path are exactly the ones the default branch holds.
+ */
+export const borrowedHost = (gh: Gh): BorrowedHost => ({
+  commits(source) {
+    const parsed = parseBorrowedSource(source);
+    if (!parsed) return null;
+    let text: string;
+    try {
+      text = gh(['api', `repos/${parsed.repo}/commits?path=${encodeURIComponent(parsed.path)}&per_page=100`]);
+    } catch {
+      return null; // the host gave no answer: the watch reports a gap, never a pass
+    }
+    return parseCommits(text);
+  },
+  commitDate(source, commit) {
+    const parsed = parseBorrowedSource(source);
+    if (!parsed) return null;
+    let text: string;
+    try {
+      text = gh(['api', `repos/${parsed.repo}/commits/${commit}`]);
+    } catch {
+      return null;
+    }
+    return parseCommitDate(text);
+  },
+});

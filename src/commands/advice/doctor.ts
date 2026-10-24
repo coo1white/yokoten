@@ -1,19 +1,24 @@
-// `yokoten doctor`, `explain` and `adopt`: they read and show; none writes to the project.
-// A Claude Code session start keeps what it said in ~/.config/yokoten/sessions/ (#405).
+// `yokoten doctor`, `explain` and `adopt`. Doctor reads and shows. A session start also
+// writes the agent's status file, git-ignored (#685). A lead writes its log path into
+// the repo's git folder (#700). A Claude Code session start keeps what it said in
+// ~/.config/yokoten/sessions/ (#405).
 
 import { readSync } from 'node:fs';
+import { identityLine } from '../../agents/desk/team/who.ts';
 import * as claudeCode from '../../agents/runtimes/claude-code.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import { ghIn } from '../../host/github/index.ts';
 import { DEFAULTS, loadConfig } from '../../rules/config.ts';
 import { workerRole } from '../../rules/guards.ts';
+import { canKeepStatus, changeAgentStatus, findStatusCheckout, startFields } from '../../run/hook.ts';
 import { formatFinding } from '../../rules/message.ts';
 import { hideHome } from '../../rules/privacy.ts';
 import { draft, facts, table } from '../../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../../setup/advice/explain.ts';
-import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../../setup/doctor.ts';
+import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../../setup/doctor/index.ts';
 import { READERS } from '../hook.ts';
 import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from '../shared.ts';
+import { writeLeadSession } from './board/feed/read/logs.ts';
 
 /** What full doctor says while the slow reads run: the server read and (in WSL) the drive read. */
 const SLOW_READ_LINE = 'reading GitHub settings...';
@@ -38,8 +43,14 @@ export function runDoctor(invocation: Invocation): number {
     else print(invocation, [...allLines, `yokoten doctor: ${formatFinding(missing)}`], invocation.stderr);
     return 1;
   }
+  const start = root && session && agent === 'claude-code' ? readSessionStart(invocation) : null;
+  if (root && session) noteSessionStart(cwd, env, agent, start?.model ?? '', start?.transcriptPath ?? '');
   // A compaction start repeats only what changed (#405); any other start says all.
-  const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, agent === 'claude-code' ? readSessionStart(invocation) : null, blocks).flat() : allLines;
+  const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, start, blocks).flat() : allLines;
+  // A desk that named a vendor other than the harness's (#748) speaks first: the agent
+  // learns who it is before the harness's prompt tells it about its own maker.
+  const identity = root && session && !options.flags.has('--json') ? identityLine(agent, env) : '';
+  if (identity) lines.unshift(identity);
   // A worker, by YOKOTEN_ROLE or by the mark on its worktree (#555), hears that the guard sees
   // it as one (#402), on every start, a compaction too: its role is safety, never news to
   // drop. The lead hears nothing.
@@ -56,6 +67,21 @@ export function runDoctor(invocation: Invocation): number {
   return session || ok ? 0 : 1;
 }
 
+/**
+ * The session's status file at its start (#685): who runs (vendor, model), in which role
+ * (by the guard's own rule), where, and that it works. The board reads it. The model
+ * comes from the runtime, or else YOKOTEN_MODEL, which the board sets when it starts one.
+ * A lead also records `transcriptPath` for the board (#700). A worker never does.
+ */
+function noteSessionStart(cwd: string, env: Invocation['env'], agent: string, model: string, transcriptPath: string): void {
+  const isWorker = workerRole(env, [cwd]) !== null;
+  if (!isWorker && transcriptPath) writeLeadSession(cwd, transcriptPath);
+  const checkout = findStatusCheckout(cwd);
+  if (!checkout || !canKeepStatus(checkout, isWorker)) return;
+  const fields = startFields(agent, isWorker, checkout, model || (env.YOKOTEN_MODEL ?? '').trim().slice(0, 64));
+  changeAgentStatus(checkout, { ...fields, set: { ...fields.set, doing: 'started', blocked: null } });
+}
+
 const WORKER_SESSION = 'this session is a worker: lead-only files are guarded';
 const WORKER_MARKED = 'this session is a worker, because its worktree or clone carries the worker mark: lead-only files are guarded, and the lead pushes after review';
 
@@ -68,7 +94,7 @@ const STDIN_LIMIT = 1 << 20;
  * The SessionStart event Claude Code writes to stdin, or null when it gives none. It never
  * waits on a terminal, and never longer than STDIN_WAIT_MS on a pipe that stays open.
  */
-function readSessionStart({ env, stdin }: Invocation): SessionStart | null {
+function readSessionStart({ env, stdin }: Invocation): (SessionStart & { transcriptPath?: string }) | null {
   // Reading the process's stdin stream opens it first. For a pipe, libuv then puts the fd
   // in non-blocking mode, so readSync below throws EAGAIN in place of waiting for a writer
   // that never closes. A file, such as /dev/null, reads to its end at once.

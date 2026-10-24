@@ -5,30 +5,30 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
+import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import {
   boardBrief,
   boardGuardReady,
+  boardReportPath,
   boardStartParts,
   collectBoardWaiting,
   createBoardControls,
-  readBoardAttention,
-  readBoardIssues,
   readBoardLimitChange,
   readBoardStartAsk,
+  readBoardStartNext,
   setBoardLimits,
   startBoardAgent,
+  startBoardNext,
   stopBoardAgent,
   type BoardEvents,
   type BoardSpawner,
-  type BoardWaiting,
 } from '../../../../src/commands/advice/board/controls.ts';
-import type { Gh } from '../../../../src/host/github/index.ts';
 import type { Env } from '../../../../src/rules/config.ts';
 import { workerMarkAt, workerRole } from '../../../../src/rules/guards.ts';
 import * as codexHooks from '../../../../src/agents/runtimes/codex.ts';
 import * as grokHooks from '../../../../src/agents/runtimes/grok.ts';
-import { type AgentView, vendorOf } from '../../../../src/commands/advice/board/view.ts';
 
 // #603: a fake agent process. Tests pass it, so they never start a real agent. Each
 // start is recorded with its command, folder and env; each kill by its pid.
@@ -42,8 +42,6 @@ function fakeAgents(): { spawner: BoardSpawner; started: { command: string; args
   };
   return { spawner, started, killed };
 }
-
-const agent = (fields: Partial<AgentView>): AgentView => ({ key: '', name: 'a', vendor: vendorOf(''), model: '', effort: '', role: '', dot: 'idle', task: '', title: '', ref: null, doing: '', checks: '', age: '', updated: '', branch: '', ...fields });
 
 // #603: the brief names the issue, the worktree and the model; each vendor starts with
 // its own headless command, and an unknown vendor has none.
@@ -66,68 +64,64 @@ test('board controls: the brief and the start commands', () => {
   assert.match(readBoardStartAsk({ issue: 'x', vendor: 'codex', model: 'm' }) as string, /number/, 'the issue is a number');
   assert.match(readBoardStartAsk({ issue: '603', vendor: 'gemini', model: 'm' }) as string, /by hand/, 'an unknown vendor is refused');
   assert.match(readBoardStartAsk({ issue: '603', vendor: 'codex', model: '' }) as string, /model/, 'the model is named');
+  assert.deepEqual(readBoardStartNext({ vendor: 'codex', model: 'model-a' }), { vendor: 'codex', model: 'model-a' }, 'the next ready issue needs no number');
+  assert.match(readBoardStartNext({ vendor: 'gemini', model: 'm' }) as string, /by hand/, 'an unknown vendor is refused');
+  assert.match(readBoardStartNext({ vendor: 'codex', model: '' }) as string, /model/, 'the model is named');
 });
 
 // #603: the limits change one side and keep the other; anything odd is refused plainly.
 test('board controls: the limits change', () => {
   const controls = createBoardControls(join(makeTempDir(), 'board.log'));
-  assert.deepEqual(controls.limits, { maxAgents: 3, byModel: {} });
-  assert.deepEqual(setBoardLimits(controls, { maxAgents: '2' }), { maxAgents: 2, byModel: {} });
-  assert.deepEqual(setBoardLimits(controls, { models: 'model-a:1, model-b:2' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 } });
+  assert.deepEqual(controls.limits, { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 });
+  assert.deepEqual(setBoardLimits(controls, { maxAgents: '2' }), { maxAgents: 2, byModel: {}, memoryFloorMb: 1024 });
+  assert.deepEqual(setBoardLimits(controls, { models: 'model-a:1, model-b:2' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 }, memoryFloorMb: 1024 });
+  assert.deepEqual(setBoardLimits(controls, { memory: '0' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 }, memoryFloorMb: 0 }, 'the floor can be turned off');
   assert.match(setBoardLimits(controls, { maxAgents: '0' }) as string, /1 to 32/);
   assert.match(setBoardLimits(controls, { maxAgents: 'many' }) as string, /1 to 32/);
   assert.match(setBoardLimits(controls, { models: 'model-a:x' }) as string, /name:count/);
   assert.match(setBoardLimits(controls, { models: 'model-a' }) as string, /name:count/);
-  assert.match(setBoardLimits(controls, {}) as string, /maxAgents, models/);
+  assert.match(setBoardLimits(controls, { memory: '-1' }) as string, /0 to 65536/);
+  assert.match(setBoardLimits(controls, {}) as string, /maxAgents, models, memory/);
   assert.deepEqual(readBoardLimitChange({ maxAgents: '33' }) as string, 'set maxAgents to a whole number from 1 to 32');
 });
 
-// #603: the open issues as rows, or why gh cannot read them.
-test('board controls: the open issues', () => {
-  const gh: Gh = () => JSON.stringify([{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }, { number: 'x' }, null]);
-  assert.deepEqual(readBoardIssues(gh, 'octo/demo'), [{ number: 603, title: 'board agents', url: 'https://example.com/i/603' }]);
-  assert.equal(readBoardIssues(() => { throw new Error('no net'); }, 'octo/demo'), 'gh could not list the open issues: run it again');
-  assert.equal(readBoardIssues(() => 'oops', 'octo/demo'), 'gh gave no open issue list: run it again');
-});
-
-// #603: the attention comes from the status files; a missing, broken, or quiet file is skipped.
-test('board controls: the attention in the status files', () => {
-  const folder = makeTempDir();
-  const trees = [{ path: folder, branch: 'main' }];
-  assert.deepEqual(readBoardAttention(trees), [], 'no file, no hold-up');
-  writeFileSync(join(folder, '.yokoten-agent.json'), '{oops');
-  assert.deepEqual(readBoardAttention(trees), [], 'a broken file is skipped');
-  writeFileSync(join(folder, '.yokoten-agent.json'), JSON.stringify({ name: 'w', role: 'reviewer', updated: '2026-10-22T10:00:00Z', doing: 'fine' }));
-  assert.deepEqual(readBoardAttention(trees), [], 'a quiet file is skipped');
-  writeFileSync(join(folder, '.yokoten-agent.json'), JSON.stringify({ name: 'w', role: 'reviewer', updated: '2026-10-22T10:00:00Z', blocked: 'the guard stopped it\nsecond line', question: 'which one?', link: 'javascript:alert(1)' }));
-  assert.deepEqual(readBoardAttention(trees), [
-    { name: 'w', vendor: '', role: 'reviewer', worktree: '', updated: '2026-10-22T10:00:00Z', kind: 'guard', why: 'the guard stopped it', link: '' },
-    { name: 'w', vendor: '', role: 'reviewer', worktree: '', updated: '2026-10-22T10:00:00Z', kind: 'question', why: 'which one?', link: '' },
-  ], 'one line each, and no odd link');
-});
-
-// #603: the waiting list latches an agent row while the agent is here, and drops it
-// when it leaves; Approve rows follow the pulls.
-test('board controls: the waiting list latches while the agent is here', () => {
-  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
-  const held = [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated: '2026-10-22T10:00:00Z', kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
-  const seen: BoardWaiting[] = [];
-  assert.deepEqual(collectBoardWaiting(board, held, [], seen).map((row) => row.kind), ['guard']);
-  assert.deepEqual(collectBoardWaiting(board, [], [], seen).map((row) => row.kind), ['guard'], 'a quiet file clears nothing');
-  assert.deepEqual(collectBoardWaiting({ ...board, agents: [] }, [], [], seen), [], 'leaving clears it');
-});
-
-// #603 re-inspection (LOW): a waiting row counted from the agent's last write, so a
-// rewrite reset the wait. The wait counts from when the row first showed instead.
-test('board controls: the wait counts from when the row first showed', () => {
-  const board = { repo: 'r', repoUrl: '', agents: [agent({ key: 'p', name: 'w', role: 'engineer', updated: '2026-10-22T10:00:00Z', branch: 'main' })], needs: [], pulls: [], merged: [], worktrees: [{ path: 'p', branch: 'main' }], updated: '' };
-  const seen: BoardWaiting[] = [];
-  const at = Date.parse('2026-10-22T10:00:00Z');
-  const held = (updated: string) => [{ name: 'w', vendor: '', role: 'engineer' as const, worktree: 'p', updated, kind: 'guard' as const, why: 'the guard stopped it', link: '' }];
-  assert.deepEqual(collectBoardWaiting(board, held('2026-10-22T10:00:00Z'), [], seen, at).map((row) => row.wait), ['just now'], 'first seen');
-  // The agent rewrites every minute; ten minutes later the wait is ten minutes.
-  const later = collectBoardWaiting(board, held('2026-10-22T10:09:00Z'), [], seen, at + 10 * 60 * 1000);
-  assert.deepEqual(later.map((row) => row.wait), ['10 min ago'], 'the rewrite resets nothing');
+// #709: the board's start path starts ready work in the heap's order and stops at the
+// memory floor and the agent cap.
+test('board controls: start next uses the heap order and the memory floor', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const issues = [
+    { number: 13, title: 'second', url: '', createdAt: '', updatedAt: '', dependsOn: [] },
+    { number: 12, title: 'first', url: '', createdAt: '', updatedAt: '', dependsOn: [] },
+    { number: 14, title: 'waits on the first', url: '', createdAt: '', updatedAt: '', dependsOn: [12] },
+  ];
+  const ask = { vendor: 'claude-code', model: 'model-a' };
+  // A machine under the floor starts nothing, whatever the cap says.
+  const low = startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 0, freeMemoryMb: 100 } });
+  assert.match(typeof low === 'string' ? low : 'started', /under the 1024 MB floor/);
+  assert.equal(agents.started.length, 0, 'a low floor starts nothing');
+  assert.equal(startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 3, freeMemoryMb: 4096 } }), 'the board already runs 3 agents of 3: stop one before starting another');
+  assert.equal(agents.started.length, 0, 'a full cap starts nothing');
+  // With room for two, the two smallest ready numbers start, smallest first.
+  controls.limits.maxAgents = 2;
+  const two = startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 0, freeMemoryMb: 4096 } });
+  assert.ok(typeof two !== 'string', `the start passes: ${two}`);
+  assert.deepEqual(two.runs.map((run) => run.issue), ['12', '13'], 'the heap order starts 12 then 13');
+  assert.deepEqual(agents.started.map((start) => start.cwd), [join(sandbox.repo, '.worktrees', '12'), join(sandbox.repo, '.worktrees', '13')]);
+  assert.deepEqual(two.waiting, [], '14 waits on 12, so it is not ready');
+  assert.equal(two.heldBy, 'none', 'both ready issues fit the cap');
+  // The issues already started are not started twice; 14 still waits for 12 to close.
+  controls.limits.maxAgents = 3;
+  assert.match(String(startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 2, freeMemoryMb: 4096 } })), /no open issue is ready/);
+  assert.equal(agents.started.length, 2, 'no issue starts twice');
+  // The floor is a setting: a lower floor lets the next start through.
+  assert.ok(typeof setBoardLimits(controls, { memory: '64' }) !== 'string');
+  agents.started[0].events.exit(0);
+  agents.started[1].events.exit(0);
+  const third = startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 0, freeMemoryMb: 100 } });
+  assert.ok(typeof third !== 'string', `the lower floor starts: ${third}`);
+  assert.deepEqual(third.runs.map((run) => run.issue), ['12', '13'], 'the ready issues start again once their first runs stop');
 });
 
 // #603 findings: the board marks the worktree it makes or reuses, so a runtime that
@@ -140,6 +134,24 @@ test('board controls: a started agent works in a marked worktree', () => {
   assert.ok(typeof run !== 'string', `the start passes: ${run}`);
   assert.equal(workerMarkAt(run.worktree, sandbox.env), 'mark', 'the board-made worktree carries the worker mark');
   assert.equal(workerRole({}, [run.worktree]), 'mark', 'a worker even with no YOKOTEN_ROLE in the env');
+});
+
+// #711: the time limit ends a worker, keeps its work, and leaves a report for the lead.
+test('board controls: the time limit stops a run and writes a report when there is none', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  controls.timeLimitMs = 20;
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  assert.equal(run.status, 'running');
+  await delay(60);
+  assert.equal(run.status, 'stopped');
+  assert.equal(run.stoppedBy, 'time limit');
+  assert.deepEqual(agents.killed, [run.pid], 'the time limit stops its own process');
+  const report = readFileSync(boardReportPath(run.worktree, '12'), 'utf8');
+  assert.match(report, /Stopped by the time limit/);
+  assert.match(report, /wrote no report/);
 });
 
 // #603 findings: on a fresh untrusted worktree the guard hooks are skipped without a
@@ -196,7 +208,7 @@ test('board controls: an exited run frees its slot and answers already-stopped',
   assert.equal(stopBoardAgent(controls, first.name), `${first.name} already stopped`);
   const second = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '13', vendor: 'claude-code', model: 'model-a' });
   assert.ok(typeof second !== 'string', `the slot is free: ${second}`);
-  assert.deepEqual(collectBoardWaiting({ repo: 'r', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' }, [], controls.runs, []), [], 'a stopped run clears its rows');
+  assert.deepEqual(collectBoardWaiting({ repo: 'r', repoName: 'r', repoUrl: '', desk: EMPTY_DESK, agents: [], needs: [], pulls: [], merged: [], worktrees: [], updated: '' }, [], controls.runs, []), [], 'a stopped run clears its rows');
 });
 
 // Board hygiene: the start log line holds the whole brief, so it must stay one line.

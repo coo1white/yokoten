@@ -13,107 +13,15 @@
 
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
-import { type Finding, finding, isFailingFinding, type RuleId } from './message.ts';
-import { findEnvironmentValues, findLineIgnores, findSecretHits, type IgnoreDirective, makeSafeIgnoreReason, makeSecretHider, parseIgnoreFile, SECRET } from './secrets.ts';
+import { type Finding, finding, isFailingFinding, noteWork, type RuleId } from './message.ts';
+import { findEnvironmentValues, findLineIgnores, findSecretHits, type IgnoreDirective, makeSafeIgnoreReason, makeSecretHider, parseIgnoreFile, SECRET } from './privacy/secrets.ts';
 
-/** Where the system says the home folder is, with no $HOME: the password file. Empty when it can't tell. */
-export const systemHome = (): string => {
-  try {
-    return homedir() || userInfo().homedir || '';
-  } catch {
-    return '';
-  }
-};
+import { homeIn, homeOf, NO_HOME, systemHome, useRealHome, withHome } from './privacy/home.ts';
+import { loadMarks, marksFile, marksFiles, marksTexts, writtenMarksOnly } from './privacy/marks.ts';
 
-/**
- * The home folder: $HOME when it is an absolute path. Null when it is not (#392): then there
- * is no place outside the repo, and a relative `.config` would land in the folder the
- * command runs in. Only the CLI's entry falls back to the system's home (withHome), so an
- * env without HOME, as a test passes, never reaches the real home folder (#356).
- */
-export function homeOf(env: Env): string | null {
-  return env.HOME && isAbsolute(env.HOME) ? env.HOME : null;
-}
-
-/** The home folder, as homeOf finds it. With none, it throws NO_HOME. */
-export function homeIn(env: Env): string {
-  const home = homeOf(env);
-  if (!home) throw new Error(NO_HOME);
-  return home;
-}
-
-/**
- * The CLI's environment: `env` with HOME from the system when HOME is empty or not a full
- * path (#392). The one place yokoten falls back to the system's home (#356); everything
- * else reads HOME from the env it is given.
- */
-export function withHome(env: Env, system: () => string = systemHome): Env {
-  if (homeOf(env)) return env;
-  const home = system();
-  return home && isAbsolute(home) ? { ...env, HOME: home } : env;
-}
-
-/** Thrown when there is no home folder, so nothing outside the repo can be read or written. */
-export const NO_HOME = 'yokoten finds no home folder (HOME is empty or not a full path), so it has no place outside the repo';
-
-/**
- * The private-marks file yokoten writes, and the one the machine allow file sits beside: the
- * default ~/.config/yokoten/private-marks. With no home folder it is YOKOTEN_PRIVATE_MARKS, and
- * with neither it throws NO_HOME. The setting never takes the default's place (#656).
- */
-export function marksFile(env: Env): string {
-  if (!homeOf(env) && env.YOKOTEN_PRIVATE_MARKS) return env.YOKOTEN_PRIVATE_MARKS;
-  return join(homeIn(env), '.config', 'yokoten', 'private-marks');
-}
-
-/**
- * Every private-marks file the check reads (#656): the default one, when there is a home
- * folder, and the one YOKOTEN_PRIVATE_MARKS names. The setting adds marks; it never removes
- * the default's. Empty with neither.
- */
-export function marksFiles(env: Env): string[] {
-  const files = homeOf(env) ? [join(homeIn(env), '.config', 'yokoten', 'private-marks')] : [];
-  const extra = env.YOKOTEN_PRIVATE_MARKS;
-  if (extra && !files.some((file) => resolve(file) === resolve(extra))) files.push(extra);
-  return files;
-}
-
-/**
- * `env` with only the file yokoten writes to (`marksFile`) left to read (#656). Install and
- * `yokoten marks add` ask it whether a mark is there already: one only in the setting's file
- * still goes into the default file.
- */
-export function writtenMarksOnly(env: Env): Env {
-  return homeOf(env) ? { ...env, YOKOTEN_PRIVATE_MARKS: '' } : env;
-}
-
-/** The text of every private-marks file, one after the other. A missing file is empty; any other error throws, so the check fails closed. */
-function readMarksText(env: Env): string {
-  return marksFiles(env)
-    .map((file) => {
-      try {
-        return readFileSync(file, 'utf8');
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
-        throw err;
-      }
-    })
-    .map((text) => (text === '' || text.endsWith('\n') ? text : `${text}\n`))
-    .join('');
-}
-
-/** The owner's marks from every marks file, lowercased, each once. An empty list when no file is there. */
-export function loadMarks(env: Env): string[] {
-  const marks = readMarksText(env)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
-    .map((line) => line.toLowerCase());
-  return [...new Set(marks)];
-}
+export { homeIn, homeOf, NO_HOME, systemHome, useRealHome, withHome, loadMarks, marksFile, marksFiles, writtenMarksOnly };
 
 /**
  * The marks a project allows in its own repo (#424): those its yokoten.json "privacy.allow"
@@ -155,14 +63,20 @@ const DEFAULT_PORTS: Record<string, string> = { https: '443', http: '80', ssh: '
 /** `text` without any of `chars` at its end. A loop, so it is linear on any input. */
 function trimEnd(text: string, chars: string): string {
   let end = text.length;
-  while (end > 0 && chars.includes(text[end - 1])) end--;
+  while (end > 0 && chars.includes(text[end - 1])) {
+    noteWork(1);
+    end--;
+  }
   return text.slice(0, end);
 }
 
 /** `text` without any of `chars` at its start. */
 function trimStart(text: string, chars: string): string {
   let start = 0;
-  while (start < text.length && chars.includes(text[start])) start++;
+  while (start < text.length && chars.includes(text[start])) {
+    noteWork(1);
+    start++;
+  }
   return text.slice(start);
 }
 
@@ -179,6 +93,7 @@ function localKey(path: string, base?: string): string | null {
   // The deepest folder that exists, with links followed, then the rest: a link such as
   // macOS's /var gives one key whether or not the path exists yet.
   for (let head = full, rest = ''; ; rest = rest ? join(basename(head), rest) : basename(head), head = dirname(head)) {
+    noteWork(1);
     try {
       return rest ? join(realpathSync(head), rest) : realpathSync(head);
     } catch {
@@ -195,6 +110,7 @@ function localKey(path: string, base?: string): string | null {
  * a relative one against `base`, the repo's top folder. Null when it can't be read.
  */
 export function normalizeRemote(url: string, base?: string): string | null {
+  noteWork(url.length);
   const split = splitRemote(url);
   if (!split) return null;
   return 'local' in split ? localKey(split.local, base) : hostKey(split.host, split.path);
@@ -470,16 +386,8 @@ export interface Mark {
  */
 export function loadMarkKinds(env: Env): Mark[] {
   const seen = new Set<string>();
-  return marksFiles(env).flatMap((file) => {
-    let text = '';
-    try {
-      text = readFileSync(file, 'utf8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
-    // Each file on its own, so a header in one never names the kind of a line in the next.
-    return markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : []));
-  });
+  // Each file on its own, so a header in one never names the kind of a line in the next.
+  return marksTexts(env).flatMap((text) => markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : [])));
 }
 
 /**
@@ -710,6 +618,7 @@ function isStable(text: string, index: number): boolean {
 function hasLongJoin(text: string): boolean {
   for (let index = 0, run = 0; index < text.length; ) {
     const width = joinerWidth(text, index);
+    noteWork(width || 1);
     if (!width) run = 0;
     else if (++run > MAX_JOINED) return true;
     index += width || 1;
@@ -734,8 +643,15 @@ export interface FoldedText {
  * cut before each character that does not join is NFKD of its pieces.
  */
 function foldPlain(text: string): string {
-  if (!NON_ASCII.test(text)) return text;
-  return hasLongJoin(text) ? foldText(text).text : text.normalize('NFKD');
+  if (!NON_ASCII.test(text)) {
+    noteWork(text.length);
+    return text;
+  }
+  if (!hasLongJoin(text)) {
+    noteWork(text.length);
+    return text.normalize('NFKD');
+  }
+  return foldText(text).text;
 }
 
 /** The one fold of text, for the check and for `redact` (#507). A line of ASCII costs one test. */
@@ -747,6 +663,7 @@ export function foldText(text: string): FoldedText {
   for (let start = 0; start < text.length; ) {
     let end = start + (text.codePointAt(start)! > 0xffff ? 2 : 1);
     for (let joined = 0, width = 0; joined < MAX_JOINED && end < text.length && (width = joinerWidth(text, end)); joined++) end += width;
+    noteWork(end - start);
     const piece = end === start + 1 && isStable(text, start) ? text[start] : text.slice(start, end).normalize('NFKD');
     folded += piece;
     for (let i = 0; i < piece.length; i++) {
@@ -767,8 +684,14 @@ export interface FoldedLine {
   lower: string;
 }
 export const foldLine = (line: string): FoldedLine => {
-  if (!NON_ASCII.test(line)) return { text: line, lower: line.toLowerCase() };
-  const text = hasLongJoin(line) ? foldText(line).text : line.normalize('NFKD');
+  if (!NON_ASCII.test(line)) {
+    noteWork(line.length);
+    return { text: line, lower: line.toLowerCase() };
+  }
+  const long = hasLongJoin(line);
+  // One normalize of the whole line when no joined run is over the limit.
+  if (!long) noteWork(line.length);
+  const text = long ? foldText(line).text : line.normalize('NFKD');
   return { text, lower: text.replace(ZERO_WIDTH, '').toLowerCase() };
 };
 
@@ -853,6 +776,7 @@ export function hasMark(text: string, mark: string, folded: FoldedLine = foldLin
     }
     markTests.set(mark, test);
   }
+  noteWork(folded.text.length);
   return test(folded.text, folded.lower);
 }
 
@@ -1562,6 +1486,7 @@ const LONE_POST_START = new RegExp(String.raw`^(?:(?:(?:NODE_USE_ENV_PROXY|GH_RE
  * `cd` is true when the line starts with that `cd`; its target may start with `~`.
  */
 export function lonePost(command: string): { cd: boolean; target?: string } | null {
+  noteWork(command.length);
   let text = trimStart(command, ' \t');
   const cd = text.match(/^cd[ \t]+('[^'\n]*'|"[^"$`\\\n]*"|~?[\w./+@%:,=-]+|~)[ \t]*&&[ \t]*/);
   if (cd) text = text.slice(cd[0].length);
@@ -1571,6 +1496,7 @@ export function lonePost(command: string): { cd: boolean; target?: string } | nu
   let heredoc: { word: string; tabs: boolean } | null = null;
   let index = start[0].length;
   for (; index < text.length; index++) {
+    noteWork(1);
     const char = text[index];
     if (quote === "'") {
       if (char === "'") quote = null;
@@ -1626,6 +1552,7 @@ export function withoutReadPipe(command: string): string {
   let quote = '';
   let at = -1;
   for (let index = 0; index < command.length && at === -1; index++) {
+    noteWork(1);
     const char = command[index];
     if (char === '\n' || (char === '\\' && quote !== "'")) return command;
     if (quote) {
@@ -1654,6 +1581,7 @@ function isReadPipe(text: string, at: number): boolean {
   let quote = '';
   let program = '';
   for (let index = at; index < text.length; index++) {
+    noteWork(1);
     const char = text[index];
     if (char === '$' && program === 'sed') return false;
     if (quote === "'") {

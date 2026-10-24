@@ -4,6 +4,10 @@ description: Review a pull request or a diff before it merges, with the reviewer
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line. Then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Inspect a change before it merges
 
 Inspection is a station on the line, not an opinion. It has a fixed order, a fixed
@@ -55,3 +59,7 @@ question, and is written as one. End with what was not checked.
 
 Post the findings on the pull request. Only the owner approves. Never approve with
 the owner's account, and never merge a SHA other than the one reviewed.
+
+## How you name an issue
+
+Write `issue #N` or `PR #N`. A bare `#N` is not a name.

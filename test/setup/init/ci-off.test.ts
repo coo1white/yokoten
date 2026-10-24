@@ -15,6 +15,9 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   const sandbox = makeSandbox();
   const extra = stubGh(sandbox, { 'api users/octo --jq .type': 'User', 'api repos/octo/app --jq .private': 'true' });
   sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  // The remote step is done once a branch is pushed; a local ref is enough for the road.
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/dependabot.yml'];
   const isThere = (file: string) => existsSync(join(sandbox.repo, file));
   const notNow = () => JSON.parse(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8')).notNow;
@@ -150,3 +153,6 @@ test('init --no-ci: only the "notNow" key changes in yokoten.json; the rest keep
   // A second run keeps it.
   assert.match((await other.call(['init', '--no-ci'])).stdout, /^kept "notNow" ci in yokoten\.json$/m);
 });
+
+// ---- The core rules into an AGENTS.md the project already has (#378) ----
+

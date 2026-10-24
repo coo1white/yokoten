@@ -164,6 +164,11 @@ export function hookFile(root: string, hooksPath: string, hook: CommitHook = 'pr
 /** The lines init adds to a project's own pre-commit and pre-merge-commit. `exit 1` because a hook may go on after them. */
 export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
 
+/** What `addCheckLines` did, in the report's words: a hook that already ran the check is "kept". */
+function checkWords(result: ReturnType<typeof addCheckLines>): string {
+  return result === 'same' ? 'kept' : result;
+}
+
 /**
  * Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it.
  * Its own lines stay. A hook git would skip, for lack of the execute bit, is made executable.
@@ -419,7 +424,7 @@ export function writeGithooks(root: string, cli: string, kit: string, handOff: b
         writeFileSync(path, placed);
         chmodSync(path, statSync(path).mode | 0o111);
       }
-      lines.push(`${placed !== null ? 'updated' : result === 'same' ? 'kept' : result} ${rel}`);
+      lines.push(`${placed !== null ? 'updated' : checkWords(result)} ${rel}`);
     }
     if (old) lines.push(`kept your ${old.file}: ${rel} runs it${isCommitHook(hook) ? ' after the check' : ''}`);
   }
@@ -444,7 +449,8 @@ export function setCommitCheck(root: string, cli: string, hooks: HookSetup, bloc
     execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, env, stdio: 'pipe' });
     // The answers kept so far name the old value.
     forgetGitReads();
-    return ['set git core.hooksPath to .githooks (the commit check)', ...note, ...dead];
+    // init moves this line to the start of the report (#654).
+    return ['git hook: on (the commit check runs from .githooks)', ...note, ...dead];
   }
   const { hooksPath } = hooks;
   const fileOf = (hook: CommitHook) => (hooksPath ? hookFile(root, hooksPath, hook) : `.husky/${hook}`);
@@ -454,7 +460,7 @@ export function setCommitCheck(root: string, cli: string, hooks: HookSetup, bloc
   }
   const lines = COMMIT_HOOKS.map((hook) => {
     const file = fileOf(hook) as string;
-    return `${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
+    return `${checkWords(addCheckLines(join(root, file), cli))} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
   });
   if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit and .husky/pre-merge-commit');
   return lines;
