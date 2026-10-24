@@ -21,7 +21,7 @@ import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';
-import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssues, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, setBoardLimits, startBoardAgent, stopBoardAgent } from './controls.ts';
+import { type BoardControls, collectBoardWaiting, createBoardControls, readBoardAttention, readBoardIssues, readBoardIssuesLater, readBoardSnapshot, readBoardStartAsk, readBoardStartNext, setBoardLimits, startBoardAgent, startBoardNext, stopBoardAgent } from './controls.ts';
 import { feedAnswer, makeBoardMask, makeFeedStreams } from './feed/route.ts';
 import { feedsJson, makeFeedStore, recordFeed } from './feed/steps.ts';
 import { boardManifest, boardPage, BOARD_REFRESH_SECONDS } from './page/page.ts';
@@ -207,6 +207,15 @@ function startRefuseStatus(reason: string): number {
   return 400;
 }
 
+/**
+ * The status for "start next" that started nothing: a failed read is the server, and
+ * anything else is a conflict with the machine or the queue, not a bad request.
+ */
+function startNextStatus(reason: string): number {
+  if (reason.startsWith('the board could not')) return 500;
+  return 409;
+}
+
 /** The status for a refused stop: unknown is missing, done is a conflict, the rest is the request. */
 function stopRefuseStatus(reason: string): number {
   if (reason.startsWith('no agent called') || reason === 'name the agent to stop') return 404;
@@ -337,6 +346,21 @@ export function startBoardServer(root: string, env: Env, gh: GhLater, options: B
         if (path === '/agents/start') {
           const fields = boardFields(body, req.headers['content-type']);
           if (!fields) return serveText(res, 400, 'text/plain; charset=utf-8', 'send JSON or form fields');
+          // "Start next" needs no issue: the dependency queue picks it (#709).
+          if ((fields.next ?? '').trim() !== '') {
+            const next = readBoardStartNext(fields);
+            if (typeof next === 'string') return serveText(res, 400, 'text/plain; charset=utf-8', next);
+            const remote = refreshGitHub();
+            const issues = remote ? github.issues : BOARD_NO_REMOTE_ISSUES;
+            const started = startBoardNext(root, env, controls, next, issues);
+            if (typeof started === 'string') return serveText(res, startNextStatus(started), 'text/plain; charset=utf-8', started);
+            return serveText(res, 200, 'application/json; charset=utf-8', JSON.stringify({
+              started: started.runs.map((run) => ({ name: run.name, issue: run.issue, worktree: hideHome(run.worktree, env), pid: run.pid })),
+              waiting: started.waiting,
+              heldBy: started.heldBy,
+              refused: started.refused,
+            }));
+          }
           const ask = readBoardStartAsk(fields);
           if (typeof ask === 'string') return serveText(res, 400, 'text/plain; charset=utf-8', ask);
           const started = startBoardAgent(root, env, controls, ask);
