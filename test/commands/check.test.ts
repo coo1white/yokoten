@@ -1035,6 +1035,25 @@ test('ci-health: opens and pins the one report issue, then edits it in place', a
   assert.ok(!healthCalls(sandbox).some((call) => call.startsWith('issue create')), 'the second run edits, never makes a second issue');
 });
 
+// #647: a title from GitHub can hold a pipe and lines; the table stays one row per check.
+test('ci-health: a title with a pipe and lines becomes one table cell', () => {
+  const run = {
+    id: 1,
+    workflow: 'ci',
+    event: 'push',
+    branch: 'main',
+    status: 'completed',
+    conclusion: 'success',
+    createdAt: '2026-10-22T10:00:00Z',
+    startedAt: '2026-10-22T10:00:00Z',
+    updatedAt: '2026-10-22T10:01:00Z',
+    url: '',
+  };
+  const health = summarizeActionsHealth([run], [{ number: 7, title: 'a | b\nnext', url: '', isDraft: false, check: 'ci', conclusion: 'failure' }]);
+  const body = renderActionsHealth(health, { repo: 'octo/demo', now: new Date('2026-10-22T12:00:00Z') });
+  assert.match(body, /^\| \[#7 a \\\| b next\]\(#\) \| ci \| failure \|$/m);
+});
+
 /** The exported shape, so a field rename is a type error in the tests too. */
 export type HealthShape = ActionsHealth;
 
