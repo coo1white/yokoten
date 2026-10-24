@@ -1333,7 +1333,7 @@ test('lead-only files: git apply reads only a plain patch file under 1 MB, and s
       'const { checkCommand } = await import(guards);',
       "process.stdout.write(String(checkCommand(command, { env: { YOKOTEN_ROLE: 'worker' }, cwd })?.id));",
     ].join('\n');
-    const guards = pathToFileURL(join(import.meta.dirname, '../../..', 'src', 'rules', 'guards.ts')).href;
+    const guards = pathToFileURL(join(import.meta.dirname, '../../..', 'src', 'rules', 'guard', 'guards.ts')).href;
     const child = runChild(process.execPath, ['--input-type=module', '-e', code], { input: JSON.stringify({ guards, command: 'git apply pipe.patch', cwd: sandbox.repo }) });
     assert.deepEqual([child.status, child.stdout], [0, 'lead-only'], `a FIFO is never read, nor waited on: ${child.stderr}`);
   }
@@ -2004,8 +2004,8 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
 // A shape gives what it should at 8 times 512, or, for one with a size of its own, at
 // that size: 100k substitutions are refused. The cases go in on stdin.
 test('bash and hooks: loops that never spent the budget read a thousand repeats in linear time (#226)', () => {
-  const guards = join(import.meta.dirname, '../../..', 'src', 'rules', 'guards.ts');
-  const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
+  const guards = join(import.meta.dirname, '../../..', 'src', 'rules', 'guard', 'guards.ts');
+  const linear = join(import.meta.dirname, '../../..', 'scripts', 'linear.ts');
   type Part = string | [string];
   type Case = { mode: 'command' | 'hook'; parts: Part[]; want: string; size?: number };
   const cases: Case[] = [];

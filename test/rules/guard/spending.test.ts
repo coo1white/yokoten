@@ -2,10 +2,10 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { TEST_HOME } from '../../repo/home.ts';
+import { makeTempDir } from '../../repo/helpers.ts';
 import {
   appendPayment,
   decideSpending,
@@ -21,7 +21,7 @@ import {
   writeLimit,
 } from '../../../src/rules/guard/spending.ts';
 
-const home = (): string => mkdtempSync(join(TEST_HOME, 'spending-'));
+const home = (): string => makeTempDir('spending-');
 
 const limitOf = (fields: Partial<SpendingLimit> = {}): SpendingLimit => ({ dayUsd: 2_000_000, paymentUsd: 100_000, services: ['api.example.com'], setAt: '2026-10-23T00:00:00.000Z', ...fields });
 
@@ -90,5 +90,4 @@ test('the files: a limit and payments live under the home folder, and a broken f
   const broken = readLimit(env);
   assert.equal(broken.limit, null);
   assert.match(broken.problem ?? '', /yokoten does not know: "day" is not an amount/);
-  rmSync(env.HOME, { recursive: true, force: true });
 });
