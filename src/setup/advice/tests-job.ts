@@ -8,6 +8,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Ask } from '../install.ts';
 import { runsTests, scriptedRuns, testLanguages } from './test-commands.ts';
+import { SPEED_BUDGET } from './ci-speed.ts';
 
 /** One language's CI job: the setup action pinned to a commit, its input, and the install step. */
 export interface TestsJob {
@@ -54,11 +55,37 @@ export interface CheckoutStep {
   note: string;
 }
 
-/** The `tests` job for one language, as YAML under `jobs:`. Every `uses:` is pinned. */
-export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutStep): string =>
-  [
+/** How the job keeps the test time. `cli` is set when the test command writes a TAP report. */
+export interface TestsJobOptions {
+  /** The command yokoten's own step runs, such as `.yokoten/bin/yokoten.ts`. */
+  cli?: string;
+  /** How many shards to run, each a third of the test files. One when left out. */
+  shards?: number;
+}
+
+/**
+ * The `tests` job for one language, as YAML under `jobs:`. Every `uses:` is pinned.
+ * With `options.cli`, the test command writes a TAP report and a later step judges its
+ * time against the budget (#479): the report is Node's own, so the caller sets this
+ * only for a `node --test` project. With `options.shards`, the job runs as a matrix,
+ * and one red shard does not cancel the rest.
+ */
+export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutStep, options: TestsJobOptions = {}): string => {
+  const shards = options.shards ?? 1;
+  const report = shards > 1 ? '${{ runner.temp }}/tests-${{ matrix.shard }}.tap' : '${{ runner.temp }}/tests.tap';
+  const shardFlag = shards > 1 ? ` --test-shard=\${{ matrix.shard }}/${shards}` : '';
+  return [
     `  # Runs the ${job.language} tests.`,
     '  tests:',
+    ...(shards > 1
+      ? [
+          '    strategy:',
+          '      # One red shard does not cancel the others, so a run shows every failure at once.',
+          '      fail-fast: false',
+          '      matrix:',
+          `        shard: [${Array.from({ length: shards }, (_, index) => index + 1).join(', ')}]`,
+        ]
+      : []),
     '    runs-on: ubuntu-latest',
     '    timeout-minutes: 10',
     '    permissions:',
@@ -72,7 +99,19 @@ export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutSt
     `          ${job.input}: ${job.inputValue}`,
     `      - run: ${job.install}`,
     `      - run: ${runner}`,
+    ...(options.cli
+      ? [
+          '        env:',
+          '          # The test step only: a job-wide value replaces the workflow\'s NODE_OPTIONS for',
+          '          # every step, including the install and the time check below (#479).',
+          `          NODE_OPTIONS: --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${report}${shardFlag}`,
+          '      # The test time against the budget: slow files and what to do about them (#479).',
+          '      - if: ${{ !cancelled() }}',
+          `        run: node ${options.cli} speed ${report} --budget ${SPEED_BUDGET}`,
+        ]
+      : []),
   ].join('\n');
+};
 
 /**
  * The `uses:` values in workflow text that name a remote action without a commit pin. A
@@ -331,6 +370,9 @@ export const nodeTestsFix = (root: string): string | null => {
   return `in ${WORKFLOW}, the checkout step is not pinned. Pin it, then run \`yokoten init\``;
 };
 
+/** Whether the Node test script runs Node's own test runner, so a TAP report is possible. */
+const nodeTestRun = (root: string): boolean => /\bnode\s+(?:--\S+\s+)*--test\b/.test(testScript(root));
+
 /**
  * Write the `tests` job for the project's language into its workflow. Quiet (no lines)
  * when no language we write for is found. A test script is Node only when no other
@@ -355,7 +397,7 @@ export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string
   if (!checkout) return [`left ${WORKFLOW} unchanged: it has no checkout step to copy; add the tests job under \`jobs:\` by hand, and add \`tests\` to the \`needs\` list of \`ci\``];
   if (!isCommitPin(checkout.uses))
     return [`left ${WORKFLOW} unchanged: its checkout step is not pinned to a commit (${checkout.uses}); pin it first, then run \`yokoten init\` again`];
-  const jobText = testsJobText(quotedNodeJob(job), runner, checkout);
+  const jobText = testsJobText(quotedNodeJob(job), runner, checkout, nodeTestRun(root) ? { cli: '.yokoten/bin/yokoten.ts', shards: 3 } : {});
   const bad = unpinnedUses(jobText);
   if (bad.length) return [`did not write the tests job: ${bad.join(', ')} is not pinned to a commit`];
   const needs = addTestsNeeds(contents);

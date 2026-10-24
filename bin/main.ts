@@ -80,6 +80,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/advice/mcp.ts').then((m) => m.runMcp(invocation));
     case 'borrowed':
       return import('../src/commands/check.ts').then((m) => m.runBorrowed(invocation));
+    case 'speed':
+      return import('../src/commands/advice/speed.ts').then((m) => m.runSpeed(invocation));
     case 'redact':
       return import('../src/commands/check.ts').then((m) => m.runRedact(invocation));
     case 'marks':

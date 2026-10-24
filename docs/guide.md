@@ -86,6 +86,27 @@ flowchart LR
 | **3** | on every pull request | a commit made with the hook off |
 | **lock** | on the server | a merge without your review, a push to `main`, a release tag that isn't yours |
 
+## Keep CI fast
+
+Agents add tests fast. A suite then gets slow, and a slow red run teaches people to stop
+waiting. When a Node project's test script runs `node --test`, `yokoten init` writes a
+tests job with three shards and `fail-fast: false`. It then runs `yokoten speed`. A
+project with another test runner gets the tests job without the shards and without the
+speed step. The command prints the total, the slowest tests, and the share
+of the run that the slowest test files hold. It fails when the run passes the budget by
+more than the room a busy runner needs.
+
+When the run is over, the command says what to change. The advice is grouped by cause:
+
+- one job does everything: split the tests into shards, and set `fail-fast: false`;
+- a process per call: call the code in the test process, and keep a few end-to-end tests;
+- one fixture built again and again: build it once and copy it;
+- a timing test that flakes: measure the best of several runs, and leave room for noise.
+
+The budget is for one job or shard on a quiet runner, 180 s by default:
+`yokoten speed tests.tap --budget 180`. A run may take 50% longer on a busy runner
+before it fails.
+
 ## What a session sees
 
 At the start of a session in a project that hasn't adopted yokoten yet:
@@ -935,6 +956,7 @@ It puts three safe defaults in `.github/` too:
 | `ci-health [--repo <owner/name>] [--dry-run]` | Reads the last 200 Actions runs and the checks of the open pull requests, then updates one pinned issue, `CI health`. `--dry-run` prints the report and writes nothing |
 | `provenance <ref> [--json]` | For a commit, or each commit of a range: the writer, reviewers, approver, tier and issue, from the squashed message and the host's latest Approve. `--json` prints the records. See [Provenance](standard.md#provenance) |
 | `borrowed [--dry-run] [--json]` | Compares each file in `src/borrowed/` with upstream's default branch, through `gh`, and opens one issue per source that changed. A security fix is called out in the title. `--dry-run` shows the report and opens nothing; `--json` prints the report as data. See [Borrowed code](#borrowed-code) |
+| `speed [report] [--budget <seconds>]` | The test time against the budget: the total, the slowest tests and the share of the run that the slowest test files hold. It reads a TAP report from Node's test runner, or a folder with one per shard, and exits 1 when the run passes the budget plus the room a busy runner needs. Over the budget, it names what to change: shards with `fail-fast: false`, in-process calls, one shared fixture, or a timing test with room for noise. `yokoten init` writes the step into a new Node tests job. See [Keep CI fast](#keep-ci-fast) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `anchor [--json]` | Lists the anchors recorded in this checkout, newest first. A worker records one when its checks pass and its tree is clean. An anchor is a commit: go back with `git switch -c try-2 <commit>`, and nothing is reset or deleted. See [The stop check](#the-stop-check) |

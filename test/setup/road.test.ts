@@ -45,8 +45,8 @@ test('road: "notNow" ci also waits a step that needs CI, and only such a step (#
   assert.deepEqual(walked({ ci: 'private repo' }), ['not now', 'next']);
   // The control: without "ci", the step that needs CI is the next one.
   assert.deepEqual(walked({ other: 'x' }), ['next', 'to do']);
-  // The steps that need CI on the road: the tests, the CI check and the pull request check.
-  assert.deepEqual(ROAD.filter((s) => s.withoutCi).map((s) => s.key), ['tests', 'ci', 'titles']);
+  // The steps that need CI on the road: the tests, the CI check, the time budget and the pull request check.
+  assert.deepEqual(ROAD.filter((s) => s.withoutCi).map((s) => s.key), ['tests', 'ci', 'test-budget', 'titles']);
 });
 
 // ---- The tests step (#257): the common test commands in a workflow count, in any kind of project. ----
@@ -674,4 +674,31 @@ test('road: the tests step names the workflow file, the job to add and the needs
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('road: the time budget step is done when CI runs yokoten speed (#479)', () => {
+  const dir = makeTempDir('yokoten-speed-step-');
+  const workflows = join(dir, '.github', 'workflows');
+  mkdirSync(workflows, { recursive: true });
+  const budget = ROAD.find((entry) => entry.key === 'test-budget');
+  assert.ok(budget);
+  assert.equal(budget.stage, 2);
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: node .yokoten/bin/yokoten.ts speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), true);
+  // The fix text names a bare command, and a package runner is the other common form;
+  // both must make the step count (#479).
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: npx yokoten speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), true);
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: yokoten speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), true);
+  // A name that only looks like the command is not one.
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: echo yokoten speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), false);
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: npm test\n');
+  assert.equal(budget.check(dir, {}, undefined), false);
+  assert.equal(budget.what(dir, {}, undefined), 'CI does not check how long the tests take');
+  assert.match(budget.fix(dir, {}, undefined), /yokoten speed/);
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'node --test' } }));
+  assert.match(budget.fix(dir, {}, undefined), /NODE_OPTIONS: .*--test-reporter=tap/);
+  assert.match(budget.fix(dir, {}, undefined), /--budget 180/);
 });

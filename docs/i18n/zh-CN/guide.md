@@ -720,6 +720,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `ci-health [--repo <owner/name>] [--dry-run]` | 读最近 200 次 Actions 运行和打开的 PR 的检查，然后更新一个固定的 issue「CI health」。`--dry-run` 只打印报告，什么都不写 |
 | `provenance <ref> [--json]` | 给一个提交，或一个范围里的每个提交，写明写的人、审的人、批准的人、等级和 issue；从 squash 后的提交信息和宿主上最新的 Approve 读。`--json` 输出记录。见[来源记录](../standard.md#来源) |
 | `borrowed [--dry-run] [--json]` | 通过 `gh` 把 `src/borrowed/` 里的每个文件和上游默认分支对比，每个有变化的来源开一个 issue。安全修复会在标题里点出来。`--dry-run` 只显示报告，不开 issue；`--json` 以数据形式输出报告。见[借来的代码](#借来的代码) |
+| `speed [report] [--budget <秒>]` | 对照时间预算看测试用了多久：总时间、最慢的测试，以及最慢的测试文件占整次运行的多少时间。它读 Node 测试运行器写出的 TAP 报告，也可以读一个文件夹里每个分片一份的报告；超过预算加上忙碌运行器需要的余量时，退出码为 1。超预算时会按原因给出建议：用分片并设 `fail-fast: false`、在测试进程里直接调用代码、共用一份 fixture、给计时测试留出噪声余量。`yokoten init` 会把这一步写进新的 Node 测试任务。 |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `anchor [--json]` | 列出这个检出里记录的锚点，最新的在前。worker 的检查通过、工作区干净时记录一个。锚点是一个提交：用 `git switch -c try-2 <commit>` 回去，什么都不会被重置或删除。见下面的「停止检查」 |
