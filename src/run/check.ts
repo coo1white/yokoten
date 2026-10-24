@@ -244,21 +244,38 @@ export function unstageHint(root: string, env: Env, problems: Finding[]): string
 const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
+ * The object ids git puts in a merge hook's env as `GITHEAD_<oid>` (the value is the name,
+ * such as `main`): the other parents of a clean merge, before git writes MERGE_HEAD (#549).
+ */
+function envMergeHeads(env: Env): string[] {
+  return Object.keys(env)
+    .filter((name) => name.startsWith('GITHEAD_'))
+    .map((name) => name.slice('GITHEAD_'.length))
+    .filter((id) => OBJECT_ID.test(id));
+}
+
+/**
  * The other parents of the merge being committed, from MERGE_HEAD; none outside a merge.
  * `--git-path` finds it in a worktree too. A line that is not an object id makes the whole
  * file untrusted, so none is returned and every staged file gets the role checks. A head
  * HEAD already leads to is a fast-forward, which git commits with one parent, not as a
  * merge, so it is dropped.
+ *
+ * A clean merge runs the commit check as pre-merge-commit, and git writes MERGE_HEAD after
+ * that hook, so the file is absent then. The same hook env names the other parents as
+ * `GITHEAD_<oid>`, and those are read instead (#549). Like MERGE_HEAD, the env is the
+ * agent's, so this is a guard against mistakes; the lock is on the server.
  */
 function mergeHeads(root: string, env: Env): string[] {
   // Where MERGE_HEAD is must be known (#403); only the file itself may be missing.
   const path = resolve(root, git(root, env, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim());
-  let lines: string[];
+  let text: string | null;
   try {
-    lines = readFileSync(path, 'utf8').split('\n').filter(Boolean);
+    text = readFileSync(path, 'utf8');
   } catch {
-    return [];
+    text = null;
   }
+  const lines = text === null ? envMergeHeads(env) : text.split('\n').filter(Boolean);
   if (!lines.every((line) => OBJECT_ID.test(line))) return [];
   // Exit 1 is "not an ancestor": a real other parent. 0 is a fast-forward, which exempts
   // nothing. Anything else is no answer, and the check stops (#403): a head left out here
