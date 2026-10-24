@@ -3,11 +3,12 @@
 import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
-import { ADAPTERS, adapterFor, contextOf, denialOf, releaseFixOf, rewriteOf, stopReaderOf } from '../agents/runtimes/runtime.ts';
+import { ADAPTERS, adapterFor, askOf, contextOf, denialOf, releaseFixOf, rewriteOf, stopReaderOf } from '../agents/runtimes/runtime.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
-import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
-import { type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
+import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { type Finding, finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
+import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
   type Action,
   bumpDoneTries,
@@ -37,7 +38,7 @@ import {
 import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
-// The tables below ask the adapters' contract (#395), never a runtime's name.
+// The table below asks the adapters' contract (#395), never a runtime's name.
 export const READERS: Record<string, (input: unknown) => Action> = Object.fromEntries(
   Object.values(ADAPTERS).map((adapter) => [adapter.name, adapter.readToolCall]),
 );
@@ -169,7 +170,9 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   let doneWhen: { command: string; ok: boolean; output: string } | undefined;
   // A subagent runs in the worker's worktree only when the event's folder is that
   // worktree. Otherwise it shares the lead's folder (#614).
-  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : root) : folder;
+  // A broken `.git` still reads its own done-when, so run it in the desk it belongs to (#746).
+  const link = isWorker ? gitLinkAbove(folder) : null;
+  const ranIn = isWorker && root ? (event.subagent ? subagentDir(folder) : link?.top ?? root) : folder;
   if (isWorker && root) {
     const command = readDoneWhen(env, event.subagent ? ranIn : folder);
     if (command) {
@@ -370,6 +373,25 @@ function allowFailingStop(
   return 0;
 }
 
+/**
+ * The question before a heavy job when the kept host reading is low (#401): what runs,
+ * why a full drive can corrupt the repo, and the fix. Null when no fresh reading is kept,
+ * the drive has room, or the command is light. It reads one small file, never the drive.
+ */
+export function askForHeavyJob(command: string, env: Env): Finding | null {
+  const disk = readKeptHostDisk(env);
+  if (!disk || !isLowOnSpace(disk, env)) return null;
+  const job = findHeavyJob(command);
+  if (job === null) return null;
+  const when = new Date(disk.readAt).toISOString().slice(0, 16).replace('T', ' ');
+  return {
+    ...finding('disk-space', `\`${job}\` is a heavy job, and ${HOST_DRIVE} has ${formatSpace(disk)} (read ${when} UTC)`, `before this job, ${HOST_DISK_FIX}. Then run \`yokoten doctor\` to read the drive again`, {
+      why: 'a full drive can corrupt the repo: git can write empty objects, and a branch head can be lost',
+    }),
+    ask: true,
+  };
+}
+
 /** `guard`: the guard's worker, when bin/main.ts started it early (#408). */
 export function runHook(invocation: Invocation, guard?: Guard): number | Promise<number> {
   const { cwd } = invocation;
@@ -425,11 +447,22 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     }
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    // A heavy job on a nearly full host drive asks first, and never refuses (#401).
+    const ask = !found && action.command !== undefined ? askForHeavyJob(action.command, env) : null;
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
-    if (json) printJson(invocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+    if (json) printJson(invocation, found ? { blocked: true, finding: found } : ask ? { blocked: false, toolCall: true, ask } : { blocked: false, toolCall: true });
+    if (!found && ask) {
+      const question = `yokoten: ${formatFinding(ask)}`;
+      const asked = askOf(agent);
+      if (!json && asked !== null) say(invocation, asked(question), invocation.stdout);
+      else if (!json) say(invocation, `${question}\n`, invocation.stderr);
+      return 0;
+    }
     if (!found && !json && adapterFor(agent)?.formatContext !== undefined) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
-      return teamMessages(cwd, env, rootOf(cwd, env)).then((messages) => {
+      // When the call names no other folder, the root above is this folder's: one git call, not two (#821).
+      const sessionRoot = resolve(cwd, action.cwd ?? '.') === resolve(cwd) ? root : rootOf(cwd, env);
+      return teamMessages(cwd, env, sessionRoot).then((messages) => {
         const text = messages ? contextOf(agent, messages) : null;
         if (text) say(invocation, text, invocation.stdout);
         return 0;

@@ -384,7 +384,7 @@ How yokoten checks it. `parseMadeWith` reads the last line. `madeWithFindings` r
 Version 1. The line has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
-- [src/commands/bot.ts](../src/commands/bot.ts) and [test/commands/bot.test.ts](../test/commands/bot.test.ts).
+- [src/commands/merge/bot.ts](../src/commands/merge/bot.ts) and [test/commands/merge/bot.test.ts](../test/commands/merge/bot.test.ts).
 
 ## Provenance
 

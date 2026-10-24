@@ -1,6 +1,6 @@
-// Tests for src/rules/secrets.ts.
+// Tests for src/rules/privacy/secrets.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,11 +10,11 @@ import {
   formatFinding,
   isFailingFinding,
   isWarningFinding,
-} from '../../src/rules/message.ts';
-import { addedIgnores, loadIgnores, scanText } from '../../src/rules/privacy.ts';
-import { findEnvironmentValues, findLineIgnores, findSecretCandidates, findSecretHits, makeSecretHider, SECRET, SECRET_CONTROL } from '../../src/rules/secrets.ts';
-import { assertLinear } from '../../scripts/linear.ts';
-import { at, makeTempDir } from '../repo/helpers.ts';
+} from '../../../src/rules/message.ts';
+import { addedIgnores, loadIgnores, scanText } from '../../../src/rules/privacy.ts';
+import { findEnvironmentValues, findLineIgnores, findSecretCandidates, findSecretHits, makeSecretHider, SECRET, SECRET_CONTROL } from '../../../src/rules/privacy/secrets.ts';
+import { assertLinear } from '../../../scripts/linear.ts';
+import { at, makeTempDir } from '../../repo/helpers.ts';
 
 // Secrets (#8). Each sample is a prefix plus a body, joined here, so no token sits in
 // this file whole.
