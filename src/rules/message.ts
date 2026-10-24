@@ -107,6 +107,12 @@ export const RULES = {
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
     check: 'the tool-call guard stops a pipeline that feeds a download into a shell, into `eval`, into a substitution that can run it, or into a program word that is not plain text, including a name that starts with `$`. A `$` argument of a plain program passes. Save the file first, read it, then run it',
   },
+  'hidden-code': {
+    rule: 'a command the guard cannot fully read is refused, not let through',
+    why: 'bash can run code the guard did not read, from a name it expands later, so a rule the guard keeps could be bypassed',
+    check: 'the tool-call guard stops a program word it cannot read (`$CMD`, a substitution, a glob), an indirect or arithmetic expansion whose value it cannot see, a `printf -v`, `test -v` or assignment name with a subscript, and a shell setting such as PS4 or IFS that hides a substitution; write the program as a plain name and the value as plain text',
+    docs: guide('what-it-doesnt-do'),
+  },
   'gh-token': {
     rule: "an agent does not see or send gh's token",
     why: "with gh's token, curl or a script calls the host directly, around every rule the guard keeps for gh",
