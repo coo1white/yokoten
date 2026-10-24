@@ -523,6 +523,26 @@ export const COMMANDS: Command[] = [
     example: 'yokoten board --text',
   },
   {
+    name: 'finish',
+    summary: 'close a run whose agent stopped beating, and say where its work is',
+    usage: '[--after <minutes>] [--dry-run] [--json]',
+    text: [
+      'Finds the agents in this repo, its worktrees and its desks whose status file says',
+      'they are working but has not changed for a while. For each one it runs the full',
+      'check, writes REPORT-<issue>.md when the agent wrote none (an existing report is',
+      'never touched), and sets the status to done with outcome stopped.',
+      'Nothing is reset, deleted or pushed: the branch and the worktree stay, and the',
+      'report says how to go on. An agent that asks the owner something is waiting, not',
+      'gone. Only a status file with no update for 30 minutes counts as gone.',
+    ],
+    options: [
+      { name: '--after', value: 'minutes', text: 'how long without an update counts as gone (default 30)' },
+      { name: '--dry-run', text: 'list what would be finished and write nothing' },
+      { name: '--json', text: 'the results as JSON on stdout' },
+    ],
+    example: 'yokoten finish --dry-run',
+  },
+  {
     name: 'uninstall',
     summary: 'take back what install wrote, for example to use the plugin instead',
     usage: '',
