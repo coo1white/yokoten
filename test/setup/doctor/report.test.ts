@@ -1136,4 +1136,16 @@ test('doctor: the sandbox step is to do, then done after init, then names a too-
   assert.match(doctor, /^ {4}(next|to do) +sandbox: Gemini YOLO mode is allowed in \.gemini\/settings\.json; set security\.disableYoloMode to true in \.gemini\/settings\.json$/m);
 });
 
+// #667: full doctor runs check, so a CODEOWNERS line that protects nothing is a finding.
+test('doctor: a CODEOWNERS line that matches no file is a finding (#667)', () => {
+  const sandbox = makeSandbox();
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.write('.github/CODEOWNERS', 'src/gone.ts @lead\n');
+  sandbox.git('add', '.');
+  const full = doctor(sandbox.repo, { env: { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: () => { throw new Error('no gh in this test'); } });
+  const found = full.report.findings.find((f) => f.id === 'stale-codeowners');
+  assert.equal(found?.line, 1);
+  assert.match(found?.what ?? '', /protects nothing; point it at the new path/);
+});
+
 // #500: after a fresh install, every line that names a command uses one way to run yokoten.
