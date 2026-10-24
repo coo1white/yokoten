@@ -78,8 +78,8 @@ import {
   lintStdout,
   lintTools,
 } from '../../src/commands/advice/mcp.ts';
-import { nameNotes } from '../../src/run/names.ts';
-import { translationNotes } from '../../src/run/translations.ts';
+import { nameNotes } from '../../src/run/notes/names.ts';
+import { translationNotes } from '../../src/run/notes/translations.ts';
 import { readCurrentPullRequest } from '../../src/host/current-pr.ts';
 import {
   readIssue,

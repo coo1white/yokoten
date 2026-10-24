@@ -1,18 +1,18 @@
-// Tests for src/run/names.ts.
+// Tests for src/run/notes/names.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NAMED } from '../repo/helpers.ts';
+import { NAMED } from '../../repo/helpers.ts';
 import {
   DOCS_URL,
   formatFinding,
-} from '../../src/rules/message.ts';
-import { addedLinesByFile } from '../../src/rules/pr.ts';
+} from '../../../src/rules/message.ts';
+import { addedLinesByFile } from '../../../src/rules/pr.ts';
 import {
   isCodeFile,
   nameNotes,
-} from '../../src/run/names.ts';
+} from '../../../src/run/notes/names.ts';
 
 test('names: a note for a long-lived one-letter name and a 5-word name on added lines (#111)', () => {
   const notes = nameNotes('src/cart.ts', NAMED, new Set([1, 2, 3]));

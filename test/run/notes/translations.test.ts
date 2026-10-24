@@ -1,6 +1,6 @@
-// Tests for src/run/translations.ts.
+// Tests for src/run/notes/translations.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -9,18 +9,18 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { makeTranslatedRepo, makeTempDir } from '../repo/helpers.ts';
+import { makeTranslatedRepo, makeTempDir } from '../../repo/helpers.ts';
 import {
   DEFAULTS,
   loadConfig,
-} from '../../src/rules/config.ts';
-import type { Finding } from '../../src/rules/message.ts';
-import { check } from '../../src/run/check.ts';
+} from '../../../src/rules/config.ts';
+import type { Finding } from '../../../src/rules/message.ts';
+import { check } from '../../../src/run/check.ts';
 import {
   parseSourceMarker,
   sourceMarker,
   translationNotes,
-} from '../../src/run/translations.ts';
+} from '../../../src/run/notes/translations.ts';
 
 // The older marker form (#87), with the English blob; still read (#166).
 const blobMarker = (source: string, blob: string) => `<!-- source: ${source} blob ${blob} -->`;
