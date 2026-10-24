@@ -281,14 +281,14 @@ agent 列在这里，但还没有确认它的守卫能端到端拦住。光看�
 | DeepSeek Harness（`dsh`） | `.dsh/hooks.json`：PreToolUse；再用 `.dsh/yokoten.patch.yml` 让 dsh 加载它 | 退出码 2，理由写在 stderr | 是，2026-10-20：dsh 0.2.1-rc.2，`dsh headless --patch .dsh/yokoten.patch.yml`，DeepSeek 的默认模型 | 钩子要靠一个桥接插件才会跑，每个 profile 都得自己装，见 [DeepSeek Harness](#deepseek-harness)。没装插件或启动时没带 patch，dsh 一个钩子都不跑，也不提醒。Windows 上还管不住（#332）。还没有收尾检查 |
 | Grok CLI（`grok`） | `.grok/hooks/yokoten.json`：PreToolUse 和 Stop | 在 stdout 输出 `permissionDecision: "deny"`，退出码 2 | 是，2026-10-20：Grok CLI 1.0.52，`grok -p --trust --always-approve`，默认模型 | 要先信任这个文件夹，才跑项目钩子：在这里运行 `grok`，输入 `/hooks-trust`。没信任就一声不吭地跳过。它也会跑 `.claude/settings.json` 里的钩子，所以一次调用可能查两遍，这是有意的 |
 | Gemini CLI | `.gemini/settings.json`：BeforeTool 和 AfterAgent | 退出码 2，理由写在 stderr | 没有完整跑过：个人 Google 账号 2026-06-18 起不能再登录，要付费 API key 或企业授权 | 谷歌给个人用户的 agent 现在是 Antigravity CLI |
-| OpenCode | `.opencode/plugins/yokoten.ts`：OpenCode 2 的 permission `evaluate`，以及 OpenCode 1 的 `tool.execute.before` | OpenCode 2 把 `effect` 设为 deny；OpenCode 1 抛出理由 | 没有完整跑过 | 没有收尾检查。守卫失败或超时就拒绝这次调用。不是只读、又读不出命令或路径时，也拒绝 |
+| OpenCode | `.opencode/plugins/yokoten.ts`：OpenCode 2 的 permission `evaluate`，以及 OpenCode 1 的 `tool.execute.before` | OpenCode 2 把 `effect` 设为 deny；OpenCode 1 抛出理由 | 是，2026-10-23：OpenCode 2.1.4，`opencode-go/deepseek-v4.1-flash`，插件就是 `init` 写的那份 | 没有收尾检查。守卫失败或超时就拒绝这次调用。不是只读、又读不出命令或路径时，也拒绝。子 agent 的调用没有完整跑过 |
 | 其他 agent | 无 | `AGENTS.md` 里的规则；还有提交检查，不管是谁提交的，坏提交都会被拦下 | | |
 
 用户级的钩子由 `install` 写：会话开头的带路提示，加上命令守卫。它们写进
 `~/.claude/settings.json`；有 `~/.codex`、`~/.gemini` 文件夹的话，也写进
 `~/.codex/hooks.json` 和 `~/.gemini/settings.json`。有 Muse 的配置文件夹的话，Muse Code 两个都装，写进
 `~/.config/muse/settings.json`（设了 `$XDG_CONFIG_HOME` 就写进 `$XDG_CONFIG_HOME/muse/settings.json`）。有 `~/.grok` 的话，Grok CLI 只装命令守卫，写进
-`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。有 `~/.config/opencode` 的话，OpenCode 只装命令守卫，写进 `~/.config/opencode/plugins/yokoten.ts`。Grok 的信任检查关掉时（设了 `GROK_FOLDER_TRUST=0`，或者 `~/.grok/config.toml` 里写了 `[folder_trust] enabled = false`），`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
+`~/.grok/hooks/yokoten.json`：会话开头钩子的输出，Grok 只给你看，不给 agent 看。有 `~/.gemini/config` 的话，Antigravity CLI 只装命令守卫，写进 `~/.gemini/config/hooks.json`。有 `~/.copilot` 的话，Copilot CLI 也装命令守卫，写进 `~/.copilot/hooks/yokoten.json`。两者都还没有收尾检查：agy 的 Stop 事件没有重入信号，Copilot 的钩子超时后会放行调用。有 `~/.config/opencode` 的话，OpenCode 只装命令守卫，写进 `~/.config/opencode/plugins/yokoten.ts`。Grok 的信任检查关掉时（设了 `GROK_FOLDER_TRUST=0`，或者 `~/.grok/config.toml` 里写了 `[folder_trust] enabled = false`），`doctor` 把每个文件夹都当成已信任。在 Codex 里，`apply_patch` 要改哪些
 文件，守卫都会查，在 shell 里跑的也查。
 
 每个工具都要你先信任，项目钩子才会跑：
@@ -688,6 +688,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签；最后一行写明做出这个 PR 的每个 AI 和模型：`🤖 Made with <agent> (<model>)`，可写一个或多个逗号分隔的组合；审阅的 AI 也可以写上：`🤖 Made with worker <X> (<模型>), reviewed by <Y> (<模型>) and <Z> (<模型>), lead Claude Code (<模型>)`（一个或两个审阅者，最多两个）。见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败。`Made with` 里的模型和 worker 状态文件不一致时也只提醒，而且只在有 worker 工作副本的机器上检查：CI 看不到那个文件 |
 | `check --pr <number>` | 同样的检查，但通过 `gh` 读这个编号的 PR，没有 CI 的仓库合并前自己跑 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `borrowed [--dry-run] [--json]` | 通过 `gh` 把 `src/borrowed/` 里的每个文件和上游默认分支对比，每个有变化的来源开一个 issue。安全修复会在标题里点出来。`--dry-run` 只显示报告，不开 issue；`--json` 以数据形式输出报告。见[借来的代码](#借来的代码) |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
@@ -704,6 +705,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `train <pr>... [--wait <秒>]` | 按给出的顺序，以 bot 的身份合并一批已批准、检查全绿的 PR；第一个需要人来处理的 PR 就让它停下。第一次合并之前先记下每个 PR 的基础分支，所以叠在被 squash 合并的分支上的 PR，会用它和那个分支真正共有的基础来合并。只涉及 import 行的冲突取并集；真正的冲突、测试失败、`check` 失败或缺少批准都会让列车停下。每次合并后的树先测试再推送；推送后的合并要等 CI 通过；`--wait` 设等多久，默认 1800 秒。只有 lead 能跑 |
 | `board [--text] [--no-open]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR 和 worktree，见「团队看板」 |
 
 每个命令后面加 `--help` 或 `-h`，就会打出它自己的说明：做什么、有哪些选项、一个例子。
@@ -987,6 +989,60 @@ commit 或同一个 PR 里。
 「至少」落后几个 commit。不够用时，`check` 整次运行只给一条提醒，说有几份译文没检查，
 不会每个文件都报一条。就算设了 `"fail": true`，这条提醒也不会让 CI 失败。`check` 从不
 fetch。CI 里 checkout 时设 `fetch-depth: 0`，kit 里的 `yokoten.yml` 已经设好了。
+
+### 借来的代码
+
+记录 0024 说明 yokoten 什么时候可以复制别的项目的代码。复制来的一小块叫**轮子**。轮子
+放在 `src/borrowed/`，永远不作为依赖。它很小：只放我们需要的那部分。轮子里不是本项目
+自己的代码，所以读者必须能看出它从哪来。
+
+只在宽松许可证下复制：MIT、BSD-2-Clause、BSD-3-Clause、ISC 或 Apache-2.0。其他许可证
+走净室路线：一个 agent 只写代码做什么，另一个没看过源码的 agent 根据这份说明写代码。
+
+每个轮子开头都有一段注释文件头，放在任何代码之前：
+
+```ts
+// source: https://github.com/example/upstream/blob/3f2a1c9d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f/src/thing.ts
+// commit: 3f2a1c9d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f
+// license: MIT
+// copyright: Copyright (c) 2026 Example Authors
+// changes: renamed readThing to parseThing
+```
+
+| 字段 | 是否必需 | 内容 |
+|------|----------|------|
+| `source` | 总是 | 上游文件的网址，形如 `github.com/<owner>/<repo>/blob/...` |
+| `commit` | 总是 | 取代码时上游提交的完整 40 位 sha |
+| `license` | 总是 | SPDX 名称：`MIT`、`BSD-2-Clause`、`BSD-3-Clause`、`ISC` 或 `Apache-2.0` |
+| `copyright` | 总是 | 上游的版权声明，逐字保留 |
+| `notice` | Apache-2.0 | 上游的 NOTICE 文本 |
+| `changes` | 否 | 我们改了什么，让读者分得清我们的修改和上游的代码 |
+
+每个字段占一行：`// 字段: 值`。文件头必须在最前面，在代码之前。只有第一段注释算数。
+同一个字段写两次时，第一个值生效。
+
+`yokoten check` 会读 `src/borrowed/` 里每个文件的文件头，既查整棵树，也查即将提交的
+改动。每个缺失的字段都会报告，并给出文件和要补的那一行。文件头不对，提交就过不去。
+来源不是网址，或者提交不是完整 sha，也会被拒绝。
+
+五种之外的许可证会被拒绝，即使文件头是完整的。修改办法是
+`use the clean-room road in record 0024`（走记录 0024 的净室路线）。检查不认识的许可证
+名称也一样。
+
+`borrowed` 工作流每周一运行 `yokoten borrowed`。对每个轮子，命令问 GitHub：上游默认分支
+上，哪些提交改动过这个源文件。如果有晚于我们所取提交的提交，上游就变了。
+
+命令**每个来源开一个 issue**，不是每个文件一个。它会先找已经提到这个来源的未关闭 issue，
+所以之后的运行不会重复开。issue 里列出本地文件、我们取的提交，以及上游更新的提交。提交
+说明里提到安全修复时，标题是 `check: take a borrowed security fix`；其他变化用
+`check: review borrowed code upstream`。
+
+主机回答不了的来源是一个缺口，不是通过。任务会说明是哪个来源，并以失败结束，免得有人
+把沉默当成「上游没变」。只想看报告、不开 issue，运行 `yokoten borrowed --dry-run`。
+
+上游修了 bug，就取新的提交：更新 `source` 和 `commit`，重新应用我们的 `changes`，让测试
+通过。如果变化没有碰到我们用的那部分，在 issue 里说明并关闭它。不再用某个轮子时，删掉
+那个文件。退路也是出路：这段代码很小，测试说明了它必须做什么（记录 0014）。
 
 ### 更新规则
 
@@ -1281,6 +1337,35 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 `tier:` 一样。少了哪个、哪个不对，各报一条，每条都说怎么改。
 
 服务器怎么设置，一步一步写在 [`docs/server.md`](../../server.md)。
+
+### 在 PR 上会看到的审查机器人
+
+审查机器人会在你开 PR 之后读这个 PR。它把评论发在 PR 页面上。你可能会看到改动的讲解、
+风险等级、合并前检查清单，还有修改建议。有的机器人能直接把这些修改推上去。
+
+分两种：
+
+- **商业的。** 机器人是闭源的。公司替你运行，你的代码会发到公司的服务器。很多对公开仓库
+  免费，对私有仓库收费。
+- **开源的。** 你自己运行，用你自己的模型 API 密钥。模型用的 token 由你向模型厂商付费，
+  代码留在你自己的机器上。
+
+价格、许可证和数据的去向会变。本指南不推荐任何一款机器人。打开它之前，先读它自己的页面。
+机器人的评论里一般有链接。
+
+yokoten 在 PR 之前工作，在你这台机器上：
+
+- 守卫拦住危险的命令、密钥和个人信息；
+- `inspect` skill 在你的 agent 会话里审查改动，不额外花钱；
+- 检查和合并规则拦住你没有批准的合并或发版。
+
+审查机器人在 PR 之后工作。两者配合得很好。机器人看到 PR；yokoten 看到写出这个 PR 的会话。
+
+刚开始不需要审查机器人。yokoten 自己的审查就够了。团队想在 PR 页面上多一个读者时，再加
+一个机器人。`doctor` 从不叫你装一个：它只说 yokoten 自己的下一步。
+
+yokoten 在 PR 页面上的结果，只来自它自己的检查。它不重复别的机器人的结论，也不再审一遍
+代码（#91）。
 
 ### 工位
 

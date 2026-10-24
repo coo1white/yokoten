@@ -2,10 +2,10 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { readTrust } from '../../src/agents/copilot.ts';
+import { addUserHooks, hasUserDir, readTrust, removeUserHooks, userHooksFile, userHooksState } from '../../src/agents/copilot.ts';
 import { makeSandbox } from '../repo/helpers.ts';
 
 /** Write Copilot CLI's config.json in `home`, in the shape Copilot CLI 1.0.98 saved it (#341). */
@@ -47,4 +47,39 @@ test('copilot trust (#341): doctor says when Copilot CLI skips the hooks; a trus
   assert.doesNotMatch((await sandbox.call(['doctor'], { extra: { COPILOT_HOME: elsewhere } })).stdout, /copilot-hook/, 'after init too: no home, no line');
   mkdirSync(elsewhere);
   assert.deepEqual(readTrust(root, { HOME: sandbox.home, COPILOT_HOME: elsewhere }), { state: 'no store', store: '$COPILOT_HOME/config.json' });
+});
+
+// #342: Copilot's user hooks folder is outside every project, so the guard runs in a repo
+// without yokoten too. It follows $COPILOT_HOME, and it keeps a hook the user wrote.
+test('copilot user hook: install writes the guard in ~/.copilot/hooks/yokoten.json and uninstall takes it out (#342)', () => {
+  const sandbox = makeSandbox();
+  const env = { HOME: sandbox.home };
+  const file = join(sandbox.home, '.copilot', 'hooks', 'yokoten.json');
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
+  const missing = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
+  assert.equal(userHooksFile(env), '~/.copilot/hooks/yokoten.json');
+  assert.equal(hasUserDir(env), false, 'no ~/.copilot: Copilot looks unused');
+  mkdirSync(dirname(file), { recursive: true });
+  assert.equal(hasUserDir(env), true);
+  writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine' }] }] } }));
+  assert.deepEqual(userHooksState(env, cli, missing), { guard: 'added' });
+  assert.deepEqual(addUserHooks(env, cli, missing), { guard: 'added' });
+  assert.deepEqual(userHooksState(env, cli, missing), { guard: 'same' });
+  const written = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(written.hooks.PreToolUse[0].hooks[0].command, 'mine', "the user's hook stays");
+  assert.equal(written.hooks.PreToolUse[1].matcher, 'Bash');
+  assert.match(written.hooks.PreToolUse[1].hooks[0].command, / hook --agent claude-code --commands-only /);
+  // $COPILOT_HOME moves the folder, and the report names the variable.
+  const elsewhere = join(sandbox.home, 'elsewhere');
+  mkdirSync(elsewhere);
+  assert.equal(hasUserDir({ HOME: sandbox.home, COPILOT_HOME: elsewhere }), true);
+  assert.equal(userHooksFile({ HOME: sandbox.home, COPILOT_HOME: elsewhere }), '$COPILOT_HOME/hooks/yokoten.json');
+  assert.deepEqual(addUserHooks({ HOME: sandbox.home, COPILOT_HOME: elsewhere }, cli, missing), { guard: 'added' });
+  assert.ok(readFileSync(join(elsewhere, 'hooks', 'yokoten.json'), 'utf8').includes('hook --agent claude-code'));
+  assert.equal(removeUserHooks(env), 'removed');
+  assert.equal(userHooksState(env, cli, missing).guard, 'added');
+  assert.equal(removeUserHooks(env), 'not there');
+  writeFileSync(file, '{ not json');
+  assert.equal(removeUserHooks(env), null);
+  assert.equal(readFileSync(file, 'utf8'), '{ not json', 'a file yokoten cannot read stays as it was');
 });

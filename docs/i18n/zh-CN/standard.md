@@ -384,7 +384,7 @@ Dependabot 开的 PR，这一行有问题只是提醒，不算失败。
 版本 1。这一行没有版本字段。
 
 - [src/rules/pr.ts](../../../src/rules/pr.ts) 和 [test/rules/pr.test.ts](../../../test/rules/pr.test.ts)。
-- [src/commands/bot.ts](../../../src/commands/bot.ts) 和 [test/commands/bot.test.ts](../../../test/commands/bot.test.ts)。
+- [src/commands/merge/bot.ts](../../../src/commands/merge/bot.ts) 和 [test/commands/merge/bot.test.ts](../../../test/commands/merge/bot.test.ts)。
 
 ## 来源
 
