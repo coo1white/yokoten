@@ -83,11 +83,23 @@ export function hostRunRemoval(words: string[]): Finding | undefined {
 // ---- Repository and organization settings (#825) ----
 //
 // Protection 3 of record 0034: an agent does not make a repo public or change the server's
-// lock. `gh repo edit` is refused by its own rule; the same change through `gh api` was not,
-// so this reads the route. A read passes. A comment, a label or a review stays allowed.
+// lock. `gh repo edit` is the other way to make that change; the same change through `gh api`
+// was not refused, so this reads the route. A read passes. A comment, a label or a review
+// stays allowed.
 
 const SETTINGS_FIX = 'ask the owner, who changes repository and organization settings in the browser';
 const ORG = 'orgs/[^/]+';
+// `gh api graphql` sends one document, and a mutation reaches settings the REST routes below
+// do not name. The document starts with its operation, after whitespace and comment lines.
+// A GitHub Enterprise server serves the same call at `api/graphql`.
+const GRAPHQL_ROUTE = /^(?:api\/)?graphql$/i;
+const MUTATION = /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*mutation\b/i;
+// A document the shell builds is not one the guard can read: a variable, a substitution or
+// a backtick. A GraphQL variable declaration (`query($id: ID!)`) is none of these.
+const SHELL_DOCUMENT = /^\$|\$\(|\$\{|`/;
+// The options that carry the document: a field, or an input file (#825).
+const GRAPHQL_FIELD = new Set(['-f', '--raw-field', '-F', '--field']);
+const GRAPHQL_INPUT = new Set(['--input']);
 // A repo setting: the repo itself (visibility, default branch, deletion), its branch
 // protection, its rulesets, and the groups that change what checks run or who reaches the
 // code. Any other repo write (a comment, a label, a review, a merge) is one the bot needs.
@@ -97,12 +109,35 @@ const SETTINGS_ROUTES = [
   new RegExp(`^${REPO}/rulesets(?:/.*)?$`, 'i'),
   new RegExp(`^${REPO}/(?:actions/permissions(?:/.*)?|interaction-limits|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|transfer)$`, 'i'),
   // Who reaches the code, and what CI runs with: collaborators, teams, invitations, deploy
-  // keys, webhooks, secrets, variables, runners and environments. The bot needs none of them.
-  new RegExp(`^${REPO}/(?:collaborators|teams|invitations|keys|hooks|actions/(?:secrets|variables|runners)|environments)(?:/.*)?$`, 'i'),
+  // keys, webhooks, secrets, variables, runners and environments. A dependabot or codespace
+  // secret is a CI secret too, and it sits outside `actions/`. The bot needs none of them.
+  new RegExp(`^${REPO}/(?:collaborators|teams|invitations|keys|hooks|actions/(?:secrets|variables|runners)|(?:dependabot|codespaces)/secrets|environments)(?:/.*)?$`, 'i'),
   // An organization and everything under it: its settings, membership, teams and rulesets
   // are the owner's, and the bot has no write there.
   new RegExp(`^${ORG}(?:/.*)?$`, 'i'),
 ];
+
+/**
+ * Whether a `gh api graphql` call sends a mutation (#825). A document the guard cannot read,
+ * an `@file`, a shell variable or substitution, `--input`, or none at all, counts as one it
+ * cannot vouch for.
+ */
+function isGraphqlMutation(args: string[]): boolean {
+  let hasDocument = false;
+  for (let index = 0; index < args.length; index++) {
+    if (optionValue(args, index, GRAPHQL_INPUT)) return true;
+    const field = optionValue(args, index, GRAPHQL_FIELD);
+    if (!field) continue;
+    const value = field.value ?? '';
+    const equals = value.indexOf('=');
+    const document = equals === -1 ? value : value.slice(equals + 1);
+    if (document.startsWith('@') || SHELL_DOCUMENT.test(document)) return true;
+    hasDocument = true;
+    if (MUTATION.test(document)) return true;
+    index = field.next - 1;
+  }
+  return !hasDocument;
+}
 
 /** A `gh api` call that writes to repository or organization settings, or undefined when it is not one or is a read (#825). */
 export function hostSettingsWrite(words: string[]): Finding | undefined {
@@ -117,6 +152,10 @@ export function hostSettingsWrite(words: string[]): Finding | undefined {
   // No method and a field or `--input`: gh sends POST. A named GET is a read, even with fields.
   const method = call.method || (call.hasFields ? 'POST' : 'GET');
   if (method === 'GET') return undefined;
+  if (GRAPHQL_ROUTE.test(call.path)) {
+    if (isGraphqlMutation(args)) return finding('repo-settings', 'this `gh api graphql` call sends a mutation, which can change repository or organization settings', SETTINGS_FIX);
+    return undefined;
+  }
   if (!SETTINGS_ROUTES.some((route) => route.test(call.path))) return undefined;
   return finding('repo-settings', 'this `gh api` call changes repository or organization settings', SETTINGS_FIX);
 }

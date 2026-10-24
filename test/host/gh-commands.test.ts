@@ -97,6 +97,8 @@ test('repo settings: a gh api write is refused, a read passes (#825)', () => {
     'gh api -X POST repos/o/r/keys -f title=deploy -f key=x',
     'gh api -X POST repos/o/r/hooks -f config[url]=https://example.com/hook',
     'gh api -X PUT repos/o/r/actions/secrets/TOKEN -f encrypted_value=x',
+    'gh api -X PUT repos/o/r/dependabot/secrets/TOKEN -f encrypted_value=x',
+    'gh api -X PUT repos/o/r/codespaces/secrets/TOKEN -f encrypted_value=x',
     'gh api -X PATCH repos/o/r/actions/variables/DEBUG -f value=1',
     'gh api -X POST repos/o/r/actions/runners/registration-token',
     'gh api -X PATCH repos/o/r/environments/release -f wait_timer=0',
@@ -135,6 +137,42 @@ test('repo settings: reads and the bot writes it needs pass (#825)', () => {
     'gh api --method POST repos/o/r/milestones -f title=v1',
   ];
   for (const command of writes) assert.equal(checkCommand(command, { cwd: process.cwd(), env: lead }), null, command);
+});
+
+test('repo settings: a graphql mutation is a settings write, a query passes (#825)', () => {
+  const lead = {};
+  const what = 'this `gh api graphql` call sends a mutation, which can change repository or organization settings';
+  const refused = [
+    'gh api graphql -f query=mutation { changeVisibility(input: {visibility: PUBLIC}) { clientMutationId } }',
+    'gh api -X POST /graphql -f query=mutation{ updateRepository(input: {}) { clientMutationId } }',
+    'gh api -X POST /api/graphql -f query=mutation { x }',
+    'gh api -X POST https://api.github.com/graphql -f query=mutation { x }',
+    'gh api graphql --raw-field query=mutation { changeVisibility(input: {}) { clientMutationId } }',
+    // The document gh would read, which the guard cannot.
+    'gh api graphql -F query=@mutation.graphql',
+    'gh api graphql --input mutation.json',
+    // A document the shell builds, so the guard cannot see it.
+    'gh api graphql -f query=$(cat mutation.graphql)',
+    'gh api graphql -f query="$DOC"',
+    // A method and no document at all.
+    'gh api -X POST graphql',
+    // Behind `yokoten bot`.
+    'yokoten bot -- gh api graphql -f query=mutation { x }',
+  ];
+  for (const command of refused) {
+    const found = checkCommand(command, { cwd: process.cwd(), env: lead });
+    assert.equal(found?.id, 'repo-settings', command);
+    assert.equal(found?.what, what, command);
+  }
+  // A worker hears the same refusal: the settings check answers before its own send rule.
+  assert.equal(checkCommand(refused[0], { cwd: process.cwd(), env: { YOKOTEN_ROLE: 'worker' } })?.id, 'repo-settings');
+  const reads = [
+    'gh api graphql -f query=query { viewer { login } }',
+    'gh api -X POST graphql -f query={ viewer { login } }',
+    // The word only inside a string, in an operation that reads.
+    'gh api graphql -f query=query { search(query: "mutation") { issueCount } }',
+  ];
+  for (const command of reads) assert.equal(checkCommand(command, { cwd: process.cwd(), env: lead }), null, command);
 });
 
 test('host samples: doctor hears a miss, and a catch is quiet (#650)', () => {

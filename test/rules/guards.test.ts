@@ -2434,8 +2434,6 @@ test('guard: a worker does not push, post or change a git folder; the lead may (
       'gh api repos/a/b/issues -f title=x',
       'gh api repos/a/b/issues/1/comments -F body=@note.md',
       'gh api repos/a/b/pulls --input body.json',
-      "gh api graphql -f query='mutation { addComment(input: {}) { clientMutationId } }'",
-      'gh api graphql -F query=@q.graphql',
     ],
     'worker-mark': [
       'rm .git/worktrees/wt/yokoten-worker',
