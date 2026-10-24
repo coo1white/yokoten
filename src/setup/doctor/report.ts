@@ -284,7 +284,7 @@ export function guardCostCheck(root: string, probe: MachineProbe, env: Env): Pra
   const own = join(root, hookCliPath(root));
   const cli = existsSync(own) ? own : fileURLToPath(new URL('../../../bin/yokoten.mjs', import.meta.url));
   const cost = probe.measureGuard(cli, root, env);
-  return cost ? { name: 'guard', ok: true, finding: finding('disk-space', '', ''), detail: guardLine(cost) } : null;
+  return cost ? { name: 'guard', ok: true, finding: finding('guard-cost', '', ''), detail: guardLine(cost) } : null;
 }
 
 function doctorRun(

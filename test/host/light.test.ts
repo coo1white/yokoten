@@ -75,7 +75,11 @@ test('guard cost: a real run is measured in wall time and, off Windows, CPU time
   assert.ok(cost, 'it ran');
   assert.ok(cost.wallMs > 0);
   if (process.platform !== 'win32') assert.ok(cost.cpuMs !== null && cost.cpuMs > 0, 'the CPU time of the child is there');
-  assert.equal(measureRun(['/no/such/program'], '', { cwd: sandbox.repo, env: sandbox.env })?.wallMs === undefined, process.platform === 'win32', 'a program that is not there is not a cost');
+  assert.equal(measureRun(['/no/such/program'], '', { cwd: sandbox.repo, env: sandbox.env }), null, 'a program that is not there is not a cost');
+  assert.equal(measureRun([sandbox.repo], '', { cwd: sandbox.repo, env: sandbox.env }), null, 'a folder is found, but it is not a program');
+  const refused = measureRun([process.execPath, '-e', 'process.exit(2)'], '', { cwd: sandbox.repo, env: sandbox.env });
+  assert.ok(refused, 'a program that exits nonzero still ran: the guard exits 2 on a refusal');
+  assert.ok(refused.wallMs > 0);
 });
 
 test('guard cost: full doctor reports it in one line, spawning the guard once; a session does not (#461)', () => {

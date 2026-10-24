@@ -85,17 +85,23 @@ export function parseChildTimes(text: string): number | null {
  * Runs `argv` once with `input` on stdin, as a guard hook would, and measures it. The CPU
  * comes from the shell's `times` for its waited-for child: no other portable way to see a
  * child's CPU from Node. Windows has no such shell; there the wall time stands alone.
- * Null when the program can't run.
+ * Null when the program can't run: on POSIX the wrapper keeps the program's exit code, and
+ * the shell answers 126 (found but not executable) or 127 (not found) when `exec` fails.
+ * A program that exits nonzero did run, so its cost is real (the guard itself exits 2 on a
+ * refusal).
  */
 export function measureRun(argv: string[], input: string, options: { cwd: string; env: Record<string, string | undefined> }): GuardCost | null {
   const start = process.hrtime.bigint();
   const isPosix = process.platform !== 'win32';
   const result = isPosix
-    ? spawnSync('sh', ['-c', '"$@" >/dev/null 2>&1; times', 'sh', ...argv], { ...options, input, encoding: 'utf8', timeout: 10_000 })
+    ? spawnSync('sh', ['-c', '"$@" >/dev/null 2>&1; code=$?; times; printf "code=%s" "$code" >&2', 'sh', ...argv], { ...options, input, encoding: 'utf8', timeout: 10_000 })
     : spawnSync(argv[0], argv.slice(1), { ...options, input, encoding: 'utf8', timeout: 10_000, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
   const wallMs = Number(process.hrtime.bigint() - start) / 1e6;
   if (result.error || result.status === null) return null;
-  return { wallMs, cpuMs: isPosix ? parseChildTimes(result.stdout ?? '') : null };
+  if (!isPosix) return { wallMs, cpuMs: null };
+  const code = /(?:^|\n)code=(\d+)$/.exec((result.stderr ?? '').trim())?.[1];
+  if (code === undefined || code === '126' || code === '127') return null;
+  return { wallMs, cpuMs: parseChildTimes(result.stdout ?? '') };
 }
 
 /** The cores Node may use. */
