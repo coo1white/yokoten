@@ -372,18 +372,17 @@ function patchFiles(patch: string): string[] {
 // `git commit` options whose value is the next word.
 const COMMIT_VALUES = new Set(['--message', '--file', '--reuse-message', '--reedit-message', '--fixup', '--squash', '--author', '--date', '--cleanup', '--template', '--trailer', '--pathspec-from-file']);
 
+/** What a `git commit` asks for: the paths it names, and whether -a, -i or a pathspec file is set. */
+export type CommitOptions = { named: string[]; isAll: boolean; isInclude: boolean; namesFromFile: boolean };
+
 /**
- * The files a `git commit` commits, as full paths: its pathspecs when it names any, else
- * what is staged, and with -a what is changed too. In a short option cluster, m, F, C, c
- * and t take a value; S and u take the rest of the word.
+ * A `git commit`'s arguments read once. In a short option cluster, m, F, C, c and t take a
+ * value; S and u take the rest of the word.
  */
-export function commitTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf'], env: Env): WriteTarget[] {
-  const start = words.findIndex(isGit);
-  if (start === -1) return [];
-  const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
-  if (sub !== 'commit') return [];
+export function parseCommitOptions(args: string[]): CommitOptions {
   let isAll = false;
   let isInclude = false;
+  let namesFromFile = false;
   const named: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const word = args[index];
@@ -394,6 +393,7 @@ export function commitTargets(words: string[], folder: string | null, rootOf: Fi
     if (word.startsWith('--')) {
       if (word === '--all') isAll = true;
       if (word === '--include') isInclude = true;
+      if (/^--pathspec-from-file(?:=|$)/.test(word)) namesFromFile = true;
       if (COMMIT_VALUES.has(word)) index++;
     } else if (word.startsWith('-') && word !== '-') {
       for (const [at, letter] of [...word].entries()) {
@@ -405,6 +405,19 @@ export function commitTargets(words: string[], folder: string | null, rootOf: Fi
       }
     } else named.push(word);
   }
+  return { named, isAll, isInclude, namesFromFile };
+}
+
+/**
+ * The files a `git commit` commits, as full paths: its pathspecs when it names any, else
+ * what is staged, and with -a what is changed too.
+ */
+export function commitTargets(words: string[], folder: string | null, rootOf: FileRules['rootOf'], env: Env): WriteTarget[] {
+  const start = words.findIndex(isGit);
+  if (start === -1) return [];
+  const { sub, args, dir } = gitParts(withoutShellRedirects(words, start + 1), folder);
+  if (sub !== 'commit') return [];
+  const { named, isAll, isInclude } = parseCommitOptions(args);
   const targets = named.map((path) => ({ path, from: dir }));
   if (named.length > 0 && !isInclude) return targets;
   // From an unknown folder the staged files (and with -a, the changed ones too) are
