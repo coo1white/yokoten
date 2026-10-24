@@ -10,10 +10,13 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileS
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
+import { readStop } from './claude-code.ts';
+import type { AgentAdapter } from './runtime.ts';
 import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -109,7 +112,7 @@ export const hasProjectStopHook = (root: string): boolean => hasHook(projectHook
 export const checkProjectHooks = (root: string): void => checkHooksFile(projectHooks(root), ['PreToolUse', 'Stop']);
 
 /** A Stop event: the same fields as Claude Code's (`cwd`, `stop_hook_active`). */
-export { readStop } from './claude-code.ts';
+export { readStop };
 
 const userHooks = (env: Env) => join(homeIn(env), '.codex', 'hooks.json');
 
@@ -362,6 +365,27 @@ function mainCheckout(root: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The model and provider the user's `config.toml` names (#748): top-level `model` and
+ * `model_provider`, as Codex reads them. Null when the file is missing, unreadable, or
+ * names no model: the harness then keeps its own default. Read-only, no git.
+ */
+export function readModelIdentity(env: Env): { model: string; provider: string } | null {
+  const user = homeOf(env);
+  const home = env.CODEX_HOME || (user ? join(user, '.codex') : '');
+  if (!home) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseToml(readFileSync(join(home, 'config.toml'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 64) : '');
+  const model = text(parsed.model);
+  if (!model) return null;
+  return { model, provider: text(parsed.model_provider) };
 }
 
 /**
@@ -1059,6 +1083,25 @@ export const DESK: RuntimeDesk = {
   login: (env) => [{ from: join(env.CODEX_HOME || join(homeIn(env), '.codex'), 'auth.json'), to: 'auth.json' }],
   stateEnv: (state) => ({ CODEX_HOME: state }),
   hosts: ['api.openai.com', 'api.deepseek.com'],
+  identity: readModelIdentity,
+};
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'codex',
+  label: 'Codex CLI',
+  projectHook: '`.codex/hooks.json`: PreToolUse and Stop',
+  userHook: '~/.codex/hooks.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: false, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: true },
+  readToolCall,
+  readStop,
+  releaseFix: releaseFix(approve('codex')),
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
 };
 
 // ---- Writing that trust (#661) ----

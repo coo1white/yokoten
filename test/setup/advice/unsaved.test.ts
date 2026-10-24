@@ -100,7 +100,7 @@ test('unsaved: uncommitted changes, with the file count and the oldest change (#
   assert.deepEqual(rest, []);
   assert.equal(note.id, 'uncommitted-changes');
   assert.equal(note.what, '. has 2 uncommitted files, the oldest changed 3 days ago');
-  assert.equal(note.fix, 'commit them: `git -C . add -A && git -C . commit`, then push');
+  assert.equal(note.fix, 'commit them: `git add -A && git commit -m "chore: save work"`, then push');
   assert.deepEqual(clone.facts().worktrees[0].changedFiles?.sort(), ['a.txt', 'new.txt']);
   // A session hears only changes older than an hour: work going on now is not forgotten.
   assert.deepEqual(ids(clone.notes({ session: true })), ['uncommitted-changes']);
@@ -108,6 +108,19 @@ test('unsaved: uncommitted changes, with the file count and the oldest change (#
   utimesSync(join(clone.repo, 'new.txt'), now, now);
   assert.deepEqual(clone.notes({ session: true }), []);
   assert.deepEqual(ids(clone.notes()), ['uncommitted-changes'], 'full doctor still lists it');
+});
+
+test('unsaved: a commit that carries .yokoten/ says what the copy is, and the commit check takes the message (#655)', () => {
+  const clone = cleanClone();
+  mkdirSync(join(clone.repo, '.yokoten'), { recursive: true });
+  writeFileSync(join(clone.repo, '.yokoten', 'VERSION'), '0.1.0\n');
+  const [note] = clone.notes();
+  assert.equal(note.fix, 'commit them: `git add -A && git commit -m "chore: add yokoten"`; .yokoten/ is a copy of yokoten (about 90 files), and committing it is the point, then push');
+  // Positive control: a change with no .yokoten/ gets the generic message, and no copy note.
+  writeFileSync(join(clone.repo, '.yokoten', 'VERSION'), '0.2.0\n');
+  rmSync(join(clone.repo, '.yokoten'), { recursive: true });
+  writeFileSync(join(clone.repo, 'a.txt'), 'b\n');
+  assert.equal(clone.notes()[0].fix, 'commit them: `git add -A && git commit -m "chore: save work"`, then push');
 });
 
 test('unsaved: commits not pushed, per branch, and a branch with no upstream (#365)', () => {
@@ -306,7 +319,7 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
     `worktree ../temp/loose has commits on a detached HEAD that no branch holds, so they are still only on this machine; it is ${place}`,
     `2 worktrees are under the temp folder (${temp}); none holds unsaved work, but new work there may be lost on restart`,
   ]);
-  assert.equal(notes()[0].fix, 'commit them: `git -C ../temp/dirty add -A && git -C ../temp/dirty commit`, then push', 'the one command that saves it');
+  assert.equal(notes()[0].fix, 'commit them: `git -C ../temp/dirty add -A && git -C ../temp/dirty commit -m "chore: save work"`, then push', 'the one command that saves it');
   // A session: one line with the count of those at risk, then their notes; never the clean ones.
   const session = notes(true);
   assert.equal(session[0].what, `3 worktrees under the temp folder (${temp}) hold unsaved work, and a restart may empty that folder`);
@@ -494,7 +507,7 @@ test('unsaved: with no remote no advice says push on its own (#524)', () => {
   writeFileSync(join(sandbox.repo, 'a.txt'), 'changed\n');
   const found = unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, tempDirs: [] })!, { home: sandbox.home });
   assert.deepEqual(ids(found), ['uncommitted-changes', 'unpushed-commits']);
-  assert.equal(found[0].fix, 'commit them: `git -C . add -A && git -C . commit`; once the repo has a remote, push it');
-  assert.equal(found[1].fix, 'add a remote first: `git remote add origin <url>`; then push: `git push -u origin --all`');
+  assert.equal(found[0].fix, 'commit them: `git add -A && git commit -m "chore: save work"`; once the repo has a remote, push it');
+  assert.equal(found[1].fix, 'make the repo on your code host, add it as origin: `git remote add origin <url>`; then push: `git push -u origin --all`');
   for (const note of found) assert.doesNotMatch(note.fix, /, then push|and push/, 'push comes after a remote is added');
 });

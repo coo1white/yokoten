@@ -21,6 +21,8 @@ import { type TrustChange, type TrustPlan } from './codex.ts';
 import { type Added, addHook, checkHooksFile, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
+import { readStop } from './claude-code.ts';
+import type { AgentAdapter } from './runtime.ts';
 
 // bash takes `command` and `workdir`; the edit tools take `path`.
 const SHELL = 'bash';
@@ -44,7 +46,7 @@ export function readToolCall(input: unknown): Action {
 }
 
 /** A Stop event: the same fields as Claude Code's (`cwd`, `stop_hook_active`). */
-export { readStop } from './claude-code.ts';
+export { readStop };
 
 const projectHooks = (root: string) => join(root, '.muse', 'hooks.json');
 
@@ -233,4 +235,20 @@ export const DESK: RuntimeDesk = {
   login: (env) => [{ from: join(configDir(env), 'auth.json'), to: join('config', 'muse', 'auth.json') }],
   stateEnv: (state) => ({ XDG_CONFIG_HOME: join(state, 'config'), XDG_DATA_HOME: join(state, 'data') }),
   hosts: ['api.meta.ai'],
+};
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'muse',
+  label: 'Muse Code',
+  projectHook: '`.muse/hooks.json`: PreToolUse and Stop',
+  userHook: '~/.config/muse/settings.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: false, hasStopHook: true, needsTrust: true, failsOpen: true, passesRole: false },
+  readToolCall,
+  readStop,
+  releaseFix: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', tool_name: 'bash', tool_input: { command } }),
 };

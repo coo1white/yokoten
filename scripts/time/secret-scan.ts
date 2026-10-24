@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { setPriority } from 'node:os';
 import { parseArgs } from 'node:util';
-import { findSecretHits } from '../../src/rules/secrets.ts';
+import { findSecretHits } from '../../src/rules/privacy/secrets.ts';
 
 const { values: options } = parseArgs({
   options: {

@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectSandbox, blankedToml, hasTomlKey, hasTomlTable, hookHash, isInsideProject, parseToml, readTrust, readTrustTables, revertTrust, sandboxProblem, type TrustChange, writeTrust } from '../../../src/agents/runtimes/codex.ts';
+import { addProjectSandbox, blankedToml, hasTomlKey, hasTomlTable, hookHash, isInsideProject, parseToml, readModelIdentity, readTrust, readTrustTables, revertTrust, sandboxProblem, type TrustChange, writeTrust } from '../../../src/agents/runtimes/codex.ts';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 
 // Each call is shaped as the runtime's hook docs show it (#30): Codex's PreToolUse
@@ -88,6 +88,18 @@ test('hook --agent codex: shell calls by command, apply_patch by the files it to
   // A patch is not a command, and an unknown tool is neither.
   assert.equal((await call('apply_patch', 'git push --tags')).status, 0);
   assert.equal((await call('mcp__fs__write', 'git push --tags')).status, 0);
+});
+
+test('codex config.toml: the model and provider it names, or null (#748)', () => {
+  const home = makeTempDir('codex-');
+  const config = (text: string) => writeFileSync(join(home, 'config.toml'), text);
+  assert.equal(readModelIdentity({ CODEX_HOME: home }), null, 'no file yet');
+  config('model = "deepseek-flash"\nmodel_provider = "deepseek"\n\n[model_providers.deepseek]\nname = "DeepSeek"\n');
+  assert.deepEqual(readModelIdentity({ CODEX_HOME: home }), { model: 'deepseek-flash', provider: 'deepseek' });
+  config('model = "gpt-6.1-sol"\n');
+  assert.deepEqual(readModelIdentity({ CODEX_HOME: home }), { model: 'gpt-6.1-sol', provider: '' }, 'the provider is optional');
+  config('sandbox_mode = "workspace-write"\n');
+  assert.equal(readModelIdentity({ CODEX_HOME: home }), null, 'no model key');
 });
 
 // The hooks init wrote in a real run of Codex 0.163.0 on 2026-10-19 (#340), and the hashes

@@ -36,7 +36,7 @@ import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf
 import { readOriginUrl } from './plan.ts';
 import { writeTestsJob } from './advice/tests-job.ts';
 import { type Ask, isYes } from './install.ts';
-import { copyRuntime, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
+import { copyRuntime, describeWrite, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
 export const isSelf = (root: string): boolean => {
@@ -83,7 +83,7 @@ type SandboxWrite = 'added' | 'same' | 'kept' | 'hand' | 'unreadable' | Problem;
 /** One init line for one agent's sandbox (#589). */
 function sandboxLine(agent: string, file: string, why: string, write: SandboxWrite): string {
   if (write === 'added') return `added the ${agent} sandbox in ${file} (${why})`;
-  if (write === 'same') return `same the ${agent} sandbox in ${file}`;
+  if (write === 'same') return describeWrite('same', `the ${agent} sandbox in ${file}`);
   if (write === 'kept') return `kept your ${agent} sandbox in ${file} (doctor names what differs)`;
   if (write === 'hand') return `skipped the ${agent} sandbox: ${file} has comments, so add ${gemini.SANDBOX_HAND_ADD} by hand, then run \`yokoten init\` again`;
   if (write === 'unreadable') return `skipped the ${agent} sandbox: can't read ${file} (make it readable, then run \`yokoten init\` again)`;
@@ -149,7 +149,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   const hookCli = hookCliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
     const copied = copyRuntime(join(root, '.yokoten'));
-    report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
+    report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (a copy of yokoten, about 90 files; committing it is the point)');
   }
   const hooks = readHookSetup(root, env);
   const kit = join(KIT, 'project');
@@ -197,9 +197,9 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
     checkProjectSettings(root);
     return [
-      `${addProjectHook(root, hookCli)} the tool-call hook in .claude/settings.json`,
-      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, and a worker's done-when check, on Stop and SubagentStop)`,
-      `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+      describeWrite(addProjectHook(root, hookCli), 'the tool-call hook in .claude/settings.json'),
+      describeWrite(addProjectStopHook(root, hookCli), "the stop check in .claude/settings.json (changed files, and a worker's done-when check, on Stop and SubagentStop)"),
+      describeWrite(setProjectEnv(root, 'TZ', 'UTC'), 'TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)'),
     ];
   });
   // Codex, Gemini CLI, Antigravity CLI, OpenCode, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
@@ -208,30 +208,30 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
     codex.checkProjectHooks(root);
     return [
-      `${codex.addProjectHook(root, hookCli)} the Codex tool-call hook in .codex/hooks.json`,
-      `${codex.addProjectStopHook(root, hookCli)} the Codex stop check in .codex/hooks.json`,
+      describeWrite(codex.addProjectHook(root, hookCli), 'the Codex tool-call hook in .codex/hooks.json'),
+      describeWrite(codex.addProjectStopHook(root, hookCli), 'the Codex stop check in .codex/hooks.json'),
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
     gemini.checkProjectHooks(root, hookCli);
     return [
-      `${gemini.addProjectHook(root, hookCli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
-      `${gemini.addProjectStopHook(root, hookCli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
+      describeWrite(gemini.addProjectHook(root, hookCli), 'the Gemini CLI tool-call hook in .gemini/settings.json'),
+      describeWrite(gemini.addProjectStopHook(root, hookCli), 'the Gemini CLI stop check in .gemini/settings.json (AfterAgent)'),
     ];
   });
   const antigravityHooks = agentHooks('the Antigravity CLI hook', '.agents/hooks.json', () => [
-    `${antigravity.addProjectHook(root, hookCli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
+    describeWrite(antigravity.addProjectHook(root, hookCli), 'the Antigravity CLI tool-call hook in .agents/hooks.json'),
   ]);
   // OpenCode has no trust step in the docs we have. The plugin loads when OpenCode starts.
   const openCodePlugin = agentHooks('the OpenCode plugin', opencode.PLUGIN_FILE, () => [
-    `${opencode.addProjectPlugin(root, hookCli)} the OpenCode tool-call plugin in ${opencode.PLUGIN_FILE}`,
+    describeWrite(opencode.addProjectPlugin(root, hookCli), `the OpenCode tool-call plugin in ${opencode.PLUGIN_FILE}`),
   ]);
   const museHooks = agentHooks('the Muse Code hooks', '.muse/hooks.json', () => {
     const added = muse.addProjectHooks(root, hookCli);
     return [
-      `${added.guard} the Muse Code tool-call hook in .muse/hooks.json`,
-      `${added.stop} the Muse Code stop check in .muse/hooks.json`,
-      `${added.doctor} the Muse Code session doctor in .muse/hooks.json`,
+      describeWrite(added.guard, 'the Muse Code tool-call hook in .muse/hooks.json'),
+      describeWrite(added.stop, 'the Muse Code stop check in .muse/hooks.json'),
+      describeWrite(added.doctor, 'the Muse Code session doctor in .muse/hooks.json'),
     ];
   });
   // Grok CLI runs the project's hooks only in a folder the user trusts. `yokoten trust`
@@ -239,14 +239,20 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   const grokHooks = agentHooks('the Grok CLI hooks', grok.HOOKS_FILE, () => {
     const added = grok.addProjectHooks(root, hookCli);
     return [
-      `${added.guard} the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`,
-      `${added.stop} the Grok CLI stop check in ${grok.HOOKS_FILE}`,
+      describeWrite(added.guard, `the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`),
+      describeWrite(added.stop, `the Grok CLI stop check in ${grok.HOOKS_FILE}`),
     ];
   });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
-  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
+  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => {
+    const added = dsh.addProjectHooks(root, hookCli);
+    return dsh.initLines([
+      describeWrite(added.guard, `the DeepSeek Harness tool-call hook in ${dsh.HOOKS_FILE}`),
+      describeWrite(added.patch, `the DeepSeek Harness launch patch in ${dsh.PATCH_FILE}`),
+    ]);
+  });
   // Trust steps print only for an agent installed on this machine (#654). The hook files
   // above are still written. Gemini CLI and Antigravity CLI have no trust step. One line
   // names the guide when any step was left out.
@@ -480,7 +486,7 @@ function writeCodeOwners(root: string, gh: Gh, env: Env): string {
   if (org) return `wrote .github/CODEOWNERS (the lead-only paths; @${remote} is an organization, so put a person or @${remote}/<team> in place of ${OWNER_PLACEHOLDER})`;
   return owner
     ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
-    : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
+    : `wrote .github/CODEOWNERS (the lead-only paths; make the repo, add the remote and push, then put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
 }
 
 // ---- Dependabot for the project's own packages (#379) ----
@@ -990,6 +996,11 @@ export function hookFile(root: string, hooksPath: string, hook: CommitHook = 'pr
 /** The lines init adds to a project's own pre-commit and pre-merge-commit. `exit 1` because a hook may go on after them. */
 export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
 
+/** What `addCheckLines` did, in the report's words: a hook that already ran the check is "kept". */
+function checkWords(result: ReturnType<typeof addCheckLines>): string {
+  return result === 'same' ? 'kept' : result;
+}
+
 /**
  * Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it.
  * Its own lines stay. A hook git would skip, for lack of the execute bit, is made executable.
@@ -1242,7 +1253,7 @@ function writeGithooks(root: string, cli: string, kit: string, handOff: boolean,
         writeFileSync(path, placed);
         chmodSync(path, statSync(path).mode | 0o111);
       }
-      lines.push(`${placed !== null ? 'updated' : result === 'same' ? 'kept' : result} ${rel}`);
+      lines.push(`${placed !== null ? 'updated' : checkWords(result)} ${rel}`);
     }
     if (old) lines.push(`kept your ${old.file}: ${rel} runs it${isCommitHook(hook) ? ' after the check' : ''}`);
   }
@@ -1279,7 +1290,7 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: str
   }
   const lines = COMMIT_HOOKS.map((hook) => {
     const file = fileOf(hook) as string;
-    return `${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
+    return `${checkWords(addCheckLines(join(root, file), cli))} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
   });
   if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit and .husky/pre-merge-commit');
   return lines;

@@ -20,7 +20,7 @@ import { type Env } from '../../../../../rules/config.ts';
 import { homeOf } from '../../../../../rules/privacy.ts';
 import { commonGitDir } from '../../../../../run/hook.ts';
 import { boardHome } from '../../agents.ts';
-import { LINE_READERS, type StreamSource } from '../items.ts';
+import { LINE_READERS, type StreamItem, type StreamSource } from '../items.ts';
 
 /** One session log the board can stream: which runtime wrote it, the file, and when it last changed. */
 export interface FoundLog {
@@ -241,14 +241,20 @@ function lastAssistantSay(file: string, source: StreamSource, tree: string): str
     const lines = text.split('\n');
     for (let index = lines.length - 1; index >= 0; index -= 1) {
       if (!lines[index].trim()) continue;
-      let record: unknown;
-      try {
-        record = JSON.parse(lines[index]);
-      } catch {
-        continue;
+      let said: StreamItem[];
+      if (source === 'plain') {
+        said = reader(lines[index], tree);
+      } else {
+        let record: unknown;
+        try {
+          record = JSON.parse(lines[index]);
+        } catch {
+          continue;
+        }
+        said = reader(record, tree);
       }
-      const said = reader(record, tree).find((item) => item.kind === 'say');
-      if (said?.text.trim()) return said.text;
+      const item = said.find((one) => one.kind === 'say');
+      if (item?.text.trim()) return item.text;
     }
     return '';
   } catch {
@@ -268,12 +274,12 @@ export function lastAssistantText(file: string, source: StreamSource, tree: stri
   return lastAssistantSay(file, source, tree).trim();
 }
 
-/** The newest Claude Code log of a worktree: its own sessions, or a subagent whose task names it. */
-export function findClaudeLog(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog | null {
+/** Every Claude Code log of a worktree: its own sessions, or a subagent whose task names it. */
+export function claudeLogs(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog[] {
   const registered = readLeadSession(tree, env);
-  if (registered) return registered;
+  if (registered) return [registered];
   const home = homeOf(env);
-  if (!home) return null;
+  if (!home) return [];
   const roots = claudeProjects(tree, home, env);
   const found: FoundLog[] = [];
   for (const projects of roots) {
@@ -302,7 +308,12 @@ export function findClaudeLog(tree: string, env: Env, cache: LogCache, now: numb
       }
     }
   }
-  return newest(found);
+  return found;
+}
+
+/** The newest Claude Code log of a worktree: its own sessions, or a subagent whose task names it. */
+export function findClaudeLog(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog | null {
+  return newest(claudeLogs(tree, env, cache, now));
 }
 
 /** The workspace a Muse session runs in, from the metadata at its start, or ''. */
@@ -317,10 +328,10 @@ export function museRoot(head: string): string {
   }
 }
 
-/** The newest Muse Code session of a worktree: one whose workspace is the worktree. */
-export function findMuseLog(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog | null {
+/** Every Muse Code session of a worktree: one whose workspace is the worktree. */
+export function museLogs(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog[] {
   const home = homeOf(env);
-  if (!home) return null;
+  if (!home) return [];
   const roots = [join(stateDir(env.XDG_DATA_HOME, ['.local', 'share'], home), 'muse'), join(`${tree}.state`, 'muse', 'data', 'muse')].map((root) => join(root, 'sessions'));
   const found: FoundLog[] = [];
   for (const sessions of roots) {
@@ -343,7 +354,12 @@ export function findMuseLog(tree: string, env: Env, cache: LogCache, now: number
       }
     }
   }
-  return newest(found);
+  return found;
+}
+
+/** The newest Muse Code session of a worktree: one whose workspace is the worktree. */
+export function findMuseLog(tree: string, env: Env, cache: LogCache, now: number = Date.now()): FoundLog | null {
+  return newest(museLogs(tree, env, cache, now));
 }
 
 /** The newest Grok session of a worktree: Grok keeps one folder of sessions per working folder. */
@@ -415,24 +431,107 @@ export function findCodexLog(tree: string, env: Env, cache: LogCache, now: numbe
   return newest(found);
 }
 
-/** The finders by runtime, as a status file's vendor names it. */
-const LOG_FINDERS: Record<string, (tree: string, env: Env, cache: LogCache) => FoundLog | null> = {
-  claude: findClaudeLog,
-  'claude-code': findClaudeLog,
-  muse: findMuseLog,
-  grok: findGrokLog,
-  codex: findCodexLog,
-};
+/** The longest plain log path the board keeps. A real path is far shorter. */
+const PLAIN_LOG_PATH_LIMIT = 4096;
+
+/**
+ * The named log folders a plain log may live in, beyond the worktree: a desk's own
+ * runtime folder, and the runtime's data folder. OpenCode keeps its log at
+ * `<data>/opencode/log/opencode.log`.
+ */
+function plainLogFolders(tree: string, key: string, env: Env): string[] {
+  if (key !== 'opencode') return [];
+  const folders = [join(`${tree}.state`, 'opencode', 'log')];
+  const home = homeOf(env);
+  if (home) folders.push(join(stateDir(env.XDG_DATA_HOME, ['.local', 'share'], home), 'opencode', 'log'));
+  return folders;
+}
+
+/**
+ * True when `real` is `root` or inside it, both resolved, so a symlink cannot leave.
+ * The root itself must be a real folder: an agent that writes the worktree could
+ * otherwise link a named folder to `/` and hand over every file.
+ */
+function isInsideRoot(real: string, root: string): boolean {
+  try {
+    const given = lstatSync(root);
+    if (!given.isDirectory() || given.isSymbolicLink()) return false;
+    const base = realpathSync(root);
+    return real === base || real.startsWith(base.endsWith(sep) ? base : `${base}${sep}`);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A plain text log named by the status file's `log` field, or null. The path must be
+ * absolute, and resolve to a regular file inside the worktree or a named runtime log
+ * folder. A symlink that leaves those folders is refused. Every line is masked like any
+ * other.
+ */
+export function findPlainLog(tree: string, vendor: string, env: Env, path: string): FoundLog | null {
+  const file = path.trim();
+  if (!file || file.length > PLAIN_LOG_PATH_LIMIT || !isAbsolute(file)) return null;
+  let real = '';
+  try {
+    real = realpathSync(file);
+    if (!statSync(real).isFile()) return null;
+  } catch {
+    return null;
+  }
+  const roots = [tree, ...plainLogFolders(tree, vendor.trim().toLowerCase(), env)];
+  if (!roots.some((root) => isInsideRoot(real, root))) return null;
+  const mtime = fileTime(real);
+  return mtime === null ? null : { source: 'plain', file: real, mtime };
+}
 
 /**
  * The session log of the agent in `tree`, or null when there is none. A known vendor's
  * runtime is asked; any other vendor, or none, gets the newest log any runtime has there.
- * DeepSeek runs on the Codex CLI, so it reads a Codex rollout and no other log.
+ * DeepSeek runs on the Codex CLI, so it reads a Codex rollout and no other log. When there
+ * is no session log, a plain text log named by the status file's `log` field is read
+ * instead (#694). It must stay inside the worktree or a named runtime log folder.
+ * OpenCode 2 keeps its sessions in a data folder, but not as JSON lines this reader can
+ * follow, so an OpenCode agent uses that plain log.
  */
-export function findAgentLog(tree: string, vendor: string, env: Env, cache: LogCache): FoundLog | null {
+export function findAgentLog(tree: string, vendor: string, env: Env, cache: LogCache, logPath = ''): FoundLog | null {
   const key = vendor.trim().toLowerCase();
-  if (key === 'deepseek' || key === 'deepseek-harness') return findCodexLog(tree, env, cache);
-  const finder = Object.hasOwn(LOG_FINDERS, key) ? LOG_FINDERS[key] : null;
-  if (finder) return finder(tree, env, cache);
-  return newest([findClaudeLog(tree, env, cache), findMuseLog(tree, env, cache), findGrokLog(tree, env), findCodexLog(tree, env, cache)].filter((log): log is FoundLog => log !== null));
+  const session = sessionLog(tree, key, env, cache);
+  return session ?? findPlainLog(tree, key, env, logPath);
+}
+
+/**
+ * Every session log of the agent in `tree`, newest first: the usage view reads each one
+ * (#611). A plain text log stands in when there is no session log. The vendor key is read
+ * as in `findAgentLog`.
+ */
+export function findAgentLogs(tree: string, vendor: string, env: Env, cache: LogCache, logPath = '', now: number = Date.now()): FoundLog[] {
+  const key = vendor.trim().toLowerCase();
+  const found = sessionLogs(tree, key, env, cache, now);
+  if (!found.length) {
+    const plain = findPlainLog(tree, key, env, logPath);
+    if (plain) found.push(plain);
+  }
+  return found.sort((a, b) => b.mtime - a.mtime);
+}
+
+/** The session log for a vendor key, or null. No plain log here: its path comes from the status file. */
+function sessionLog(tree: string, key: string, env: Env, cache: LogCache): FoundLog | null {
+  return newest(sessionLogs(tree, key, env, cache, Date.now()));
+}
+
+/** Every session log for a vendor key, in no order. No plain log here: its path comes from the status file. */
+function sessionLogs(tree: string, key: string, env: Env, cache: LogCache, now: number): FoundLog[] {
+  if (key === 'deepseek' || key === 'deepseek-harness') return single(findCodexLog(tree, env, cache));
+  if (key === 'opencode') return [];
+  if (key === 'claude' || key === 'claude-code') return claudeLogs(tree, env, cache, now);
+  if (key === 'muse') return museLogs(tree, env, cache, now);
+  if (key === 'grok') return single(findGrokLog(tree, env));
+  if (key === 'codex') return single(findCodexLog(tree, env, cache));
+  return [...claudeLogs(tree, env, cache, now), ...museLogs(tree, env, cache, now), ...single(findGrokLog(tree, env)), ...single(findCodexLog(tree, env, cache))];
+}
+
+/** A single log as a list of one, or none. */
+function single(log: FoundLog | null): FoundLog[] {
+  return log ? [log] : [];
 }
