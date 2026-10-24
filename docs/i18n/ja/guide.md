@@ -900,7 +900,7 @@ yokoten 自身のコードは五つのルールに従います。理由と出典
 `test/repo/architecture.test.ts` はルール 2 と 3、そして関数の中の `CONSTANT_CASE` をチェックします。失敗はそれぞれ、何を変えるかを言います。
 
 ```
-src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
+src/rules/guard/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
 ```
 
 どのプロジェクトでも、`check --pr` は作られた場所から遠くで使われる一文字の名前と、4 語より多い名前に注意します。読むのは、プルリクエストが TypeScript と JavaScript のファイルに足す行だけです。注意が CI を失敗させることは決してありません。
@@ -1163,7 +1163,7 @@ IP のチェックは IPv4 だけを覆い、`10.x` や `192.168.x` のような
 - **環境。** `env` と `printenv` は絞り込まれません。あらゆる種類の秘密情報を出力します。エージェントのセッションで走らせないでください。
 - **ブラウザーのページとスクリーンショット。** アカウントのページをテキストとして読まないでください。
 
-フックはすべてのコマンドを知れません。出力があなたの詳細を見せるときは、インシデントを開き、そのコマンドに `ACCOUNT_PRINTERS`（`src/rules/guards.ts`）の行を与えてください。
+フックはすべてのコマンドを知れません。出力があなたの詳細を見せるときは、インシデントを開き、そのコマンドに `ACCOUNT_PRINTERS`（`src/rules/guard/guards.ts`）の行を与えてください。
 
 ### エージェントの環境が持つもの
 

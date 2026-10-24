@@ -20,8 +20,15 @@ import {
   PLUGIN_ROOT,
   ROOT,
 } from '../../repo/helpers.ts';
-import { addProjectSandbox, addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, readStop, sandboxProblem } from '../../../src/agents/runtimes/claude-code.ts';
+import { addProjectSandbox, addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, readStop, readToolCall, sandboxProblem } from '../../../src/agents/runtimes/claude-code.ts';
 import { pluginHookCommand } from '../../../src/run/cli.ts';
+
+test('readToolCall: the PowerShell tool names its command as PowerShell (#332)', () => {
+  const call = (name: string) => ({ cwd: '/w', tool_name: name, tool_input: { command: 'Get-ChildItem' } });
+  assert.equal(readToolCall(call('PowerShell')).shell, 'powershell');
+  assert.equal(readToolCall(call('Bash')).shell, undefined);
+  assert.equal(readToolCall({ cwd: '/w', tool_input: { command: 'Get-ChildItem' } }).shell, undefined);
+});
 
 test('claude-code readStop: a Stop or SubagentStop event is checked; a worker subagent is a worker (#614)', () => {
   assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, subagent: false, sessionId: undefined });

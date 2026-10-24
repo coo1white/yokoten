@@ -189,6 +189,7 @@ agent 离开以后，它的列表也丢掉。
 没有一份大家共用的工具名清单。
 `Action` 有 `command`、`commands`、`paths`、`cwd` 和 `worker`。
 是 shell 时，`command` 就是那条命令。
+调用指明 PowerShell 时，`shell` 就是 `powershell`，校验器会用 PowerShell 读取器读它。
 `paths` 是这次编辑会碰到的文件。
 事件里写了目录时，`cwd` 就是那个目录。
 调用来自 worker 时，`worker` 为真。

@@ -14,12 +14,13 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { accessSync, closeSync, constants, existsSync, fstatSync, globSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, type Stats, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
-import type { Config, Env } from './config.ts';
-import { loadConfig, matcher } from './config.ts';
-import { WORKTREES_DIR } from './layout.ts';
-import { type Finding, finding, noteWork } from './message.ts';
-import { checkCommandTitle } from './pr.ts';
-import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
+import type { Config, Env } from '../config.ts';
+import { loadConfig, matcher } from '../config.ts';
+import { WORKTREES_DIR } from '../layout.ts';
+import { type Finding, finding, noteWork } from '../message.ts';
+import { isPowerShell, readPowerShell, UnreadablePowerShell } from './powershell.ts';
+import { checkCommandTitle } from '../pr.ts';
+import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from '../privacy.ts';
 
 /** A file edit, by path relative to the repo root. */
 export function checkEdit(path: string, { config, env }: { config: Config; env: Env }): Finding | null {
@@ -1485,7 +1486,7 @@ export function isGranted(path: string, env: Env, foldsCase = FOLDS_CASE): boole
  * the hook applies to an edit (see `judge`): a worker's shell write is checked against the
  * same ones, and against a repo with a yokoten.json it finds above the file.
  */
-export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; repos?: RuledRepo[] }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; repos?: RuledRepo[]; shell?: 'powershell' }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   const outerAnswers = gitAnswers;
@@ -1494,7 +1495,22 @@ export function checkCommand(command: string, options: { env: Env; config?: Guar
     const isWorker = options.env.YOKOTEN_ROLE === 'worker';
     // The file rules are looked up once per call, and only for a worker.
     const rules = isWorker ? fileRules(options.repos ?? []) : undefined;
-    return withBudget(command.length, () => checkEachCommand(command, { ...options, rules }));
+    const reason = withBudget(command.length, () => checkEachCommand(command, { ...options, rules }));
+    if (reason) return reason;
+    // Windows agents send PowerShell (#332): the same rules, read by the second parser.
+    if (options.shell !== 'powershell' && !isPowerShell(command)) return null;
+    let statements: string[];
+    try {
+      statements = readPowerShell(command);
+    } catch (error) {
+      const why = error instanceof UnreadablePowerShell ? error.message : 'yokoten could not read it';
+      return finding('unreadable-command', `yokoten could not read this PowerShell command: ${why}`, 'split it into simpler commands, one per call');
+    }
+    for (const statement of statements) {
+      const inner = withBudget(statement.length, () => checkEachCommand(statement, { ...options, rules }));
+      if (inner) return inner;
+    }
+    return null;
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
   } finally {

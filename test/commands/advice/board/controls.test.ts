@@ -27,7 +27,7 @@ import {
   type BoardSpawner,
 } from '../../../../src/commands/advice/board/controls.ts';
 import type { Env } from '../../../../src/rules/config.ts';
-import { workerMarkAt, workerRole } from '../../../../src/rules/guards.ts';
+import { workerMarkAt, workerRole } from '../../../../src/rules/guard/guards.ts';
 import * as codexHooks from '../../../../src/agents/runtimes/codex.ts';
 import * as grokHooks from '../../../../src/agents/runtimes/grok.ts';
 
