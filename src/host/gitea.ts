@@ -120,19 +120,46 @@ interface Protection {
   enable_code_owner_review?: unknown;
 }
 
+/**
+ * True when `text` matches `pattern`, where `*` matches any run of characters.
+ *
+ * It walks both strings and never builds a RegExp. The pattern comes from a server,
+ * and a regex built from it can backtrack for a long time on a hostile pattern
+ * (CodeQL js/polynomial-redos).
+ */
+function matchesPattern(pattern: string, text: string): boolean {
+  let patternIndex = 0;
+  let textIndex = 0;
+  let starIndex = -1;
+  let starTextIndex = 0;
+  while (textIndex < text.length) {
+    if (patternIndex < pattern.length && pattern[patternIndex] === text[textIndex]) {
+      patternIndex++;
+      textIndex++;
+    } else if (patternIndex < pattern.length && pattern[patternIndex] === '*') {
+      starIndex = patternIndex;
+      patternIndex++;
+      starTextIndex = textIndex;
+    } else if (starIndex !== -1) {
+      // The last `*` takes one more character, and matching carries on after it.
+      patternIndex = starIndex + 1;
+      textIndex = ++starTextIndex;
+    } else {
+      return false;
+    }
+  }
+  while (patternIndex < pattern.length && pattern[patternIndex] === '*') patternIndex++;
+  return patternIndex === pattern.length;
+}
+
 /** True when a Gitea branch pattern (`main`, `release/*`) names `branch`. */
 function matchesBranch(pattern: string, branch: string): boolean {
-  if (pattern === branch) return true;
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-  return new RegExp(`^${escaped}$`).test(branch);
+  return matchesPattern(pattern, branch);
 }
 
 /** True when a tag pattern covers the next release tag too, not only one tag that exists now. */
 function coversReleaseTags(pattern: string): boolean {
-  if (!pattern) return false;
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-  const patternOf = new RegExp(`^${escaped}$`);
-  return ['v1.0.0', 'v2.0.0'].every((tag) => patternOf.test(tag));
+  return pattern !== '' && ['v1.0.0', 'v2.0.0'].every((tag) => matchesPattern(pattern, tag));
 }
 
 /** The default branch's rules, from the protection Gitea keeps, or none. */
