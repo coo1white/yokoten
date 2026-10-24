@@ -113,9 +113,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The same rule as npm (#632): a tag with a `-` is a pre-release, so it is not the
+          # latest release. Only a stable tag moves `latest`.
+          case "$GITHUB_REF_NAME" in
+            *-*) is_latest=false ;;
+            *) is_latest=true ;;
+          esac
           title="yokoten ${GITHUB_REF_NAME#v}"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" --title "$title" --notes-file notes.md
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "$title" --notes-file notes.md
+            gh release create "$GITHUB_REF_NAME" --verify-tag --latest="$is_latest" --title "$title" --notes-file notes.md
           fi
