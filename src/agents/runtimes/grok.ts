@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
@@ -32,6 +33,7 @@ import { type Added, addHook, checkHooksFile, type HookState, hookState, isObjec
 import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables } from './codex.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
+import type { AgentAdapter } from './runtime.ts';
 
 // The shell tool takes `command` (and may take `cwd`); the edit tools take `file_path`.
 const SHELL = new Set(['run_terminal_command', 'run_terminal_cmd', 'Bash']);
@@ -315,4 +317,25 @@ export const DESK: RuntimeDesk = {
   stateEnv: (state) => ({ GROK_HOME: state }),
   programParts: (env) => [join(env.GROK_HOME || join(homeIn(env), '.grok'), 'bin')],
   hosts: ['api.x.ai'],
+};
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'grok',
+  label: 'Grok CLI (`grok`)',
+  projectHook: '`.grok/hooks/yokoten.json`: PreToolUse and Stop',
+  userHook: '~/.grok/hooks/yokoten.json',
+  blocking: '`permissionDecision: "deny"` on stdout, and exit 2',
+  capabilities: { canRewrite: true, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: true },
+  readToolCall,
+  readStop,
+  formatDenial,
+  formatContext,
+  formatRewrite,
+  releaseFix: releaseFix(approve('grok')),
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', toolName: 'Bash', toolInput: { command } }),
 };
