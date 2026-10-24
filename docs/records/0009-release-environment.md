@@ -102,8 +102,8 @@ GitHub explains required reviewers and deployment tag rules in
    `npm ci` and `npm publish --access public`. Reject the waiting `publish` job on the
    run page.
 5. On npmjs.com, open the `yokoten` package > **Settings**. Under **Publishing
-   access**, choose "Require two-factor authentication and disallow tokens", then
-   **Update Package Settings**.
+   access**, choose "Require two-factor authentication and disallow bypass 2fa tokens",
+   then **Update Package Settings**.
 6. Just before the next release (the 2-day limit), on the same page, under **Trusted
    Publisher**, choose **GitHub Actions**. Enter organization `yokoten-labs`,
    repository `yokoten`, workflow filename `release.yml`, environment name `release`.

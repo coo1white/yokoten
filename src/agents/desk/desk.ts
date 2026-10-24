@@ -35,7 +35,7 @@ import { DESK as GROK } from '../runtimes/grok.ts';
 import { DESK as MUSE } from '../runtimes/muse.ts';
 import { DESK as OPENCODE } from '../runtimes/small/opencode.ts';
 import { buildAgentEnv } from './agent-env.ts';
-import { DESK_FILE, modelOf, prepareDeskTeam } from './team/team.ts';
+import { DESK_FILE, modelOf, prepareDeskTeam, vendorOf } from './team/team.ts';
 
 /** What a runtime's own file tells the desk: where its state is, how to move it, and its API hosts. */
 export interface RuntimeDesk {
@@ -61,6 +61,8 @@ export interface RuntimeDesk {
    * (OpenCode 2's `--standalone`). A sandbox that keeps loopback closed must open it.
    */
   loopback?: boolean;
+  /** The model and provider the agent's own config names (#748), or null when it names none. */
+  identity?: (env: Env) => { model: string; provider: string } | null;
 }
 
 /** The runtimes a desk can start, by the name `--agent` takes elsewhere. DeepSeek runs through Codex or OpenCode. */
@@ -271,6 +273,16 @@ export function planDesk(request: DeskRequest): DeskPlan {
   if (!request.command.length) throw new Error('no agent command after --');
   const { env } = request;
   const platform = request.platform ?? process.platform;
+  // Who the agent really is (#748): the agent's own config may name a model of another
+  // vendor than the harness's. The command line wins, as the runtime does: `--model X`
+  // names the model for the board's roster and for the desk's env alike. The model goes to
+  // the board; when the vendor differs, the brief also starts with one line saying so
+  // (identity.ts).
+  const named = runtime.identity?.(env) ?? null;
+  const asked = modelOf(request.command);
+  const model = asked !== 'model not named' && asked.trim() ? asked.trim() : named?.model ?? '';
+  const vendor = model ? vendorOf(request.runtime, model, named?.provider) : '';
+  const identity = model && vendor !== vendorOf(request.runtime, '') ? { model, vendor } : null;
   const home = realOr(homeIn(env));
   const desk = realOr(resolve(request.desk));
   if (!existsSync(join(desk, '.git'))) throw new Error(`${desk} is not a git clone. Make the desk with \`git clone <repo> <folder>\`.`);
@@ -322,7 +334,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
   if (request.team) {
     const folder = realOr(resolve(request.team.folder));
     if (isTooWide(folder) || isInside(desk, folder, platform) || isInside(folder, desk, platform)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
-    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: modelOf(request.command), desk });
+    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: model || 'model not named', desk });
     if (!readable.includes(team.readable)) readable.push(team.readable);
     writable.push(team.writable);
     locked.push(team.locked);
@@ -337,7 +349,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
     loopback: runtime.loopback,
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv } }), ...runtime.stateEnv(state), TZ: 'UTC' },
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }

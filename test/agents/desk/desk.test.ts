@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programExtensions, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
+import { identityLine } from '../../../src/agents/desk/team/who.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
 import { workerMarkAt } from '../../../src/rules/guards.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
@@ -227,6 +228,42 @@ test('proxyEnv: every proxy name in both cases, and Node told to read them', () 
   assert.equal(names.NODE_USE_ENV_PROXY, '1');
   assert.equal(names.NO_PROXY, '127.0.0.1,localhost,::1');
   assert.equal(names.no_proxy, names.NO_PROXY);
+});
+
+test('planDesk: a Codex config of another vendor names the model, and the brief starts with who it is (#748)', () => {
+  const { desk } = makeDesk();
+  const codexHome = makeTempDir('codex-');
+  const config = (text: string) => writeFileSync(join(codexHome, 'config.toml'), text);
+  const plan = () => planDesk({ runtime: 'codex', desk, command: ['node'], env: { ...env(), CODEX_HOME: codexHome }, markDesk: writeMark });
+  // A DeepSeek model through Codex: the board gets the real model, and the brief starts
+  // with who the agent is, so Codex's words about OpenAI are not its own.
+  config('model = "deepseek-flash"\nmodel_provider = "deepseek"\n\n[model_providers.deepseek]\nname = "DeepSeek"\n');
+  const deepseek = plan();
+  assert.equal(deepseek.env.YOKOTEN_MODEL, 'deepseek-flash');
+  assert.equal(deepseek.env.YOKOTEN_VENDOR, 'DeepSeek');
+  assert.match(identityLine('codex', deepseek.env), /^yokoten: you are DeepSeek \(deepseek-flash\), served through codex; /);
+  // The harness's own vendor needs no line: its prompt already tells the truth. The real
+  // model still reaches the board, so it shows the model rather than the harness default.
+  config('model = "gpt-6.1-sol"\nmodel_provider = "openai"\n');
+  const openai = plan();
+  assert.equal(openai.env.YOKOTEN_MODEL, 'gpt-6.1-sol');
+  assert.equal(openai.env.YOKOTEN_VENDOR, undefined);
+  assert.equal(identityLine('codex', openai.env), '');
+  // A provider whose name names its vendor counts when the model name does not.
+  config('model = "flash"\nmodel_provider = "deepseek"\n');
+  assert.equal(plan().env.YOKOTEN_VENDOR, 'DeepSeek');
+});
+
+test('planDesk: a command model wins over the config, for the roster and the env (#748)', () => {
+  const { projects, desk } = makeDesk();
+  const team = join(projects, 'origin.team');
+  const codexHome = makeTempDir('codex-');
+  writeFileSync(join(codexHome, 'config.toml'), 'model = "gpt-6.1-sol"\nmodel_provider = "openai"\n');
+  const plan = planDesk({ runtime: 'codex', desk, command: ['node', '--model', 'deepseek-flash'], env: { ...env(), CODEX_HOME: codexHome }, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), team: { folder: team, name: 'g1' } });
+  assert.equal(plan.env.YOKOTEN_MODEL, 'deepseek-flash');
+  assert.equal(plan.env.YOKOTEN_VENDOR, 'DeepSeek');
+  assert.match(identityLine('codex', plan.env), /^yokoten: you are DeepSeek \(deepseek-flash\)/);
+  assert.match(readFileSync(join(team, 'agents', 'g1.json'), 'utf8'), /"model": "deepseek-flash"/, 'the roster names the model the env names');
 });
 
 test('planDesk: on a team, the team folder read-only, only the own outbox writable, the desk file locked (#674)', () => {
