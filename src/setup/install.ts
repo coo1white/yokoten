@@ -27,7 +27,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { STOPS_FILE, STOPS_OFF_FILE } from '../rules/guards.ts';
+import { STOPS_FILE, STOPS_OFF_FILE } from '../rules/guard/guards.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import * as copilot from '../agents/copilot.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';

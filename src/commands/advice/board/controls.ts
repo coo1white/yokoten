@@ -29,7 +29,7 @@ import { readGit } from '../../../run/check.ts';
 import { hookCliPath } from '../../../setup/init.ts';
 import { type MachineState, type ScheduleRoom, type ScheduleSettings, type ScheduleSummary, roomStateOf, SCHEDULE_DEFAULTS, takeStarts } from '../schedule.ts';
 import { planOf, roomOf } from './waiting.ts';
-import { markWorktree } from '../../hook.ts';
+import { markWorktree } from '../../guard/hook.ts';
 import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
 /**

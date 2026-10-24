@@ -9,14 +9,14 @@ import * as claudeCode from '../../agents/runtimes/claude-code.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import { ghIn } from '../../host/github/index.ts';
 import { DEFAULTS, loadConfig } from '../../rules/config.ts';
-import { workerRole } from '../../rules/guards.ts';
+import { workerRole } from '../../rules/guard/guards.ts';
 import { canKeepStatus, changeAgentStatus, findStatusCheckout, startFields } from '../../run/hook.ts';
 import { formatFinding } from '../../rules/message.ts';
 import { hideHome } from '../../rules/privacy.ts';
 import { draft, facts, table } from '../../setup/advice/adopt.ts';
 import { explain, explainLines, ids } from '../../setup/advice/explain.ts';
 import { blocksToSay, doctor, OUTPUT_STOP, SERVER_TIMEOUT_MS, type SessionStart, UNFILTERED } from '../../setup/doctor/index.ts';
-import { READERS } from '../hook.ts';
+import { READERS } from '../guard/hook.ts';
 import { type Invocation, noRootFinding, parse, print, printJson, requireRoot, rootOf, say, usage } from '../shared.ts';
 import { writeLeadSession } from './board/feed/read/logs.ts';
 

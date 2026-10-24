@@ -7,6 +7,7 @@ import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
+import { formatUsd, isToday, readLimit, readPayments, spentToday } from '../../../rules/guard/spending.ts';
 import type { BoardIssue } from './controls.ts';
 import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees } from './agents.ts';
 import { buildNeeds } from './feed/needs.ts';
@@ -330,9 +331,49 @@ function agentView(found: FoundAgent, env: Env, now: number, nickname: string, i
   };
 }
 
+/** One payment the board shows: when, how much, to whom, and whether it went through. */
+export interface BoardPayment {
+  at: string;
+  amount: string;
+  service: string;
+  isPaid: boolean;
+}
+
+/** The day's spending: the limit, what it cost, and the payments. */
+export interface BoardSpending {
+  isSet: boolean;
+  day: string;
+  payment: string;
+  services: string[];
+  spentToday: string;
+  setAt: string;
+  /** Why the limit or the log cannot be read; empty when both are good. */
+  problem: string;
+  payments: BoardPayment[];
+}
+
+/** The day's payments, newest first, with the owner's limit. Undefined when there is nothing to show. */
+function spendingView(env: Env, mask: (text: string) => string, now: number): BoardSpending | undefined {
+  const found = readLimit(env);
+  const { payments, problem } = readPayments(env);
+  const today = payments.filter((payment) => isToday(payment, new Date(now)));
+  const limit = found.limit;
+  const view: BoardSpending = {
+    isSet: limit !== null,
+    day: limit ? formatUsd(limit.dayUsd) : '',
+    payment: limit ? formatUsd(limit.paymentUsd) : '',
+    services: limit ? limit.services.map(mask) : [],
+    spentToday: formatUsd(spentToday(payments, new Date(now))),
+    setAt: limit?.setAt ?? '',
+    problem: [found.problem, problem].filter(Boolean).join('; '),
+    payments: today.slice(-20).reverse().map((payment) => ({ at: new Date(payment.at).toISOString(), amount: formatUsd(payment.amountUsd), service: mask(payment.service), isPaid: payment.isPaid })),
+  };
+  // A fresh machine has no limit and no payment, so the board says nothing about spending.
+  return view.isSet || view.problem || view.payments.length ? view : undefined;
+}
+
 /** Everything the board shows. The pulls and the worktrees are their rows, or why they can't be read. */
-export interface BoardData {
-  /** The repo root the board runs in, with `~` for home. */
+export interface BoardData {  /** The repo root the board runs in, with `~` for home. */
   repo: string;
   /** The main checkout's folder name. The top bar shows this, not the worktree folder. */
   repoName: string;
@@ -347,6 +388,8 @@ export interface BoardData {
   usage?: BoardUsage;
   /** The lead's desk: what it is doing, the decisions, and its last reply (#701). */
   desk: LeadDesk;
+  /** Today's payments and the owner's limit (#640). */
+  spending?: BoardSpending;
   /** When the data was read. */
   updated: string;
   /** Seats per vendor, or null when `.git/yokoten-seats.json` is missing or bad. */
@@ -432,6 +475,7 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
     worktrees: typeof worktrees === 'string' ? worktrees : worktrees.map((tree) => ({ path: hideHome(tree.path, env), branch: tree.branch })),
     usage,
     desk: leadDesk(root, env, found),
+    spending: spendingView(env, mask, now),
     updated: new Date(now).toISOString(),
     seats: readBoardSeats(root),
   };

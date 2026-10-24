@@ -3,7 +3,7 @@
 import { terminalText } from '../../../../run/learn.ts';
 import type { BoardRun, BoardWaiting } from '../controls.ts';
 import { type BoardUsage, costWords, tokenText, totalOf } from '../feed/read/usage.ts';
-import type { AgentView, BoardData, PullView } from '../view.ts';
+import type { AgentView, BoardData, BoardSpending, PullView } from '../view.ts';
 
 /** One agent as plain words: its nickname, vendor, role, task, worktree, what it does now, and how long ago. */
 function formatAgent(agent: AgentView): string {
@@ -75,6 +75,18 @@ function formatUsage(usage: BoardUsage): string[] {
   ];
 }
 
+/** The day's payments as plain words: the limit, the total, and every payment (#640). */
+function formatSpending(spending: BoardSpending): string[] {
+  if (spending.problem) return ['Payments:', `- the spending record cannot be read: ${spending.problem}. Nothing is paid until it is fixed.`];
+  if (!spending.isSet) return ['Payments:', '- no spending limit is set, so an agent pays nothing. The owner sets one with `yokoten spend limit`.'];
+  const count = `${spending.services.length} service${spending.services.length === 1 ? '' : 's'}`;
+  return [
+    'Payments:',
+    `- limit $${spending.day} a day, $${spending.payment} a payment, ${count}${spending.services.length ? ` (${spending.services.join(', ')})` : ''}; $${spending.spentToday} paid today.`,
+    ...(spending.payments.length ? spending.payments.map((payment) => `- ${payment.at.slice(11, 16)} UTC, $${payment.amount} to ${payment.service}, ${payment.isPaid ? 'paid' : 'failed'}`) : ['- no payments today.']),
+  ];
+}
+
 /**
  * The board as plain text: the same data the page shows. With `extra` it also shows the
  * waiting list and the runs the board started; without it the text stays as before.
@@ -90,6 +102,7 @@ export function renderBoardText(board: BoardData, extra?: BoardTextExtra): strin
     'Needs you:',
     ...(board.needs.length ? board.needs.map((need) => `- ${need.title}: ${need.why}`) : ['- nothing.']),
     '',
+    ...(board.spending === undefined ? [] : [...formatSpending(board.spending), '']),
     'Agents:',
     ...(board.agents.length ? board.agents.map((agent) => `- ${formatAgent(agent)}`) : [`- none. Start an agent in this repo or its worktrees, or from the board page: it shows here by itself.`]),
     '',

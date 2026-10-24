@@ -295,7 +295,7 @@ function collectWords(): string[] {
   const desk = read('src/agents/desk/desk.ts');
   const env = read('src/agents/desk/agent-env.ts');
   const proxy = read('src/agents/desk/network/proxy.ts');
-  const command = read('src/commands/hook.ts');
+  const command = read('src/commands/guard/hook.ts');
   const words: string[] = [];
 
   words.push(...interfaceWords(hook, 'Action'));
@@ -408,8 +408,8 @@ function holderPaths(): string[] {
     'test/commands/advice/board/page/browser/script.test.ts',
     'src/run/hook.ts',
     'test/run/hook.test.ts',
-    'src/commands/hook.ts',
-    'test/commands/hook.test.ts',
+    'src/commands/guard/hook.ts',
+    'test/commands/guard/hook.test.ts',
     'src/commands/advice/board/agents.ts',
     'test/commands/advice/board/agents.test.ts',
     'src/commands/advice/board/controls.ts',

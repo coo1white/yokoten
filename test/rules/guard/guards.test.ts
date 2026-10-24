@@ -1,6 +1,6 @@
-// Tests for src/rules/guards.ts.
+// Tests for src/rules/guard/guards.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import {
   execFileSync,
@@ -20,11 +20,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { hookEnvironment, makeGitFolder, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
+import { hookEnvironment, makeGitFolder, makeSandbox, makeTempDir, runChild } from '../../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
-} from '../../src/rules/config.ts';
+} from '../../../src/rules/config.ts';
 import {
   addWorkerPath,
   checkCommand,
@@ -50,10 +50,10 @@ import {
   useHostCommands,
   workerRole,
   wrapForRedact,
-} from '../../src/rules/guards.ts';
-import { judge } from '../../src/run/hook.ts';
-import { invoke } from '../repo/invoke.ts';
-import { assertLinear, assertLinearEach, assertWallSmoke } from '../../scripts/linear.ts';
+} from '../../../src/rules/guard/guards.ts';
+import { judge } from '../../../src/run/hook.ts';
+import { invoke } from '../../repo/invoke.ts';
+import { assertLinear, assertLinearEach, assertWallSmoke } from '../../../scripts/linear.ts';
 
 const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { cwd: process.cwd(), env }), `should block: ${command}`);
 
@@ -1333,7 +1333,7 @@ test('lead-only files: git apply reads only a plain patch file under 1 MB, and s
       'const { checkCommand } = await import(guards);',
       "process.stdout.write(String(checkCommand(command, { env: { YOKOTEN_ROLE: 'worker' }, cwd })?.id));",
     ].join('\n');
-    const guards = pathToFileURL(join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts')).href;
+    const guards = pathToFileURL(join(import.meta.dirname, '../../..', 'src', 'rules', 'guard', 'guards.ts')).href;
     const child = runChild(process.execPath, ['--input-type=module', '-e', code], { input: JSON.stringify({ guards, command: 'git apply pipe.patch', cwd: sandbox.repo }) });
     assert.deepEqual([child.status, child.stdout], [0, 'lead-only'], `a FIFO is never read, nor waited on: ${child.stderr}`);
   }
@@ -2004,8 +2004,8 @@ test('hooks setting: env -C, env --chdir, builtin cd and GIT_COMMON_DIR move rep
 // A shape gives what it should at 8 times 512, or, for one with a size of its own, at
 // that size: 100k substitutions are refused. The cases go in on stdin.
 test('bash and hooks: loops that never spent the budget read a thousand repeats in linear time (#226)', () => {
-  const guards = join(import.meta.dirname, '../..', 'src', 'rules', 'guards.ts');
-  const linear = join(import.meta.dirname, '../..', 'scripts', 'linear.ts');
+  const guards = join(import.meta.dirname, '../../..', 'src', 'rules', 'guard', 'guards.ts');
+  const linear = join(import.meta.dirname, '../../..', 'scripts', 'linear.ts');
   type Part = string | [string];
   type Case = { mode: 'command' | 'hook'; parts: Part[]; want: string; size?: number };
   const cases: Case[] = [];
@@ -3854,7 +3854,7 @@ test('guard: a worker stays in its box: plain cd inside the worktree, short sett
     'git config user.name',
     'git config --get user.name',
     'git config --list',
-    "grep -E 'a|b' src/rules/guards.ts",
+    "grep -E 'a|b' src/rules/guard/guards.ts",
     'less README.md',
     'file README.md',
   ]) allowed(command, worker);
@@ -4159,7 +4159,7 @@ test('useHostCommands: a second, different registration is refused (#650)', () =
 });
 
 test('checkCommand: without the host rules loaded, a gh command is refused, not let through (#650)', () => {
-  const guards = pathToFileURL(join(process.cwd(), 'src/rules/guards.ts')).href;
+  const guards = pathToFileURL(join(process.cwd(), 'src/rules/guard/guards.ts')).href;
   const script = `const { checkCommand } = await import(process.argv[1]); const at = (c) => checkCommand(c, { cwd: process.cwd(), env: {} })?.id ?? 'allowed'; console.log(at('gh run cancel 1'), at('gh pr view 1'), at('ls'));`;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, guards], { encoding: 'utf8' });
   assert.equal(result.stdout.trim(), 'run-remove run-remove allowed', result.stderr);

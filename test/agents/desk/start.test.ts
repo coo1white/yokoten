@@ -17,7 +17,7 @@ import { planDesk } from '../../../src/agents/desk/desk.ts';
 import { appendMessage } from '../../../src/agents/desk/team/outbox.ts';
 import { LEAD, prepareDeskTeam } from '../../../src/agents/desk/team/team.ts';
 import { chooseBackend, signalEnd, startDesk } from '../../../src/agents/desk/start.ts';
-import { markWorktree } from '../../../src/commands/hook.ts';
+import { markWorktree } from '../../../src/commands/guard/hook.ts';
 import { CLI, makeTempDir } from '../../repo/helpers.ts';
 
 test('chooseBackend: native Windows is experimental and sent to WSL2, an unknown system is named', () => {

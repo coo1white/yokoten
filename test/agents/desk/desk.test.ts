@@ -9,8 +9,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { DESK_RUNTIMES, findProgram, hiddenFolders, isInside, OWN_RUNTIME, planDesk, prepareDeskState, programExtensions, programFolders, proxyEnv } from '../../../src/agents/desk/desk.ts';
 import { identityLine } from '../../../src/agents/desk/team/who.ts';
-import { markWorktree } from '../../../src/commands/hook.ts';
-import { workerMarkAt } from '../../../src/rules/guards.ts';
+import { markWorktree } from '../../../src/commands/guard/hook.ts';
+import { workerMarkAt } from '../../../src/rules/guard/guards.ts';
 import { makeTempDir } from '../../repo/helpers.ts';
 import { TEST_HOME } from '../../repo/home.ts';
 

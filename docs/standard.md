@@ -212,7 +212,7 @@ How yokoten checks it. The guard checks `command` and `paths` before the tool ru
 Version 1. `Action` has no version field.
 
 - [src/run/hook.ts](../src/run/hook.ts) and [test/run/hook.test.ts](../test/run/hook.test.ts).
-- [src/commands/hook.ts](../src/commands/hook.ts) and [test/commands/hook.test.ts](../test/commands/hook.test.ts).
+- [src/commands/guard/hook.ts](../src/commands/guard/hook.ts) and [test/commands/guard/hook.test.ts](../test/commands/guard/hook.test.ts).
 - [src/agents/runtimes/claude-code.ts](../src/agents/runtimes/claude-code.ts) and [test/agents/runtimes/claude-code.test.ts](../test/agents/runtimes/claude-code.test.ts).
 - [src/agents/runtimes/codex.ts](../src/agents/runtimes/codex.ts) and [test/agents/runtimes/codex.test.ts](../test/agents/runtimes/codex.test.ts).
 - [src/agents/runtimes/gemini.ts](../src/agents/runtimes/gemini.ts) and [test/agents/runtimes/gemini.test.ts](../test/agents/runtimes/gemini.test.ts).
@@ -338,7 +338,7 @@ The board skips a missing, broken or non-object file.
 Version 1. The file has no version field.
 
 - [src/run/hook.ts](../src/run/hook.ts) and [test/run/hook.test.ts](../test/run/hook.test.ts).
-- [src/commands/hook.ts](../src/commands/hook.ts) and [test/commands/hook.test.ts](../test/commands/hook.test.ts).
+- [src/commands/guard/hook.ts](../src/commands/guard/hook.ts) and [test/commands/guard/hook.test.ts](../test/commands/guard/hook.test.ts).
 - [src/commands/advice/board/agents.ts](../src/commands/advice/board/agents.ts) and [test/commands/advice/board/agents.test.ts](../test/commands/advice/board/agents.test.ts).
 - [src/commands/advice/board/controls.ts](../src/commands/advice/board/controls.ts) and [test/commands/advice/board/controls.test.ts](../test/commands/advice/board/controls.test.ts).
 - [src/commands/advice/board/view.ts](../src/commands/advice/board/view.ts) and [test/commands/advice/board/view.test.ts](../test/commands/advice/board/view.test.ts).
