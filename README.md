@@ -34,6 +34,8 @@ hooks, sandbox and settings, and doesn't replace them.
 3. **A board for a team of agents.** Agents from different vendors work side by side,
    each in its own fenced desk, and you see all of them on one page.
 
+yokoten works before the pull request and alongside [PR review bots](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests).
+
 ## Install
 
 No clone and no PATH edit. Homebrew and Scoop install Node for you.
