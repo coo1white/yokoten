@@ -757,15 +757,17 @@ export function readCommandTitle(command: string[]): CommandTitle | UnreadableTi
   return title === null ? null : { kind, title, labels };
 }
 
-/** The title (the last one, as in gh) and every label that one gh command's options set. */
-function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[] } {
+/** The title (the last one, as in gh), every label one gh command's options add, and those it removes. */
+function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[]; removes: string[] } {
   let title: string | null = null;
   const labels: string[] = [];
+  const removes: string[] = [];
   for (const [name, value] of options) {
     if (TITLE_OPTIONS.has(name)) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
+    else if (name === '--remove-label') removes.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
-  return { title, labels };
+  return { title, labels, removes };
 }
 
 /**
@@ -836,9 +838,10 @@ export function readCommandBody(command: string[]): CommandBody | null {
 // ---- The labels a gh command sets (#422) ----
 //
 // `yokoten bot` adds the type and tier labels `check --pr` asks for when `gh pr create`
-// leaves them out, from the title's type and the body's `tier:` line.
+// leaves them out, from the title's type and the body's `tier:` line. An edit keeps them
+// right too: a new title adds its type, a new body moves the tier label.
 
-/** The labels `gh pr create` leaves out that `check --pr` asks for, and the problems with those it gives. */
+/** The labels a `gh pr create` or `gh pr edit` leaves out that `check --pr` asks for, and the problems with those it gives. */
 export interface CommandLabels {
   /** Each missing label, as the label names that would do, best first. */
   missing: string[][];
@@ -846,6 +849,15 @@ export interface CommandLabels {
   problems: Finding[];
   /** The `--repo` value, or null when the command names none. */
   repo: string | null;
+  /** The labels the command already removes with `--remove-label`. */
+  removes: string[];
+  /** Whether the command gives a tier label itself, with `--label` or `--add-label`. */
+  hasTierLabel: boolean;
+  /**
+   * For `gh pr edit`, the pull request it names and the tier its new body sets; null for
+   * a create. A null selector means the pull request of the current branch.
+   */
+  edit: { selector: string | null; tier: string | null } | null;
 }
 
 // Aliases that say more than the type, so the bot never picks them for a person.
@@ -861,15 +873,19 @@ function typeLabelNames(type: string): string[] {
 /**
  * The type and tier labels that `gh pr create` (or `new`) leaves out, from the title's
  * type and the body's tier line, and the problems with the tier labels it gives. A label
- * it gives is kept. Null for any other command, or a run-together word it can't read.
+ * it gives is kept. An edit adds only what its new title or body asks for, and reports the
+ * tier it sets so the caller can remove the old label. Null for any other command, an edit
+ * that sets neither a title nor a body, or a run-together word it can't read.
  */
 export function readCommandLabels(command: string[], body: string | null): CommandLabels | null {
   const [file, ...rest] = command;
   if (!file || botProgram(file) !== 'gh') return null;
   const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
-  const [kind, verb] = words.map((index) => rest[index]);
-  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
-  const { title, labels } = readTitleAndLabels(options);
+  const [kind, verb, selector] = words.map((index) => rest[index]);
+  const isEdit = verb === 'edit';
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new' && !isEdit) || unreadable !== null) return null;
+  if (isEdit && body === null && !options.some(([name]) => TITLE_OPTIONS.has(name))) return null;
+  const { title, labels, removes } = readTitleAndLabels(options);
   const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
   const missing: string[][] = [];
   const type = title === null ? undefined : TITLE.exec(title.trim())?.[1];
@@ -877,7 +893,7 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const tier = bodyTier(body ?? '');
   const hasTier = labels.some((label) => readLabelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
-  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
+  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo, removes, hasTierLabel: hasTier, edit: isEdit ? { selector: selector ?? null, tier } : null };
 }
 
 /** The labels a `gh issue create` command gives, and its `--repo` value. */
