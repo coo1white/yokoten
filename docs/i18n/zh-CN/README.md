@@ -99,6 +99,7 @@ yokoten 在 PR 之前工作，也和 [PR 审查机器人](https://github.com/yok
 ## 了解更多
 
 - **[使用指南](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 条规则、所有命令、它怎么工作，还有它做不到的事。
+- **[标准](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/standard.md)**：每个 agent 写出、yokoten 读取的格式。版本 1。
 - **[决定记录](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：为什么这样做。
 - **[更新记录](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[参与开发](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[安全](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[服务器设置](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 
