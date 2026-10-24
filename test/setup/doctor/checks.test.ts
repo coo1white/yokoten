@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { makeSandbox, makeTempDir, ROOT } from '../../repo/helpers.ts';
 import { DEFAULTS } from '../../../src/rules/config.ts';
 import { launcherDir, setUpLauncher } from '../../../src/setup/install.ts';
+import { sealManaged } from '../../../src/setup/files.ts';
 import { doctor, launcherCheck, privacyNotes, releaseChannel } from '../../../src/setup/doctor/index.ts';
 
 // #522: install fills the git name, so the marks are in place. One run gives one answer.
@@ -37,6 +38,23 @@ test('install then doctor: the private-marks lines agree, in full doctor and a s
   writeFileSync(join(sandbox.home, '.config/yokoten/private-marks'), '# only a comment\n');
   assert.match((await sandbox.call(['doctor'])).stdout, /^ +MISSING private-marks: ~\/\.config\/yokoten\/private-marks is missing or has no marks; run `(npx )?yokoten marks add`/m);
   assert.match((await sandbox.call(['doctor', '--session'])).stdout, /private-marks is missing or has no marks/);
+});
+
+test('doctor: names a newer kit copy that waits behind an edit (#477)', async () => {
+  const sandbox = makeSandbox();
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  const skill = join(sandbox.home, '.claude', 'skills', 'dispatch', 'SKILL.md');
+  const installed = readFileSync(skill, 'utf8');
+  // An edit on the copy install wrote: the kit has nothing newer, so doctor stays quiet.
+  writeFileSync(skill, `${installed}\nAsk the owner before a release.\n`);
+  assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /edited-kit/);
+  // An edit on an older kit copy: the newer copy waits, and doctor names how to compare.
+  const older = sealManaged(installed.replace('Hand one task', 'Hand one job'));
+  writeFileSync(skill, `${older}\nAsk the owner before a release.\n`);
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ +note +edited-kit: a newer kit copy is waiting for the skill dispatch \(~\/\.claude\/skills\/dispatch\/SKILL\.md\) you edited/m);
+  assert.match(out, /diff ~\/\.claude\/skills\/dispatch\/SKILL\.md .*kit\/user\/skills\/dispatch\/SKILL\.md/);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /a newer kit copy is waiting for the skill dispatch/);
 });
 
 test('doctor: the plugin, when on, stands in for install', async () => {

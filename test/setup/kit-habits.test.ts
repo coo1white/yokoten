@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { ROOT } from '../repo/helpers.ts';
 
-const MANAGED = '<!-- managed by yokoten; `yokoten install` replaces this file -->';
+const MANAGED = '<!-- managed by yokoten; `yokoten install` updates this file, and keeps your edits -->';
 
 /** A kit skill, read from the repo root. */
 const readSkill = (name: string): string => readFileSync(join(ROOT, 'kit/user/skills', name, 'SKILL.md'), 'utf8');

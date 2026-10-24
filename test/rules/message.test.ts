@@ -110,7 +110,8 @@ import {
   upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor/index.ts';
-import { openCodePluginNote, workerDeskNote } from '../../src/setup/doctor/checks.ts';
+import { editedKitCheck, openCodePluginNote, workerDeskNote } from '../../src/setup/doctor/checks.ts';
+import { KIT, sealManaged } from '../../src/setup/files.ts';
 import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
@@ -297,6 +298,13 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     writeFileSync(join(dir, 'AGENTS.md'), rules);
     add(coreRulesCheck(dir)?.finding);
   }
+  // A kit skill the user edited, with a newer kit copy waiting (#477): a note, never a failure.
+  const editedHome = makeTempDir();
+  const kitSkill = readFileSync(join(KIT, 'user', 'skills', 'dispatch', 'SKILL.md'), 'utf8');
+  const olderSkill = sealManaged(kitSkill.replace('Hand one task', 'Hand one job'));
+  mkdirSync(join(editedHome, '.claude', 'skills', 'dispatch'), { recursive: true });
+  writeFileSync(join(editedHome, '.claude', 'skills', 'dispatch', 'SKILL.md'), `${olderSkill}\nAsk the owner before a release.\n`);
+  add(editedKitCheck({ HOME: editedHome }));
   // A kit workflow with the project's changes (#456).
   mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
   writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), 'on: push\n');

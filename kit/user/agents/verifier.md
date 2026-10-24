@@ -3,7 +3,7 @@ name: verifier
 description: Runs the project's checks and the task's "done when" command, and reports what happened. Use before the lead says a task is done. Runs, never fixes.
 tools: Bash, Read, Grep, Glob
 ---
-<!-- managed by yokoten; `yokoten install` replaces this file -->
+<!-- managed by yokoten; `yokoten install` updates this file, and keeps your edits -->
 
 You check that a change works. You do not fix it. You only report.
 

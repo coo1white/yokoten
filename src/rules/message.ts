@@ -552,6 +552,12 @@ export const RULES = {
     check: '`doctor` compares everything above `## This project` in AGENTS.md with the kit\'s core rules, and a session hears when they differ; without that heading it can\'t compare, as a note; a `<!-- yokoten kit X.Y.Z -->` mark newer than the yokoten you run is a note to update yokoten itself, and `update` refuses it; `yokoten update` shows the change, and `--write` makes it',
     docs: guide('updating-the-rules'),
   },
+  'edited-kit': {
+    rule: 'a managed file you edited is kept, and a newer kit copy arrives only when you take it',
+    why: "an edit stays the user's, and a kit fix still reaches the parts they did not change (record 0015)",
+    check: '`install` writes the hash of the file it wrote into the mark, and keeps a file whose hash no longer matches. `doctor` compares that recorded hash with the kit\'s copy and names each edited file whose copy changed, with the `diff` command; a note, never a failure',
+    docs: guide('updating-the-rules'),
+  },
   'kit-workflows': {
     rule: "the project's CI workflows from the kit are the kit's newest, or the project's own on purpose",
     why: 'a fix to the kit\'s CI reaches a project only when its workflow file gets the new text',

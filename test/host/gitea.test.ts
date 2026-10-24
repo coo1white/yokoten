@@ -1,0 +1,305 @@
+// Tests for src/host/gitea.ts, the Gitea adapter (#505).
+
+import '../repo/home.ts';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { type GiteaGet, giteaGet, readGiteaServer } from '../../src/host/gitea.ts';
+import { hostOf } from '../../src/host/hosts.ts';
+import { DEFAULTS } from '../../src/rules/config.ts';
+import { doctor } from '../../src/setup/doctor/index.ts';
+import { ROAD } from '../../src/setup/road.ts';
+import { serverChecks, walk } from '../../src/setup/road.ts';
+import { LABELS } from '../../src/setup/plan.ts';
+import { at, makeTempDir } from '../repo/helpers.ts';
+
+const HOST = { repo: 'me/repo', api: 'https://gitea.example.com/api/v1' };
+// Built at run time, so the file holds no key-shaped string for a scanner to flag (#849).
+const TOKEN = { GITEA_TOKEN: ['placeholder', 'token'].join('-') };
+
+/** A fake Gitea: route by path, ignore the paging query, and record what was asked. */
+function fakeGitea(routes: Record<string, unknown>, seen: string[] = []): GiteaGet {
+  return async (path) => {
+    const clean = path.split('?')[0];
+    seen.push(clean);
+    if (!(clean in routes)) return { status: 404, body: null };
+    return { status: 200, body: routes[clean] };
+  };
+}
+
+const GOOD: Record<string, unknown> = {
+  '/repos/me/repo': {
+    default_branch: 'main',
+    private: false,
+    allow_squash_merge: true,
+    allow_merge_commits: false,
+    allow_rebase: false,
+    allow_rebase_explicit: false,
+    default_delete_branch_after_merge: true,
+  },
+  '/repos/me/repo/branch_protections': [
+    { branch_name: 'main', enable_status_check: true, status_check_contexts: ['ci'], required_approvals: 1, require_code_owner_approval: true },
+  ],
+  '/repos/me/repo/tag_protections': [{ name_pattern: 'v*' }],
+  '/repos/me/repo/labels': LABELS.map((label) => ({ name: label.name, color: label.color, description: label.description })),
+  '/repos/me/repo/milestones': [{ title: 'First release', state: 'open' }],
+  '/repos/me/repo/branches': [{ name: 'main' }, { name: 'fix/cart' }],
+  '/repos/me/repo/pulls': [{ head: { label: 'me:fix/cart', ref: 'fix/cart' } }],
+};
+
+test('gitea: reads the server into the neutral shape, and the road judges each forge step (#505)', async () => {
+  const seen: string[] = [];
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(GOOD, seen));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.equal(server.defaultBranch, 'main');
+  assert.equal(server.isPrivate, false);
+  assert.deepEqual(server.mergeMethods, ['squash']);
+  assert.equal(server.deleteBranchOnMerge, true);
+  assert.deepEqual(server.branch, {
+    pullRequest: true,
+    codeOwnerReview: true,
+    mergeMethods: [],
+    requiredChecks: ['ci'],
+    noForcePush: true,
+    noDeletion: true,
+    approvals: 1,
+  });
+  assert.equal(server.tags, true);
+  assert.equal(Array.isArray(server.forgotten) ? server.forgotten.length : -1, 0);
+  assert.equal(server.planning && !('unread' in server.planning) ? server.planning.milestones[0].title : '', 'First release');
+
+  // Each forge step the host can judge is done; the security switches are unknown, never off.
+  const checks = serverChecks(server);
+  for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules']) {
+    assert.equal(checks.find((c) => c.id === id)?.mark, 'ok', id);
+  }
+  assert.equal(checks.find((c) => c.id === 'security-switches')?.mark, "can't check", 'Gitea core has no secret scanning');
+
+  // The planning and review steps read it too; none is "can't check".
+  for (const key of ['labels', 'milestone']) {
+    const step = ROAD.find((s) => s.key === key)!;
+    assert.equal(step.check('.', {}, server), true, key);
+  }
+  const review = ROAD.find((s) => s.key === 'review')!;
+  assert.equal(review.check('.', {}, server), null, 'Gitea has no Actions approval switch to read');
+  assert.match(review.unchecked?.(server) ?? '', /Gitea has no Actions approval switch/, 'the reason is Gitea\'s, not GitHub\'s');
+  // At most a step yokoten did read can be "can't check"; the byHand list is not used.
+  assert.ok(!seen.includes('/repos/me/repo/actions/permissions/workflow'), 'no GitHub-only endpoint is asked');
+});
+
+test('gitea: a tag pattern must cover a patch release to count (#849)', async () => {
+  const cases: [string, boolean][] = [
+    ['v*', true],
+    ['v*.*.*', true],
+    // These match v1.0.0 and v2.0.0, but leave v1.2.3 open.
+    ['v*.0.0', false],
+    ['*0', false],
+    // This covers v1 only, so a v2 release is outside it.
+    ['v1.*', false],
+  ];
+  for (const [pattern, expected] of cases) {
+    const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+      ...GOOD,
+      '/repos/me/repo/tag_protections': [{ name_pattern: pattern }],
+    }));
+    assert.ok(!('unread' in server), JSON.stringify(server));
+    if ('unread' in server) continue;
+    assert.equal(server.tags, expected, pattern);
+  }
+});
+
+test('gitea: a protection with no code-owner field is unknown, not off (#849)', async () => {
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo/branch_protections': [
+      { branch_name: 'main', enable_status_check: true, status_check_contexts: ['ci'], required_approvals: 1 },
+    ],
+  }));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.ok(!('unread' in server.branch));
+  if ('unread' in server.branch) return;
+  assert.equal(server.branch.codeOwnerReview, null, 'the server did not say, so it is not off');
+  const marks = serverChecks(server);
+  assert.equal(marks.find((c) => c.id === 'code-owner-review')?.mark, "can't check");
+  assert.equal(marks.find((c) => c.id === 'main-rules')?.mark, 'ok', 'the rest of the protection is still judged');
+
+  // The newer field alone is enough to say the review is on.
+  const enabled = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo/branch_protections': [{ branch_name: 'main', enable_code_owner_review: true }],
+  }));
+  assert.ok(!('unread' in enabled) && !('unread' in enabled.branch));
+  if ('unread' in enabled || 'unread' in enabled.branch) return;
+  assert.equal(enabled.branch.codeOwnerReview, true);
+});
+
+test('gitea: a 404 on a later list says which API is missing, not that the repo is (#849)', async () => {
+  const routes: Record<string, unknown> = { ...GOOD };
+  delete routes['/repos/me/repo/branch_protections'];
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(routes));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.ok('unread' in server.branch);
+  if (!('unread' in server.branch)) return;
+  assert.match(server.branch.unread, /branch protection API/);
+  assert.doesNotMatch(server.branch.unread, /did not find the repo/);
+  assert.equal(server.tags, true, 'the reads that worked are still read');
+
+  const noLabels: Record<string, unknown> = { ...GOOD };
+  delete noLabels['/repos/me/repo/labels'];
+  const withoutLabels = await readGiteaServer(HOST, TOKEN, fakeGitea(noLabels));
+  assert.ok(!('unread' in withoutLabels), JSON.stringify(withoutLabels));
+  if ('unread' in withoutLabels) return;
+  assert.ok(withoutLabels.planning && 'unread' in withoutLabels.planning);
+  if (!withoutLabels.planning || !('unread' in withoutLabels.planning)) return;
+  assert.match(withoutLabels.planning.unread, /label API/);
+  assert.doesNotMatch(withoutLabels.planning.unread, /did not find the repo/);
+});
+
+test('gitea: either rebase switch allows a rebase merge (#849)', async () => {
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo': {
+      default_branch: 'main',
+      private: false,
+      allow_squash_merge: true,
+      allow_merge_commits: false,
+      allow_rebase: false,
+      allow_rebase_explicit: true,
+      default_delete_branch_after_merge: true,
+    },
+  }));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.deepEqual(server.mergeMethods, ['squash', 'rebase']);
+});
+
+test('gitea: a repo with no protection, no labels and no milestone fails the steps it should (#505)', async () => {
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo/branch_protections': [],
+    '/repos/me/repo/labels': [],
+    '/repos/me/repo/milestones': [],
+    '/repos/me/repo/tag_protections': [],
+  }));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  const marks = serverChecks(server);
+  assert.equal(marks.find((c) => c.id === 'main-rules')?.mark, 'MISSING');
+  assert.equal(marks.find((c) => c.id === 'required-checks')?.mark, 'MISSING');
+  assert.equal(marks.find((c) => c.id === 'code-owner-review')?.mark, 'MISSING');
+  assert.equal(marks.find((c) => c.id === 'tag-rules')?.mark, 'MISSING');
+  assert.equal(ROAD.find((s) => s.key === 'labels')!.check('.', {}, server), false);
+  assert.equal(ROAD.find((s) => s.key === 'milestone')!.check('.', {}, server), false);
+  assert.equal(ROAD.find((s) => s.key === 'review')!.check('.', {}, server), false, 'no approval required');
+});
+
+test('gitea: no token, a refused token and a plain-http address are unread, never done (#505)', async () => {
+  const noToken = await readGiteaServer(HOST, {});
+  assert.match('unread' in noToken ? noToken.unread : '', /GITEA_TOKEN is not set/);
+  const refusedToken = await readGiteaServer(HOST, TOKEN, async () => ({ status: 401, body: { message: 'unauthorized' } }));
+  assert.match('unread' in refusedToken ? refusedToken.unread : '', /refused the token/);
+  const notFound = await readGiteaServer(HOST, TOKEN, async () => ({ status: 404, body: null }));
+  assert.match('unread' in notFound ? notFound.unread : '', /did not find the repo/);
+  const plain = await readGiteaServer({ repo: 'me/repo', api: 'http://gitea.example.com/api/v1' }, TOKEN);
+  assert.match('unread' in plain ? plain.unread : '', /not https/);
+  const silent = await readGiteaServer(HOST, TOKEN, async () => { throw new Error('getaddrinfo ENOTFOUND'); });
+  assert.match('unread' in silent ? silent.unread : '', /gave no answer/);
+  // The guard sits beside the fetch too: an http address never gets the token, even
+  // when a caller skips the read's own check (#849).
+  await assert.rejects(giteaGet('http://gitea.example.com/api/v1', TOKEN.GITEA_TOKEN)('/repos/me/repo'), /not https/);
+  // Every address the adapter builds is https, and a path cannot move the read to
+  // another server (#849).
+  const asked: string[] = [];
+  const record = async (address: string | URL | Request): Promise<Response> => {
+    asked.push(String(address));
+    return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await giteaGet('https://gitea.example.com/api/v1/', TOKEN.GITEA_TOKEN, record)('/repos/me/repo');
+  assert.deepEqual(asked, ['https://gitea.example.com/api/v1/repos/me/repo']);
+  await assert.rejects(giteaGet('https://gitea.example.com', TOKEN.GITEA_TOKEN, record)('@evil.example.com/x'), /leaves the server/);
+});
+
+test('hosts: a declared Gitea and gitea.com are Gitea; the address of a self-hosted one is never printed (#505)', () => {
+  const declared = hostOf(`git${at}gitea.example.com:me/repo.git`, 'gitea');
+  assert.deepEqual(declared, { kind: 'gitea', repo: 'me/repo', api: 'https://gitea.example.com/api/v1' });
+  const https = hostOf('https://gitea.example.com:8443/me/repo.git', 'gitea');
+  assert.deepEqual(https, { kind: 'gitea', repo: 'me/repo', api: 'https://gitea.example.com:8443/api/v1' });
+  assert.deepEqual(hostOf('https://gitea.com/me/repo.git'), { kind: 'gitea', repo: 'me/repo', api: 'https://gitea.com/api/v1' });
+  // Without the key, a self-hosted server stays a host with no adapter.
+  assert.deepEqual(hostOf(`git${at}gitea.example.com:me/repo.git`), { kind: 'other', name: 'gitea.example.com', label: 'this host' });
+  assert.ok(!JSON.stringify(hostOf(`git${at}gitea.example.com:me/repo.git`, 'gitea')).includes('unread'));
+});
+
+// The walk is what doctor prints: with a Gitea read, the forge steps are judged, not by hand.
+test('gitea: walk marks the forge steps done or to do, never can\'t check (#505)', async () => {
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(GOOD));
+  assert.ok(!('unread' in server));
+  if ('unread' in server) return;
+  const found = ROAD.map((step) => ({ step, found: (step.byHand ? step.check('.', {}, server) : false) }));
+  const walked = walk(found, {});
+  for (const key of ['labels', 'milestone', 'protection', 'merge-settings']) {
+    assert.notEqual(walked.steps.find((s) => s.step.key === key)?.mark, "can't check", key);
+  }
+});
+
+test('gitea: a missing tag protection API is said to be missing, not a missing repo (#849)', async () => {
+  const routes: Record<string, unknown> = { ...GOOD };
+  delete routes['/repos/me/repo/tag_protections'];
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(routes));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  const tags = server.tags;
+  assert.equal(typeof tags === 'object' ? tags.unread : '', 'this Gitea has no tag protection API');
+  assert.equal(serverChecks(server).find((c) => c.id === 'tag-rules')?.mark, "can't check");
+});
+
+test('gitea: a GitHub repo does not read .gitea/workflows as its CI (#849)', () => {
+  const root = makeTempDir('yokoten-github-ci-');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/me/repo.git'], { cwd: root });
+  mkdirSync(join(root, '.gitea', 'workflows'), { recursive: true });
+  writeFileSync(join(root, '.gitea', 'workflows', 'ci.yml'), 'on: [push, pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node bin/yokoten.ts check\n');
+  for (const key of ['tests', 'ci', 'titles']) {
+    assert.equal(ROAD.find((step) => step.key === key)!.check(root, {}, undefined), false, key);
+  }
+  // The same workflow where GitHub reads it counts.
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'on: [push, pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node bin/yokoten.ts check\n');
+  assert.equal(ROAD.find((step) => step.key === 'ci')!.check(root, {}, undefined), true);
+});
+
+test('gitea: a workflow in .gitea/workflows is read as CI, like .github/workflows (#505)', () => {
+  const root = makeTempDir('yokoten-gitea-ci-');
+  execFileSync('git', ['init', '-q', root]);
+  mkdirSync(join(root, '.gitea', 'workflows'), { recursive: true });
+  writeFileSync(join(root, '.gitea', 'workflows', 'ci.yml'), 'on: [push, pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node bin/yokoten.ts check\n');
+  const ci = ROAD.find((step) => step.key === 'ci')!;
+  assert.equal(ci.check(root, {}, undefined, { ...DEFAULTS, host: 'gitea' }), true, 'Gitea reads .gitea/workflows');
+});
+
+test('gitea: doctor judges the forge steps through the adapter, not by hand (#505)', async () => {
+  const root = makeTempDir('yokoten-gitea-');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', `git${at}gitea.example.com:me/repo.git`], { cwd: root });
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(GOOD));
+  assert.ok(!('unread' in server));
+  if ('unread' in server) return;
+  const result = doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: { ...DEFAULTS, host: 'gitea' }, host: { kind: 'gitea', ...HOST }, server });
+  const mark = (id: string) => result.report.steps?.find((s) => s.id === id)?.mark;
+  assert.equal(mark('labels'), 'done');
+  assert.equal(mark('milestone'), 'done');
+  assert.equal(mark('protection'), 'done');
+  assert.equal(mark('merge-settings'), 'done');
+  assert.equal(mark('review'), "can't check", 'Gitea has no Actions approval switch to read');
+  assert.equal(mark('security-settings'), "can't check", 'Gitea core has no security switches');
+  const text = result.lines.join('\n');
+  assert.ok(!text.includes("yokoten can't check this on"), 'the by-hand wording is for a host with no adapter');
+  // Read the host from the host under test, not a URL literal: a scanner sees a bare host
+  // in `includes` as a URL check, and this assertion is about the text, not a URL (#849).
+  assert.ok(!text.includes(new URL(HOST.api).hostname), 'a self-hosted address is never printed');
+});

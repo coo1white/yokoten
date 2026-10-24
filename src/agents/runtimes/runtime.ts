@@ -147,7 +147,7 @@ export const GUIDE_AGENTS: readonly GuideEntry[] = [
     changes: { canRewrite: false, failsOpen: true },
     verified: 'yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto)',
     caveats:
-      'Runs repo hooks only after you trust the folder: run `copilot` there and choose "Yes, and remember this folder for future sessions". Skips them without a word otherwise. A hook that times out lets the call go on',
+      'Runs repo hooks only after you trust the folder: run `yokoten trust` there. Skips them without a word otherwise. A hook that times out lets the call go on',
   },
   {
     label: 'Antigravity CLI (`agy`)',
@@ -159,14 +159,14 @@ export const GUIDE_AGENTS: readonly GuideEntry[] = [
     label: 'Codex CLI',
     adapter: 'codex',
     verified: 'yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash`',
-    caveats: 'Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word',
+    caveats: 'Runs the hooks only after you trust the folder, and then both hooks: run `yokoten trust` there. `codex exec` skips an untrusted hook without a word',
   },
   {
     label: 'Muse Code',
     adapter: 'muse',
     verified: 'yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor`',
     caveats:
-      'Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so run it in a desk (the desk carries the mark), or mark a worker\'s worktree with `yokoten worker mark <dir> --no-desk`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on',
+      'Runs the hooks only after you trust the folder: run `yokoten trust`. Muse passes no `YOKOTEN_ROLE` to a hook, so run it in a desk (the desk carries the mark), or mark a worker\'s worktree with `yokoten worker mark <dir> --no-desk`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on',
   },
   {
     label: 'DeepSeek Harness (`dsh`)',
@@ -180,7 +180,7 @@ export const GUIDE_AGENTS: readonly GuideEntry[] = [
     adapter: 'grok',
     verified: 'yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model',
     caveats:
-      'Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose',
+      'Runs project hooks only after you trust the folder: run `yokoten trust` there. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose',
   },
   {
     label: 'Gemini CLI',

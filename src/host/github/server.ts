@@ -10,7 +10,8 @@ import { type Board, type Gh, type Planning, type Unread, readLinkedBoards, read
 /** The rules that apply to the default branch, from every active ruleset. */
 export interface BranchRules {
   pullRequest: boolean;
-  codeOwnerReview: boolean;
+  /** Whether a merge needs code owner review; null when the host does not send the field. */
+  codeOwnerReview: boolean | null;
   /** Merge methods the rules allow; empty when they do not limit them. */
   mergeMethods: string[];
   requiredChecks: string[];
@@ -35,6 +36,8 @@ export interface ServerSettings {
   isPrivate: boolean | null;
   /** Whether a workflow may approve a pull request (an Actions setting), or null without admin rights. */
   actionsCanApprove: boolean | null;
+  /** Why the approval switch can't be read here, in the host's words (#505); GitHub leaves it out. */
+  actionsApprovalNote?: string;
   /** Merge methods the repo allows, or null without admin rights. */
   mergeMethods: string[] | null;
   deleteBranchOnMerge: boolean | null;

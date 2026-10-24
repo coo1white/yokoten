@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/small/antigravity.ts';
-import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
+import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, hasProjectHook as hasClaudeProjectHook, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/small/deepseek-harness.ts';
@@ -23,8 +23,8 @@ import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import * as opencode from '../agents/runtimes/small/opencode.ts';
-import { isFolder } from '../agents/folder-trust.ts';
 import { type Problem, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
+import { type TrustChange, type TrustPlan, revertTrust, writeTrust } from '../agents/runtimes/codex.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
 import { AGENT_STATUS_FILE } from '../run/hook.ts';
@@ -35,7 +35,7 @@ import { homeOf, systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
 import { readOriginUrl } from './plan.ts';
 import { writeTestsJob } from './advice/tests-job.ts';
-import type { Ask } from './install.ts';
+import { type Ask, isYes } from './install.ts';
 import { copyRuntime, describeWrite, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
@@ -110,26 +110,9 @@ function sandboxLines(root: string): { ok: boolean; lines: string[] } {
 
 /** How long init waits for GitHub to say whether the remote owner is an organization. */
 const ORG_LOOKUP_MS = 5000;
-
-/**
- * Whether Copilot CLI looks used on this machine. Its home is `$COPILOT_HOME` when that
- * is set, and `~/.copilot` otherwise: the same folder its trust store lives in (#654).
- */
-function hasCopilotHome(env: Env): boolean {
-  const user = homeOf(env);
-  const home = env.COPILOT_HOME || (user ? join(user, '.copilot') : '');
-  return isFolder(home);
-}
-
-/** A trust step, or a DeepSeek bridge command. Printed only when that agent is installed (#654). */
+/** A DeepSeek bridge command: the only step left that init prints or folds into the guide. */
 function isTrustStep(line: string): boolean {
-  return line.startsWith('GitHub Copilot CLI runs the hooks')
-    || line.startsWith('to trust this folder in Copilot CLI')
-    || line.startsWith('Codex runs the hooks')
-    || line.startsWith('to trust them in Codex')
-    || line.startsWith('Muse Code runs the hooks')
-    || line.startsWith('Grok CLI runs the hooks')
-    || line.includes('dsh plugin --profile')
+  return line.includes('dsh plugin --profile')
     || line.includes('dsh <profile> --patch');
 }
 
@@ -217,10 +200,6 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
       describeWrite(addProjectHook(root, hookCli), 'the tool-call hook in .claude/settings.json'),
       describeWrite(addProjectStopHook(root, hookCli), "the stop check in .claude/settings.json (changed files, and a worker's done-when check, on Stop and SubagentStop)"),
       describeWrite(setProjectEnv(root, 'TZ', 'UTC'), 'TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)'),
-      // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
-      // It skips them without a word otherwise (#341), so the line says how to trust it.
-      'GitHub Copilot CLI runs the hooks in .claude/settings.json only after you trust this folder',
-      `to trust this folder in Copilot CLI: ${copilot.TRUST_STEP}`,
     ];
   });
   // Codex, Gemini CLI, Antigravity CLI, OpenCode, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
@@ -231,8 +210,6 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
     return [
       describeWrite(codex.addProjectHook(root, hookCli), 'the Codex tool-call hook in .codex/hooks.json'),
       describeWrite(codex.addProjectStopHook(root, hookCli), 'the Codex stop check in .codex/hooks.json'),
-      'Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks',
-      `to trust them in Codex: ${codex.TRUST_STEP}`,
     ];
   });
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
@@ -255,17 +232,15 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
       describeWrite(added.guard, 'the Muse Code tool-call hook in .muse/hooks.json'),
       describeWrite(added.stop, 'the Muse Code stop check in .muse/hooks.json'),
       describeWrite(added.doctor, 'the Muse Code session doctor in .muse/hooks.json'),
-      `Muse Code runs the hooks in .muse/hooks.json only after you trust this folder: ${muse.TRUST_STEP}`,
     ];
   });
-  // Grok CLI runs the project's hooks only in a folder the user trusts. yokoten never trusts
-  // one for the user: the line says how (#407).
+  // Grok CLI runs the project's hooks only in a folder the user trusts. `yokoten trust`
+  // writes that trust, once the person answers the question below (#661).
   const grokHooks = agentHooks('the Grok CLI hooks', grok.HOOKS_FILE, () => {
     const added = grok.addProjectHooks(root, hookCli);
     return [
       describeWrite(added.guard, `the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`),
       describeWrite(added.stop, `the Grok CLI stop check in ${grok.HOOKS_FILE}`),
-      `Grok CLI runs the hooks in ${grok.HOOKS_FILE} only after you trust this folder: ${grok.TRUST_STEP}`,
     ];
   });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
@@ -287,7 +262,7 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
     if (kept.omitted) omittedTrustStep = true;
     return kept.lines;
   };
-  report.push(...showSteps(claudeHooks.lines, hasCopilotHome(env)));
+  report.push(...claudeHooks.lines);
   report.push(
     ...showSteps(codexHooks.lines, codex.hasUserDir(env)),
     ...geminiHooks.lines,
@@ -299,14 +274,20 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
     ...showSteps(grokHooks.lines, grok.hasUserDir(env)),
   );
   if (omittedTrustStep) report.push('other agents: see the guide');
+  // The guard stays off in an agent until it trusts yokoten's hooks. Ask once, here on a
+  // terminal, and write only yokoten's entries (#661). With no terminal, name the command.
+  // The sandboxes come first: trusting a folder is what lets its own sandbox apply, so
+  // trust reads the one init has just written (#661).
   const sandboxes = sandboxLines(root);
   report.push(...sandboxes.lines);
+  const trust = trustLines(root, env, ask);
+  report.push(...trust.lines);
   // Point git at the hooks last, so the files exist first. That call's first line leads
   // the report. Its other lines stay at the end (#654).
   const [hookLine, ...hookNotes] = setCommitCheck(root, cli, hooks, blocks, env);
   report.unshift(hookLine);
   report.push(...hookNotes);
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && openCodePlugin.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok, lines: report };
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && openCodePlugin.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok && trust.ok, lines: report };
 }
 
 // ---- A project that keeps CI off (#377) ----
@@ -1732,4 +1713,242 @@ export function updateCoreRules(root: string, { write }: { write: boolean }): { 
       'Nothing was written. Run `yokoten update --write` to write it.',
     ],
   };
+}
+
+// `yokoten trust`, and the one question `init` asks on a terminal (#661). Each agent runs
+// a project's hooks only once the user trusts them; until then it skips them without a word.
+// This writes that trust for yokoten's own hooks only, in the agent's own settings, the way
+// the agent would write it. Without a terminal it writes nothing and names this command.
+//
+// The way back is recorded as it goes (record 0014): `yokoten trust --undo` removes only
+// the entries yokoten wrote, and leaves an entry the user changed since.
+
+/** One agent that can be turned on here: its name, and how to see it and plan its trust. */
+interface Agent {
+  name: string;
+  isInstalled: (env: Env) => boolean;
+  hasHooks: (root: string) => boolean;
+  plan: (root: string, env: Env) => TrustPlan;
+  /**
+   * Why trusting this folder would apply a project setting that contains nothing, or null
+   * (#661). Trusting a folder is what lets its own settings apply, so it comes second.
+   */
+  problem?: (root: string, env: Env) => { what: string; fix: string } | null;
+}
+
+/**
+ * The agents whose trust is a file yokoten can write (#661), in the order a report names them.
+ * `hasHooks` asks for yokoten's own guard hook, not just the file: a folder with an empty
+ * hooks file runs no guard, so trusting it would buy nothing and hide that it is off.
+ */
+const AGENTS: Agent[] = [
+  { name: 'Codex', isInstalled: codex.hasUserDir, hasHooks: codex.hasProjectHook, plan: codex.trustProject, problem: codex.sandboxProblem },
+  { name: 'Grok CLI', isInstalled: grok.hasUserDir, hasHooks: grok.hasProjectHook, plan: grok.trustProject },
+  { name: 'Copilot CLI', isInstalled: copilot.hasUserDir, hasHooks: hasClaudeProjectHook, plan: copilot.trustProject },
+  { name: 'Muse Code', isInstalled: muse.hasUserDir, hasHooks: muse.hasProjectHook, plan: muse.trustProject },
+];
+
+/** A planned agent: the name a report uses, what its store needs, and any sandbox problem. */
+interface Planned {
+  name: string;
+  plan: TrustPlan;
+  problem: { what: string; fix: string } | null;
+}
+
+/** The agents installed here that have yokoten's guard hook in this project. */
+function planned(root: string, env: Env): Planned[] {
+  return AGENTS.filter((agent) => agent.isInstalled(env) && agent.hasHooks(root)).map((agent) => ({ name: agent.name, plan: agent.plan(root, env), problem: agent.problem?.(root, env) ?? null }));
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listOf(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
+// ---- The way back ----
+
+/** Where yokoten records the entries it wrote, so undo can leave everything else alone. */
+const journalPath = (env: Env): string | null => {
+  const home = homeOf(env);
+  return home ? join(home, '.config', 'yokoten', 'trust.json') : null;
+};
+
+/** One entry yokoten wrote, with the project it belongs to. */
+interface JournalEntry {
+  root: string;
+  change: TrustChange;
+}
+
+/** The recorded entries, or none when the file is missing or broken: undo then does nothing. */
+function readJournal(env: Env): JournalEntry[] {
+  const file = journalPath(env);
+  if (!file || !existsSync(file)) return [];
+  try {
+    const saved: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (!saved || typeof saved !== 'object') return [];
+    const entries = (saved as { entries?: unknown }).entries;
+    if (!Array.isArray(entries)) return [];
+    return entries.filter((entry): entry is JournalEntry => !!entry && typeof entry === 'object' && typeof (entry as JournalEntry).root === 'string' && !!(entry as JournalEntry).change);
+  } catch {
+    return [];
+  }
+}
+
+/** Keep the recorded entries. A failure here only costs the exact undo, never the guard. */
+function writeJournal(env: Env, entries: readonly JournalEntry[]): boolean {
+  const file = journalPath(env);
+  if (!file) return false;
+  try {
+    if (entries.length === 0) {
+      writeFileSync(file, `${JSON.stringify({ version: 1, entries: [] }, null, 2)}\n`);
+      return true;
+    }
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Add what an agent's store took to the journal. */
+function record(root: string, env: Env, plan: TrustPlan): boolean {
+  const entries = readJournal(env);
+  const already = new Set(entries.map((entry) => `${entry.change.file}\u0000${entry.change.path.join('.')}\u0000${entry.change.key}`));
+  for (const change of plan.changes) {
+    if (!already.has(`${change.file}\u0000${change.path.join('.')}\u0000${change.key}`)) entries.push({ root, change });
+  }
+  return writeJournal(env, entries);
+}
+
+// ---- Turning it on ----
+
+/** Why a plan could not be written, in plain words. */
+function whyNot(plan: TrustPlan): string {
+  if (plan.state === 'no home') return 'its home folder is not there';
+  return `can't read ${plan.store}`;
+}
+
+/** Write the planned entries, and say what was written and how to undo it. */
+function apply(root: string, env: Env, plans: readonly Planned[]): { ok: boolean; lines: string[]; wrote: boolean } {
+  const lines: string[] = [];
+  let ok = true;
+  let wrote = false;
+  for (const { name, plan } of plans) {
+    const done = writeTrust(plan);
+    if (done === 'written') {
+      wrote = true;
+      const journal = record(root, env, plan);
+      lines.push(`turned on yokoten's guard in ${name} (${plan.store})`);
+      if (!journal) lines.push(`couldn't record the way back for ${name}; remove the entry in ${plan.store} by hand`);
+    } else if (done === 'kept') {
+      ok = false;
+      lines.push(`couldn't turn on yokoten's guard in ${name}: ${plan.store} holds this setting in a shape yokoten won't rewrite; set it there by hand`);
+    } else {
+      ok = false;
+      lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);
+    }
+  }
+  if (wrote) lines.push('undo: `yokoten trust --undo` removes only the entries yokoten wrote');
+  return { ok, lines, wrote };
+}
+
+/**
+ * What the agents installed here need, sorted by what a report says about each (#661): the
+ * ones trust may write, and the ones it must leave off, and why.
+ */
+interface TrustWork {
+  found: number;
+  todo: Planned[];
+  same: string[];
+  edited: string[];
+  blocked: Planned[];
+  unsafe: { name: string; problem: { what: string; fix: string } }[];
+}
+
+function trustWork(root: string, env: Env): TrustWork {
+  const work: TrustWork = { found: 0, todo: [], same: [], edited: [], blocked: [], unsafe: [] };
+  for (const plannedAgent of planned(root, env)) {
+    work.found++;
+    if (plannedAgent.plan.state === 'same') work.same.push(plannedAgent.name);
+    else if (plannedAgent.plan.state === 'changed') work.edited.push(plannedAgent.name);
+    else if (plannedAgent.plan.state === 'trusted' && plannedAgent.problem) work.unsafe.push({ name: plannedAgent.name, problem: plannedAgent.problem });
+    else if (plannedAgent.plan.state === 'trusted') work.todo.push(plannedAgent);
+    else work.blocked.push(plannedAgent);
+  }
+  return work;
+}
+
+/** The agents trust leaves off, and why: a changed hook, an unsafe project sandbox, an unreadable store. */
+function refusedLines(work: TrustWork): { ok: boolean; lines: string[] } {
+  const lines: string[] = [];
+  if (work.same.length > 0) lines.push(`yokoten's guard is already on in ${listOf(work.same)}`);
+  for (const name of work.edited) {
+    lines.push(`left yokoten's guard off in ${name}: a hook yokoten wrote there was edited; run \`yokoten init\` to put it back, then \`yokoten trust\``);
+  }
+  // Trusting the folder is what lets the project's own settings apply (#661): a sandbox
+  // problem doctor finds is a reason to leave trust off, not to write it and look on.
+  for (const { name, problem } of work.unsafe) lines.push(`left yokoten's guard off in ${name}: ${problem.what}; ${problem.fix}`);
+  for (const { name, plan } of work.blocked) lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);
+  return { ok: work.edited.length === 0 && work.unsafe.length === 0 && work.blocked.length === 0, lines };
+}
+
+/**
+ * The trust lines `init` prints. On a terminal it asks once about the agents installed
+ * here; on yes, it writes. Without a terminal (an agent, CI) it writes nothing and names
+ * the one command a person runs (#661).
+ */
+export function trustLines(root: string, env: Env, ask?: Ask): { ok: boolean; lines: string[] } {
+  const work = trustWork(root, env);
+  const said = refusedLines(work);
+  if (work.todo.length === 0) return work.found === 0 ? { ok: true, lines: [] } : said;
+  const names = listOf(work.todo.map(({ name }) => name));
+  if (!ask) return { ok: said.ok, lines: [...said.lines, `to turn on yokoten's guard in ${names}, run \`yokoten trust\``] };
+  if (!isYes(ask(`Turn on yokoten's guard in ${names} (the agents installed here)? [Y/n]`))) {
+    return { ok: said.ok, lines: [...said.lines, `left yokoten's guard off in ${names}: run \`yokoten trust\` when you want it on`] };
+  }
+  const done = apply(root, env, work.todo);
+  return { ok: said.ok && done.ok, lines: [...said.lines, ...done.lines] };
+}
+
+/** `yokoten trust`: turn the guard on in every agent installed here, with no question. */
+export function trust(root: string, env: Env): { ok: boolean; lines: string[] } {
+  const work = trustWork(root, env);
+  if (work.found === 0) return { ok: true, lines: ['no agent installed here runs yokoten\'s hooks in this project, so there is nothing to turn on'] };
+  const said = refusedLines(work);
+  if (work.todo.length === 0) return said;
+  const done = apply(root, env, work.todo);
+  return { ok: said.ok && done.ok, lines: [...said.lines, ...done.lines] };
+}
+
+/** `yokoten trust --undo`: put back only the entries this command recorded for this project. */
+export function undoTrust(root: string, env: Env): { ok: boolean; lines: string[] } {
+  const all = readJournal(env);
+  const mine = all.filter((entry) => entry.root === root);
+  if (mine.length === 0) return { ok: true, lines: ['nothing to undo: `yokoten trust` wrote nothing for this folder'] };
+  const lines: string[] = [];
+  const kept: JournalEntry[] = [];
+  const done: JournalEntry[] = [];
+  let ok = true;
+  const reverted = new Map<string, string>();
+  const unchanged = new Map<string, string>();
+  for (const entry of mine) {
+    const result = revertTrust(entry.change);
+    if (result === 'reverted') {
+      done.push(entry);
+      reverted.set(entry.change.agent, entry.change.store);
+    } else if (result === 'kept') {
+      kept.push(entry);
+      unchanged.set(entry.change.agent, entry.change.store);
+    } else {
+      ok = false;
+      kept.push(entry);
+      lines.push(`couldn't undo the trust in ${entry.change.agent}: can't read ${entry.change.store}`);
+    }
+  }
+  for (const [agent, store] of reverted) lines.push(`removed the trust yokoten added in ${agent} (${store})`);
+  for (const [agent, store] of unchanged) lines.push(`left the trust in ${agent} (${store}): it changed since yokoten wrote it`);
+  writeJournal(env, [...all.filter((entry) => entry.root !== root), ...kept]);
+  return { ok, lines };
 }

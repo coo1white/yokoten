@@ -21,6 +21,7 @@ export {
   commandWording,
   coreRulesCheck,
   doubleInstallCheck,
+  editedKitCheck,
   launcherCheck,
   machineChecks,
   OUTPUT_STOP,

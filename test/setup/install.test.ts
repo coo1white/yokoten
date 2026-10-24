@@ -37,7 +37,7 @@ import {
   onToolCall,
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
-import { copyRuntime } from '../../src/setup/files.ts';
+import { copyRuntime, isEditedManaged, sealManaged, writeManaged } from '../../src/setup/files.ts';
 import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isMachineSetUp, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
@@ -181,6 +181,53 @@ test('uninstall: takes back what install wrote, keeps the user\'s own files and 
   assert.equal(broken.status, 0, broken.stderr);
   assert.match(broken.stdout, /^kept ~\/\.claude\/settings\.json: it is not JSON/m);
   assert.equal(readFileSync(join(claude, 'settings.json'), 'utf8'), 'not json');
+});
+
+// #477: install keeps a managed file the user edited, and still updates a file they did not.
+test('install: a managed skill you edited is kept; an untouched copy updates from the kit (#477)', async () => {
+  const sandbox = makeSandbox();
+  const skill = join(sandbox.home, '.claude', 'skills', 'dispatch', 'SKILL.md');
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  const installed = readFileSync(skill, 'utf8');
+  assert.match(installed, /managed by yokoten.* sha256=[0-9a-f]{64}/, 'the mark records what install wrote');
+
+  // The user adds a rule of their own to a file install manages.
+  const mine = `${installed}\nAsk the owner before a release.\n`;
+  writeFileSync(skill, mine);
+  let result = await sandbox.call(['install']);
+  assert.match(result.stdout, /^kept \(your edit\) skill dispatch in ~\/\.claude\/skills$/m);
+  assert.equal(readFileSync(skill, 'utf8'), mine, 'their edit stays');
+  assert.match(result.stdout, /your edits stay: install skipped skill dispatch\. The new copy is in ~\/\.local\/share\/yokoten\/kit\/user\./);
+
+  // A copy yokoten wrote from an older kit, which the user did not touch, is replaced.
+  writeFileSync(skill, sealManaged(installed.replace('Hand one task', 'Hand one job')));
+  result = await sandbox.call(['install']);
+  assert.match(result.stdout, /^updated skill dispatch in ~\/\.claude\/skills$/m);
+  assert.equal(readFileSync(skill, 'utf8'), installed, 'the new copy is in place');
+
+  // A copy from an older yokoten has no hash: install replaces it once, then it has one.
+  writeFileSync(skill, installed.replace(/;? sha256=[0-9a-f]{64}/, ''));
+  result = await sandbox.call(['install']);
+  assert.match(result.stdout, /^updated skill dispatch/m);
+  assert.equal(readFileSync(skill, 'utf8'), installed);
+
+  // uninstall keeps the edit too: it is the user's.
+  writeFileSync(skill, mine);
+  result = await sandbox.call(['uninstall']);
+  assert.match(result.stdout, /^kept \(your edit\) skill dispatch in ~\/\.claude\/skills$/m);
+  assert.match(readFileSync(skill, 'utf8'), /Ask the owner before a release\./);
+});
+
+test('uninstall: a skill file that only mentions the mark in a sentence stays (#848)', async () => {
+  const sandbox = makeSandbox();
+  const skill = join(sandbox.home, '.claude', 'skills', 'dispatch', 'SKILL.md');
+  const mine = 'This file is managed by yokoten, in a sentence of my own.\n';
+  mkdirSync(dirname(skill), { recursive: true });
+  writeFileSync(skill, mine);
+  const result = await sandbox.call(['uninstall']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^kept skill dispatch in ~\/\.claude\/skills \(yours, not yokoten's\)$/m);
+  assert.equal(readFileSync(skill, 'utf8'), mine, 'the user\'s own file stays');
 });
 
 // A shared skill folder with the user's own files in it stays a real folder: replacing it
@@ -583,7 +630,7 @@ function launcherHome() {
 test('launcher: runs the installed runtime with each argument kept whole (#433)', () => {
   const { home, runtime, env, launcher } = launcherHome();
   setUpLauncher(env, runtime, home);
-  assert.equal(readFileSync(launcher, 'utf8'), launcherText(runtime, 'linux'));
+  assert.equal(readFileSync(launcher, 'utf8'), sealManaged(launcherText(runtime, 'linux')));
   assert.match(readFileSync(launcher, 'utf8'), /^#!\/bin\/sh\n# managed by yokoten/);
   const run = spawnSync(launcher, ['doctor', 'two words', '$HOME'], { env, encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
@@ -605,7 +652,7 @@ test('launcher: runs the .mjs entry the hooks run, and a launcher from an older 
   assert.ok(isOnPath({ PATH: dirname(launcher) }, runtime, 'linux'));
   const lines = setUpLauncher(env, runtime, home);
   assert.equal(lines[0], `updated the launcher ${launcher}`);
-  assert.equal(readFileSync(launcher, 'utf8'), launcherText(runtime, 'linux'));
+  assert.equal(readFileSync(launcher, 'utf8'), sealManaged(launcherText(runtime, 'linux')));
 });
 
 test('launcher: asks once before it adds the PATH line, and only with a terminal (#433)', () => {
@@ -666,7 +713,7 @@ test('launcher: Windows gets yokoten.cmd and steps for the PATH, never an edit (
   assert.equal(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32').split('\r\n').slice(0, 2).join('\n'), '@echo off\nrem managed by yokoten: `yokoten uninstall` removes this file.');
   assert.match(launcherText('C:\\Users\\o\\.local\\share\\yokoten', 'win32'), /\r\nnode "C:\\Users\\o\\.local\\share\\yokoten[\\/]bin[\\/]yokoten\.mjs" %\*\r\n$/);
   const lines = setUpLauncher(env, runtime, home, { ask: answer('y'), platform: 'win32' });
-  assert.equal(readFileSync(join(home, '.local', 'bin', 'yokoten.cmd'), 'utf8'), launcherText(runtime, 'win32'));
+  assert.equal(readFileSync(join(home, '.local', 'bin', 'yokoten.cmd'), 'utf8'), sealManaged(launcherText(runtime, 'win32')));
   assert.ok(!existsSync(join(home, '.local', 'bin', 'yokoten')));
   assert.deepEqual(asked, []);
   assert.match(lines.at(-1) ?? '', /is not on your PATH\. Add it to the Path for your account/);
@@ -1050,4 +1097,67 @@ test('uninstall: removes the stop log (#621)', async () => {
   const again = await sandbox.call(['uninstall']);
   assert.equal(again.status, 0, again.stderr);
   assert.match(again.stdout, /^not there the stop log$/m);
+});
+
+// #848: a line of the user's own that names the mark must not hide it, and CRLF alone is no edit.
+const MANAGED_SKILL = `---
+name: dispatch
+description: Hand one task to a worker.
+---
+<!-- managed by yokoten; \`yokoten install\` updates this file, and keeps your edits -->
+
+# Dispatch
+
+Hand one task to a worker.
+`;
+
+/** The sealed skill with `above` before its mark and `below` after its first paragraph. */
+const editedSkill = (above: string, below: string): string =>
+  sealManaged(MANAGED_SKILL)
+    .replace('<!-- managed by yokoten', `${above}\n<!-- managed by yokoten`)
+    .replace('Hand one task to a worker.\n', `Hand one task to a worker.\n${below}\n`);
+
+test('files: a line above the mark that says "managed by yokoten" does not hide the mark (#848)', () => {
+  const sealed = sealManaged(MANAGED_SKILL);
+  assert.match(sealed, / sha256=[0-9a-f]{64}/, 'the mark records a hash');
+  // The user writes a description above the mark and a rule below it: both are their edit.
+  const mine = editedSkill('This file is managed by yokoten, with my own rule.', 'Ask the owner before a release.');
+  assert.equal(isEditedManaged(mine), true, 'the hash in the real mark is found');
+  const path = join(makeTempDir(), 'SKILL.md');
+  writeFileSync(path, mine);
+  assert.equal(writeManaged(path, MANAGED_SKILL), 'kept (your edit)');
+  assert.equal(readFileSync(path, 'utf8'), mine, 'their edit stays');
+});
+
+test('files: a markdown heading that names the mark is the user\'s, not yokoten\'s (#848)', () => {
+  const path = join(makeTempDir(), 'SKILL.md');
+  const mine = '# This skill is managed by yokoten, and I wrote it\n';
+  writeFileSync(path, mine);
+  assert.equal(writeManaged(path, MANAGED_SKILL), 'kept (yours)');
+  assert.equal(readFileSync(path, 'utf8'), mine);
+});
+
+test('files: a file that only mentions the mark in its own words is the user\'s', () => {
+  const path = join(makeTempDir(), 'notes.md');
+  const mine = 'This file is managed by yokoten, in a sentence of my own.\n';
+  writeFileSync(path, mine);
+  assert.equal(writeManaged(path, MANAGED_SKILL), 'kept (yours)');
+  assert.equal(readFileSync(path, 'utf8'), mine);
+});
+
+test('files: a managed file whose only change is CRLF line ends is yokoten\'s copy (#456)', () => {
+  const sealed = sealManaged(MANAGED_SKILL);
+  const windows = sealed.replace(/\n/g, '\r\n');
+  assert.equal(isEditedManaged(windows), false, 'CRLF is not an edit');
+  const path = join(makeTempDir(), 'SKILL.md');
+  writeFileSync(path, windows);
+  assert.equal(writeManaged(path, MANAGED_SKILL), 'updated');
+  assert.equal(readFileSync(path, 'utf8'), sealed);
+});
+
+test('files: sealing the same text twice is stable, and a $ in the mark stays a $', () => {
+  const once = sealManaged(MANAGED_SKILL);
+  assert.equal(sealManaged(once), once);
+  const withDollar = MANAGED_SKILL.replace('updates this file', 'updates this $file');
+  assert.match(sealManaged(withDollar), /updates this \$file/, 'a $ does not read as a replacement pattern');
 });
