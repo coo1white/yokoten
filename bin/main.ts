@@ -72,6 +72,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/advice/messages.ts').then((m) => m.runMsg(invocation));
     case 'check':
       return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
+    case 'provenance':
+      return import('../src/commands/check.ts').then((m) => m.runProvenance(invocation));
     case 'mcp':
       return import('../src/commands/advice/mcp.ts').then((m) => m.runMcp(invocation));
     case 'borrowed':

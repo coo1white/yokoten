@@ -284,6 +284,12 @@ export const RULES = {
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
+  'pr-provenance': {
+    rule: 'the Made-with line names each desk that worked on the branch with its vendor and model, and a reviewer comes from another vendor than the writer (core rule 8, record 0021)',
+    why: 'every change is traced to the model that wrote it and another vendor that reviewed it, not by hand',
+    check: `${PR_CHECK}, against the desk status files of the branch's worktrees and desks; a run with no status files has nothing to compare, so it is not a finding`,
+    docs: guide('the-core-rules'),
+  },
   'pr-changelog': {
     rule: 'a pull request that changes behaviour adds a file in changes/ (core rule 8)',
     why: 'each pull request adds its own file, so pull requests never conflict and a release needs no digging',
@@ -807,6 +813,55 @@ export const formatFindingMarks = (f: Finding): string => {
  */
 export const formatFinding = (f: Finding): string =>
   `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
+
+/**
+ * A refusal by its four parts (#707): a title with the rule id, why, what to do instead,
+ * and the docs link. A person reads it in 30 seconds, and the board draws the same parts.
+ * A refusal always keeps its link, so a report never ends without one.
+ */
+export interface Refusal {
+  /** The rule id, as `yokoten explain` knows it. */
+  id: string;
+  /** `yokoten stopped this: <what> [<id>]`. */
+  title: string;
+  /** Why it matters, as one sentence. */
+  why: string;
+  /** The safe way, as one sentence. */
+  fix: string;
+  /** Where the rule is explained in full. */
+  docs: string;
+}
+
+/** The four parts of a refusal, for a text reader or the board. */
+export const refusalParts = (f: Finding): Refusal => ({
+  id: f.id,
+  title: `yokoten stopped this: ${place(f)}${f.what} [${f.id}]`,
+  why: `${sentence(f.why)}.`,
+  fix: `${sentence(f.fix)}.`,
+  docs: f.docs ?? DOCS_URL,
+});
+
+/** The text form of a refusal, every rule the same: title, why, do instead, more. */
+export const formatRefusal = (f: Finding): string => {
+  const parts = refusalParts(f);
+  return `${parts.title}\nWhy: ${parts.why}\nDo instead: ${parts.fix}\nMore: ${parts.docs}`;
+};
+
+/**
+ * The four parts back from text, or null when the text is not a refusal in this shape.
+ * The board reads a session log, which may hold an older message or a runtime's wrapper.
+ */
+export function parseRefusal(text: string): Refusal | null {
+  const lines = text.split('\n').map((line) => line.trimEnd());
+  const title = lines.find((line) => line.startsWith('yokoten stopped this: '));
+  if (title === undefined) return null;
+  const named = /^yokoten stopped this: (.+) \[([\w-]+)\]$/.exec(title);
+  const why = lines.find((line) => line.startsWith('Why: '))?.slice('Why: '.length);
+  const fix = lines.find((line) => line.startsWith('Do instead: '))?.slice('Do instead: '.length);
+  const docs = lines.find((line) => line.startsWith('More: '))?.slice('More: '.length);
+  if (named === null || why === undefined || fix === undefined) return null;
+  return { id: named[2] ?? '', title: named[0], why, fix, docs: docs ?? DOCS_URL };
+}
 
 // ---- Steps a scan takes (#754) ----
 //
