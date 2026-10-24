@@ -173,7 +173,8 @@ test('init: adds the practices, keeps what is there, and doctor asks for the rem
   assert.match(readFileSync(join(sandbox.repo, 'changes/README.md'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts changelog --write/, 'the change files folder (#132)');
   assert.ok(statSync(join(sandbox.repo, '.githooks', 'pre-commit')).mode & 0o100);
   const workflow = readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8');
-  assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
+  assert.match(workflow, /- run: node \.yokoten\/bin\/yokoten\.ts check\n/, 'the check is the project\'s copy, the same as the commit hook (#129, core rule 6)');
+  assert.match(workflow, /uses: yokoten-labs\/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0\.1\.0/, 'and the released Action, pinned to a commit (#129)');
   assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
   assert.match(workflow, /^  ci:\n    if: always\(\)\n    needs: \[changes, check, lint\]$/m, 'one required check that waits for the rest (#36)');
   assert.match(readFileSync(join(sandbox.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
@@ -185,17 +186,17 @@ test('init: adds the practices, keeps what is there, and doctor asks for the rem
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.match(result.stdout, /kept \.github\/dependabot\.yml/);
   assert.match(result.stdout, /kept CHANGELOG\.md/);
-  assert.match(result.stdout, /same the tool-call hook/);
-  assert.match(result.stdout, /same TZ=UTC for agent sessions/);
+  assert.match(result.stdout, /kept the tool-call hook/);
+  assert.match(result.stdout, /kept TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
-  assert.match(result.stdout, /same the stop check/);
+  assert.match(result.stdout, /kept the stop check/);
   const stopHook = { hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.mjs"', 'hook --stop'), timeout: 600 }] };
   assert.deepEqual(settings.hooks.Stop, [stopHook], 'the stop check, once (#92)');
   assert.deepEqual(settings.hooks.SubagentStop, [stopHook], 'SubagentStop, once (#614)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
-  assert.match(result.stdout, /same the Codex tool-call hook/);
-  assert.match(result.stdout, /same the Gemini CLI tool-call hook/);
+  assert.match(result.stdout, /kept the Codex tool-call hook/);
+  assert.match(result.stdout, /kept the Gemini CLI tool-call hook/);
   const codex = JSON.parse(readFileSync(join(sandbox.repo, '.codex', 'hooks.json'), 'utf8'));
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
@@ -211,8 +212,8 @@ test('init: adds the practices, keeps what is there, and doctor asks for the rem
     matcher: 'run_shell_command|write_file|replace',
   });
   // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
-  assert.match(result.stdout, /same the Codex stop check/);
-  assert.match(result.stdout, /same the Gemini CLI stop check/);
+  assert.match(result.stdout, /kept the Codex stop check/);
+  assert.match(result.stdout, /kept the Gemini CLI stop check/);
   assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --stop --agent codex'), timeout: 600 }] }]);
   assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600_000 }] }]);
   // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
@@ -224,7 +225,7 @@ test('init: adds the practices, keeps what is there, and doctor asks for the rem
   assert.doesNotMatch(result.stdout, /to trust this folder in Copilot CLI/);
   assert.equal(result.stdout.split('\n').filter((line) => line === 'other agents: see the guide').length, 1);
   // Antigravity CLI (#30): its own file, and Copilot CLI reads .claude/settings.json.
-  assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
+  assert.match(result.stdout, /kept the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
   const agents = JSON.parse(readFileSync(join(sandbox.repo, '.agents', 'hooks.json'), 'utf8'));
   assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent antigravity'));
   // The pre-commit hook runs the vendored check on a real commit.
@@ -798,8 +799,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = await sandbox.call(['init']);
-  assert.match(result.stdout, /same \.husky\/pre-commit/);
-  assert.match(result.stdout, /same \.husky\/pre-merge-commit/);
+  assert.match(result.stdout, /kept \.husky\/pre-commit/);
+  assert.match(result.stdout, /kept \.husky\/pre-merge-commit/);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
   // A real commit runs both: the project's hook and the yokoten check.
   sandbox.git('add', '.');
@@ -829,7 +830,7 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   // A hook that init changed before the runtime guard (#204) already runs the check.
   const before = '# yokoten: the commit check\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\nnpm test\n';
   sandbox.write('.husky/pre-commit', before);
-  assert.match((await sandbox.call(['init'])).stdout, /^same \.husky\/pre-commit/m);
+  assert.match((await sandbox.call(['init'])).stdout, /^kept \.husky\/pre-commit/m);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), before);
   assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
   assert.match((await sandbox.call(['doctor'])).stdout, /run `npm install` so husky sets core\.hooksPath/);
@@ -1415,8 +1416,8 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   writeFileSync(file, after);
   const again = await sandbox.call(['init']);
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(again.stdout, /^same the Gemini CLI tool-call hook in \.gemini\/settings\.json$/m);
-  assert.match(again.stdout, /^same the Gemini CLI stop check in \.gemini\/settings\.json/m);
+  assert.match(again.stdout, /^kept the Gemini CLI tool-call hook in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^kept the Gemini CLI stop check in \.gemini\/settings\.json/m);
   assert.equal(readFileSync(file, 'utf8'), after, 'the file changed');
   assert.match((await sandbox.call(['doctor'])).stdout, /^ {2}ok {6}gemini-hook$/m);
 });
@@ -1902,11 +1903,16 @@ const withTestsJob = (yml: string): string =>
 /** The kit's yokoten.yml before #451, rebuilt from the newest: one of the versions init wrote. */
 const oldYokotenYml = () =>
   kitWorkflow('yokoten.yml')
+    // Before #129, the kit ran only its own copy of yokoten, not the released Action.
     .replace(
-      '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. A push to main never cancels a run: every commit stays in history,\n# and a cancelled run leaves a ✗ on it (#660).\n',
+      "      # yokoten as a released Action (#129), pinned to the first release by its full\n      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the\n      # release's own copy, so a pull request that changes .yokoten/ still meets a check\n      # it cannot edit. pr.yml and issue.yml still run the project's copy.\n      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0\n        with:\n          pr-check: 'false'\n          issue-check: 'false'\n          node-version: '^22.23.4'\n",
+      '',
+    )
+    .replace(
+      '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. Every other event gets a group of its own, so a run on main is never\n# cancelled, waiting or running: every commit stays in history (#660, #798).\n',
       '# A new push to a pull request cancels the run still going for it. A push to main gets\n# a group of its own, so a run on main is never cancelled.\n',
     )
-    .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}")
+    // The group is the same as before #451, so only the lines below differ.
     // Before #660, a push to main cancelled the run still going on main.
     .replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", 'cancel-in-progress: true')
     // Before #572, the kit set up Node by its line alone.
@@ -2049,7 +2055,7 @@ test('doctor: no kit-workflows note after adding the tests job the way doctor sa
 test('doctor: a kit-workflows note when the kit\'s own jobs fall behind (#552)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('package.json', '{"scripts": {"test": "node --test"}}\n');
-  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')).replace('node .yokoten/bin/yokoten.ts check', 'node .yokoten/bin/yokoten.ts check --stray'));
+  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')).replace("          pr-check: 'false'", "          pr-check: 'true'"));
   assert.match((await sandbox.call(['doctor'])).stdout, /note +kit-workflows: \.github\/workflows\/yokoten\.yml has your changes, and the kit's newest copy differs/);
 });
 
@@ -2179,10 +2185,10 @@ test('init: writes each agent sandbox, and a second run changes nothing (#589)',
   assert.match(grok, /^extends = "workspace"$/m);
   const again = await sandbox.call(['init']);
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(again.stdout, /^same the Claude Code sandbox in \.claude\/settings\.json$/m);
-  assert.match(again.stdout, /^same the Codex sandbox in \.codex\/config\.toml$/m);
-  assert.match(again.stdout, /^same the Gemini sandbox in \.gemini\/settings\.json$/m);
-  assert.match(again.stdout, /^same the Grok sandbox in \.grok\/sandbox\.toml$/m);
+  assert.match(again.stdout, /^kept the Claude Code sandbox in \.claude\/settings\.json$/m);
+  assert.match(again.stdout, /^kept the Codex sandbox in \.codex\/config\.toml$/m);
+  assert.match(again.stdout, /^kept the Gemini sandbox in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^kept the Grok sandbox in \.grok\/sandbox\.toml$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: true });
 });
 
