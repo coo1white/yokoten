@@ -79,7 +79,13 @@ jobs:
       - run: npm install --global npm@11.21.0 # zizmor: ignore[adhoc-packages]
       - name: Publish
         # `./` makes npm read a file: it reads `package/x.tgz` as a GitHub repo and clones it.
-        run: npm publish ./package/*.tgz --provenance --access public
+        # A release goes to `latest`; a pre-release goes to `next` and never moves `latest` (#632).
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-*) dist_tag=next ;;
+            *) dist_tag=latest ;;
+          esac
+          npm publish ./package/*.tgz --provenance --access public --tag "$dist_tag"
   # The release page starts from CHANGELOG.md, so the page and the changelog never tell
   # different stories (#533). It runs only after the package is on npm, and it owns the
   # one write permission the publish job does not have. The Marketplace listing for the
