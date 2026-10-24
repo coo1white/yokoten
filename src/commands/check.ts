@@ -928,10 +928,11 @@ function utcText(stamp: string): string {
 /**
  * A table cell: no pipe, one line. The text comes from GitHub, so the work stays linear:
  * each line is trimmed and joined, and no pattern scans a whitespace run twice.
+ * A backslash is escaped first, or `a\|b` would close the cell.
  */
 const cellText = (text: string): string =>
   text
-    .replace(/\|/g, '\\|')
+    .replace(/[\\|]/g, '\\$&')
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
@@ -1046,7 +1047,7 @@ export function postHealthIssue(gh: Gh, repo: string, body: string): PostedHealt
   const dir = mkdtempSync(join(tmpdir(), 'yokoten-ci-health-'));
   const file = join(dir, 'body.md');
   try {
-    writeFileSync(file, body);
+    writeFileSync(file, body, { mode: 0o600 });
     let number = found;
     let created = false;
     if (number) gh(['issue', 'edit', String(number), '--repo', repo, '--body-file', file]);

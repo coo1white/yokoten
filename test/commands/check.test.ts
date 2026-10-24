@@ -1054,6 +1054,25 @@ test('ci-health: a title with a pipe and lines becomes one table cell', () => {
   assert.match(body, /^\| \[#7 a \\\| b next\]\(#\) \| ci \| failure \|$/m);
 });
 
+// #647: a backslash is escaped before the pipe it could pair with, so the cell keeps it.
+test('ci-health: a backslash before a pipe stays inside the table cell', () => {
+  const run = {
+    id: 1,
+    workflow: 'ci',
+    event: 'push',
+    branch: 'main',
+    status: 'completed',
+    conclusion: 'success',
+    createdAt: '2026-10-22T10:00:00Z',
+    startedAt: '2026-10-22T10:00:00Z',
+    updatedAt: '2026-10-22T10:01:00Z',
+    url: '',
+  };
+  const health = summarizeActionsHealth([run], [{ number: 8, title: String.raw`a \| b`, url: '', isDraft: false, check: 'ci', conclusion: 'failure' }]);
+  const body = renderActionsHealth(health, { repo: 'octo/demo', now: new Date('2026-10-22T12:00:00Z') });
+  assert.equal(body.split('\n').find((line) => line.startsWith('| [#8 ')), String.raw`| [#8 a \\\| b](#) | ci | failure |`);
+});
+
 /** The exported shape, so a field rename is a type error in the tests too. */
 export type HealthShape = ActionsHealth;
 
