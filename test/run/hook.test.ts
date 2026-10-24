@@ -78,9 +78,9 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   // A worker subagent is a worker even in a lead session.
   result = await sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'worker', tool_input: { file_path: 'CLAUDE.md' } }) });
   assert.equal(result.status, 2);
-  // The user-level guard leaves files to the project.
+  // The user-level guard applies the safeguard's defaults in a repo without yokoten.json (#816).
   result = await sandbox.call(['hook', '--commands-only'], { input: tool({ file_path: 'CLAUDE.md' }), extra: { YOKOTEN_ROLE: 'worker' } });
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 2);
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
 });
 

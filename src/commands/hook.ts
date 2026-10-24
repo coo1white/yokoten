@@ -109,16 +109,23 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
   const rootByFolder = new Map<string, string | null>([[base, session?.root ?? null]]);
   const repos = new Map<string, Repo | null>();
   // In the full hook, the session's root already has its rules.
-  if (session) repos.set(session.root, commandsOnly && existsSync(join(session.root, 'yokoten.json')) ? session : null);
+  if (session) repos.set(session.root, commandsOnly ? session : null);
   for (const path of action.paths) {
     let folder = dirname(resolve(base, path));
     while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
     if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder, invocation.env));
     const root = rootByFolder.get(folder);
     if (!root || repos.has(root)) continue;
-    repos.set(root, existsSync(join(root, 'yokoten.json')) ? { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) } : null);
+    repos.set(root, repoAt(invocation, root));
   }
-  return [...repos.values()].filter((repo) => repo !== null);
+  // A repo without yokoten.json still gets the safeguard (#816): the defaults, which stop
+  // the five protections from turning off. No init and no setting is needed.
+  return [...repos.values()].filter((repo): repo is Repo => repo !== null);
+}
+
+/** A repo's rules: its yokoten.json, or the defaults when it has none. */
+function repoAt(invocation: Invocation, root: string): Repo {
+  return { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) };
 }
 
 /**
@@ -624,7 +631,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
-    if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    const markReason = found != null && role === 'mark' && WORKER_RULES.has(found.id) ? capital(markNote(folders, invocation.env)) : undefined;
+    if (found != null && markReason !== undefined) found = { ...found, fix: `${found.fix}. ${markReason}` };
     // The third same refusal becomes a stop message; any success starts the count again (#711).
     if (found) {
       const repeats = sessionKey === null ? null : bumpRepeat(env, sessionKey, found.id, shape);

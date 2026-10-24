@@ -58,6 +58,29 @@ yokoten 把这些经验写成规则，再配上会自己跑的检查：
 
 这些保护一装上就开着，人人都有：不用回答问题，也不用改文件。能改变它的每个设置，都能改回默认。[记录 0014](../../records/0014-safe-by-default.md) 写了 yokoten 哪些事自己做、哪些先问你、哪些绝不做。
 
+## 守桥：五条保护
+
+同样的五条保护，从第一天起就对每个人、每个 agent 生效。不需要 `yokoten init`，也不需要改任何设置。
+
+1. **别丢工作**：不许 force push，不许 hard reset，不许删 `.git` 或历史。
+2. **别泄密**：提交或发帖里不许有密钥、令牌、邮箱地址或主目录路径。
+3. **别替你发布**：不许打 tag、发 release、发布软件包，也不许把仓库改成公开。
+4. **别运行没读过的网上代码**：不许把下载内容直接管道给 shell。
+5. **别拆掉守桥**：不许关闭检查或 hook；worker 不许改 CI 或规则，lead 的改动要经过你的审阅。
+
+它拦下动作时，总是显示同样的四个部分：
+
+```
+yokoten stopped this: creating the tag v1.2.0 [release]
+Why: A tag publishes a release, and only you decide when to release.
+Do instead: If the owner asked for this, they run `git tag v1.2.0` themselves.
+More: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-safeguard
+```
+
+第一行点名被拦下的 tag、文件或分支，以及规则。`Why` 说明可能出什么问题。`Do instead`
+给出安全的做法，不会读代码的人也能照着说。`More` 链接到规则全文。第五条保护里的改动
+只有主人能做；agent 要请主人来改。
+
 ## 三道检查，一把锁
 
 ```mermaid
