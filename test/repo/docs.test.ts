@@ -613,6 +613,11 @@ test('standard: links in the spec and the manifesto resolve', () => {
   assert.deepEqual(missing, []);
 });
 
+test('standard: the README points at the page, so a reader can find it', () => {
+  assert.match(read('README.md'), /\[The standard\]\([^)]*docs\/standard\.md\)/);
+  assert.ok(existsSync(join(ROOT, 'docs/standard.md')));
+});
+
 test('standard: a wide desk symlink sentence is caught', () => {
   assert.deepEqual(unnamedLinkPaths('A symlink on a desk path is refused.', DESK_LINK_PATHS), [...DESK_LINK_PATHS]);
 });
