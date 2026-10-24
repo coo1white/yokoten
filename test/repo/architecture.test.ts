@@ -63,6 +63,7 @@ const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
   'agents/hooks-file.ts', // no tests yet (#152); the install and init tests use it
   'host/github/index.ts', // re-exports the GitHub adapter's public names
+  'commands/merge/conflicts/types.ts', // shapes and constants only; every conflicts test uses them (#914)
   'setup/files.ts', // no tests yet (#152); the install tests and this file use it
 ];
 

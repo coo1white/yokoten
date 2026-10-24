@@ -13,7 +13,7 @@ function change(id: string, extra: Partial<Change> = {}): Change {
   return { id, label: name, branch: id.replace(/^(pr|branch):/, ''), head: '01234567', draft: false, files: [], moves: [], mainConflicts: [], ...extra };
 }
 
-const pair = (a: string, b: string, files = ['src/a.ts']): Collision => ({ a, b, files });
+const pair = (a: string, b: string, files = ['src/a.ts']): Collision => ({ first: a, second: b, files });
 
 /** A map with no leases and no hot paths, which the order never reads. */
 function mapOf(changes: Change[], collisions: Collision[] = []): ConflictMap {

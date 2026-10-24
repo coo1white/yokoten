@@ -69,7 +69,7 @@ export function listPullRequests(map: ConflictMap): number[] {
 function countCollisions(changes: Change[], map: ConflictMap): Map<string, number> {
   const counts = new Map(changes.map((change) => [change.id, 0]));
   for (const collision of map.collisions) {
-    for (const id of [collision.a, collision.b]) {
+    for (const id of [collision.first, collision.second]) {
       if (counts.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
     }
   }

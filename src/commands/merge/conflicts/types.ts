@@ -28,8 +28,8 @@ export interface Change {
 
 /** Two open changes that conflict with each other. Only pairs that share a file are tried. */
 export interface Collision {
-  a: string;
-  b: string;
+  first: string;
+  second: string;
   files: string[];
 }
 

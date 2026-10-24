@@ -30,7 +30,7 @@ function findChange(map: ConflictMap, id: string): Change {
 function findCollidingFiles(map: ConflictMap, change: Change): string[] {
   const files = [...(change.mainConflicts ?? [])];
   for (const collision of map.collisions) {
-    if (collision.a === change.id || collision.b === change.id) files.push(...collision.files);
+    if (collision.first === change.id || collision.second === change.id) files.push(...collision.files);
   }
   return [...new Set(files)];
 }

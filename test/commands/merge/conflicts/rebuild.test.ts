@@ -37,7 +37,7 @@ function sampleMap(): ConflictMap {
         mainConflicts: [],
       },
     ],
-    collisions: [{ a: 'branch:feature-x', b: 'pr:12', files: ['src/b.ts'] }],
+    collisions: [{ first: 'branch:feature-x', second: 'pr:12', files: ['src/b.ts'] }],
     leased: {},
     hot: [],
   };
