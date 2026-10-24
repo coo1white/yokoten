@@ -96,6 +96,9 @@ const SETTINGS_ROUTES = [
   new RegExp(`^${REPO}/branches/.+/protection(?:/.*)?$`, 'i'),
   new RegExp(`^${REPO}/rulesets(?:/.*)?$`, 'i'),
   new RegExp(`^${REPO}/(?:actions/permissions(?:/.*)?|interaction-limits|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|transfer)$`, 'i'),
+  // Who reaches the code, and what CI runs with: collaborators, teams, invitations, deploy
+  // keys, webhooks, secrets, variables, runners and environments. The bot needs none of them.
+  new RegExp(`^${REPO}/(?:collaborators|teams|invitations|keys|hooks|actions/(?:secrets|variables|runners)|environments)(?:/.*)?$`, 'i'),
   // An organization and everything under it: its settings, membership, teams and rulesets
   // are the owner's, and the bot has no write there.
   new RegExp(`^${ORG}(?:/.*)?$`, 'i'),

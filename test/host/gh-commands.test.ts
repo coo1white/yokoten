@@ -90,6 +90,16 @@ test('repo settings: a gh api write is refused, a read passes (#825)', () => {
     'gh api -X PUT repos/o/r/vulnerability-alerts',
     'gh api --method PATCH orgs/o -f default_repository_permission=read',
     'gh api -X POST orgs/o/teams -f name=x',
+    // Who reaches the code, and what CI runs with.
+    'gh api -X PUT repos/o/r/collaborators/x -f permission=admin',
+    'gh api -X PUT repos/o/r/teams/dev -f permission=push',
+    'gh api -X POST repos/o/r/invitations -f invitee_id=1',
+    'gh api -X POST repos/o/r/keys -f title=deploy -f key=x',
+    'gh api -X POST repos/o/r/hooks -f config[url]=https://example.com/hook',
+    'gh api -X PUT repos/o/r/actions/secrets/TOKEN -f encrypted_value=x',
+    'gh api -X PATCH repos/o/r/actions/variables/DEBUG -f value=1',
+    'gh api -X POST repos/o/r/actions/runners/registration-token',
+    'gh api -X PATCH repos/o/r/environments/release -f wait_timer=0',
     // Behind `yokoten bot`, and for a worker too.
     'yokoten bot -- gh api -X PATCH repos/o/r -f visibility=public',
   ];
