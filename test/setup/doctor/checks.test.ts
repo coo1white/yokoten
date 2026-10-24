@@ -225,7 +225,7 @@ test('doctor: notes an installed plugin older than this yokoten (#198)', async (
   install({ gitCommitSha: 'abc123' });
   pluginVersion('0.0.1');
   const lines = (await full()).split('\n');
-  const line = `  note    plugin: the yokoten plugin is older than this yokoten (0.0.1 < ${version}); update it: \`claude plugin update yokoten@yokoten\`, then restart Claude Code`;
+  const line = `  note    plugin: the yokoten plugin is older than this yokoten (0.0.1 < ${version}); update it: \`claude plugin update yokoten@yokoten\`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart`;
   assert.ok(lines.includes(line), lines.join('\n'));
   assert.ok(!lines.some((l) => l.includes('MISSING plugin')));
   assert.match((await sandbox.call(['doctor', '--session'])).stdout, olderNote);

@@ -4,11 +4,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github/index.ts';
-import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
-import { finding, type Finding } from '../rules/message.ts';
-import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
-import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
+import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../../host/github/index.ts';
+import { DEFAULTS, type Env, loadConfig } from '../../rules/config.ts';
+import { finding, type Finding } from '../../rules/message.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkApprovalFreshness, checkCommandTitle, checkIssueLabels, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone, readLabelTier } from '../../rules/pr.ts';
+import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from '../shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const { env, cwd } = invocation;
@@ -61,22 +61,53 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   }
   const token = await installationToken(config, repo);
   const [file, ...given] = command;
-  // The type and tier labels the command leaves out, by the names the repo has (#422).
-  const withLabels = labels?.missing.length ? addArgs(given, chooseLabels(invocation, labels, file, botEnv(env, token)).flatMap((name) => ['--label', name])) : given;
+  const ghEnv = botEnv(env, token);
   // A new pull request with no milestone takes its linked issue's (#512): one `gh issue view`.
   const wanted = body && !isLookup(body) ? readCommandMilestone(command, body.text) : null;
-  const milestone = wanted ? chooseMilestone(invocation, wanted, ghWith(file, cwd, botEnv(env, token))) : null;
+  const milestone = wanted ? chooseMilestone(invocation, wanted, ghWith(file, cwd, ghEnv)) : null;
   if (milestone === false) return 1;
-  const rest = milestone ? addArgs(withLabels, ['--milestone', milestone]) : withLabels;
   if (pendingIssue) {
-    const issueProblems = checkIssueLabels(pendingIssue.labels, readRepoLabelNames(ghWith(file, cwd, botEnv(env, token))));
+    const issueProblems = checkIssueLabels(pendingIssue.labels, readRepoLabelNames(ghWith(file, cwd, ghEnv)));
     if (issueProblems.length) {
       print(invocation, [`yokoten bot: ${issueProblems.length} problem(s) in the labels; nothing was sent. Fix the labels and run it again:`, ...bullets(issueProblems)], invocation.stderr);
       return 1;
     }
   }
-  // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches.
-  if (body && isLookup(body) && refuseBody(invocation, checkBody(body, lookupBranch(body, file, botEnv(env, token), env), env))) return 1;
+  // `gh pr edit <number or URL>`: one `gh pr view` with the same token names its branches,
+  // and its labels, so an edit can move the tier label to the one its new body sets (#422).
+  let current: string[] | null = null;
+  let lookedUp = false;
+  if (body && isLookup(body)) {
+    const branch = lookupBranch(body, file, ghEnv, env);
+    lookedUp = true;
+    current = 'labels' in branch ? branch.labels ?? null : null;
+    if (refuseBody(invocation, checkBody(body, branch, env))) return 1;
+  }
+  // The type and tier labels the command leaves out, by the names the repo has (#422).
+  // An edit also moves the tier label: the pull request's labels say which old one to remove.
+  const wantedTier = labels?.edit?.tier ?? null;
+  if (wantedTier !== null && !lookedUp) current = readPullRequestLabels(invocation, labels?.edit?.selector ?? null, labels?.repo ?? null, file, ghEnv);
+  // A read that failed leaves the old tier label where it is, so the note says so: two tier
+  // labels fail `check --pr`, and the caller can remove the old one itself (#422).
+  if (wantedTier !== null && current === null) {
+    print(invocation, [`yokoten bot: note: gh could not read this pull request's labels, so an older tier label may stay next to \`tier ${wantedTier}\`; remove it with --remove-label. \`check --pr\` refuses two tier labels`], invocation.stderr);
+  }
+  const chosen = labels?.missing.length ? chooseLabels(invocation, labels, file, ghEnv) : [];
+  const addLabel = labels?.edit ? '--add-label' : '--label';
+  const adds = chosen.filter((name) => !current?.some((label) => label.toLowerCase() === name.toLowerCase()));
+  // The old tier label goes only when the new one is in place: the command gives it, the
+  // bot adds it, or the pull request already has it. A tier the repo does not have is left
+  // out by `chooseLabels`, so the pull request keeps its current tier label (#422).
+  const hasNewTier = Boolean(labels?.hasTierLabel)
+    || chosen.some((name) => readLabelTier(name) === wantedTier)
+    || (current?.some((label) => readLabelTier(label) === wantedTier) ?? false);
+  const removes = wantedTier === null || !hasNewTier ? [] : current?.filter((label) => {
+    const tier = readLabelTier(label);
+    return tier !== null && tier !== wantedTier && !labels?.removes.some((given) => given.toLowerCase() === label.toLowerCase());
+  }) ?? [];
+  const labelArgs = [...adds.flatMap((name) => [addLabel, name]), ...removes.flatMap((name) => ['--remove-label', name])];
+  const withLabels = labelArgs.length ? addArgs(given, labelArgs) : given;
+  const rest = milestone ? addArgs(withLabels, ['--milestone', milestone]) : withLabels;
   // A `gh pr merge` of a tier A pull request needs a code owner's Approve on its head
   // (#612): the merge is refused when the Approve is older, or can't be checked.
   if (file === 'gh' && isPrMerge(rest)) {
@@ -352,6 +383,24 @@ function chooseLabels(invocation: Invocation, labels: CommandLabels, gh: string,
   return chosen;
 }
 
+/**
+ * The labels of the pull request an edit names, from one `gh pr view` with the bot's token.
+ * Null when gh can't say: the caller then adds what the command says and removes nothing.
+ */
+function readPullRequestLabels(invocation: Invocation, selector: string | null, repo: string | null, gh: string, ghEnv: Env): string[] | null {
+  const args = ['pr', 'view', ...(selector === null ? [] : [selector]), '--json', 'labels', ...(repo === null ? [] : ['--repo', repo])];
+  const view = spawnSync(gh, args, { cwd: invocation.cwd, encoding: 'utf8', env: ghEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    const parsed: unknown = JSON.parse(view.stdout ?? '');
+    if (view.status === 0 && Array.isArray((parsed as { labels?: unknown })?.labels)) {
+      return ((parsed as { labels: { name?: unknown }[] }).labels).map((label) => String(label?.name ?? ''));
+    }
+  } catch {
+    // said by the caller
+  }
+  return null;
+}
+
 /** The gh arguments with `added` before any `--`. */
 function addArgs(args: string[], added: string[]): string[] {
   const end = args.indexOf('--');
@@ -391,8 +440,8 @@ function chooseMilestone(invocation: Invocation, wanted: CommandMilestone, gh: G
 /** Whether the pull request is named by a number or a URL, so gh must say its branches. */
 const isLookup = (body: PendingBody): boolean => body.head !== null && /^\d+$|^https?:/.test(body.head);
 
-/** The branches to compare, or why the body is checked without the changed files. */
-type Branch = { base: string; head: string; files?: ReturnType<typeof readBranchFiles> } | { why: string };
+/** The branches to compare and the pull request's labels, or why the body is checked without the changed files. */
+type Branch = { base: string; head: string; files?: ReturnType<typeof readBranchFiles>; labels?: string[] } | { why: string };
 
 /** This branch, or the one `--head` or `gh pr edit <branch>` names, against origin/<base>. */
 function localBranch(body: PendingBody): Branch {
@@ -407,8 +456,8 @@ function localBranch(body: PendingBody): Branch {
  * here yet is fetched from origin, quietly.
  */
 function lookupBranch(body: PendingBody, gh: string, ghEnv: Env, env: Env): Branch {
-  const view = spawnSync(gh, ['pr', 'view', body.head ?? '', '--json', 'headRefName,baseRefName', ...(body.repo ? ['--repo', body.repo] : [])], { cwd: body.root, encoding: 'utf8', env: ghEnv, stdio: ['ignore', 'pipe', 'ignore'] });
-  let refs: { headRefName?: unknown; baseRefName?: unknown } = {};
+  const view = spawnSync(gh, ['pr', 'view', body.head ?? '', '--json', 'headRefName,baseRefName,labels', ...(body.repo ? ['--repo', body.repo] : [])], { cwd: body.root, encoding: 'utf8', env: ghEnv, stdio: ['ignore', 'pipe', 'ignore'] });
+  let refs: { headRefName?: unknown; baseRefName?: unknown; labels?: unknown } = {};
   try {
     refs = JSON.parse(view.stdout ?? '');
   } catch {
@@ -419,10 +468,11 @@ function lookupBranch(body: PendingBody, gh: string, ghEnv: Env, env: Env): Bran
   }
   const base = body.base ?? refs.baseRefName;
   const branch = { base: `origin/${base}`, head: `origin/${refs.headRefName}` };
+  const labels = Array.isArray(refs.labels) ? refs.labels.map((label) => String((label as { name?: unknown })?.name ?? '')) : undefined;
   const files = readBranchFiles(body.root, branch.base, branch.head, env);
-  if (files) return { ...branch, files };
+  if (files) return { ...branch, files, labels };
   spawnSync('git', ['fetch', '--quiet', '--no-tags', 'origin', '--end-of-options', refs.headRefName, base], { cwd: body.root, env, stdio: 'ignore' });
-  return branch;
+  return { ...branch, labels };
 }
 
 /** The problems with a body: every body rule of `check --pr` when the branch's files can be read, else the body alone, with a note. */
