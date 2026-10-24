@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { type GiteaGet, readGiteaServer } from '../../src/host/gitea.ts';
+import { type GiteaGet, giteaGet, readGiteaServer } from '../../src/host/gitea.ts';
 import { hostOf } from '../../src/host/hosts.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
 import { doctor } from '../../src/setup/doctor/index.ts';
@@ -120,6 +120,9 @@ test('gitea: no token, a refused token and a plain-http address are unread, neve
   assert.match('unread' in plain ? plain.unread : '', /not https/);
   const silent = await readGiteaServer(HOST, TOKEN, async () => { throw new Error('getaddrinfo ENOTFOUND'); });
   assert.match('unread' in silent ? silent.unread : '', /gave no answer/);
+  // The guard sits beside the fetch too: an http address never gets the token, even
+  // when a caller skips the read's own check (#849).
+  await assert.rejects(giteaGet('http://gitea.example.com/api/v1', TOKEN.GITEA_TOKEN)('/repos/me/repo'), /not https/);
 });
 
 test('hosts: a declared Gitea and gitea.com are Gitea; the address of a self-hosted one is never printed (#505)', () => {
