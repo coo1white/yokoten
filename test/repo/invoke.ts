@@ -40,10 +40,14 @@ function collect(): { stream: Writable; text: () => string } {
  * Run `yokoten <words>` in this process, in `cwd`, with `env` as the whole environment and
  * `stdin` as all of its standard input (none by default): never the test runner's own.
  */
-export async function invoke(words: string[], { env, cwd, stdin = '' }: { env: Env; cwd: string; stdin?: string }): Promise<Invoked> {
+export async function invoke(words: string[], { env, cwd, stdin = '', isTTY }: { env: Env; cwd: string; stdin?: string; isTTY?: boolean }): Promise<Invoked> {
   const [command, ...args] = words;
   const stdout = collect();
   const stderr = collect();
+  if (isTTY !== undefined) {
+    (stdout.stream as typeof stdout.stream & { isTTY?: boolean }).isTTY = isTTY;
+    (stderr.stream as typeof stderr.stream & { isTTY?: boolean }).isTTY = isTTY;
+  }
   const exitCode = process.exitCode;
   const folder = process.cwd();
   const code = await main({ command, args, env: { ...env }, cwd, stdout: stdout.stream, stderr: stderr.stream, stdin: { fd: null, text: stdin, stream: Readable.from([stdin], { objectMode: false }) }, script: SCRIPT });
