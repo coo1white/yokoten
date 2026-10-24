@@ -28,7 +28,40 @@ yokoten 在你已经在用的 agent 之上，多做三件事。钩子、沙箱�
 
 ## 安装
 
-只要 [Node](https://nodejs.org/) 22.23.4 或更高（用 Node 24 要 24.22.1 起，用 Node 26 要 26.12.1 起）。别的都不用装。
+不用克隆，也不用改 PATH。用 Homebrew 或 Scoop 的话，Node 会一起装上。
+
+**macOS 和 Linux**，用 [Homebrew](https://brew.sh)：
+
+```sh
+brew install yokoten-labs/tap/yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**Windows**，用 [Scoop](https://scoop.sh)：
+
+```powershell
+scoop bucket add yokoten https://github.com/yokoten-labs/scoop-bucket
+scoop install yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**任何系统**，用 npm，需要 [Node](https://nodejs.org/) 22.23.4 或更高（用 Node 24 要 24.22.1 起，用 Node 26 要 26.12.1 起）：
+
+```sh
+npm install -g yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**完全不想装**，用 npx：
 
 ```sh
 cd your-project
@@ -42,6 +75,8 @@ npx yokoten install      # 每台电脑一次
 npx yokoten init         # 每个项目一次
 npx yokoten doctor       # 走到了第几关，下一步做什么
 ```
+
+`yokoten install` 给这台电脑加上 skills、agents 和钩子。前面用哪种方式装命令都一样。
 
 用 Claude Code 的话，可以改用插件。先运行 `/plugin marketplace add yokoten-labs/yokoten`，再运行 `/plugin install yokoten@yokoten`。插件和 `npx` 选一个，不要两个都装。选择[要安装哪个版本](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)：Stable（默认）、Beta 或 Dev。只在 CI 里用的话，[当成 GitHub Action 用](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交检查只认 UTC 时间。在 shell 的配置文件里加一行 `export TZ=UTC`，加一次就行。
 

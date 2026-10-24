@@ -38,8 +38,41 @@ yokoten works before the pull request and alongside [PR review bots](https://git
 
 ## Install
 
-You need [Node](https://nodejs.org/) 22.23.4 or later (24.22.1 or later on Node 24, 26.12.1
-or later on Node 26). Nothing else.
+No clone and no PATH edit. Homebrew and Scoop install Node for you.
+
+**macOS and Linux**, with [Homebrew](https://brew.sh):
+
+```sh
+brew install yokoten-labs/tap/yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**Windows**, with [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add yokoten https://github.com/yokoten-labs/scoop-bucket
+scoop install yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**Any system**, with npm and [Node](https://nodejs.org/) 22.23.4 or later (24.22.1 or later on
+Node 24, 26.12.1 or later on Node 26):
+
+```sh
+npm install -g yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**With no install at all**, use npx:
 
 ```sh
 cd your-project
@@ -54,6 +87,9 @@ npx yokoten install     # once per computer
 npx yokoten init        # once per project
 npx yokoten doctor      # where you are, and the one next step
 ```
+
+`yokoten install` adds the skills, agents and hooks to this machine, whichever way you
+installed the command.
 
 In Claude Code you can use the plugin instead: `/plugin marketplace add yokoten-labs/yokoten`,
 then `/plugin install yokoten@yokoten`. Use the plugin or `npx`, not both.

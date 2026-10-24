@@ -37,7 +37,7 @@
     "check": "node bin/yokoten.ts check",
     "build": "node scripts/build.ts",
     "prepack": "node scripts/build.ts",
-    "check-package": "node scripts/check-package.ts"
+    "check-package": "node scripts/release/check-package.ts"
   },
   "files": [
     "bin",

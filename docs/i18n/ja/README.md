@@ -30,7 +30,40 @@ yokoten は、今使っているエージェントの上に、三つのことを
 
 ## インストール
 
-必要なのは [Node](https://nodejs.org/) 22.23.4 以降だけです（Node 24 は 24.22.1 以降、Node 26 は 26.12.1 以降）。他には何も要りません。
+クローンも PATH の変更も要りません。Homebrew か Scoop なら、Node も一緒に入ります。
+
+**macOS と Linux** では [Homebrew](https://brew.sh) を使います：
+
+```sh
+brew install yokoten-labs/tap/yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**Windows** では [Scoop](https://scoop.sh) を使います：
+
+```powershell
+scoop bucket add yokoten https://github.com/yokoten-labs/scoop-bucket
+scoop install yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**どのシステムでも**、npm と [Node](https://nodejs.org/) 22.23.4 以降で入れられます（Node 24 は 24.22.1 以降、Node 26 は 26.12.1 以降）：
+
+```sh
+npm install -g yokoten
+yokoten install
+cd your-project
+yokoten init
+yokoten doctor
+```
+
+**何も入れずに**使うなら npx です：
 
 ```sh
 cd your-project
@@ -44,6 +77,8 @@ npx yokoten install     # PC ごとに一度
 npx yokoten init        # プロジェクトごとに一度
 npx yokoten doctor      # 今いる関所と、次の一手
 ```
+
+`yokoten install` は、この PC に skills、agents、フックを加えます。コマンドの入れ方がどれでも同じです。
 
 Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。[どのバージョンを入れるか](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)を選べます。Stable（既定）、Beta、Dev です。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
 

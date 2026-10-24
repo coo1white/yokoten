@@ -1,5 +1,20 @@
 {
   "install": {
+    "brew": [
+      { "cmd": "brew install yokoten-labs/tap/yokoten", "note": { "en": "once per computer", "zh": "每台电脑一次" } },
+      { "cmd": "yokoten install", "note": { "en": "skills, agents and hooks on this machine", "zh": "给这台电脑装上 skills、agents 和钩子" } },
+      { "cmd": "cd your-project" },
+      { "cmd": "yokoten init", "note": { "en": "once per project", "zh": "每个项目一次" } },
+      { "cmd": "yokoten doctor", "note": { "en": "where you are, and the one next step", "zh": "走到了第几关，下一步做什么" } }
+    ],
+    "scoop": [
+      { "cmd": "scoop bucket add yokoten https://github.com/yokoten-labs/scoop-bucket" },
+      { "cmd": "scoop install yokoten", "note": { "en": "once per computer", "zh": "每台电脑一次" } },
+      { "cmd": "yokoten install", "note": { "en": "skills, agents and hooks on this machine", "zh": "给这台电脑装上 skills、agents 和钩子" } },
+      { "cmd": "cd your-project" },
+      { "cmd": "yokoten init", "note": { "en": "once per project", "zh": "每个项目一次" } },
+      { "cmd": "yokoten doctor", "note": { "en": "where you are, and the one next step", "zh": "走到了第几关，下一步做什么" } }
+    ],
     "npx": [
       { "cmd": "cd your-project" },
       { "cmd": "npx yokoten", "note": { "en": "once: installs what is missing, then shows the next step", "zh": "一次就好：装好缺的东西，再显示下一步" } },

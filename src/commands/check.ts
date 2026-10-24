@@ -24,7 +24,7 @@ import { type Env, loadConfig } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, madeWithModelNote, parseMadeWith, parseProvenance, provenanceFindings, splitForDependabot } from '../rules/pr.ts';
 import { BOARD_AGENT_FILE, parseBoardAgent, readBoardWorktrees } from './advice/board/agents.ts';
-import { parseChange } from '../run/changelog.ts';
+import { parseChange } from '../run/release/changelog.ts';
 import { borrowedFiles, type BorrowedChange, check, checkHistory, GitReadError, gitReadFinding, type GitRun, historyTimeZones, indexFiles, readGit, syncPull, timeZoneNote, unstageHint, verifyMerge, watchBorrowed } from '../run/check.ts';
 import { readBranchDesks } from '../run/hook.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
