@@ -222,7 +222,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   const body = pr.body ?? '';
   const tier = bodyTier(body);
   if (!tier) {
-    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: files CODEOWNERS owns, or a change that makes a rule looser; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);

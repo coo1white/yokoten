@@ -21,7 +21,8 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { cutPoint } from '../../src/commands/check.ts';
+import { borrowedIssue, cutPoint, hasOpenIssue } from '../../src/commands/check.ts';
+import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
@@ -430,11 +431,26 @@ test('check --pr: a Dependabot pull request passes with notes; the same body fro
   assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title']);
 });
 
+/** The error code when this machine may not listen on 127.0.0.1 (a sandbox), else null. */
+async function listenRefusal(): Promise<string | null> {
+  const server = createServer();
+  return new Promise((done) => {
+    server.once('error', (error: NodeJS.ErrnoException) => done(error.code ?? 'a refusal'));
+    server.listen(0, '127.0.0.1', () => server.close(() => done(null)));
+  });
+}
+
 // #645: GitHub can start the runs of one pull request in any order, and each event file
 // keeps the labels of its own moment. When the workflow asks (YOKOTEN_PR_LIVE), every run
 // reads the pull request as it is now, so a late run for `opened` judges the labels added
 // since, and a rerun judges it again. A draft is judged in full, like any pull request.
-test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async () => {
+test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async (t) => {
+  // A sandbox can refuse the call itself (`listen EPERM`) before any assertion runs; say so
+  // in one line and skip (#827). CI allows a local server, so the test runs there.
+  if ((await listenRefusal()) !== null) {
+    t.skip('this machine does not allow a local server; skipped');
+    return;
+  }
   const sandbox = makeSandbox();
   sandbox.write('README.md', 'Short.\n');
   sandbox.git('add', '.');
@@ -913,4 +929,48 @@ test('provenance: a range shows each commit, and a bad ref is one finding (#756)
   const usage = await sandbox.call(['provenance']);
   assert.equal(usage.status, 1);
   assert.match(usage.stderr, /give a commit or a range/);
+});
+
+// ---- Borrowed code (record 0024): the issue, and the command ----
+
+test('borrowed: the issue names the source and the security fix, and a second run sees it open', () => {
+  const source = 'https://github.com/example/upstream/blob/main/src/thing.ts';
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const older = 'fedcba9876543210fedcba9876543210fedcba98';
+  const path = 'src/borrowed/thing.ts';
+  const host: BorrowedHost = {
+    commits: () => [
+      { sha: older, message: 'fix: CVE-2026-1 remote code execution' },
+      { sha, message: 'taken' },
+    ],
+  };
+  const change = watchBorrowed([{ path, source, commit: sha, license: 'MIT' }], host).changed[0];
+  const issue = borrowedIssue(change);
+  assert.match(issue.title, /^check: /);
+  assert.ok(issue.title.length <= 60, issue.title);
+  assert.ok(issue.body.includes(source));
+  assert.ok(issue.body.includes(path));
+  assert.ok(issue.body.includes('security'));
+  assert.deepEqual(issue.labels, ['bug', 'hotfix', 'tier B']);
+  assert.deepEqual(borrowedIssue({ ...change, isSecurity: false }).labels, ['bug', 'tier B']);
+  assert.equal(borrowedIssue({ ...change, isSecurity: false }).title, 'check: review borrowed code upstream');
+  const calls: string[][] = [];
+  const gh = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 7, body: `Upstream changed \`${source}\`` }]);
+  };
+  assert.equal(hasOpenIssue(gh, source), true);
+  assert.equal(hasOpenIssue(gh, 'https://github.com/example/elsewhere/blob/main/x.ts'), false);
+  assert.match(calls[0].join(' '), /issue list --state open/);
+  // An answer that is not a list is a gap: stop, never open a duplicate (#676).
+  for (const answer of ['not json', '{}', 'null']) {
+    assert.throws(() => hasOpenIssue(() => answer, source), /did not give an issue list/, answer);
+  }
+});
+
+test('borrowed --dry-run: a repo with no wheel writes nothing and says so', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['borrowed', '--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /borrowed: 0 file\(s\), 0 source\(s\) changed, 0 unreadable/);
 });

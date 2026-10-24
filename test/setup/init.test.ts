@@ -145,7 +145,7 @@ test('init: the Gemini hook command runs when Gemini quotes a path with a space 
   assert.match(broken.stderr, /Cannot find module/);
 });
 
-test('init: adds the practices, keeps what is there, and doctor goes on to stage 4', async () => {
+test('init: adds the practices, keeps what is there, and doctor asks for the remote next', async () => {
   const sandbox = makeSandbox();
   // An AGENTS.md with `## This project` is left to `update` (#378).
   const ours = '# our own rules\n\n## This project\n\nours\n';
@@ -161,6 +161,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /kept AGENTS\.md/);
   assert.match(result.stdout, /wrote \.githooks\/pre-commit/);
+  assert.match(result.stdout, /wrote \.yokoten\/ \(a copy of yokoten, about 90 files; committing it is the point\)/);
+  assert.match(result.stdout, /wrote \.github\/CODEOWNERS \(the lead-only paths; make the repo, add the remote and push, then put your GitHub handle in place of @YOUR_GITHUB_HANDLE\)/);
   assert.equal(readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8'), ours);
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.equal(readFileSync(join(sandbox.repo, '.github/SECURITY.md'), 'utf8'), '# email us\n', 'the project\'s own policy stays');
@@ -183,17 +185,17 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.match(result.stdout, /kept \.github\/SECURITY\.md/);
   assert.match(result.stdout, /kept \.github\/dependabot\.yml/);
   assert.match(result.stdout, /kept CHANGELOG\.md/);
-  assert.match(result.stdout, /same the tool-call hook/);
-  assert.match(result.stdout, /same TZ=UTC for agent sessions/);
+  assert.match(result.stdout, /kept the tool-call hook/);
+  assert.match(result.stdout, /kept TZ=UTC for agent sessions/);
   const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.hooks.PreToolUse.length, 1);
-  assert.match(result.stdout, /same the stop check/);
+  assert.match(result.stdout, /kept the stop check/);
   const stopHook = { hooks: [{ type: 'command', command: guarded('"$CLAUDE_PROJECT_DIR/.yokoten/bin/yokoten.mjs"', 'hook --stop'), timeout: 600 }] };
   assert.deepEqual(settings.hooks.Stop, [stopHook], 'the stop check, once (#92)');
   assert.deepEqual(settings.hooks.SubagentStop, [stopHook], 'SubagentStop, once (#614)');
   assert.equal(settings.env.TZ, 'UTC', 'agent commits record no time zone (#40)');
-  assert.match(result.stdout, /same the Codex tool-call hook/);
-  assert.match(result.stdout, /same the Gemini CLI tool-call hook/);
+  assert.match(result.stdout, /kept the Codex tool-call hook/);
+  assert.match(result.stdout, /kept the Gemini CLI tool-call hook/);
   const codex = JSON.parse(readFileSync(join(sandbox.repo, '.codex', 'hooks.json'), 'utf8'));
   assert.equal(codex.description, 'ours');
   assert.equal(codex.hooks.PreToolUse.length, 2);
@@ -209,8 +211,8 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
     matcher: 'run_shell_command|write_file|replace',
   });
   // The stop checks (#211): Codex's Stop and Gemini's AfterAgent take no matcher, once each.
-  assert.match(result.stdout, /same the Codex stop check/);
-  assert.match(result.stdout, /same the Gemini CLI stop check/);
+  assert.match(result.stdout, /kept the Codex stop check/);
+  assert.match(result.stdout, /kept the Gemini CLI stop check/);
   assert.deepEqual(codex.hooks.Stop, [{ hooks: [{ type: 'command', command: guarded('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --stop --agent codex'), timeout: 600 }] }]);
   assert.deepEqual(gemini.hooks.AfterAgent, [{ hooks: [{ type: 'command', command: guarded('$GEMINI_PROJECT_DIR/.yokoten/bin/yokoten.mjs', 'hook --stop --agent gemini'), name: 'yokoten-stop', timeout: 600_000 }] }]);
   // Codex's hooks are in place; this home has no ~/.codex, so doctor says nothing of its trust (#341).
@@ -222,7 +224,7 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.doesNotMatch(result.stdout, /to trust this folder in Copilot CLI/);
   assert.equal(result.stdout.split('\n').filter((line) => line === 'other agents: see the guide').length, 1);
   // Antigravity CLI (#30): its own file, and Copilot CLI reads .claude/settings.json.
-  assert.match(result.stdout, /same the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
+  assert.match(result.stdout, /kept the Antigravity CLI tool-call hook in \.agents\/hooks\.json/);
   const agents = JSON.parse(readFileSync(join(sandbox.repo, '.agents', 'hooks.json'), 'utf8'));
   assert.deepEqual(agents.yokoten.PreToolUse[0].hooks[0].command, guardedCall('"$(git rev-parse --show-toplevel)/.yokoten/bin/yokoten.mjs"', 'hook --agent antigravity'));
   // The pre-commit hook runs the vendored check on a real commit.
@@ -238,12 +240,12 @@ test('init: adds the practices, keeps what is there, and doctor goes on to stage
   assert.notEqual(secret.status, 0, 'a secret is refused too (#8)');
   assert.match(secret.stderr, /leak\.md:1: a secret \(AWS access key id\)/);
   sandbox.git('reset', '-q', 'leak.md');
-  // init does all of stages 1 to 3 but the tests, so with tests the road goes on to stage 4.
+  // init does all of stages 1 to 3 but the tests, so with tests the road goes on to the remote.
   assert.match((await sandbox.call(['doctor', '--session'])).stdout, /^yokoten: stage 1 of 5, safety net\. Next: no workflow runs a test command/);
   sandbox.withTests();
   result = await sandbox.call(['doctor', '--session']);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /^yokoten: stage 4 of 5, a team of agents\. Next: \.github\/CODEOWNERS names no owner yet \(@YOUR_GITHUB_HANDLE\); put your GitHub handle in \.github\/CODEOWNERS/);
+  assert.match(result.stdout, /^yokoten: stage 2 of 5, issues and pull requests\. Next: there is no origin remote, so the work is only on this machine; make the repo on your code host, add it as origin \(`git remote add origin <url>`\), and push \(`git push -u origin --all`\)/);
 });
 
 const GUIDE_LINE = 'other agents: see the guide';
@@ -796,8 +798,8 @@ test("init: husky keeps its hooks folder; .husky/pre-commit gets the check and k
   assert.equal(await stepMark(sandbox, 'commit-check'), 'done');
   // Again: the hook already runs yokoten.
   result = await sandbox.call(['init']);
-  assert.match(result.stdout, /same \.husky\/pre-commit/);
-  assert.match(result.stdout, /same \.husky\/pre-merge-commit/);
+  assert.match(result.stdout, /kept \.husky\/pre-commit/);
+  assert.match(result.stdout, /kept \.husky\/pre-merge-commit/);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), hook);
   // A real commit runs both: the project's hook and the yokoten check.
   sandbox.git('add', '.');
@@ -827,7 +829,7 @@ test('init: husky not yet installed in this clone; init leaves core.hooksPath un
   // A hook that init changed before the runtime guard (#204) already runs the check.
   const before = '# yokoten: the commit check\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\nnpm test\n';
   sandbox.write('.husky/pre-commit', before);
-  assert.match((await sandbox.call(['init'])).stdout, /^same \.husky\/pre-commit/m);
+  assert.match((await sandbox.call(['init'])).stdout, /^kept \.husky\/pre-commit/m);
   assert.equal(readFileSync(join(sandbox.repo, '.husky/pre-commit'), 'utf8'), before);
   assert.notEqual(await stepMark(sandbox, 'commit-check'), 'done', 'git runs no hook yet');
   assert.match((await sandbox.call(['doctor'])).stdout, /run `npm install` so husky sets core\.hooksPath/);
@@ -1413,8 +1415,8 @@ test('init: a commented .gemini/settings.json is left as it was and gets the hoo
   writeFileSync(file, after);
   const again = await sandbox.call(['init']);
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(again.stdout, /^same the Gemini CLI tool-call hook in \.gemini\/settings\.json$/m);
-  assert.match(again.stdout, /^same the Gemini CLI stop check in \.gemini\/settings\.json/m);
+  assert.match(again.stdout, /^kept the Gemini CLI tool-call hook in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^kept the Gemini CLI stop check in \.gemini\/settings\.json/m);
   assert.equal(readFileSync(file, 'utf8'), after, 'the file changed');
   assert.match((await sandbox.call(['doctor'])).stdout, /^ {2}ok {6}gemini-hook$/m);
 });
@@ -1514,7 +1516,7 @@ fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
   // --github --yes asked for changes on GitHub; with no remote none were made, so it fails (#208).
   result = await sandbox.call(['init', '--github', '--yes'], { extra });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /GitHub: skipped, because there is no origin remote yet\. Add one on GitHub, then run `yokoten init --github --yes`/);
+  assert.match(result.stderr, /GitHub: skipped, because there is no origin remote yet\. Make the repo on GitHub, add it as origin, and push; then run `yokoten init --github --yes`/);
   assert.match(result.stderr, /\nyokoten init: --github --yes changed nothing on GitHub \(the reason is above\)\. The project files are as listed above\.\n$/);
   assert.equal(calls().length, 0);
   sandbox.git('remote', 'add', 'origin', 'https://github.com/example/repo.git');
@@ -1592,6 +1594,9 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   const sandbox = makeSandbox();
   const extra = stubGh(sandbox, { 'api users/octo --jq .type': 'User', 'api repos/octo/app --jq .private': 'true' });
   sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  // The remote step is done once a branch is pushed; a local ref is enough for the road.
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/dependabot.yml'];
   const isThere = (file: string) => existsSync(join(sandbox.repo, file));
   const notNow = () => JSON.parse(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8')).notNow;
@@ -1898,10 +1903,10 @@ const withTestsJob = (yml: string): string =>
 const oldYokotenYml = () =>
   kitWorkflow('yokoten.yml')
     .replace(
-      '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. A push to main never cancels a run: every commit stays in history,\n# and a cancelled run leaves a ✗ on it (#660).\n',
+      '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. Every other event gets a group of its own, so a run on main is never\n# cancelled, waiting or running: every commit stays in history (#660, #798).\n',
       '# A new push to a pull request cancels the run still going for it. A push to main gets\n# a group of its own, so a run on main is never cancelled.\n',
     )
-    .replace("group: ${{ github.workflow }}-${{ github.ref }}", "group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}")
+    // The group is the same as before #451, so only the lines below differ.
     // Before #660, a push to main cancelled the run still going on main.
     .replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", 'cancel-in-progress: true')
     // Before #572, the kit set up Node by its line alone.
@@ -2174,10 +2179,10 @@ test('init: writes each agent sandbox, and a second run changes nothing (#589)',
   assert.match(grok, /^extends = "workspace"$/m);
   const again = await sandbox.call(['init']);
   assert.equal(again.status, 0, again.stdout + again.stderr);
-  assert.match(again.stdout, /^same the Claude Code sandbox in \.claude\/settings\.json$/m);
-  assert.match(again.stdout, /^same the Codex sandbox in \.codex\/config\.toml$/m);
-  assert.match(again.stdout, /^same the Gemini sandbox in \.gemini\/settings\.json$/m);
-  assert.match(again.stdout, /^same the Grok sandbox in \.grok\/sandbox\.toml$/m);
+  assert.match(again.stdout, /^kept the Claude Code sandbox in \.claude\/settings\.json$/m);
+  assert.match(again.stdout, /^kept the Codex sandbox in \.codex\/config\.toml$/m);
+  assert.match(again.stdout, /^kept the Gemini sandbox in \.gemini\/settings\.json$/m);
+  assert.match(again.stdout, /^kept the Grok sandbox in \.grok\/sandbox\.toml$/m);
   assert.deepEqual(JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: true });
 });
 

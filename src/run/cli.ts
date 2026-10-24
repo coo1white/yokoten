@@ -84,13 +84,41 @@ export const MISSING_NODE = 'yokoten: the guard cannot run, because node is not 
  *   its stdout goes straight to the hook's own, through fd 3.
  * - The subshell's stderr is /dev/null, so the shell's job line for a killed node
  *   ("Killed", or bash's line with the whole command and its paths) never shows.
- * The plugin's PreToolUse hook in .claude-plugin/plugin.json is this text; a test holds them equal.
+ * install's tool-call guard is this text. The plugin's tool guard fails closed inside
+ * bin/launch.mjs, so its hook command stays one short line (#706).
  */
 export const refuseOnFailure = (path: string, args: string): string =>
   `command -v node >/dev/null 2>&1 || { echo '${MISSING_NODE}' >&2; exit 1; }; ` +
   `{ err=$( ( node ${GUARD_HEAP} ${path} ${args} 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; ` +
   'case $code in 0|2) printf %s "${err%x}" >&2;; ' +
   '*) echo "yokoten\'s guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`" >&2; code=2;; esac; exit $code';
+
+/** What PreToolUse says when no safe plugin copy remains. It names no path. `bin/launch.mjs` says the same line. */
+export const PLUGIN_GUARD_MISSING = 'yokoten: the guard cannot run, because no safe plugin copy was found, so the command is refused';
+
+/** What SessionStart says when no safe plugin copy remains. It names no path, and the session still starts. `bin/launch.mjs` says the same line. */
+export const PLUGIN_SESSION_MISSING = 'yokoten: the session check cannot run, because no safe plugin copy was found';
+
+/** What the plugin hook says when `bin/launch.mjs` is not in this session's plugin folder. A tool call is refused. Session start still goes on. */
+export const PLUGIN_COPY_GONE = 'yokoten: this plugin copy is gone; restart Claude Code';
+
+/**
+ * The Claude Code plugin hook (#706). The command is one short line, so a refusal
+ * does not show a long program in front of the message. It runs `bin/launch.mjs`
+ * when that file is there. When the file is gone, it says `PLUGIN_COPY_GONE` and
+ * refuses a tool call (exit 2), or prints the line and exits 0 at session start.
+ * The fallback path stays in the command, so the file scan still sees
+ * `${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs`. The launcher reads every other path.
+ */
+export function pluginHookCommand(isSessionStart: boolean): string {
+  if (/['"\\]/.test(PLUGIN_COPY_GONE)) throw new Error('the gone line has a quote or a backslash');
+  const launch = '"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs"';
+  const fallback = '"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs"';
+  const mode = isSessionStart ? 'session' : 'tool';
+  const yokotenArgs = isSessionStart ? 'doctor --session' : 'hook --commands-only';
+  const say = isSessionStart ? `echo '${PLUGIN_COPY_GONE}'; exit 0` : `echo '${PLUGIN_COPY_GONE}' >&2; exit 2`;
+  return `[ -f ${launch} ] 2>/dev/null || { ${say}; }; node ${launch} ${mode} ${fallback} ${yokotenArgs}`;
+}
 
 /**
  * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.
@@ -128,6 +156,8 @@ export interface Command {
   argument?: string;
   /** The positional arguments it takes, in order, when it takes more than one: an action, then its word (#447). */
   arguments?: string[];
+  /** It takes any number of positional arguments, in the order given: a merge train's queue (#320). */
+  many?: boolean;
   example: string;
 }
 
@@ -223,6 +253,20 @@ export const COMMANDS: Command[] = [
     options: [{ name: '--json', text: 'the records as JSON on stdout' }],
     argument: 'ref',
     example: 'yokoten provenance main~1..main',
+  },
+  {
+    name: 'borrowed',
+    summary: 'compare borrowed code with its upstream, and open issues when it moved',
+    usage: '[--dry-run] [--json]',
+    text: [
+      "Compares each file in src/borrowed/ with upstream's default branch, through gh.",
+      'It opens one issue per source that changed, and calls out a security fix.',
+    ],
+    options: [
+      { name: '--dry-run', text: 'show the report and the issues it would open, and write nothing' },
+      { name: '--json', text: 'the report as JSON on stdout' },
+    ],
+    example: 'yokoten borrowed --dry-run',
   },
   {
     name: 'redact',
@@ -387,6 +431,25 @@ export const COMMANDS: Command[] = [
     ],
     options: [],
     example: 'yokoten bot -- gh pr create --fill',
+  },
+  {
+    name: 'train',
+    summary: 'merge an approved queue one pull request at a time, with a gate between each',
+    usage: '<pr>... [--wait <seconds>]',
+    text: [
+      'Merges each pull request in the order given, as the bot, and stops at the first one',
+      'that needs a person. Only the lead runs it.',
+      'Before the first merge it records every base branch, because GitHub forgets a base',
+      'when it deletes the branch. A pull request stacked on a squash-merged branch then',
+      'merges from the base it really shares with its old branch, not an older one.',
+      'A conflict that is only import lines is resolved by taking the union. Any other',
+      'conflict, a failing test or a missing approval stops the train.',
+      'Each merged tree runs the project\'s tests and `check` before it is pushed, and CI',
+      'must pass on the pushed merge before the squash.',
+    ],
+    options: [{ name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' }],
+    many: true,
+    example: 'yokoten train 1207 1209 1211',
   },
   {
     name: 'board',

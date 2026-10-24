@@ -75,30 +75,41 @@ export interface VendorLook {
   color: string;
 }
 
-/** Filed names that share one shown name (#693). The hooks file each agent by its --agent name. */
-const VENDOR_KEY: Record<string, string> = {
-  anthropic: 'claude',
-  claude: 'claude',
-  'claude-code': 'claude',
-  xai: 'grok',
-  grok: 'grok',
-  muse: 'muse',
-  deepseek: 'deepseek',
-  'deepseek-harness': 'deepseek',
-  'codex-deepseek': 'deepseek',
-  'codex on deepseek': 'deepseek',
-};
-
-const VENDOR_LOOKS: Record<string, VendorLook> = {
-  claude: { name: 'Claude', color: '#d97757' },
-  codex: { name: 'Codex', color: '#10a37f' },
-  gemini: { name: 'Gemini', color: '#4285f4' },
-  antigravity: { name: 'Antigravity', color: '#4285f4' },
-  grok: { name: 'Grok', color: '#9ca3af' },
-  muse: { name: 'Muse', color: '#0866ff' },
-  deepseek: { name: 'DeepSeek', color: '#4d6bfe' },
-};
-const OTHER_VENDOR_COLOR = '#8b8b8b';
+/**
+ * How a vendor shows (#693). Claude, Grok, Muse and DeepSeek each have one name.
+ * Codex on a DeepSeek model shows as DeepSeek. Claude on that model stays Claude.
+ * Any other vendor keeps its filed name, in grey. The tables are inside the function
+ * so the page can run it as one script, with no module constants.
+ */
+export function vendorOf(vendor: string, model = ''): VendorLook {
+  /** Filed names that share one shown name (#693). The hooks file each agent by its --agent name. */
+  const keys: Record<string, string> = {
+    anthropic: 'claude',
+    claude: 'claude',
+    'claude-code': 'claude',
+    xai: 'grok',
+    grok: 'grok',
+    muse: 'muse',
+    deepseek: 'deepseek',
+    'deepseek-harness': 'deepseek',
+    'codex-deepseek': 'deepseek',
+    'codex on deepseek': 'deepseek',
+  };
+  const looks: Record<string, VendorLook> = {
+    claude: { name: 'Claude', color: '#d97757' },
+    codex: { name: 'Codex', color: '#10a37f' },
+    gemini: { name: 'Gemini', color: '#4285f4' },
+    antigravity: { name: 'Antigravity', color: '#4285f4' },
+    grok: { name: 'Grok', color: '#9ca3af' },
+    muse: { name: 'Muse', color: '#0866ff' },
+    deepseek: { name: 'DeepSeek', color: '#4d6bfe' },
+  };
+  const filed = vendor.trim().toLowerCase();
+  let key = keys[filed] ?? filed;
+  if (key === 'codex' && model.toLowerCase().includes('deepseek')) key = 'deepseek';
+  const known = looks[key];
+  return known ?? { name: vendor.trim() || 'Unknown', color: '#8b8b8b' };
+}
 
 /** Adjectives for a friendly name. The same list the old viewer used, so a name can stay. */
 const NICKNAME_ADJECTIVES = ['Swift', 'Calm', 'Bright', 'Brave', 'Keen', 'Steady', 'Clever', 'Gentle', 'Bold', 'Quiet', 'Eager', 'Patient', 'Lucky', 'Sunny', 'Witty', 'Nimble'];
@@ -134,19 +145,6 @@ function realFolder(folder: string): string {
   } catch {
     return folder;
   }
-}
-
-/**
- * How a vendor shows (#693). Claude, Grok, Muse and DeepSeek each have one name.
- * Codex on a DeepSeek model shows as DeepSeek. Claude on that model stays Claude.
- * Any other vendor keeps its filed name, in grey.
- */
-export function vendorOf(vendor: string, model = ''): VendorLook {
-  const filed = vendor.trim().toLowerCase();
-  let key = VENDOR_KEY[filed] ?? filed;
-  if (key === 'codex' && model.toLowerCase().includes('deepseek')) key = 'deepseek';
-  const known = VENDOR_LOOKS[key];
-  return known ?? { name: vendor.trim() || 'Unknown', color: OTHER_VENDOR_COLOR };
 }
 
 /** One agent as the page shows it. `key` tells agents apart: its worktree, with `~` for home. */
@@ -265,11 +263,11 @@ function fileChangedAt(file: string): number | null {
  * True when the agent says it is working and its status file or its own log changed
  * within 15 minutes. A stale "working" holds no seat. The log is read only when the file is stale.
  */
-function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], env: Env, cache: LogCache, now: number): boolean {
+function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], env: Env, cache: LogCache, now: number, logPath = ''): boolean {
   if (state !== 'working') return false;
   const statusAt = fileChangedAt(join(tree, BOARD_AGENT_FILE));
   if (statusAt !== null && now - statusAt < LIVE_WINDOW_MS) return true;
-  const log = findAgentLog(tree, vendor, env, cache);
+  const log = findAgentLog(tree, vendor, env, cache, logPath);
   return log !== null && now - log.mtime < LIVE_WINDOW_MS;
 }
 
@@ -277,8 +275,8 @@ function isAgentLive(tree: string, vendor: string, state: BoardAgent['state'], e
  * The lead row's one line (#700): the first line of what the lead last said, masked as
  * the stream masks it, then cut to the row. No log, or no mask: the status file's line.
  */
-function leadLine(tree: string, vendor: string, env: Env, root: string, cache: LogCache, fallback: string): string {
-  const log = findAgentLog(tree, vendor, env, cache);
+function leadLine(tree: string, vendor: string, env: Env, root: string, cache: LogCache, fallback: string, logPath = ''): string {
+  const log = findAgentLog(tree, vendor, env, cache, logPath);
   if (!log) return fallback;
   const text = lastAssistantLine(log.file, log.source, tree);
   if (!text) return fallback;
@@ -307,7 +305,7 @@ function workStarted(agent: BoardAgent, tree: string): string {
 function agentView(found: FoundAgent, env: Env, now: number, nickname: string, isMain: boolean, cache: LogCache, root: string, mask: (text: string) => string): AgentView {
   const { agent, tree } = found;
   const look = vendorOf(agent.vendor, agent.model);
-  const filed = agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing) : agent.doing;
+  const filed = agent.role === 'lead' ? leadLine(tree.path, agent.vendor, env, root, cache, agent.doing, agent.log) : agent.doing;
   return {
     key: hideHome(tree.path, env),
     name: mask(agent.name),
@@ -327,7 +325,7 @@ function agentView(found: FoundAgent, env: Env, now: number, nickname: string, i
     updated: agent.updated,
     started: workStarted(agent, tree.path),
     branch: tree.branch,
-    isLive: isAgentLive(tree.path, agent.vendor, agent.state, env, cache, now),
+    isLive: isAgentLive(tree.path, agent.vendor, agent.state, env, cache, now, agent.log),
   };
 }
 
@@ -359,14 +357,14 @@ export const BOARD_NO_REMOTE_ISSUES = 'this repo has no GitHub remote, so the bo
 /** What the lists say before the first read from GitHub finishes (#688). */
 export const BOARD_READING_GITHUB = 'reading GitHub…';
 /**
- * The most open issues the board reads. A list this long may be cut off, so it
- * cannot prove that an issue is closed (#693).
+ * The most open issues the board lists. It reads one more, so it can tell a complete
+ * list from a cut-off one: an issue missing from a cut-off list could look closed (#693).
  */
 export const BOARD_ISSUE_LIMIT = 30;
 
-/** The open issue numbers, or null when the list is missing or may be cut off. */
+/** The open issue numbers, or null when the list is missing or was actually cut off. */
 export function issueNumbersOf(issues: { number: number }[] | string): number[] | null {
-  if (!Array.isArray(issues) || issues.length >= BOARD_ISSUE_LIMIT) return null;
+  if (!Array.isArray(issues) || issues.length > BOARD_ISSUE_LIMIT) return null;
   return issues.map((issue) => issue.number);
 }
 

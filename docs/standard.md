@@ -285,6 +285,7 @@ The board skips a file that is not a JSON object.
 | `task` | the agent | text |
 | `worktree` | the agent | text |
 | `doing` | the agent | text |
+| `log` | the agent | text. An absolute path to a plain text log inside the worktree or a runtime's log folder. The board reads it when it finds no session log. |
 | `updated` | the agent, and the stop hook | text. The hook writes UTC time with no milliseconds, such as `2026-10-23T00:00:00Z`. |
 | `started` | the agent | text, the same form as `updated`: when this work started. The board falls back to the file's birth time, then to `updated`. |
 | `role` | the agent | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. Any other word, including `worker`, becomes empty. |
@@ -382,7 +383,7 @@ How yokoten checks it. `parseMadeWith` reads the last line. `madeWithFindings` r
 Version 1. The line has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
-- [src/commands/bot.ts](../src/commands/bot.ts) and [test/commands/bot.test.ts](../test/commands/bot.test.ts).
+- [src/commands/merge/bot.ts](../src/commands/merge/bot.ts) and [test/commands/merge/bot.test.ts](../test/commands/merge/bot.test.ts).
 
 ## Provenance
 

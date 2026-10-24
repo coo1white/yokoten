@@ -2,7 +2,7 @@
 
 import '../../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -96,11 +96,12 @@ test('board feed route: a home path, an email, a token and a private mark never 
   }
 });
 
-// #694: an agent whose log can't be found shows its `doing` steps, as before.
+// #694: an agent whose log can't be found shows its `doing` steps, as before. A `log`
+// field that names no file is no log.
 test('board feed route: no log falls back to the doing steps', async () => {
   const sandbox = makeSandbox();
   const env = { ...sandbox.env, HOME: dirname(sandbox.repo) };
-  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'codex', worktree: sandbox.repo, doing: 'reading the issue' }));
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'codex', worktree: sandbox.repo, doing: 'reading the issue', log: join(sandbox.repo, 'not-written.log') }));
   const { server, url } = await startBoardServer(sandbox.repo, env, () => '[]');
   try {
     const base = url.split('?')[0];
@@ -109,6 +110,35 @@ test('board feed route: no log falls back to the doing steps', async () => {
     assert.deepEqual([answer.source, answer.items], ['doing', []]);
     const data = JSON.parse((await get(`${base}data`, { cookie })).text) as { feeds: Record<string, { text: string }[]> };
     assert.deepEqual(data.feeds['~/repo'].map((event) => event.text), ['reading the issue'], '/data still has the doing steps');
+  } finally {
+    server.close();
+  }
+});
+
+// #694: a runner's plain text log, named by the status file's `log` field, streams as
+// messages. Only the new lines on each read, and every mask still applies.
+test('board feed route: a plain log streams its new lines, with a home path, an email and a token masked', async () => {
+  const sandbox = makeSandbox();
+  const home = dirname(sandbox.repo);
+  const log = join(sandbox.repo, 'runner.log');
+  const first = `Mail ${EMAIL} about ${TOKEN} in ${sandbox.repo}/src/a.ts\n`;
+  writeFileSync(log, first);
+  writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'w', vendor: 'opencode', worktree: sandbox.repo, doing: 'running', log }));
+  const { server, url } = await startBoardServer(sandbox.repo, { ...sandbox.env, HOME: home }, () => '[]');
+  try {
+    const base = url.split('?')[0];
+    const cookie = await boardCookie(url);
+    const feedUrl = (after = '') => `${base}feed?agent=${encodeURIComponent('~/repo')}&after=${encodeURIComponent(after)}`;
+    const answer = await get(feedUrl(), { cookie });
+    assert.equal(answer.status, 200, answer.text);
+    const body = JSON.parse(answer.text) as { source: string; next: string; reset: boolean; items: { kind: string; text: string }[] };
+    assert.equal(body.source, 'plain');
+    assert.deepEqual(body.items.map((item) => [item.kind, item.text]), [['say', 'Mail <email> about <secret> in ~/repo/src/a.ts']]);
+    for (const secret of [home, EMAIL, TOKEN]) assert.ok(!answer.text.includes(secret), `${secret === home ? 'the home folder' : 'a private value'} never leaves`);
+    // The cursor brings only the new line, and the old one is not read again.
+    appendFileSync(log, 'second line\n');
+    const again = JSON.parse((await get(feedUrl(body.next), { cookie })).text) as { items: { text: string }[]; reset: boolean };
+    assert.deepEqual([again.items.map((item) => item.text), again.reset], [['second line'], false]);
   } finally {
     server.close();
   }
