@@ -1,4 +1,4 @@
-# 0039 Redo a conflicting pull request on main; never merge main into it
+# 0040 Redo a conflicting pull request on main; never merge main into it
 
 Status: proposed
 Date: 2026-10-24 (UTC)
@@ -70,8 +70,8 @@ The ledger entry in point 3 is what makes them measurable next time.
    evidence, not every line. The evidence becomes one ledger entry, so the next record
    can count rounds and rework instead of guessing.
 4. **A work-in-progress limit.** No new task starts while the open pull requests pass
-   the limit. Start at 20, about half a day of the 52 merges a day this clone shows.
-   The owner sets the final number once two weeks of ledger entries exist. A lead may
+   the limit. Start at 15, the number the runner uses today. The owner may change it
+   once two weeks of ledger entries exist. A lead may
    exceed it once for a task that clears the queue: a redo of a blocked pull request,
    or a merge.
 
@@ -119,12 +119,13 @@ adds no layer.
   on one day become one task, or wait. That is the price of a coherent main line.
 - The limit can leave a desk idle. An idle desk is cheaper than 43 open pull requests,
   and the idle time is not lost: the runner starts the next task when a slot frees.
-- The first week after this record is the baseline. Without a ledger entry, rounds and
-  redo outcomes stay unknown, and the next decision repeats this guess.
+- These numbers are a first measurement, not a baseline. Without a ledger entry,
+  rounds and redo outcomes stay unknown, and the next decision repeats this guess.
 
 ## Evidence
 
-Measured in this clone on 2026-10-24, from `main` at 4c7c9be:
+First measurement, 2026-10-24, in this clone, from `main` at 4c7c9be. These are the
+numbers as they stood that day; the next measurement replaces them.
 
 - Per day and total: `git log --pretty='%cI'`, grouped by the UTC day of the commit
   date; the first commit, "feat: yokoten 0.1.0", carries no pull request number.
