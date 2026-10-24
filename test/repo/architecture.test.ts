@@ -290,6 +290,17 @@ test('child processes: a killed child names the test that ran it (#436)', () => 
   assert.equal(runChild('node', ['-e', '']).status, 0);
 });
 
+// #813: runChild spread the caller's options into spawnSync, so `shell: true` let a test value
+// (a temp path, a file name) become shell code. A caller that asks for a shell gets none.
+test('child processes: runChild never starts a shell (#813)', () => {
+  // The type names every field, so TypeScript callers cannot ask. Plain JavaScript, or this cast,
+  // still can: the helper must ignore it at runtime, not only refuse it at compile time.
+  const asksForShell = { shell: true } as unknown as Parameters<typeof runChild>[2];
+  const result = runChild('/bin/echo', ['a; echo shell ran'], asksForShell);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'a; echo shell ran\n', 'an argument stays a value, even when a caller asks for a shell');
+});
+
 // #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
 // the sandbox's home after the test removed it, so removing the sandbox failed. Git's
 // background maintenance can race a test the same way (#442).
