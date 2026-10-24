@@ -60,6 +60,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
       return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
     }
+    case 'anchor':
+      return import('../src/commands/hook.ts').then((m) => m.runAnchor(invocation));
     case 'stops':
       return import('../src/commands/hook.ts').then((m) => m.runStops(invocation));
     case 'worker':
