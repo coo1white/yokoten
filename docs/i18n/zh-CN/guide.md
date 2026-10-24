@@ -455,6 +455,23 @@ Windows 上请用 Git Bash。
 说明，真正拦住命令的是守卫。所以只装技能等于没有守卫：要跑 `npx yokoten install`，或者用插件，
 守卫才会打开。
 
+### 装哪个版本
+
+有三个发布通道。Stable 是稳妥的默认选择。
+
+| 通道 | 插件 | npm | 装到的是什么 | 适合谁 |
+|---|---|---|---|---|
+| Stable | `yokoten` | `latest` | 最新的正式发布标签，例如 v0.1.0，带更新日志 | 所有人 |
+| Beta | `yokoten-beta` | `next` | 最新的预发布标签，例如 v0.2.0-beta.1 | 想早点用新功能、出了问题愿意报告的人 |
+| Dev | `yokoten-dev` | 无 | 默认分支，每个合并的 pull request | 贡献者，以及我们自己的测试 |
+
+`/plugin install yokoten@yokoten` 装的是 Stable。Beta 用 `yokoten-beta@yokoten`，Dev 用
+`yokoten-dev@yokoten`。只装一个通道，不要同时装几个。要换通道，先运行
+`/plugin uninstall yokoten@yokoten`，再装另一个名字。在终端里，`claude plugin uninstall`
+和 `claude plugin install` 也一样。`doctor` 会在输出的最上面写出通道和版本。
+
+预发布版可能比正式版先出问题。Dev 每次合并都会变，而且没有更新日志。
+
 ### 用 Claude Code 插件装
 
 在 Claude Code 里输入：
@@ -484,7 +501,9 @@ Windows 上请用 Git Bash。
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
 在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
-`claude plugin update yokoten@yokoten` 也一样。下一次工具调用会跑更新后的守卫。还带着旧 hook 命令的会话需要重启一次。会话还在跑的时候，要是旧的插件文件夹被删掉了，这次工具调用会被拒绝，并提示你重启。插件要是比跑 `doctor`
+`claude plugin update yokoten@yokoten` 也一样；Beta 或 Dev 要用 `yokoten-beta@yokoten` 或
+`yokoten-dev@yokoten`。下一次工具调用会跑更新后的守卫。还带着旧 hook 命令的会话需要重启一次。
+会话还在跑的时候，要是旧的插件文件夹被删掉了，这次工具调用会被拒绝，并提示你重启。插件要是比跑 `doctor`
 的这份 yokoten 旧，`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
