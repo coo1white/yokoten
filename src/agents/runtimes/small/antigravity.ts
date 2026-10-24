@@ -11,11 +11,13 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
+import { releaseFix } from '../../../rules/guards.ts';
 import { homeIn } from '../../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
 import type { Action } from '../../../run/hook.ts';
 import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../../hooks-file.ts';
 import type { RuntimeEnv } from '../../desk/agent-env.ts';
+import type { AgentAdapter } from '../runtime.ts';
 
 // run_command takes `CommandLine` and `Cwd`; the three edit tools take `TargetFile`.
 const SHELL = 'run_command';
@@ -160,3 +162,20 @@ export function removeUserHooks(env: Env): 'removed' | 'not there' | null {
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Antigravity signs in through its app, so it needs no login name. */
 export const AGENT_ENV: RuntimeEnv = { login: [], config: [] };
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'antigravity',
+  label: 'Antigravity CLI (`agy`)',
+  projectHook: '`.agents/hooks.json`: the `yokoten` entry, PreToolUse',
+  userHook: null,
+  blocking: '`{"decision": "deny"}` on stdout',
+  capabilities: { canRewrite: false, hasStopHook: false, needsTrust: false, failsOpen: false, passesRole: true },
+  readToolCall,
+  formatDenial,
+  releaseFix: releaseFix(approve('agy')),
+  agentEnv: AGENT_ENV,
+  call: (command) => ({ workspacePaths: ['/repo'], toolCall: { name: 'run_command', args: { CommandLine: command, Cwd: '/repo' } } }),
+};

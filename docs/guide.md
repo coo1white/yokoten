@@ -300,20 +300,21 @@ yokoten guards nine AI coding agents with the same rules. This table is the one 
 them and how well each is covered. Each "yes" below is a real run: the agent tried
 `git push --tags` in a throwaway repo, and the guard stopped it. "Not run end to end"
 means the agent is listed, but its guard is not verified end to end yet. Docs are not
-proof.
+proof. The table is generated from the runtime contract in `src/agents/runtimes/runtime.ts`
+and the dated runs. A test fails when the two differ.
 
-| Agent | Hook file (`init` writes it) | How it blocks | Verified | Caveats |
-|---|---|---|---|---|
-| Claude Code | `.claude/settings.json`: PreToolUse, Stop and SubagentStop | exit 2, the reason on stderr | yes, 2026-10-19: headless, on DeepSeek `deepseek-flash` | none |
-| GitHub Copilot CLI | the same `.claude/settings.json`: Copilot reads it | exit 2, and the reason as JSON on stdout | yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto) | Runs repo hooks only after you trust the folder: run `copilot` there and choose "Yes, and remember this folder for future sessions". Skips them without a word otherwise. A hook that times out lets the call go on |
-| Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed. The lead runs a worker's done-when check |
-| Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
-| Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so mark a worker's worktree with `yokoten worker mark <dir>`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
-| DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check: the lead runs a worker's done-when check |
-| Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
-| Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
-| OpenCode | `.opencode/plugins/yokoten.ts`: OpenCode 2 permission `evaluate`, and OpenCode 1 `tool.execute.before` | OpenCode 2 sets `effect` to deny; OpenCode 1 throws the reason | yes, 2026-10-23: OpenCode 2.1.4, `opencode-go/deepseek-v4.1-flash`, the plugin as `init` writes it | No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read. A subagent call was not part of that run |
-| Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | | |
+| Agent | Hook file (`init` writes it) | How it blocks | Capabilities (rewrite · stop · trust · fails · role) | Verified | Caveats |
+|---|---|---|---|---|---|
+| Claude Code | `.claude/settings.json`: PreToolUse, Stop and SubagentStop | exit 2, the reason on stderr | yes · yes · yes · closed · yes | yes, 2026-10-19: headless, on DeepSeek `deepseek-flash` | none |
+| GitHub Copilot CLI | the same `.claude/settings.json`: Copilot reads it | exit 2, and the reason as JSON on stdout | no · yes · yes · open · yes | yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto) | Runs repo hooks only after you trust the folder: run `copilot` there and choose "Yes, and remember this folder for future sessions". Skips them without a word otherwise. A hook that times out lets the call go on |
+| Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | no · no · no · closed · yes | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed. The lead runs a worker's done-when check |
+| Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | no · yes · yes · closed · yes | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
+| Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | no · yes · yes · open · no | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so mark a worker's worktree with `yokoten worker mark <dir>`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
+| DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | no · no · no · open · yes | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check: the lead runs a worker's done-when check |
+| Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes · yes · yes · closed · yes | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
+| Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | no · yes · yes · closed · no | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
+| OpenCode | `.opencode/plugins/yokoten.ts`: OpenCode 2 permission `evaluate`, and OpenCode 1 `tool.execute.before` | OpenCode 2 sets `effect` to deny; OpenCode 1 throws the reason | no · no · no · closed · no | yes, 2026-10-23: OpenCode 2.1.4, `opencode-go/deepseek-v4.1-flash`, the plugin as `init` writes it | No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read. A subagent call was not part of that run |
+| Any other agent | none | the rules in `AGENTS.md`, and the commit check, which stops a bad commit whoever made it | — | | |
 
 `install` writes the user hooks: the guide at the start of each session, and the command
 guard. They go in `~/.claude/settings.json`, and in `~/.codex/hooks.json` and
@@ -892,13 +893,14 @@ It puts three safe defaults in `.github/` too:
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines are notes. A `Made with` model that disagrees with the worker's status file is a note on the machine with its desk. CI cannot see that file, so CI never notes it |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `borrowed [--dry-run] [--json]` | Compares each file in `src/borrowed/` with upstream's default branch, through `gh`, and opens one issue per source that changed. A security fix is called out in the title. `--dry-run` shows the report and opens nothing; `--json` prints the report as data. See [Borrowed code](#borrowed-code) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
+| `mcp [dir] [--command "<command>"] [--json]` | Starts each stdio server in `.mcp.json`, `.vscode/mcp.json` or `mcp.json` and checks its tools for every client: schema, names, annotations, count, result shape and stray stdout. `--command` checks a server with no config entry; `--json` prints the findings. A Windows warning does not fail it. See [Shipping an MCP server](#shipping-an-mcp-server-that-works-in-every-agent) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
@@ -913,7 +915,7 @@ It puts three safe defaults in `.github/` too:
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <seconds>]` | Merges an approved, green queue in the order given, as the bot, and stops at the first pull request that needs a person. It records every base before the first merge, so a pull request stacked on a squash-merged branch merges from the base it truly shares with that branch. A conflict made only of import lines takes the union; a real conflict, a failing test, a failing `check` or a missing approval stops the train. Each merged tree is tested before the push, and CI must pass on the pushed merge; `--wait` sets how long to wait (default 1800 seconds). Only the lead runs it |
-| `board [--text] [--no-open]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, and each pull request stage. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests and worktrees as plain text. See [The team board](#the-team-board) |
+| `board [--text] [--no-open] [--role name] [--vendor name]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, each pull request stage, and each agent's estimated API cost. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests, worktrees and usage as plain text. With `--text`, `--role` and `--vendor` keep only that role's or vendor's usage rows. See [The team board](#the-team-board) |
 
 Each command prints its own help with `--help` or `-h`: what it does, its options and
 one example. `yokoten help <command>` prints the same, and `yokoten --help` lists the
@@ -1588,6 +1590,104 @@ Environment variables:
 | `LLAMA_API_KEY` or `MODEL_API_KEY`, `LLAMA_API_BASE`, `LLAMA_MODEL` | The model for `adopt`. See [A first draft of the table](#a-first-draft-of-the-table) |
 
 
+## Shipping an MCP server that works in every agent
+
+An MCP server is one program that many agents start. Each agent reads the tool list a
+little differently. A schema that one agent accepts can make another drop the tool, with
+no message to the user.
+
+`yokoten mcp` starts your server over stdio and reads its tool list. It reports each
+trap with a what, a why and a fix. Run it before a release, and in CI beside your tests.
+
+```sh
+yokoten mcp
+yokoten mcp --json
+yokoten mcp --command "node src/server.ts"
+```
+
+It reads `.mcp.json`, `.vscode/mcp.json` and `mcp.json` from the project root. It starts
+each stdio server, calls `initialize`, then `tools/list`. It stops each server when it is
+done. A server over HTTP is named and skipped: this check starts only stdio servers.
+
+### What it checks
+
+| Trap | What the check looks for | Fix |
+|---|---|---|
+| A schema Claude rejects | A root `anyOf`, `oneOf` or `allOf` | Put the branches under one property of a root object |
+| A schema Gemini rejects | A `$ref` or `$defs`, a list of types, or an array with no `items` | Inline the schema, use one type, and add `items` |
+| OpenAI strict mode | A property that is not in `required` | Add every property to `required` |
+| A dropped property | A property name outside `[A-Za-z0-9_.-]`, or longer than 64 | Rename it |
+| A dropped tool | A tool name longer than 64 | Shorten it |
+| A tool the client never shows | 40 tools or more | Merge tools, or keep 39 or fewer |
+| A tool the client cannot gate | A missing `readOnlyHint`, `destructiveHint`, `idempotentHint` or `openWorldHint` | Set all four, each as `true` or `false` |
+| An empty answer in Cursor | A tool with `outputSchema` that returns only `structuredContent` | Return a text content item too |
+| A broken session | A stdout line that is not JSON-RPC, is not UTF-8, or ends with CRLF | Write logs to stderr, write UTF-8, and end each line with LF |
+| A server that never starts on Windows | A config command such as `npx` or `bar.cmd` | Start it through `cmd /c` |
+| A server that does not answer | No reply to `initialize` or `tools/list` | Run it by hand, and fix what stderr says |
+
+The check reports the tool count, the total size of the tool definitions, and the longest
+description. A large tool list costs every client context on every turn. Keep each tool
+small, and keep its description short.
+
+### The outputSchema rule
+
+A tool may declare `outputSchema`. Clients that understand it read `structuredContent`.
+Other clients read only the text content. A result with just one of the two looks empty
+somewhere.
+
+Return both:
+
+```json
+{
+  "structuredContent": { "reply": "ok" },
+  "content": [{ "type": "text", "text": "ok" }]
+}
+```
+
+`yokoten mcp` calls a tool only when it is safe to try: the tool sets
+`readOnlyHint: true`, declares an `outputSchema`, and requires no argument. Other tools
+are left alone. The check says how many it read.
+
+### Windows
+
+Windows cannot start `npx` or a `.cmd` file the way a Unix shell can. A config entry
+that names one needs `cmd`:
+
+```json
+{
+  "mcpServers": {
+    "demo": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "demo-mcp"]
+    }
+  }
+}
+```
+
+The check warns about such an entry. A warning never fails the check: the same project
+may run on a machine that is not Windows.
+
+### stdout is for JSON-RPC only
+
+The client reads stdout as a stream of JSON-RPC messages. One log line, one progress bar,
+or one carriage return breaks the session for every client.
+
+- Write logs to stderr.
+- Write one JSON-RPC message per line.
+- End each line with a line feed, not CRLF.
+- Write UTF-8 only. A Windows code page such as cp1252 corrupts a name.
+
+### In CI
+
+Add the check after your tests:
+
+```sh
+yokoten mcp --json
+```
+
+It exits 1 when a tool breaks a rule. It exits 0 when the server is clean or the project
+has no MCP config. A Windows warning is reported and does not change the exit code.
+
 ## The core rules
 
 The full table, with the reasons, is in [`kit/project/AGENTS.md`](../kit/project/AGENTS.md).
@@ -1796,6 +1896,12 @@ The fence is one contract. Each system builds it its own way:
 The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
 which the desk hides, so a worktree is refused.
 
+**Who the agent is.** The desk reads the model and provider from the agent's own config:
+for Codex, `model` and `model_provider` in `config.toml`. The board shows that model. When
+its vendor is not the harness's own, the session starts with one line that says who the
+agent is, and that the harness is its tool. A DeepSeek model runs through Codex, whose
+prompt names OpenAI; without the line, the worker signs its work as OpenAI.
+
 **The desk's state folder.** Each desk gets its own state folder for the agent, next to
 it: `<desk>.state/<agent>`. The desk points the agent there with the agent's own variable.
 Only the login file is copied in from yours. A newer login of yours is copied again on the
@@ -1991,6 +2097,17 @@ When a read fails, the page keeps the last lists and says when they were read.
 It only shows; to talk to an agent, use its own terminal for now.
 
 `yokoten board --text` prints the same in plain text.
+
+Each agent's tokens show under the agents, in **Use and cost**.
+The board reads the last 7 days of session logs the agents already write: Claude Code and Muse Code.
+It sends nothing anywhere, and it keeps no message text.
+Each row is one agent, model and day: input, cached and output tokens.
+The price is the vendor's list price in `src/commands/advice/board/feed/read/prices.ts`.
+That table names the day it was checked and each vendor's price page.
+A model with no price, or a log without token counts, says "partial" instead of a guess.
+The dollars are only an estimate: "about $1.20 if paid by API".
+Filter the rows by role (engineers, reviewers, checkers) or by vendor.
+With `--text`, `--role reviewer` and `--vendor claude` keep the same rows.
 
 `yokoten board --text` prints Waiting for you when something waits. It lists tier A
 pull requests with green checks and no Approve on the latest commit, commands the

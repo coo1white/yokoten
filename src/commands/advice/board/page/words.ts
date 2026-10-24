@@ -174,6 +174,18 @@ const EN = {
   timelineEmpty: 'Nothing in flight in the last 24 hours.',
   scaleAgo: '24h ago',
   scaleNow: 'Now',
+  usage: 'Use and cost',
+  usageHint: 'Estimates from the last 7 days of session logs on this machine. Nothing leaves it.',
+  usageEmpty: 'No token counts in a local log yet.',
+  usageAll: 'All',
+  usageChecker: 'Checkers',
+  usageTotal: 'Total',
+  usageAbout: 'about {usd} if paid by API',
+  usagePartial: 'partial',
+  usageLocal: 'no API bill: a local model',
+  usageTokens: '{input} in · {cached} cached · {output} out',
+  usagePrices: "Prices checked {date}. Each is the vendor's list price.",
+  usageLinks: 'Price pages:',
 };
 
 /** One word key. Every language has every key; a test holds this. */
@@ -337,6 +349,18 @@ const ZH_CN: Record<WordKey, string> = {
   timelineEmpty: '最近 24 小时没有进行中的事。',
   scaleAgo: '24 小时前',
   scaleNow: '现在',
+  usage: '用量与费用',
+  usageHint: '按这台机器上最近 7 天的会话日志估算，不会离开这台机器。',
+  usageEmpty: '本地日志里还没有 token 数。',
+  usageAll: '全部',
+  usageChecker: '检查员',
+  usageTotal: '合计',
+  usageAbout: '按 API 计价约 {usd}',
+  usagePartial: '不完整',
+  usageLocal: '本地模型，无 API 费用',
+  usageTokens: '{input} 输入 · {cached} 缓存 · {output} 输出',
+  usagePrices: '价格核对于 {date}，为厂商标价。',
+  usageLinks: '价格页面：',
 };
 
 /** Every language's words. English also holds the singular forms. */
