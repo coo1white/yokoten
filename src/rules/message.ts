@@ -28,6 +28,11 @@ export interface Finding {
   grade?: FindingGrade;
   /** Why a reviewer may let this finding through. An ignored finding stays in the output. */
   ignored?: string;
+  /**
+   * A question before an action, not a refusal (#401): the owner may let it run. The
+   * hook asks where its runtime can ask, and says the finding anywhere else.
+   */
+  ask?: boolean;
 }
 
 /** A rule as `explain` tells it: the rule, its reason, and the check that holds it. */
@@ -261,6 +266,12 @@ export const RULES = {
     why: "a reviewer can't read it, and it may not match the source",
     check: 'the commit check refuses a file git sees as binary, and a built file by its name (.exe, .zip, .wasm and others); images and fonts pass',
   },
+  borrowed: {
+    rule: 'borrowed code carries its source, upstream commit, license and copyright notice (record 0024)',
+    why: 'copied code is only safe and legal when its source, license and notice are kept, and when upstream fixes reach it',
+    check: '`yokoten check` reads the header at the top of every file in `src/borrowed/`; a license outside MIT, BSD-2-Clause, BSD-3-Clause, ISC and Apache-2.0 is refused. `yokoten borrowed` compares each upstream commit with the default branch and opens one issue per source that moved',
+    docs: guide('borrowed-code'),
+  },
   'pr-title': {
     rule: 'a pull request title has the commit form, `type(area): summary`, in at most 72 characters (core rule 8)',
     why: 'the title becomes the one commit on main',
@@ -420,6 +431,12 @@ export const RULES = {
     check: "`doctor` looks for this folder, or a folder above it, in `trustedFolders` in Copilot's config.json (read-only); a note, not a missing step",
     docs: guide('works-with'),
   },
+  'copilot-user-hook': {
+    rule: "Copilot CLI runs yokoten's command guard in every folder",
+    why: 'without it, a tag push, force push or skipped check by Copilot CLI in a repo without yokoten is not stopped',
+    check: "when ~/.copilot (or $COPILOT_HOME) is a folder, `doctor` compares the PreToolUse hook in ~/.copilot/hooks/yokoten.json with what `yokoten install` writes; a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
   'codex-hook': {
     rule: "the project has Codex's tool-call guard and stop check, and Codex trusts the folder and both hooks",
     why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file. Codex skips an untrusted hook without a word",
@@ -437,6 +454,12 @@ export const RULES = {
     rule: "the project has Antigravity CLI's tool-call guard",
     why: "without it, Antigravity CLI's commands and edits in this project are not checked",
     check: '`doctor` reads .agents/hooks.json for the `yokoten` PreToolUse hook that runs `yokoten hook --agent antigravity`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
+  'antigravity-user-hook': {
+    rule: "Antigravity CLI runs yokoten's command guard in every workspace",
+    why: 'without it, a tag push, force push or skipped check in a workspace without yokoten is not stopped',
+    check: "when ~/.gemini/config is a folder, `doctor` compares the PreToolUse hook in ~/.gemini/config/hooks.json with what `yokoten install` writes; a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'muse-hook': {
@@ -532,7 +555,7 @@ export const RULES = {
   'disk-space': {
     rule: 'the disk that holds the repo has room left (record 0012)',
     why: 'on a full disk, every agent session stops, and the agent cannot tell you why',
-    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading; a note, never a failure',
+    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading. When a heavy job starts and that reading is low, the tool-call guard asks first; it never refuses',
     docs: guide('machine-notes'),
   },
   'agent-temp-dir': {

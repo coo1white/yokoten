@@ -38,6 +38,13 @@ export function readToolCall(input: unknown): Action {
 export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
 
 /**
+ * How a question reaches the person before the call runs (#401): PreToolUse's `ask`
+ * decision, on exit 0. Claude Code shows the reason and runs the call only after a yes.
+ * A runtime that has no such question gets the ask from commands/hook.ts as a note.
+ */
+export const formatAsk = (reason: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } });
+
+/**
  * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`
  * on exit 0, with no decision, so Claude Code's own permission rules still decide the call.
  */
