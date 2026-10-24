@@ -530,11 +530,11 @@ test('doctor: each stage boundary, from a fresh repo to the end of the road', as
 
 test('doctor: a stage that jumped says which stages it passed, once (#514)', async () => {
   const sandbox = makeSandbox();
-  const jumped = /^stages 2 and 3 are done too: their steps were already in place, or can't be checked yet$/m;
+  const jumpLine = /^stage \d (is done too|counts as done): /m;
   // The first run has nothing to compare with: stage 1 is next, and no line.
   const first = await sandbox.call(['doctor']);
   assert.match(first.stdout, /^the road: stage 1 of 5/m);
-  assert.doesNotMatch(first.stdout, /are done too/);
+  assert.doesNotMatch(first.stdout, jumpLine);
   // Stage 1 to stage 4 at once: init writes the rules, hooks and changelog, and the
   // remote, the test workflow and the templates finish stages 2 and 3.
   assert.equal((await sandbox.call(['init'])).status, 0);
@@ -544,13 +544,34 @@ test('doctor: a stage that jumped says which stages it passed, once (#514)', asy
   sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   const jumpedRun = await sandbox.call(['doctor']);
   assert.match(jumpedRun.stdout, /^the road: stage 4 of 5/m);
-  assert.match(jumpedRun.stdout, jumped);
-  // The line is told once: the next run starts from stage 4.
+  // Each passed stage says its own reason: stage 2 has steps only the server can check,
+  // while stage 3 was already in place.
+  assert.match(jumpedRun.stdout, /^stage 2 counts as done: \d+ of its steps were already in place and 2 can't be checked yet$/m);
+  assert.match(jumpedRun.stdout, /^stage 3 is done too: its steps were already in place$/m);
+  // The lines are told once: the next run starts from stage 4.
   const later = await sandbox.call(['doctor']);
   assert.match(later.stdout, /^the road: stage 4 of 5/m);
-  assert.doesNotMatch(later.stdout, /are done too/);
-  // A session stays short: it never prints the line.
-  assert.doesNotMatch((await sandbox.call(['doctor', '--session'])).stdout, /are done too/);
+  assert.doesNotMatch(later.stdout, jumpLine);
+  // A session stays short: it never prints the lines.
+  assert.doesNotMatch((await sandbox.call(['doctor', '--session'])).stdout, jumpLine);
+});
+
+test('doctor: a jump over one stage says that stage, in the singular (#514)', async () => {
+  const sandbox = makeSandbox();
+  // Stage 1 is done and stage 2 is next (no remote), so this run records stage 2.
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  sandbox.withTests();
+  const atTwo = await sandbox.call(['doctor']);
+  assert.match(atTwo.stdout, /^the road: stage 2 of 5/m);
+  // The remote finishes stage 2, and stage 3 was already in place: only stage 3 was
+  // passed, so the line names one stage and not "stages 3 are".
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  const jumped = await sandbox.call(['doctor']);
+  assert.match(jumped.stdout, /^the road: stage 4 of 5/m);
+  assert.match(jumped.stdout, /^stage 3 is done too: its steps were already in place$/m);
+  assert.doesNotMatch(jumped.stdout, /^stages /m);
 });
 
 test('doctor: the tests step wants a test command and a CI step that runs it (#55)', async () => {

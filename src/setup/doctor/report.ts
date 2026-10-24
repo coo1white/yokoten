@@ -250,9 +250,22 @@ function rewordStrings<T>(value: T, reword: (text: string) => string): T {
   return value;
 }
 
-/** `2 and 3`, or `2, 3 and 4`: the stages a jump passed, in the words the road line uses (#514). */
-function stageListText(stages: number[]): string {
-  return stages.length > 1 ? `${stages.slice(0, -1).join(', ')} and ${stages.at(-1)}` : String(stages[0] ?? '');
+/**
+ * Why one stage that a jump passed does not hold the road back: what its steps are, by mark
+ * (#514). A step already done and a step yokoten can't check yet get their own words, so the
+ * line says which reason applies instead of joining both with "or".
+ */
+function stageJumpText(marks: Mark[]): string {
+  const countOf = (mark: Mark) => marks.filter((each) => each === mark).length;
+  const done = countOf('done');
+  if (done === marks.length) return 'its steps were already in place';
+  const unchecked = countOf("can't check");
+  const later = countOf('not now');
+  const parts: string[] = [];
+  if (done) parts.push(`${done} of its steps ${done === 1 ? 'was' : 'were'} already in place`);
+  if (unchecked) parts.push(`${unchecked} can't be checked yet`);
+  if (later) parts.push(`${later} ${later === 1 ? 'is' : 'are'} marked not now`);
+  return parts.join(', ').replace(/, ([^,]*)$/, ' and $1');
 }
 
 function doctorRun(
@@ -349,11 +362,14 @@ function doctorRun(
   const lastStage = typeof savedStage === 'number' && Number.isInteger(savedStage) && savedStage > 0 ? savedStage : null;
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
   // A stage that moved by more than one since the last full doctor says which stages it
-  // passed, and why they count as done, in one line (#514). The first run has no stage to
+  // passed, and why each counts as done, one line each (#514). The first run has no stage to
   // compare with, and a move of one is the usual next step, so neither says anything.
   if (where.stage !== null && lastStage !== null && where.stage - lastStage >= 2) {
-    const passed = Array.from({ length: where.stage - lastStage - 1 }, (_, i) => lastStage + i + 1);
-    lines.push(`stages ${stageListText(passed)} are done too: their steps were already in place, or can't be checked yet`);
+    for (let stage = lastStage + 1; stage < where.stage; stage++) {
+      const marks = where.steps.filter((walked) => walked.step.stage === stage).map((walked) => walked.mark);
+      const isDone = marks.every((mark) => mark === 'done');
+      lines.push(`stage ${stage} ${isDone ? 'is done too' : 'counts as done'}: ${stageJumpText(marks)}`);
+    }
   }
   const steps: StepState[] = [];
   // With no origin remote, the steps that read the server say so in one line, not one each (#502).
