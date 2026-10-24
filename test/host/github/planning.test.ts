@@ -3,12 +3,12 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, chmodSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir } from '../../repo/helpers.ts';
-import { borrowedHost, type Gh, parseBorrowedSource, parseCommitDate, parseCommits, readIssueMilestone, readLocalLogins, readLogin, repoOf } from '../../../src/host/github/planning.ts';
+import { ANSWER_TOO_LARGE, borrowedHost, type Gh, ghIn, isAnswerTooLarge, parseBorrowedSource, parseCommitDate, parseCommits, readIssueMilestone, readLocalLogins, readLogin, repoOf, unread } from '../../../src/host/github/planning.ts';
 import { syncBoard } from '../../../scripts/board-sync.ts';
 
 test('repo: read from https and ssh remotes', () => {
@@ -212,4 +212,26 @@ test('borrowed host: reads one commit’s date, and gives null when it cannot', 
   assert.deepEqual(calls, [['api', `repos/example/upstream/commits/${SHA}`]]);
   assert.equal(borrowedHost(() => { throw new Error('no network'); }).commitDate?.(SOURCE, SHA), null);
   assert.equal(borrowedHost(() => '{}').commitDate?.('https://example.com/a/b/blob/main/c.ts', SHA), null);
+});
+
+// #916: one page of 100 Actions runs is about 1.4 MB. A runner on Node's 1 MiB default
+// stopped there with ENOBUFS, and the report blamed the sign-in.
+test('ghIn: reads a gh answer larger than 1 MiB', () => {
+  const dir = makeTempDir('yokoten-gh-');
+  const bin = join(dir, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const size = 3 * 1024 * 1024;
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nprocess.stdout.write('x'.repeat(${size}));\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` };
+  assert.equal(ghIn(dir, env)(['api', 'repos/octo/demo/actions/runs']).length, size);
+});
+
+// The positive control for the branch above: a stopped read is named as one.
+test('unread: an answer over the buffer says so, and does not ask for gh auth login', () => {
+  const stopped = Object.assign(new Error('spawnSync gh ENOBUFS'), { code: 'ENOBUFS' });
+  assert.equal(isAnswerTooLarge(stopped), true);
+  assert.equal(isAnswerTooLarge(new Error('boom')), false);
+  assert.equal(unread(stopped).unread, ANSWER_TOO_LARGE);
+  assert.doesNotMatch(unread(stopped).fix, /auth login/);
 });
