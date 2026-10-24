@@ -42,9 +42,10 @@ export function renderLimits(state: PageState, limits: BoardLimits): HTMLElement
   const box = el('div', {});
   box.append(el('h2', { class: 'sh' }, icon('lock'), say(state, 'limitsTitle')));
   const caps = Object.keys(limits.byModel).map((name) => `${name}: ${limits.byModel[name]}`).join(', ');
-  box.append(el('p', { class: 'quiet' }, say(state, 'limitsNow', { max: limits.maxAgents }) + (caps ? ` · ${say(state, 'limitsModels', { models: caps })}` : '')));
+  box.append(el('p', { class: 'quiet' }, say(state, 'limitsNow', { max: limits.maxAgents, floor: limits.memoryFloorMb }) + (caps ? ` · ${say(state, 'limitsModels', { models: caps })}` : '')));
   box.append(field(say(state, 'maxAgents'), el('input', { id: 'limits-max', name: 'maxAgents', inputmode: 'numeric', value: String(limits.maxAgents) })));
   box.append(field(say(state, 'modelsPaired'), el('input', { id: 'limits-models', name: 'models', value: caps })));
+  box.append(field(say(state, 'memoryFloor'), el('input', { id: 'limits-memory', name: 'memory', inputmode: 'numeric', value: String(limits.memoryFloorMb) })));
   box.append(el('p', {}, el('button', { class: 'hbtn', 'data-limits': '1' }, say(state, 'saveNow'))));
   box.append(el('p', { class: 'quiet', id: 'limits-note' }, ''));
   return box;
