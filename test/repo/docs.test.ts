@@ -357,7 +357,7 @@ function collectWords(): string[] {
   const wanted = /const wanted = \[([\s\S]*?)\];/.exec(desk);
   if (!wanted) throw new Error('desk readable list changed');
   words.push(...quotedStrings(wanted[1]));
-  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,120}?TZ: '([^']+)'/.exec(desk);
+  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,300}?TZ: '([^']+)'/.exec(desk);
   if (!roleSet) throw new Error('desk role env changed');
   words.push('YOKOTEN_ROLE', roleSet[1], 'TZ', roleSet[2]);
   for (const match of desk.matchAll(/\b(YOKOTEN_[A-Z0-9_]+)\b/g)) words.push(match[1]);
@@ -418,8 +418,8 @@ function holderPaths(): string[] {
     'test/commands/advice/board/view.test.ts',
     'src/rules/pr.ts',
     'test/rules/pr.test.ts',
-    'src/commands/bot.ts',
-    'test/commands/bot.test.ts',
+    'src/commands/merge/bot.ts',
+    'test/commands/merge/bot.test.ts',
     'src/agents/desk/desk.ts',
     'test/agents/desk/desk.test.ts',
     'src/agents/desk/agent-env.ts',

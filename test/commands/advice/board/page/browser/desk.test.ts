@@ -4,7 +4,7 @@ import '../../../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BoardIssue } from '../../../../../../src/commands/advice/board/controls.ts';
-import { barPlace, renderDesk, renderTimeline } from '../../../../../../src/commands/advice/board/page/browser/desk.ts';
+import { barPlace, renderDesk, renderQueue, renderTimeline } from '../../../../../../src/commands/advice/board/page/browser/desk.ts';
 import { loadUi, type PageData, type PageState } from '../../../../../../src/commands/advice/board/page/browser/script.ts';
 import { LANG_NAMES, WORDS } from '../../../../../../src/commands/advice/board/page/words.ts';
 import { type AgentView, vendorOf } from '../../../../../../src/commands/advice/board/view.ts';
@@ -67,7 +67,7 @@ function makeState(data: PageData): PageState {
 }
 
 function makeData(fields: Partial<PageData>): PageData {
-  return { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} }, ...fields };
+  return { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 }, ...fields };
 }
 
 const drawn = (node: HTMLElement) => node as unknown as FakeNode;
@@ -124,6 +124,52 @@ test('board desk: timeline bars come from the start and the end', () => {
   assert.equal(box.textContent.includes('Gone'), false);
   assert.match(box.textContent, /Last 24 hours/);
   assert.match(box.textContent, /24h ago/);
+});
+
+test('board desk: the queue shows the next ready issues and any cycle', () => {
+  const data = makeData({
+    issues: [
+      issue({ number: 709, title: 'Start queued work' }),
+      issue({ number: 710, title: 'Next in line' }),
+      issue({ number: 711, title: 'Stuck', dependsOn: [712] }),
+      issue({ number: 712, title: 'Also stuck', dependsOn: [711] }),
+    ],
+    schedule: { ready: [709, 710], order: [709, 710], cycles: [[711, 712]], blocked: [], criticalPath: [709, 710] },
+    room: { running: 1, freeMemoryMb: 2048, hold: null },
+  });
+  const box = drawn(renderQueue(makeState(data), data) as HTMLElement);
+  assert.match(box.textContent, /Next ready2/);
+  assert.deepEqual(withClass(box, 'q-row').map((row) => row.textContent), ['#709 Start queued work', '#710 Next in line']);
+  assert.match(box.textContent, /Cycle: #711 → #712/);
+  assert.match(box.textContent, /Room to start: 3 agents at once, 1024 MB free kept/);
+  assert.ok(box.all().some((node) => node.tag === 'button' && node.getAttribute('data-start-next') === '1' && node.textContent === 'Start next'), 'one start control');
+  const low = makeData({
+    issues: [issue({ number: 709 })],
+    schedule: { ready: [709], order: [709], cycles: [], blocked: [], criticalPath: [709] },
+    room: { running: 0, freeMemoryMb: 100, hold: 'memory' },
+  });
+  assert.match(drawn(renderQueue(makeState(low), low) as HTMLElement).textContent, /The machine has 100 MB free, under the 1024 MB floor/);
+  const full = makeData({
+    issues: [issue({ number: 709 })],
+    schedule: { ready: [709], order: [709], cycles: [], blocked: [], criticalPath: [709] },
+    room: { running: 3, freeMemoryMb: 4096, hold: 'slots' },
+  });
+  assert.match(drawn(renderQueue(makeState(full), full) as HTMLElement).textContent, /3 agents already run/);
+  const empty = makeData({ schedule: { ready: [], order: [], cycles: [], blocked: [], criticalPath: [] } });
+  assert.match(drawn(renderQueue(makeState(empty), empty) as HTMLElement).textContent, /No issue is ready/);
+});
+
+test('board desk: the critical path comes first', () => {
+  const data = makeData({
+    issues: [
+      issue({ number: 10, title: 'Later', dependsOn: [11] }),
+      issue({ number: 11, title: 'First' }),
+    ],
+    schedule: { ready: [11], order: [11, 10], cycles: [], blocked: [], criticalPath: [11, 10] },
+  });
+  const box = drawn(renderTimeline(makeState(data), data, NOW));
+  assert.deepEqual(withClass(box, 'gantt-row').map((row) => row.textContent), ['First', 'Laterafter #11']);
+  assert.equal(withClass(box, 'critical').length, 2, 'both rows on the chain are marked');
 });
 
 test('board desk: a dependency is shown on its row', () => {
