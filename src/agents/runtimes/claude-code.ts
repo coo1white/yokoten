@@ -382,6 +382,7 @@ export const ADAPTER: AgentAdapter = {
   readToolCall,
   readStop,
   formatDenial,
+  formatAsk,
   formatContext,
   formatRewrite,
   releaseFix: releaseFix(`${approve('claude')} (or your agent's command)`),

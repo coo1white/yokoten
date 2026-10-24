@@ -54,6 +54,8 @@ export interface AgentAdapter {
   formatDenial?: (reason: string) => { stdout: string; exitCode: number };
   /** Text added to the agent's context by an allowed tool call, when the runtime takes it. */
   formatContext?: (text: string) => string;
+  /** A question shown before a call runs, when the runtime has such a decision. */
+  formatAsk?: (reason: string) => string;
   /** The same command with its output wrapped for `yokoten redact`, when the runtime takes it. */
   formatRewrite?: (input: unknown, command: string, reason: string) => string;
   /** The fix a release refusal names for this runtime. */
@@ -98,6 +100,11 @@ export function rewriteOf(name: string, input: unknown, command: string, reason:
 /** The context text for a runtime, or null when it takes none. */
 export function contextOf(name: string, text: string): string | null {
   return adapterFor(name)?.formatContext?.(text) ?? null;
+}
+
+/** The question for a runtime that shows one before a call runs, or null when it has no ask decision. */
+export function askOf(name: string): ((reason: string) => string) | null {
+  return adapterFor(name)?.formatAsk ?? null;
 }
 
 /** The release fix for a runtime, or undefined when the table does not know it. */
@@ -183,8 +190,8 @@ export const GUIDE_AGENTS: readonly GuideEntry[] = [
   {
     label: 'OpenCode',
     adapter: 'opencode',
-    verified: 'not run end to end',
-    caveats: 'No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read',
+    verified: 'yes, 2026-10-23: OpenCode 2.1.4, `opencode-go/deepseek-v4.1-flash`, the plugin as `init` writes it',
+    caveats: 'No stop check. A guard that fails or times out refuses the call. So does a call that is not read-only, when no command or path can be read. A subagent call was not part of that run',
   },
 ];
 
