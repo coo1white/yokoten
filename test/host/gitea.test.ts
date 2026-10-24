@@ -123,6 +123,16 @@ test('gitea: no token, a refused token and a plain-http address are unread, neve
   // The guard sits beside the fetch too: an http address never gets the token, even
   // when a caller skips the read's own check (#849).
   await assert.rejects(giteaGet('http://gitea.example.com/api/v1', TOKEN.GITEA_TOKEN)('/repos/me/repo'), /not https/);
+  // Every address the adapter builds is https, and a path cannot move the read to
+  // another server (#849).
+  const asked: string[] = [];
+  const record = async (address: string | URL | Request): Promise<Response> => {
+    asked.push(String(address));
+    return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await giteaGet('https://gitea.example.com/api/v1/', TOKEN.GITEA_TOKEN, record)('/repos/me/repo');
+  assert.deepEqual(asked, ['https://gitea.example.com/api/v1/repos/me/repo']);
+  await assert.rejects(giteaGet('https://gitea.example.com', TOKEN.GITEA_TOKEN, record)('@evil.example.com/x'), /leaves the server/);
 });
 
 test('hosts: a declared Gitea and gitea.com are Gitea; the address of a self-hosted one is never printed (#505)', () => {

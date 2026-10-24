@@ -35,36 +35,33 @@ const MAX_PAGES = 20;
 /** The token the adapter uses, from either name Gitea projects use. */
 export const giteaTokenOf = (env: Env): string => (env.GITEA_TOKEN || env.YOKOTEN_GITEA_TOKEN || '').trim();
 
-/**
- * The origin of an https API address, or '' when the address is not https.
- * A token never goes over http.
- */
-function httpsOriginOf(api: string): string {
+/** The host and base path of an https API address, or null when the address is not https. */
+function httpsBaseOf(api: string): { host: string; path: string } | null {
   try {
     const url = new URL(api);
-    return url.protocol === 'https:' ? url.origin : '';
+    if (url.protocol !== 'https:') return null;
+    const path = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+    return { host: url.host, path };
   } catch {
-    return '';
+    return null;
   }
 }
 
 /** A read through `fetch`, with the token in the header and never in a message. */
 export function giteaGet(api: string, token: string, fetchImpl: typeof fetch = fetch): GiteaGet {
-  const root = api.endsWith('/') ? api.slice(0, -1) : api;
-  const origin = httpsOriginOf(root);
+  const base = httpsBaseOf(api);
   return async (path) => {
     // The guard sits beside the fetch, not only in the caller: a token never goes over
-    // http, and no path can move the read to another host (#849).
-    const address = `${root}${path}`;
-    if (!address.startsWith('https://')) {
-      throw new Error('the Gitea address is not https, so the token is not sent');
-    }
-    const url = new URL(address);
-    if (!origin || url.origin !== origin) {
+    // http (#849).
+    if (base === null) throw new Error('the Gitea address is not https, so the token is not sent');
+    // The scheme is a literal here, so every address this adapter builds is https: no
+    // read can send the token in the clear, whatever scheme the address was given in.
+    const address = `https://${base.host}${base.path}${path}`;
+    // The host comes from the address, and a path may not move the read off it: a path
+    // such as `@another.example` cannot turn the host into another server (#849).
+    if (new URL(address).host !== base.host) {
       throw new Error('the Gitea path leaves the server, so the read is refused');
     }
-    // The address is also the value fetched: the https check above is on the exact string
-    // that carries the token, so no reader has to reason about an intermediate object.
     const res = await fetchImpl(address, {
       headers: { authorization: `token ${token}`, accept: 'application/json', 'user-agent': 'yokoten' },
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -211,7 +208,7 @@ const rowsOf = (body: unknown): unknown[] => (Array.isArray(body) ? body : []);
 export async function readGiteaServer(host: { repo: string; api: string }, env: Env, get?: GiteaGet): Promise<ServerSettings | Unread> {
   const token = giteaTokenOf(env);
   if (!token) return { unread: 'GITEA_TOKEN is not set, so yokoten can\'t read the server', fix: 'make a token for the bot user with repo read access, put it in GITEA_TOKEN, then run doctor again' };
-  if (!httpsOriginOf(host.api)) return { unread: 'the Gitea address is not https, so the token is not sent', fix: 'give the repo an https origin address, or run doctor on the server itself' };
+  if (httpsBaseOf(host.api) === null) return { unread: 'the Gitea address is not https, so the token is not sent', fix: 'give the repo an https origin address, or run doctor on the server itself' };
   const api = get ?? giteaGet(host.api, token);
   const base = `/repos/${host.repo}`;
 
