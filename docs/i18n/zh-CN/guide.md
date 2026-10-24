@@ -1332,7 +1332,8 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 这套做法把 AI 当成产线上的员工：每个人分工清楚，权限也有限。
 
-- **主人**（你）决定做什么、什么时候发布。只有你能批准 PR、打发版 tag、改仓库设置。
+- **主人**（你）决定做什么、什么时候发布。只有你能批准硬线、打发版 tag、改仓库设置。区域
+  lead 可以批准自己区域里的 PR（记录 0026）。
 - **lead** 是和你对话的那个会话。它做计划、拆任务、做审查，通过 **bot** 开 PR，从不用你的
   账号。
 - **worker** 是 lead 为单个任务启动的会话，各自在自己的 worktree 里，带着
@@ -1355,7 +1356,7 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 |------|--------------|--------|
 | C | 日常小改：文档、措辞、样式 | lead 审 |
 | B | 普通改动：其他代码，带测试 | 另一家厂商的 agent 审，lead 批准 |
-| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审 |
+| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审；既不是硬线、也没让规则变松的路径，另一个厂商的区域 lead 可以批准 |
 
 在 yokoten 自己的仓库里，`.github/CODEOWNERS` 只列出改错了很难收回的文件：核心规则、CODEOWNERS、
 会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和 `package.json`（记录 0037）。
@@ -1368,6 +1369,37 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 检查读的是目标分支（base）上的 CODEOWNERS，不是 PR 自己改过的那份。这样 PR 没法靠改这个
 文件来给自己降级。本地跑、没有 base 的时候，读工作区里的文件，提示里会说读的是哪一份。
 没有 CODEOWNERS 文件，就不查。
+
+### 区域 lead 在自己区域里批准
+
+记录 [0026](../../records/0026-the-owner-is-the-board.md) 把非硬线路径的锁从你的 code owner
+审查移到 yokoten 的合并检查。区域 lead 用 GitHub 审查来批准。审查正文的最后一行写明 lead、
+它的厂商和模型：
+
+```text
+Approved by area lead Grok (xAI, Grok 4.7)
+```
+
+GitHub 会记下这次审查针对的提交。之后又有新提交，就要重新审查。检查从 `Made with` 行读出
+写代码的厂商；同一个厂商的 lead 批准不算。`.github/CODEOWNERS` 列出的文件，以及放松规则的
+改动，仍然要你批准。在差异 tier 检查（#697）完成之前，改动一个已经存在的测试算放松规则；
+新增测试不算。
+
+这里不改任何仓库设置。你准备好以后，按这个顺序做。
+
+1. **确认 `.github/CODEOWNERS` 只列硬线。** 这个仓库已经是这样了（记录 0037）：核心规则、
+   `.github/CODEOWNERS` 本身、会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和
+   `package.json`。不是硬线的路径就删掉；删掉的路径就由区域 lead 批准。
+2. **保留一个必需批准。** lead 的审查就是 GitHub 审查，所以「Required approvals」保持 1。
+   不要让 GitHub Actions 批准 PR。
+3. **保留必需的 CI 检查。** 分支规则集仍要要求跑 `yokoten check --pr` 的那个 CI 检查。
+   bot 的合并检查是第二道锁：在 `gh pr merge` 之前读 lead 的批准。
+4. **硬线安全以后，关掉「Require review from Code Owners」。** 做完第 1 步，这个设置只列
+   硬线，开着也只会找你审这些。关掉它，其余路径就交给 bot 的检查。
+
+`yokoten doctor` 现在仍期望 code owner 审查。在它学会新锁之前，这一步会提醒你。合并被拒时，
+提示会说明原因和下一步：换一个厂商的 lead、请人在 head 上重新审查，或者硬线、放松规则的改动
+去找主人。
 
 审的人靠标签找 tier，所以 `check --pr` 也看标签。一个 PR 要有一个类型标签和一个 tier 标签。
 类型标签可以直接用标题里的类型（`feat`、`fix`、`docs`、`refactor`、`ci` 等），也可以用常见的叫法：
