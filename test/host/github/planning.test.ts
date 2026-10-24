@@ -18,13 +18,13 @@ test('repo: read from https and ssh remotes', () => {
   assert.equal(repoOf('https://example.com/me/repo.git'), null);
 });
 
-// The board sync (#165), against a fake GraphQL API. Two pages of items; the mutations
-// are recorded and applied to the fake board, never sent anywhere, so a second run sees
-// what the first one wrote.
-test('board sync: fills empty fields, keeps filled ones and Done, a dry run writes nothing, and a second run changes nothing', async () => {
+// The board sync (#165, #908), against a fake GraphQL API. Two pages of items; the
+// mutations are recorded and applied to the fake board, never sent anywhere, so a second
+// run sees what the first one wrote.
+test('board sync: fills empty fields, corrects a wrong status, keeps filled ones, a dry run writes nothing, and a second run changes nothing', async () => {
   const issue = (number: number, state: string, created: string, closed: string | null, extra: Record<string, unknown> = {}) => ({
-    __typename: 'Issue', number, state, createdAt: `${created}T08:00:00Z`, closedAt: closed && `${closed}T09:00:00Z`,
-    milestone: null, repository: { nameWithOwner: 'octo/demo' }, timelineItems: { nodes: [] }, ...extra,
+    id: `i${number}`, __typename: 'Issue', number, state, createdAt: `${created}T08:00:00Z`, closedAt: closed && `${closed}T09:00:00Z`,
+    milestone: null, repository: { nameWithOwner: 'octo/demo' }, ...extra,
   });
   const date = (value: string) => ({ date: value });
   const pages = [[
@@ -34,7 +34,7 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
     { id: 'done-closed', start: date('2026-09-20'), target: date('2026-09-25'), status: { name: 'Done', updatedAt: '2026-09-25T10:00:00Z' }, content: issue(7, 'CLOSED', '2026-10-01', '2026-10-05') },
   ], [
     { id: 'pr', start: date('2026-10-01'), target: null, status: { name: 'Todo' }, content: { ...issue(4, 'OPEN', '2026-10-01', null), __typename: 'PullRequest' } },
-    { id: 'reopened', start: date('2026-10-01'), target: date('2026-10-02'), status: { name: 'Done', updatedAt: '2026-10-03T00:00:00Z' }, content: issue(5, 'OPEN', '2026-10-01', null, { timelineItems: { nodes: [{ createdAt: '2026-10-04T00:00:00Z' }] } }) },
+    { id: 'reopened', start: date('2026-10-01'), target: date('2026-10-02'), status: { name: 'Done' }, content: issue(5, 'OPEN', '2026-10-01', null) },
     { id: 'early-close', start: date('2026-10-12'), target: null, status: { name: 'Done' }, content: { ...issue(6, 'MERGED', '2026-10-10', '2026-10-11'), __typename: 'PullRequest' } },
     { id: 'draft', start: null, target: null, status: null, content: { __typename: 'DraftIssue' } },
   ]];
@@ -48,6 +48,8 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
     else throw new Error(`unknown field ${write.field}`);
   };
   const before = JSON.stringify(pages);
+  const openContent = (kind: string) => pages.flat().map((node) => node.content as any).filter((content) => content && content.__typename === kind && content.state === 'OPEN');
+  const adds: string[] = [];
   const server = createServer((req, res) => {
     let raw = '';
     req.on('data', (chunk) => { raw += chunk; });
@@ -55,7 +57,10 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
       const { query, variables } = JSON.parse(raw);
       assert.equal(req.headers.authorization, 'Bearer t');
       let data: unknown;
-      if (query.startsWith('mutation')) {
+      if (query.includes('addProjectV2ItemById')) {
+        adds.push(variables.content);
+        data = { addProjectV2ItemById: { item: { id: `new-${variables.content}` } } };
+      } else if (query.startsWith('mutation')) {
         writes.push({ item: variables.item, field: variables.field, value: variables.value });
         applyWrite(writes.at(-1)!);
         data = { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.item } } };
@@ -64,6 +69,10 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
           { id: 'F-title', name: 'Title' }, { id: 'F-start', name: 'Start' }, { id: 'F-target', name: 'Target' },
           { id: 'F-status', name: 'Status', options: ['Todo', 'In progress', 'In review', 'Done'].map((name) => ({ id: `O-${name}`, name })) },
         ] } } } };
+      } else if (query.includes('issues(first')) {
+        data = { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: openContent('Issue') } } };
+      } else if (query.includes('pullRequests(first')) {
+        data = { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: openContent('PullRequest') } } };
       } else {
         const index = variables.after === null ? 0 : 1;
         data = { organization: { projectV2: { items: { pageInfo: { hasNextPage: index === 0, endCursor: 'c1' }, nodes: pages[index] } } } };
@@ -79,20 +88,24 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
   process.env.NO_PROXY = process.env.no_proxy = '127.0.0.1,localhost';
   try {
     const lines: string[] = [];
-    const options = { owner: 'octo', number: 1, token: 't', api, isDryRun: true, log: (line: string) => lines.push(line) };
+    const options = { owner: 'octo', number: 1, repo: 'octo/demo', token: 't', api, isDryRun: true, log: (line: string) => lines.push(line) };
     const planned = await syncBoard(options);
     assert.deepEqual(writes, [], 'a dry run writes nothing');
+    assert.deepEqual(adds, [], 'nothing is added when every open item is on the board');
     assert.equal(JSON.stringify(pages), before, 'a dry run leaves the board as it was');
-    assert.deepEqual(planned.map((c) => `${c.item} ${c.field}=${c.value}`), [
+    assert.deepEqual(planned.map((c) => c.kind === 'added' ? `${c.item} added` : `${c.item} ${c.field}=${c.value}`), [
       'empty Start=2026-10-01', 'empty Target=2026-10-26', 'empty Status=Todo',
       'filled Status=Done',
+      'done-open Status=Todo',
       'pr Status=In review',
       'reopened Status=Todo',
       'early-close Target=2026-10-12',
     ]);
-    assert.match(lines.at(-1)!, /^8 items, 7 change\(s\) \(dry run: nothing written\)$/);
+    assert.match(lines.at(-1)!, /^8 items, 8 change\(s\) \(dry run: nothing written\)$/);
     assert.match(lines[0], /^would set octo\/demo#1 Start: 2026-10-01$/);
 
+    const doneClosed = () => JSON.stringify(pages.flat().find((node) => node.id === 'done-closed'));
+    const doneClosedBefore = doneClosed();
     const written = await syncBoard({ ...options, isDryRun: false });
     assert.deepEqual(written, planned);
     assert.deepEqual(writes.slice(0, 3), [
@@ -100,20 +113,101 @@ test('board sync: fills empty fields, keeps filled ones and Done, a dry run writ
       { item: 'empty', field: 'F-target', value: { date: '2026-10-26' } },
       { item: 'empty', field: 'F-status', value: { singleSelectOptionId: 'O-Todo' } },
     ]);
-    assert.equal(writes.length, 7);
+    assert.equal(writes.length, 8);
 
-    // A Done item keeps Done and its dates.
-    const doneItems = () => pages.flat().filter((node) => node.id.startsWith('done-')).map((node) => JSON.stringify(node));
-    const doneBefore = JSON.parse(before).flat().filter((node: { id: string }) => node.id.startsWith('done-')).map((node: unknown) => JSON.stringify(node));
-    assert.deepEqual(doneItems(), doneBefore, 'the first run keeps Done items as they were');
+    // A closed Done item keeps Done and its dates; an open one follows the work.
+    assert.equal(doneClosed(), doneClosedBefore, 'the first run keeps a closed Done item as it was');
+    assert.equal((pages.flat().find((node) => node.id === 'done-open') as any).status.name, 'Todo', 'an open issue with no branch or pull request is Todo');
 
     // The second run, on the board the first one wrote: no mutation, nothing changed.
     lines.length = 0;
     const second = await syncBoard({ ...options, isDryRun: false });
     assert.deepEqual(second, [], 'a second run plans nothing');
-    assert.equal(writes.length, 7, 'a second run sends no mutation');
+    assert.equal(writes.length, 8, 'a second run sends no field mutation');
+    assert.deepEqual(adds, [], 'a second run adds nothing');
     assert.deepEqual(lines, ['8 items, 0 change(s)']);
-    assert.deepEqual(doneItems(), doneBefore, 'the second run keeps Done items as they were');
+    assert.equal(doneClosed(), doneClosedBefore, 'the second run keeps a closed Done item as it was');
+  } finally {
+    server.close();
+    for (const [name, value] of [['NO_PROXY', saved.upper], ['no_proxy', saved.lower]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
+// #908: the board was missing new work. One open issue and one open pull request are
+// added, each once, and the status of an issue with a branch is corrected to In progress.
+test('board sync: adds the open issues and pull requests missing from the board, once', async () => {
+  const content = (kind: 'Issue' | 'PullRequest', number: number, extra: Record<string, unknown> = {}) => ({
+    id: `i${number}`, __typename: kind, number, state: 'OPEN', createdAt: '2026-10-01T08:00:00Z', closedAt: null,
+    milestone: null, repository: { nameWithOwner: 'octo/demo' }, ...extra,
+  });
+  const done = (status: string) => ({ start: { date: '2026-10-01' }, target: { date: '2026-10-20' }, status: { name: status } });
+  const board: any[] = [
+    { id: 'b1', ...done('Todo'), content: content('Issue', 1) },
+    { id: 'b5', ...done('Todo'), content: content('Issue', 5, { linkedBranches: { nodes: [{ ref: { name: '5-work' } }] } }) },
+    { id: 'b3', ...done('In review'), content: content('PullRequest', 3, { headRefName: '3-work' }) },
+  ];
+  const openIssues = [board[0].content, content('Issue', 2), board[1].content];
+  const openPulls = [board[2].content, content('PullRequest', 4, { headRefName: '4-work' })];
+  const everyContent = [...openIssues, ...openPulls];
+  const adds: string[] = [];
+  const writes: Array<{ item: string; field: string; value: any }> = [];
+  const server = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      const { query, variables } = JSON.parse(raw);
+      let data: unknown;
+      if (query.includes('addProjectV2ItemById')) {
+        adds.push(variables.content);
+        board.push({ id: `new-${variables.content}`, start: null, target: null, status: null, content: everyContent.find((node) => node.id === variables.content) });
+        data = { addProjectV2ItemById: { item: { id: `new-${variables.content}` } } };
+      } else if (query.startsWith('mutation')) {
+        writes.push({ item: variables.item, field: variables.field, value: variables.value });
+        const item: any = board.find((node) => node.id === variables.item);
+        if (variables.field === 'F-start') item.start = { date: variables.value.date };
+        else if (variables.field === 'F-target') item.target = { date: variables.value.date };
+        else if (variables.field === 'F-status') item.status = { name: variables.value.singleSelectOptionId.replace(/^O-/, '') };
+        data = { updateProjectV2ItemFieldValue: { projectV2Item: { id: variables.item } } };
+      } else if (query.includes('fields(first')) {
+        data = { organization: { projectV2: { id: 'P1', fields: { nodes: [
+          { id: 'F-start', name: 'Start' }, { id: 'F-target', name: 'Target' },
+          { id: 'F-status', name: 'Status', options: ['Todo', 'In progress', 'In review', 'Done'].map((name) => ({ id: `O-${name}`, name })) },
+        ] } } } };
+      } else if (query.includes('issues(first')) {
+        data = { repository: { issues: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: openIssues } } };
+      } else if (query.includes('pullRequests(first')) {
+        data = { repository: { pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: openPulls } } };
+      } else {
+        data = { organization: { projectV2: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: board } } } };
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data }));
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const api = `http://127.0.0.1:${(server.address() as AddressInfo).port}/graphql`;
+  const saved = { upper: process.env.NO_PROXY, lower: process.env.no_proxy };
+  process.env.NO_PROXY = process.env.no_proxy = '127.0.0.1,localhost';
+  try {
+    const lines: string[] = [];
+    const options = { owner: 'octo', number: 1, repo: 'octo/demo', token: 't', api, isDryRun: false, log: (line: string) => lines.push(line) };
+    const changes = await syncBoard(options);
+    assert.deepEqual(adds, ['i2', 'i4'], 'the missing issue and pull request are added, each once');
+    assert.deepEqual(changes.filter((c) => c.kind === 'added').map((c) => c.label), ['octo/demo#2', 'octo/demo#4']);
+    const statusOf = (item: string) => writes.find((w) => w.item === item && w.field === 'F-status')?.value.singleSelectOptionId;
+    assert.equal(statusOf('new-i2'), 'O-Todo', 'a new issue with no branch or pull request is Todo');
+    assert.equal(statusOf('new-i4'), 'O-In review', 'a new pull request is In review');
+    assert.equal(statusOf('b5'), 'O-In progress', 'an open issue with a branch is corrected to In progress');
+    assert.match(lines.at(-1)!, /^5 items, 7 change\(s\)$/);
+
+    lines.length = 0;
+    const second = await syncBoard(options);
+    assert.deepEqual(second, [], 'a second run plans nothing');
+    assert.deepEqual(adds, ['i2', 'i4'], 'a second run adds nothing again');
+    assert.deepEqual(lines, ['5 items, 0 change(s)']);
   } finally {
     server.close();
     for (const [name, value] of [['NO_PROXY', saved.upper], ['no_proxy', saved.lower]] as const) {
