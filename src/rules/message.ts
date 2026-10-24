@@ -136,6 +136,12 @@ export const RULES = {
     check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
     docs: guide('what-it-doesnt-do'),
   },
+  'repeat-stop': {
+    rule: 'a session stops after the same step fails three times (#711)',
+    why: 'a loop does not find a way through, and every extra try costs the team time and money',
+    check: 'the tool-call guard counts, per session, the same refusal for the same command shape and the same failing command; at the third repeat it stops with a stop message; a call that succeeds resets the count. The worker stop check stops a task after its time limit',
+    docs: guide('the-core-rules'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
@@ -616,6 +622,22 @@ export const RULES = {
     check: `${SERVER_CHECK}: an active tag ruleset on v* with creation, update and deletion restricted`,
     docs: guide('the-core-rules'),
   },
+  'tag-bypass': {
+    rule: 'each v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and names no bot (core rule 3)',
+    why: 'the owner must be able to push a release tag, and no agent must be able to',
+    check: `${SERVER_CHECK}: every active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and none names a GitHub App`,
+    docs: guide('the-core-rules'),
+  },
+  'release-reviewer': {
+    rule: 'the release environment asks for your approval before it deploys (core rule 3)',
+    why: 'without it, a publish job that a tag starts runs with no one approving it',
+    check: `${SERVER_CHECK}: the release environment has a required reviewer`,
+  },
+  'release-tag-rule': {
+    rule: 'the release environment deploys only from v* tags, and not from a branch named v*',
+    why: 'a branch rule named v* matches no tag, and with both rules a branch named v* can still publish',
+    check: `${SERVER_CHECK}: the release environment has a deployment rule of type tag named v*, and no branch rule named v*`,
+  },
   'security-switches': {
     rule: 'secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on',
     why: 'the host then stops a pushed secret, and people can report a hole in private',
@@ -673,6 +695,54 @@ export const RULES = {
     why: 'the system may empty its temp folder on restart, as WSL empties /tmp',
     check: `${UNSAVED_CHECK}: each worktree's real path against the temp folders: YOKOTEN_TEMP_DIRS (empty turns it off), else the system's temp folder and /tmp. The repo itself always gets a note; a worktree only when it holds work at risk, in that work's note; the rest get one line in full doctor`,
     docs: guide('work-only-on-this-machine'),
+  },
+  'mcp-schema': {
+    rule: 'an MCP tool schema works in Claude, Gemini and OpenAI strict mode (core rule 8)',
+    why: 'a client that cannot read a schema drops the tool or refuses the server, and the user sees a missing tool, not a reason',
+    check: '`yokoten mcp` reads `tools/list` and rejects a root anyOf, oneOf or allOf (Claude), a `$ref` or `$defs`, a list of types, or an array with no items (Gemini), and a property left out of required (OpenAI strict)',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-name': {
+    rule: 'an MCP tool name is 64 characters or fewer and a property name uses letters, digits, _ . or -',
+    why: 'a client drops a tool whose name or property name it cannot read, so the user sees a missing tool',
+    check: '`yokoten mcp` reads every property name at any depth and every tool name in `tools/list`',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-annotations': {
+    rule: 'every MCP tool sets readOnlyHint, destructiveHint, idempotentHint and openWorldHint',
+    why: 'ChatGPT apps and other clients ask before a call only when the hints are there, so an unset hint hides a destructive tool',
+    check: '`yokoten mcp` reads all four hints on every tool, and each must be true or false',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-count': {
+    rule: 'an MCP server lists fewer than 40 tools',
+    why: 'Cursor uses only about the first 40, so the tools after them look broken',
+    check: '`yokoten mcp` counts the tools in `tools/list` and fails at 40 or more',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-output': {
+    rule: 'a tool with an outputSchema returns structuredContent and a text content item',
+    why: 'Cursor drops a result that is only structuredContent, so the user sees an empty answer',
+    check: '`yokoten mcp` calls each read-only tool with no required arguments, and reads both forms in its result',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-stdout': {
+    rule: 'an MCP server writes only JSON-RPC to stdout',
+    why: 'a client reads stdout as JSON-RPC, so one log line or a CRLF breaks the session',
+    check: '`yokoten mcp` starts the server, reads stdout through initialize and tools/list, and reports every line that is not a JSON-RPC message, is not UTF-8, or ends with CRLF',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-windows': {
+    rule: 'a Windows MCP config starts npx and .cmd files through cmd /c',
+    why: 'Windows cannot start npx or a .cmd file without a shell, so the server never connects',
+    check: '`yokoten mcp` reads each stdio entry and warns when its command needs a shell on Windows',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-server': {
+    rule: 'an MCP server starts and answers initialize and tools/list',
+    why: 'a server that does not answer has no tools, so a check of its tools must say that instead of passing',
+    check: '`yokoten mcp` starts each stdio server in the project config and stops with this finding when it cannot start or does not answer in time',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
   },
   'not-a-repo': {
     rule: 'yokoten runs inside a git repo',

@@ -6,14 +6,188 @@
 
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
+import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
+
+// ---- The stop log (#621) ----
+//
+// One JSON line per stop, in yokoten's config folder (~/.config/yokoten/stops.jsonl).
+// The log stays on this computer: nothing in yokoten sends it anywhere. `yokoten stops
+// off` stops the writing and deletes it. The command is written after the privacy filter
+// has masked it, and only its first line: a heredoc body is file content, never a command
+// to keep. An edit writes no path and no file text.
+
+/** What the stop check or the tool-call guard answered. */
+export type StopAnswer = 'refused' | 'allowed once' | 'no answer';
+
+/** The most the stop log may hold, in bytes. Oldest lines go first (#621). */
+export const STOPS_MAX_BYTES = 5 * 1024 * 1024;
+
+/** The longest vendor, rule or answer text kept in one line. */
+const STOP_TEXT_LIMIT = 200;
+/** The longest command kept in one line, after masking. */
+const STOP_COMMAND_LIMIT = 2000;
+
+/** One line of the stop log. */
+export interface StopLine {
+  /** When the stop happened, in UTC. */
+  time: string;
+  /** The runtime that sent the call, such as `claude-code` or `codex`. */
+  vendor: string;
+  role: 'lead' | 'worker';
+  /** The finding's id, or `done-when` for a failing task check with no finding. */
+  rule: string;
+  answer: StopAnswer;
+  /** The command's first line, masked. Left out for an edit and for a turn stop. */
+  command?: string;
+}
+
+/** What the guard or the stop check tells the log about one stop. */
+export interface StopToLog {
+  vendor: string;
+  role: 'lead' | 'worker';
+  rule: string;
+  answer: StopAnswer;
+  command?: string;
+}
+
+/** Whether the owner turned the stop log off (#621). */
+export function isStopsOff(env: Env): boolean {
+  const file = stopsOffFile(env);
+  return file !== null && existsSync(file);
+}
+
+/** One line of text, with no line break, cut to `limit`. */
+const oneLineText = (text: string, limit: number): string => text.replace(/\s+/g, ' ').trim().slice(0, limit);
+
+/** A command's first line with the owner's details masked; at most STOP_COMMAND_LIMIT characters. */
+function maskedCommand(command: string, env: Env): string {
+  const first = command.split(/\r?\n/, 1)[0].trim();
+  let masked: string;
+  try {
+    masked = makeRedactor({ marks: loadMarks(env) }, env)(first);
+  } catch {
+    // An unreadable marks file must not stop the log; the secret patterns still run.
+    masked = makeSecretHider()(first);
+    for (const value of findEnvironmentValues(env)) masked = masked.replaceAll(value, SECRET);
+  }
+  return masked.length > STOP_COMMAND_LIMIT ? `${masked.slice(0, STOP_COMMAND_LIMIT)}…` : masked;
+}
+
+/**
+ * Write one stop to the log, unless the owner turned it off. A log that cannot be written
+ * never stops the agent or the guard.
+ */
+export function logStop(env: Env, stop: StopToLog): void {
+  try {
+    if (isStopsOff(env)) return;
+    const file = stopsFile(env);
+    if (!file) return;
+    const command = stop.command === undefined ? undefined : maskedCommand(stop.command, env);
+    const line: StopLine = {
+      time: new Date().toISOString(),
+      vendor: oneLineText(stop.vendor, STOP_TEXT_LIMIT) || 'unknown',
+      role: stop.role,
+      rule: oneLineText(stop.rule, STOP_TEXT_LIMIT) || 'unknown',
+      answer: stop.answer,
+      ...(command ? { command } : {}),
+    };
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, `${JSON.stringify(line)}\n`);
+    trimStopsLog(file);
+  } catch {
+    // Logging is a help, never a lock: a full disk or a read-only home must not stop work.
+  }
+}
+
+/**
+ * Drop the oldest lines until the file fits `maxBytes` (#621). A malformed line counts as
+ * a line and goes first with the other old ones. The test passes a small cap.
+ */
+export function trimStopsLog(file: string, maxBytes: number = STOPS_MAX_BYTES): void {
+  try {
+    if (statSync(file).size <= maxBytes) return;
+  } catch {
+    return;
+  }
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return;
+  }
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  let size = Buffer.byteLength(text);
+  let first = 0;
+  while (first < lines.length - 1 && size > maxBytes) {
+    size -= Buffer.byteLength(lines[first]) + 1;
+    first += 1;
+  }
+  try {
+    writeFileSync(file, lines.length ? `${lines.slice(first).join('\n')}\n` : '');
+  } catch {
+    // The next stop tries again.
+  }
+}
+
+/** Whether a value read from the log is one line of it. */
+function isStopLine(value: unknown): value is StopLine {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const fields = value as Record<string, unknown>;
+  return (
+    typeof fields.time === 'string' &&
+    typeof fields.vendor === 'string' &&
+    (fields.role === 'lead' || fields.role === 'worker') &&
+    typeof fields.rule === 'string' &&
+    (fields.answer === 'refused' || fields.answer === 'allowed once' || fields.answer === 'no answer') &&
+    (fields.command === undefined || typeof fields.command === 'string')
+  );
+}
+
+/** Every good line of the stop log, oldest first. The board's table and `yokoten stops` read it (#621). */
+export function readStops(env: Env): StopLine[] {
+  const file = stopsFile(env);
+  if (!file) return [];
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const lines: StopLine[] = [];
+  for (const raw of text.split('\n')) {
+    if (!raw.trim()) continue;
+    try {
+      const value: unknown = JSON.parse(raw);
+      if (isStopLine(value)) lines.push(value);
+    } catch {
+      // A line cut short by a crash is skipped; the rest still counts.
+    }
+  }
+  return lines;
+}
+
+/** Whether the log is off, where it is, and how much it holds: for `yokoten stops`. */
+export function stopsState(env: Env): { file: string | null; isOff: boolean; count: number; bytes: number } {
+  const file = stopsFile(env);
+  let bytes = 0;
+  if (file) {
+    try {
+      bytes = statSync(file).size;
+    } catch {
+      bytes = 0;
+    }
+  }
+  return { file, isOff: isStopsOff(env), count: readStops(env).length, bytes };
+}
 
 /** What an agent is about to do, in no runtime's terms. */
 export interface Action {
@@ -202,6 +376,204 @@ export function clearDoneTries(env: Env, key: string): void {
   } catch {
     // The count file can stay. The hook still ends the turn.
   }
+}
+
+/**
+ * How many times the same refusal may come back before the hook says stop (#711). The
+ * third one is the stop message, not another refusal.
+ */
+export const REPEAT_STOP_LIMIT = 3;
+
+/** The folder in yokoten's config where a session's repeat counts live (#711). */
+export const REPEAT_DIR = 'repeat-stop';
+
+/**
+ * The shape of a command or an edit: what stays the same when an agent tries the same
+ * step again with other arguments. Two words name a command (`git push`, `npm test`);
+ * an edit is known by its file kind.
+ */
+export function commandShape(command: string | undefined, paths: string[] = []): string {
+  if (command !== undefined) {
+    const words = command.trim().split(/\s+/).filter((word) => word !== '' && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+    return words.slice(0, 2).join(' ') || 'a command';
+  }
+  const first = paths[0] ?? '';
+  const dot = first.lastIndexOf('.');
+  return dot > first.lastIndexOf('/') ? `an edit of *${first.slice(dot)}` : 'an edit';
+}
+
+/** The session id a runtime sends with a tool call, when it is a safe name, else undefined. */
+export function sessionIdOf(input: unknown): string | undefined {
+  if (input === null || typeof input !== 'object') return undefined;
+  const call = input as Record<string, unknown>;
+  const value = call.session_id ?? call.sessionId ?? call.agent_id ?? call.agentId;
+  return typeof value === 'string' && /^[\w-]{1,128}$/.test(value) ? value : undefined;
+}
+
+/**
+ * The key a repeat count belongs to: the session id, or null when the runtime sends none
+ * (#792). Counting under the folder instead added up calls from separate sessions in one
+ * project, so the third refusal stopped a session that had repeated nothing. Without a
+ * session id the hook cannot tell sessions apart, so it keeps the refusal's own id.
+ */
+export function repeatKeyOf(sessionId: string | undefined): string | null {
+  return sessionId !== undefined && /^[\w-]{1,128}$/.test(sessionId) ? sessionId : null;
+}
+
+const repeatFolder = (env: Env, key: string): string | null => {
+  const folder = configFolder(env);
+  return folder ? join(folder, REPEAT_DIR, key) : null;
+};
+
+const repeatPath = (env: Env, key: string, counter: string): string | null => {
+  const folder = repeatFolder(env, key);
+  return folder ? join(folder, createHash('sha256').update(counter).digest('hex').slice(0, 16)) : null;
+};
+
+/** Add one to one repeat counter and return the new count, or null when it cannot be kept. */
+function bumpRepeatCounter(env: Env, key: string, counter: string): number | null {
+  const path = repeatPath(env, key, counter);
+  if (!path) return null;
+  let count = 0;
+  try {
+    count = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+    if (!Number.isInteger(count) || count < 0) count = 0;
+  } catch {
+    count = 0;
+  }
+  count += 1;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${count}\n`);
+  } catch {
+    return null;
+  }
+  return count;
+}
+
+/**
+ * Count one refusal against its rule and shape, and against the command shape alone
+ * (#711). The larger count is returned: at REPEAT_STOP_LIMIT the hook stops the loop.
+ * Null when no count can be kept, so a broken config folder never traps a session.
+ */
+export function bumpRepeat(env: Env, key: string, findingId: string, shape: string): number | null {
+  const byRefusal = bumpRepeatCounter(env, key, `${findingId}:${shape}`);
+  const byCommand = bumpRepeatCounter(env, key, `command:${shape}`);
+  if (byRefusal === null && byCommand === null) return null;
+  return Math.max(byRefusal ?? 0, byCommand ?? 0);
+}
+
+/** Forget a session's repeat counts after a call succeeds (#711). */
+export function clearRepeats(env: Env, key: string): void {
+  const folder = repeatFolder(env, key);
+  if (!folder) return;
+  try {
+    rmSync(folder, { recursive: true, force: true });
+  } catch {
+    // The counts can stay. The next success tries again.
+  }
+}
+
+/** The stop message in place of a refusal after the same step failed three times (#711). */
+export function repeatStopFinding(): Finding {
+  return finding('repeat-stop', 'you have tried this three times', 'stop, go back to your last anchor or write your report and stop');
+}
+
+// ---- Anchors (#711) ----
+//
+// An anchor is a commit whose tests passed. Going back is always a new branch from it,
+// so nothing is reset or deleted.
+
+/** The file in a checkout's git folder that lists its anchors, one JSON object a line. */
+export const ANCHORS_FILE = 'yokoten-anchors';
+
+/** One anchor: the commit, when it was recorded, and the check that passed. */
+export interface Anchor {
+  commit: string;
+  at: string;
+  check: string;
+}
+
+/** Run git in `folder` and return its stdout, or null when git fails. */
+function gitText(folder: string, env: Env, args: string[]): string | null {
+  const result = spawnSync('git', args, { cwd: folder, env, encoding: 'utf8' });
+  return result.status === 0 ? result.stdout : null;
+}
+
+/** Whether the checkout at `folder` has no changed or untracked files. */
+export function isWorkingTreeClean(folder: string, env: Env): boolean {
+  const status = gitText(folder, env, ['status', '--porcelain']);
+  return status !== null && status.trim() === '';
+}
+
+/**
+ * Why an anchor was or was not recorded (#711, #792). The caller tells the worker a
+ * different thing for each kind: only a dirty tree asks for a checkpoint commit.
+ */
+export type AnchorOutcome =
+  | { kind: 'recorded'; anchor: Anchor }
+  | { kind: 'already'; anchor: Anchor }
+  | { kind: 'dirty' }
+  | { kind: 'no-checkout' }
+  | { kind: 'no-commit' }
+  | { kind: 'write-failed' };
+
+/**
+ * Record the commit at HEAD as an anchor, when the tree is clean and git can answer
+ * (#711). A dirty tree is not an anchor: going back to it would lose the uncommitted
+ * work. A commit that is already the newest anchor is `already`, not a new anchor.
+ */
+export function recordAnchor(folder: string, env: Env, check: string): AnchorOutcome {
+  const link = gitLinkAbove(folder);
+  if (!link || link.kind === 'broken') return { kind: 'no-checkout' };
+  if (!isWorkingTreeClean(folder, env)) return { kind: 'dirty' };
+  const commit = gitText(folder, env, ['rev-parse', 'HEAD'])?.trim();
+  if (!commit || !/^[0-9a-f]{7,64}$/.test(commit)) return { kind: 'no-commit' };
+  // The same commit is one anchor, however many times the check passes.
+  try {
+    const rows = readFileSync(join(link.gitDir, ANCHORS_FILE), 'utf8').split('\n').filter((line) => line.trim() !== '');
+    const last = rows.at(-1);
+    if (last !== undefined) {
+      const value = JSON.parse(last) as Partial<Anchor>;
+      if (value.commit === commit && typeof value.at === 'string' && typeof value.check === 'string') {
+        return { kind: 'already', anchor: { commit, at: value.at, check: value.check } };
+      }
+    }
+  } catch {
+    // No file yet, or a line the hook did not write: the anchor is recorded below.
+  }
+  const anchor: Anchor = { commit, at: new Date().toISOString(), check };
+  try {
+    appendFileSync(join(link.gitDir, ANCHORS_FILE), `${JSON.stringify(anchor)}\n`);
+  } catch {
+    return { kind: 'write-failed' };
+  }
+  return { kind: 'recorded', anchor };
+}
+
+/** The anchors recorded in the checkout at `folder`, newest first. Bad lines are skipped. */
+export function listAnchors(folder: string): Anchor[] {
+  const link = gitLinkAbove(folder);
+  if (!link || link.kind === 'broken') return [];
+  let text: string;
+  try {
+    text = readFileSync(join(link.gitDir, ANCHORS_FILE), 'utf8');
+  } catch {
+    return [];
+  }
+  const anchors: Anchor[] = [];
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const value = JSON.parse(line) as Partial<Anchor>;
+      if (typeof value.commit === 'string' && /^[0-9a-f]{7,64}$/.test(value.commit) && typeof value.at === 'string' && typeof value.check === 'string') {
+        anchors.push({ commit: value.commit, at: value.at, check: value.check });
+      }
+    } catch {
+      // A line the hook did not write is not an anchor.
+    }
+  }
+  return anchors.reverse();
 }
 
 /** The shell that runs a done-when command: `cmd.exe` on Windows, `sh` on every other system. */

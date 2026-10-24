@@ -53,7 +53,7 @@ export function renderLimits(state: PageState, limits: BoardLimits): HTMLElement
 
 /** One agent the board started, with a stop button while it runs. */
 function runCard(state: PageState, run: BoardRun): HTMLElement {
-  const status = run.status === 'running' ? say(state, 'runRunning') : say(state, 'runStopped');
+  const status = run.status === 'running' ? say(state, 'runRunning') : run.stoppedBy === 'time limit' ? say(state, 'runLimited') : say(state, 'runStopped');
   return el('div', { class: 'pr' },
     el('p', {}, `${run.name} · ${run.vendor} · ${run.model} · issue ${run.issue} · ${status}`),
     run.worktree ? el('p', { class: 'mut' }, run.worktree) : null,
