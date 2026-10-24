@@ -3,7 +3,7 @@
 // in host-neutral words. This file registers them when it loads.
 
 import { type Finding, finding } from '../rules/message.ts';
-import { findProgramPlaces, plainArgs, useHostCommands, withoutShellRedirects } from '../rules/guards.ts';
+import { findProgramPlaces, plainArgs, useHostCommands, withoutShellRedirects } from '../rules/guards/index.ts';
 import { ghIndex, type HostApiCall, optionValue, useHostApi } from '../rules/privacy.ts';
 
 // ---- Cancelling or deleting an Actions run (#650) ----

@@ -24,7 +24,7 @@ import { invoke } from '../repo/invoke.ts';
 import { type ActionsHealth, cutPoint, readActionsRuns, readHealthPullChecks, renderActionsHealth, summarizeActionsHealth } from '../../src/commands/check.ts';
 import { borrowedIssue, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
 import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
-import { wrapForRedact } from '../../src/rules/guards.ts';
+import { wrapForRedact } from '../../src/rules/guards/index.ts';
 
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
 test('check --pr: reads the CI event, lists the changed files from git, notes long prose (#47)', () => {

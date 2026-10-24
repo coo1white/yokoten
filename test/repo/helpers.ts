@@ -46,6 +46,7 @@ import {
   road,
   ROAD,
 } from '../../src/setup/road.ts';
+import { checkCommand } from '../../src/rules/guards/index.ts';
 import type { MachineProbe } from '../../src/setup/doctor/machine.ts';
 import { lineHash } from '../../src/host/sigstore/record.ts';
 
@@ -567,4 +568,95 @@ export function fence(team: string): () => void {
     for (const part of ['', 'agents', 'outbox', 'lead']) chmodSync(join(team, part), 0o755);
   };
 }
+
+export const blocked = (command: string, env: Env = {}) => assert.ok(checkCommand(command, { cwd: process.cwd(), env }), `should block: ${command}`);
+
+export const allowed = (command: string, env: Env = {}) => assert.equal(checkCommand(command, { cwd: process.cwd(), env }), null, `should allow: ${command}`);
+
+// The hooks setting in a project with its own hooks folder (#217). A repo with husky's
+// pre-commit running the check (and husky's own `.husky/_/pre-commit`, which git runs), a
+// folder without it, and core.hooksPath set to `hooks/own`. Hook files are executable.
+export function writeHook(path: string, text: string, mode = 0o755): void {
+  writeFileSync(path, text);
+  chmodSync(path, mode);
+}
+
+// husky 9.1.7's own files in .husky/_: each hook sources h, and h runs .husky/<hook> with sh -e.
+export const HUSKY_HOOK = '#!/usr/bin/env sh\n. "$(dirname "$0")/h"';
+
+export const HUSKY_H = `#!/usr/bin/env sh
+[ "$HUSKY" = "2" ] && set -x
+n=$(basename "$0")
+s=$(dirname "$(dirname "$0")")/$n
+
+[ ! -f "$s" ] && exit 0
+
+if [ -f "$HOME/.huskyrc" ]; then
+	echo "husky - '~/.huskyrc' is DEPRECATED, please move your code to ~/.config/husky/init.sh"
+fi
+i="\${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"
+[ -f "$i" ] && . "$i"
+
+[ "\${HUSKY-}" = "0" ] && exit 0
+
+export PATH="node_modules/.bin:$PATH"
+sh -e "$s" "$@"
+c=$?
+
+[ $c != 0 ] && echo "husky - $n script failed (code $c)"
+[ $c = 127 ] && echo "husky - command not found in PATH=$PATH"
+exit $c
+`;
+
+export function makeHooksRepo(): string {
+  const root = makeTempDir('yokoten-hooks-');
+  // A bare enough `.git` for git to read the setting, made without a git process (#475).
+  mkdirSync(join(root, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(root, '.git', 'refs'), { recursive: true });
+  writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(root, '.git', 'config'), '[core]\n\thooksPath = hooks/own\n');
+  mkdirSync(join(root, '.husky', '_'), { recursive: true });
+  writeHook(join(root, '.husky', 'pre-commit'), '#!/bin/sh\nnpx lint-staged\nnode ".yokoten/bin/yokoten.ts" check --staged || exit 1\n');
+  writeHook(join(root, '.husky', '_', 'pre-commit'), HUSKY_HOOK);
+  writeHook(join(root, '.husky', '_', 'h'), HUSKY_H, 0o644);
+  mkdirSync(join(root, 'hooks', 'plain'), { recursive: true });
+  writeHook(join(root, 'hooks', 'plain', 'pre-commit'), '#!/bin/sh\n# yokoten check is not run here\nnpm test\n');
+  return root;
+}
+
+// #192: a project blocks programs in yokoten.json "commands.block", each with its reason.
+export const pythonBlocked = { commands: { block: { python: 'TypeScript only', python3: 'this project is TypeScript only (AGENTS.md).' } } };
+
+// The third review of #226. The reader's work is bounded: each construct is read once, and
+// one budget covers every read of a command.
+export const isBlockedByList = (command: string, config: { commands: { block: Record<string, string> } } = pythonBlocked) => checkCommand(command, { cwd: process.cwd(), env: {}, config })?.id === 'blocked-command';
+
+// #226: gaps the reviews of #195 and #199 left. The blocked name is built from pieces.
+export const py = ['py', 'thon3'].join('');
+
+export const shouldBlock = (commands: string[]) => {
+  for (const command of commands) assert.ok(isBlockedByList(command), `should block: ${command}`);
+};
+
+export const shouldPass = (commands: string[]) => {
+  for (const command of commands) assert.equal(isBlockedByList(command), false, `should allow: ${command}`);
+};
+
+// The review of #226: the reader must never fail open or lose a command.
+export const force = ['git', 'push', '--for' + 'ce'].join(' ');
+
+// The command that sets the hooks folder, built so that this file's own text does not read as one.
+export const setHooks = (folder: string) => `${['git config core', 'hooksPath'].join('.')} ${folder}`;
+
+// #283: heredoc shapes bash runs that the guard skipped. Each was run in bash (with a
+// harmless command in place of the push) to see where bash ends the body and what it runs.
+export const refusedAs = (command: string, id: string) => assert.equal(checkCommand(command, { cwd: process.cwd(), env: {} })?.id, id, `should refuse as ${id}: ${JSON.stringify(command)}`);
+
+// A worker's shell writes and commits to lead-only files (#402). The file rules apply in a
+// repo that uses yokoten, as for an edit, so the sandbox gets a yokoten.json.
+export const yokotenSandbox = () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  return sandbox;
+};
 

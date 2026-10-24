@@ -19,7 +19,7 @@ import {
 import {
   checkCommand,
   checkEdit,
-} from '../../src/rules/guards.ts';
+} from '../../src/rules/guards/index.ts';
 import { loadHookConfig } from '../../src/run/hook.ts';
 
 // #228: each key with the wrong shape, by its key path, and the key it falls back on.
