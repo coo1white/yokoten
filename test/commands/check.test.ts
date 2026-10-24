@@ -1108,6 +1108,71 @@ test('ci-health: a backslash before a pipe stays inside the table cell', () => {
 /** The exported shape, so a field rename is a type error in the tests too. */
 export type HealthShape = ActionsHealth;
 
+// #756: `yokoten provenance <ref>` reads a squashed commit's message and the host's
+// Approve, in plain text and with --json.
+test('provenance: a commit names its writer, reviewers, approver, tier and issue (#756)', async () => {
+  const sandbox = makeSandbox();
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const gh = (body: string, code = 0) => {
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\n${body}\nexit ${code}\n`);
+    chmodSync(join(bin, 'gh'), 0o755);
+  };
+  const path = { PATH: `${bin}:${process.env.PATH}` };
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const message = join(sandbox.home, 'message');
+  writeFileSync(message, ['feat(guard): a pipe is refused (#12)', '', 'tier: B', '', 'Closes #12', 'Refs #13', '', '## Why', 'x', '', '🤖 Made with worker Grok (grok-4.7), reviewed by Claude Code (claude-opus-5-5), lead Claude Code (claude-opus-5-5)', '', 'Co-authored-by: someone <someone@example.com>', ''].join('\n'));
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-F', message);
+  gh('printf "coo1white\\t2026-10-20T00:00:00Z\\n"');
+  let result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^[0-9a-f]{7} feat\(guard\): a pipe is refused \(#12\)\n  writer: Grok \(grok-4\.7\)\n  reviewers: Claude Code \(claude-opus-5-5\)\n  approver: coo1white\n  tier: B\n  issue: #12, #13$/m);
+  const json = JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout);
+  assert.equal(json.length, 1);
+  assert.equal(json[0].approver, 'coo1white');
+  assert.deepEqual(json[0].writers, [{ vendor: 'Grok', model: 'grok-4.7' }]);
+  assert.deepEqual(json[0].reviewers, [{ vendor: 'Claude Code', model: 'claude-opus-5-5' }]);
+  assert.equal(json[0].tier, 'B');
+  assert.deepEqual(json[0].issues, [12, 13]);
+  // gh that cannot answer leaves the approver unknown, not an error.
+  gh('exit 1');
+  result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /  approver: unknown$/m);
+  assert.equal(JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout)[0].approver, null);
+});
+
+test('provenance: a range shows each commit, and a bad ref is one finding (#756)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const commit = (title: string, line: string) => {
+    const file = join(sandbox.home, 'message');
+    writeFileSync(file, `${title}\n\ntier: C\n\nCloses #7\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\n${line}\n`);
+    sandbox.write(`docs/${title.split(':')[0]}.md`, `${title}\n`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-q', '-F', file);
+  };
+  commit('docs: first (#7)', 'Made with lead Claude Code (claude-opus-5-5)');
+  commit('docs: second (#8)', 'Made with worker Grok (grok-4.7)');
+  const result = await sandbox.call(['provenance', 'HEAD~2..HEAD']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal((result.stdout.match(/^  writer: /gm) ?? []).length, 2, result.stdout);
+  assert.match(result.stdout, /docs: first \(#7\)/);
+  assert.match(result.stdout, /docs: second \(#8\)/);
+  const bad = await sandbox.call(['provenance', 'not-a-ref']);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /^yokoten provenance: git can't answer, so the check stopped without looking: `git log .+` gave no answer: /);
+  const usage = await sandbox.call(['provenance']);
+  assert.equal(usage.status, 1);
+  assert.match(usage.stderr, /give a commit or a range/);
+});
+
 // ---- Borrowed code (record 0024): the issue, and the command ----
 
 test('borrowed: the issue names the source and the security fix, and a second run sees it open', () => {
