@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
 import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import {
+  boardAnchor,
   boardBrief,
   boardGuardReady,
   boardReportPath,
@@ -44,12 +45,17 @@ function fakeAgents(): { spawner: BoardSpawner; started: { command: string; args
 }
 
 // #603: the brief names the issue, the worktree and the model; each vendor starts with
-// its own headless command, and an unknown vendor has none.
+// its own headless command, and an unknown vendor has none. #711: the brief also names
+// the safe exit, the anchor and where a resumed run starts.
 test('board controls: the brief and the start commands', () => {
   const brief = boardBrief('603', '/repo/.worktrees/603', 'model-a');
   assert.ok(brief.includes('Issue: #603'), 'the issue');
   assert.ok(brief.includes('/repo/.worktrees/603'), 'the worktree');
   assert.ok(brief.includes('model-a'), 'the model');
+  assert.match(brief, /^Stop: after the same step fails 3 times/m, 'the safe exit');
+  assert.match(brief, /^Anchor: after the tests you touched pass, commit/m, 'the anchor');
+  assert.match(brief, /^Resume: Read `git log --oneline -5` and `git status` first/m, 'a fresh start reads the worktree');
+  assert.match(boardBrief('603', '/repo/.worktrees/603', 'model-a', 'abc1234'), /the last commit is abc1234/, 'a resumed run names its anchor');
   assert.ok(brief.includes('YOKOTEN_ROLE') === false, 'no env text in the brief');
   assert.deepEqual(boardStartParts('claude-code', 'hi')?.slice(0, 2), ['claude', '-p']);
   assert.deepEqual(boardStartParts('codex', 'hi')?.slice(0, 2), ['codex', 'exec']);
@@ -134,6 +140,25 @@ test('board controls: a started agent works in a marked worktree', () => {
   assert.ok(typeof run !== 'string', `the start passes: ${run}`);
   assert.equal(workerMarkAt(run.worktree, sandbox.env), 'mark', 'the board-made worktree carries the worker mark');
   assert.equal(workerRole({}, [run.worktree]), 'mark', 'a worker even with no YOKOTEN_ROLE in the env');
+});
+
+// #711: the board reuses the worktree, so a stopped or interrupted run resumes there.
+// The second brief names the last commit, the anchor the first run left behind.
+test('board controls: a second start resumes from the last commit', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const first = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof first !== 'string', `the first start passes: ${first}`);
+  writeFileSync(join(first.worktree, 'anchor.txt'), 'work\n');
+  sandbox.git('-C', first.worktree, 'add', 'anchor.txt');
+  sandbox.git('-C', first.worktree, 'commit', '-q', '-m', 'anchor');
+  const anchor = boardAnchor(first.worktree, sandbox.env);
+  assert.match(anchor, /^[0-9a-f]{7,}$/, 'the anchor is the short commit hash');
+  const second = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof second !== 'string', `the second start passes: ${second}`);
+  assert.equal(second.worktree, first.worktree, 'the same worktree is reused');
+  assert.ok(agents.started[1].args.join('\n').includes(`the last commit is ${anchor}`), 'the resumed brief names the anchor');
 });
 
 // #711: the time limit ends a worker, keeps its work, and leaves a report for the lead.

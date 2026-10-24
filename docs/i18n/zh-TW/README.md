@@ -99,6 +99,7 @@ yokoten 在 PR 之前工作，也和 [PR 審查機器人](https://github.com/yok
 ## 延伸閱讀
 
 - **[使用指南](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 條規則、所有指令、運作方式，以及它做不到的事。
+- **[標準](https://github.com/yokoten-labs/yokoten/blob/main/docs/standard.md)**：每個 agent 寫出、yokoten 讀取的格式。版本 1。
 - **[決策紀錄](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：為什麼這樣做。
 - **[更新紀錄](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[參與開發](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[資安](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[伺服器設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 

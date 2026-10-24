@@ -2,11 +2,13 @@
 
 import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
+import { Writable } from 'node:stream';
 import type { DropReason, SortedEnv } from '../../agents/desk/agent-env.ts';
-import { ADAPTERS, adapterFor, askOf, contextOf, denialOf, releaseFixOf, rewriteOf, stopReaderOf } from '../../agents/runtimes/runtime.ts';
+import * as claudeCode from '../../agents/runtimes/claude-code.ts';
+import { ADAPTERS, adapterFor, askOf, contextOf, releaseFixOf, rewriteOf, stopReaderOf } from '../../agents/runtimes/runtime.ts';
 import { type Env, loadConfig } from '../../rules/config.ts';
 import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../../rules/guard/guards.ts';
-import { type Finding, finding, formatFinding, notRepoFinding } from '../../rules/message.ts';
+import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding } from '../../rules/message.ts';
 import { hideHome } from '../../rules/privacy.ts';
 import { checkChanged, readGit } from '../../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../../setup/doctor/host-disk.ts';
@@ -50,7 +52,7 @@ import {
   wasRefusedRecently,
   writeAgentChecks,
 } from '../../run/hook.ts';
-import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from '../shared.ts';
+import { bullets, type Invocation, type Output, parse, print, printJson, readInput, rootOf, say, usage } from '../shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
 // The table below asks the adapters' contract (#395), never a runtime's name.
@@ -230,7 +232,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   if (!isWorker) {
     logTurnStop(invocation, agent, false, findings, doneWhen, 'refused');
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
-    print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
+    print(invocation, [...refusalLines(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return withMessages(invocation, 2, await takeMessages());
   }
   const bumped = bumpDoneTries(env, key);
@@ -374,6 +376,12 @@ function forgetDoneTries(env: Invocation['env'], key: string): void {
   }
 }
 
+/**
+ * Each finding as the refusal a tool denial prints (#707): title, why, do instead, more.
+ * The board splits the same four parts from an end-of-turn refusal as from a denial.
+ */
+const refusalLines = (findings: Finding[]): string[] => findings.map((found) => formatRefusal(found));
+
 /** The rule a failing stop names first, for the log: a finding's id, or the task's done-when check. */
 function stopRule(findings: Finding[], doneWhen: { ok: boolean } | undefined): string {
   return findings[0]?.id ?? (doneWhen?.ok === false ? 'done-when' : 'unknown');
@@ -395,7 +403,7 @@ function refuseFailingStop(
   saved: boolean,
 ): number {
   const lines: string[] = [];
-  if (findings.length) lines.push(`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the task:`, ...bullets(findings));
+  if (findings.length) lines.push(...refusalLines(findings));
   if (notes.length) lines.push(`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes));
   if (doneWhen?.ok === false) {
     lines.push('yokoten: the done-when check failed. Fix what it reports, then end the task again:');
@@ -433,6 +441,46 @@ function allowFailingStop(
 }
 
 /**
+ * The answer a refusal gets (#707). Only a hook installed for Claude Code (`--agent
+ * claude-code`) answers with a deny in `hookSpecificOutput` on exit 0: an unnamed hook is
+ * read by Copilot CLI too, so it keeps the exit-2 answer. Copilot's own user hook names
+ * `claude-code` for the input shape, so install also passes `--denial exit2` to keep the
+ * answer its reader expects. A structured answer is safe only as the whole of stdout: on
+ * exit 0 Claude Code reads any surrounding text as plain output, which lets the call run.
+ * So a refusal beside other text falls back to exit 2.
+ */
+export function chooseDenial(
+  agent: string,
+  reason: string,
+  env: Env,
+  { isNamed, isStdoutEmpty, isExit2 = false }: { isNamed: boolean; isStdoutEmpty: boolean; isExit2?: boolean },
+): { stdout: string; exitCode: number } {
+  if (isExit2) return claudeCode.fallbackDenial(reason);
+  const formatDenial = adapterFor(agent)?.formatDenial;
+  const denial = isNamed && formatDenial !== undefined
+    ? formatDenial(reason, env)
+    : agent === 'claude-code' ? claudeCode.fallbackDenial(reason) : { stdout: '', exitCode: 2 };
+  return denial.exitCode === 0 && !isStdoutEmpty ? claudeCode.fallbackDenial(reason) : denial;
+}
+
+/**
+ * The one answer a tool call gets on stdout (#707): a rewrite, a context note or a refusal.
+ * Keep it in hand until the branch knows which, so a refusal can check that its JSON would
+ * be alone there (see `chooseDenial`).
+ */
+function answerBuffer(): { stream: Output; text: () => string } {
+  let text = '';
+  const stream = new Writable({
+    decodeStrings: false,
+    write(chunk, _, done) {
+      text += String(chunk);
+      done();
+    },
+  }) as Output;
+  return { stream, text: () => text };
+}
+
+/**
  * The question before a heavy job when the kept host reading is low (#401): what runs,
  * why a full drive can corrupt the repo, and the fix. Null when no fresh reading is kept,
  * the drive has room, or the command is light. It reads one small file, never the drive.
@@ -457,7 +505,10 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const options = parse('hook', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const json = options.flags.has('--json');
-  const agent = options.values['--agent'] ?? 'claude-code';
+  const namedAgent = options.values['--agent'];
+  const agent = namedAgent ?? 'claude-code';
+  const denialMode = options.values['--denial'];
+  if (denialMode !== undefined && denialMode !== 'exit2') return usage(invocation, `unknown --denial ${denialMode}; use exit2`);
   if (options.flags.has('--stop')) {
     if (options.flags.has('--commands-only')) return usage(invocation, "--stop and --commands-only can't be used together");
     const readStop = stopReaderOf(agent);
@@ -486,6 +537,13 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
+  const answer = answerBuffer();
+  const answerInvocation: Invocation = { ...invocation, stdout: answer.stream };
+  /** Writes the branch's one answer to stdout, then returns `code`. */
+  const finish = (code: number): number => {
+    invocation.stdout.write(answer.text());
+    return code;
+  };
   // The circuit breaker (#711): one count for the session, one shape for this step. A call
   // with no session id gets no count: the count would belong to the folder, not a session (#792).
   const sessionKey = repeatKeyOf(sessionIdOf(input));
@@ -500,12 +558,12 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       const wrapped = wrapForRedact(hardenRead(action.command), redactCommand(process.execPath, invocation.script, env.HOME));
       const rewritten = rewriteOf(agent, input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`);
       if (rewritten !== null) {
-        if (json) printJson(invocation, { blocked: false, toolCall: true, rewritten: wrapped });
+        if (json) printJson(answerInvocation, { blocked: false, toolCall: true, rewritten: wrapped });
         // Written as it is: hiding the home folder would change the command.
-        else invocation.stdout.write(rewritten);
+        else answerInvocation.stdout.write(rewritten);
         noteToolCall(cwd, agent, action, role !== null || action.worker, null);
         if (sessionKey !== null) clearRepeats(env, sessionKey);
-        return 0;
+        return finish(0);
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
@@ -530,13 +588,13 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // A heavy job on a nearly full host drive asks first, and never refuses (#401).
     const ask = !found && action.command !== undefined ? askForHeavyJob(action.command, env) : null;
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
-    if (json) printJson(invocation, found ? { blocked: true, finding: found } : ask ? { blocked: false, toolCall: true, ask } : { blocked: false, toolCall: true });
+    if (json) printJson(answerInvocation, found ? { blocked: true, finding: found } : ask ? { blocked: false, toolCall: true, ask } : { blocked: false, toolCall: true });
     if (!found && ask) {
       const question = `yokoten: ${formatFinding(ask)}`;
       const asked = askOf(agent);
-      if (!json && asked !== null) say(invocation, asked(question), invocation.stdout);
-      else if (!json) say(invocation, `${question}\n`, invocation.stderr);
-      return 0;
+      if (!json && asked !== null) say(answerInvocation, asked(question), answerInvocation.stdout);
+      else if (!json) say(answerInvocation, `${question}\n`, invocation.stderr);
+      return finish(0);
     }
     if (!found && !json && adapterFor(agent)?.formatContext !== undefined) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
@@ -544,17 +602,21 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       const sessionRoot = resolve(cwd, action.cwd ?? '.') === resolve(cwd) ? root : rootOf(cwd, env);
       return teamMessages(cwd, env, sessionRoot).then((messages) => {
         const text = messages ? contextOf(agent, messages) : null;
-        if (text) say(invocation, text, invocation.stdout);
-        return 0;
+        if (text) say(answerInvocation, text, answerInvocation.stdout);
+        return finish(0);
       });
     }
-    if (!found) return 0;
+    if (!found) return finish(0);
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout.
-    const reason = `yokoten: ${formatFinding(found)}`;
+    // Every rule gives the same four parts (#707): title, why, do instead, more.
+    const reason = formatRefusal(found);
     say(invocation, `${reason}\n`, invocation.stderr);
-    const denial = denialOf(agent, reason);
-    if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
-    return json ? 2 : denial.exitCode;
+    // The --agent the hook was installed with decides the answer, never an environment
+    // variable another host could inherit (#707). An unnamed hook may be read by another
+    // host through the shared .claude/settings.json, so it keeps exit 2.
+    const denial = chooseDenial(agent, reason, invocation.env, { isNamed: namedAgent !== undefined, isStdoutEmpty: answer.text() === '', isExit2: denialMode === 'exit2' });
+    if (!json && denial.stdout) say(answerInvocation, denial.stdout, answerInvocation.stdout);
+    return finish(json ? 2 : denial.exitCode);
   });
 }
 
