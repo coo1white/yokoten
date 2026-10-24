@@ -217,12 +217,21 @@ h2.sh{line-height:inherit}
 .lead-desk .answers{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 0}
 .lead-desk .ans{display:inline-flex;align-items:center;height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px;background:var(--muted);font-size:12px}
 .lead-desk .reply{display:block;width:100%;text-align:left;font-size:12px;color:var(--fg)}
+.queue{border:1px solid var(--border);background:var(--card);border-radius:8px;padding:8px 10px 10px;margin:12px 20px 0}
+.queue h3{margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut-fg)}
+.queue h3 .n{margin-left:6px;color:var(--fg)}
+.queue .q-row{margin:2px 0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.queue .q-row .num{color:var(--mut-fg)}
+.queue .q-cycle{margin:4px 0;font-size:12px;color:var(--bad)}
+.queue .q-start{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.queue .q-start select,.queue .q-start input{max-width:190px}
 .gantt{display:flex;flex-direction:column;gap:8px;padding:12px 20px 24px;overflow:auto}
 .gantt .scale{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut-fg)}
 .gantt-row{display:grid;grid-template-columns:minmax(0,34%) minmax(0,1fr);gap:8px;align-items:center}
 .gantt-name{min-width:0}
 .gantt-name .ttl{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gantt-name .waits{display:block;font-size:11px;color:var(--mut-fg)}
+.gantt-row.critical .ttl{font-weight:700}
 .gantt-track{position:relative;height:16px;border-radius:8px;background:var(--track)}
 .gantt-bar{position:absolute;top:3px;height:10px;border-radius:5px;min-width:4px}
 .gantt-bar.live{animation:desk-breathe 2.4s ease-in-out infinite}

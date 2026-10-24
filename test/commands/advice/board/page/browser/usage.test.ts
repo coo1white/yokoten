@@ -52,7 +52,7 @@ const cell = (fields: Record<string, unknown>) => ({
 function makeData(cells: ReturnType<typeof cell>[], partial: string[] = []): PageData {
   return {
     repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [],
-    desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} },
+    desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 2048 },
     usage: { cells, days: ['2026-10-22'], partial, checked: '2026-10-23', sources: [] },
   };
 }
