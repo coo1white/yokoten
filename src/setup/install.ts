@@ -38,7 +38,7 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import * as opencode from '../agents/runtimes/small/opencode.ts';
 import { type Added, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
-import { copyRuntime, describeWrite, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
+import { copyRuntime, describeWrite, HOME_DIR, isEditedManaged, isManagedText, isNewerKitCopy, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github/index.ts';
 import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, writtenMarksOnly, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
@@ -73,7 +73,7 @@ export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile
  * file is synced: replacing it with a link would throw their files away. So does a file of
  * theirs, and a link of theirs that points elsewhere.
  */
-function writeSharedSkill(linkFile: string, targetFile: string, content: string, platform: NodeJS.Platform): 'linked' | 'same' | 'updated' | 'kept (yours)' {
+function writeSharedSkill(linkFile: string, targetFile: string, content: string, platform: NodeJS.Platform): 'linked' | 'same' | 'updated' | 'kept (yours)' | 'kept (your edit)' {
   const path = dirname(linkFile);
   const target = dirname(targetFile);
   // A link, when one is there: readlinkSync throws for a real file or folder, or nothing.
@@ -84,13 +84,16 @@ function writeSharedSkill(linkFile: string, targetFile: string, content: string,
       return null;
     }
   };
-  const isManaged = (): boolean => {
+  // The skill file's text when it is a file yokoten wrote; null when it is missing or not ours.
+  const managedText = (): string | null => {
     try {
-      return readFileSync(linkFile, 'utf8').includes(MANAGED);
+      const text = readFileSync(linkFile, 'utf8');
+      return isManagedText(text) ? text : null;
     } catch {
-      return false;
+      return null;
     }
   };
+  const isManaged = (): boolean => managedText() !== null;
   // A junction on Windows: a plain link needs rights a user may not have.
   const link = (): 'linked' => {
     rmSync(path, { recursive: true, force: true });
@@ -107,7 +110,12 @@ function writeSharedSkill(linkFile: string, targetFile: string, content: string,
   } catch {
     onlyOurs = false;
   }
-  if (onlyOurs && isManaged()) return link();
+  if (onlyOurs && isManaged()) {
+    // Their own edit to the copy stays a real folder: a link would throw it away (0015).
+    const text = managedText();
+    if (text !== null && isEditedManaged(text)) return 'kept (your edit)';
+    return link();
+  }
   if (!isManaged()) return 'kept (yours)';
   // The skill file is there and managed, so this is 'same' or 'updated'.
   const synced = writeManaged(linkFile, content);
@@ -161,7 +169,7 @@ const launcherName = (platform: NodeJS.Platform): string => (platform === 'win32
 const isOurLauncher = (file: string, clis: string[]): boolean => {
   try {
     const text = readFileSync(file, 'utf8');
-    return text.includes(MANAGED) && clis.some((cli) => text.includes(cli));
+    return isManagedText(text) && clis.some((cli) => text.includes(cli));
   } catch {
     return false;
   }
@@ -240,7 +248,7 @@ const hasProfileLine = (profile: string): boolean => existsSync(profile) && read
 export type Ask = (question: string) => string | null;
 
 /** Whether an answer to a [Y/n] question is yes: Enter alone, y or yes. */
-const isYes = (answer: string | null): boolean => answer !== null && /^\s*(y|yes)?\s*$/i.test(answer);
+export const isYes = (answer: string | null): boolean => answer !== null && /^\s*(y|yes)?\s*$/i.test(answer);
 
 /**
  * Write the launcher and make sure the shell finds it. A file at that place without the
@@ -256,7 +264,8 @@ export function setUpLauncher(env: Env, runtime: string, home: string, { ask, pl
     const lines = [`kept ${file}: it is not yokoten's launcher, so install left it as it is`];
     return isOnPath(env, runtime, platform) ? lines : [...lines, aliasLine(runtime)];
   }
-  if (platform !== 'win32') chmodSync(file, 0o755);
+  // The bytes of an edit stay, and so does its mode: a kept launcher is theirs to run or not.
+  if (platform !== 'win32' && written !== 'kept (your edit)') chmodSync(file, 0o755);
   const lines = [describeWrite(written, `the launcher ${file}`)];
   if (isDirOnPath(env, dir, platform)) return lines;
   if (platform === 'win32') return [...lines, `${dir} is not on your PATH. Add it to the Path for your account (search Windows for "environment variables for your account"), then open a new terminal`];
@@ -312,18 +321,27 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   const copied = copyRuntime(target.runtime, { withKit: true });
   report.push(copied === 'kept' ? `kept: ${target.runtime} is the copy running now` : `wrote ${target.runtime}`);
 
+  // The files whose copy the user edited: install keeps them and names the new copies (0015).
+  const edited = new Set<string>();
+  const isKeptEdit = (result: string): boolean => result === 'kept (your edit)';
   const skills = join(KIT, 'user', 'skills');
   for (const name of readdirSync(skills)) {
     const content = readFileSync(join(skills, name, 'SKILL.md'), 'utf8');
     const [claudeFile, sharedFile] = skillFiles(env, name);
-    report.push(describeWrite(writeManaged(claudeFile, content), `skill ${name} in ${skillsDir(claudeFile)}`));
-    report.push(describeWrite(writeSharedSkill(sharedFile, claudeFile, content, platform ?? process.platform), `skill ${name} in ${skillsDir(sharedFile)}`));
+    const written = writeManaged(claudeFile, content);
+    if (isKeptEdit(written)) edited.add(`skill ${name}`);
+    report.push(describeWrite(written, `skill ${name} in ${skillsDir(claudeFile)}`));
+    const shared = writeSharedSkill(sharedFile, claudeFile, content, platform ?? process.platform);
+    if (isKeptEdit(shared)) edited.add(`skill ${name}`);
+    report.push(describeWrite(shared, `skill ${name} in ${skillsDir(sharedFile)}`));
   }
   const agents = join(KIT, 'user', 'agents');
   for (const file of readdirSync(agents)) {
     const result = writeManaged(agentFile(env, file), readFileSync(join(agents, file), 'utf8'));
+    if (isKeptEdit(result)) edited.add(`agent ${file.replace(/\.md$/, '')}`);
     report.push(describeWrite(result, `agent ${file.replace(/\.md$/, '')}`));
   }
+  if (edited.size) report.push(`your edits stay: install skipped ${[...edited].join(', ')}. The new ${edited.size === 1 ? 'copy is' : 'copies are'} in ~/.local/share/yokoten/kit/user.`);
 
   const claudeHooks = agentHooks('Claude Code', '~/.claude/settings.json', () => {
     const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
@@ -410,20 +428,24 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
 const kitSkills = (): string[] => readdirSync(join(KIT, 'user', 'skills'));
 const kitAgents = (): string[] => readdirSync(join(KIT, 'user', 'agents'));
 
-/** Whether `path` is a file yokoten wrote: it carries the managed mark. */
-const isManaged = (path: string): boolean => {
+/** A managed file's text: `missing` when no file is there, `yours` when the file is not ours. */
+const managedFileText = (path: string): { text: string } | 'missing' | 'yours' => {
   try {
-    return readFileSync(path, 'utf8').includes(MANAGED);
-  } catch {
-    return false;
+    const text = readFileSync(path, 'utf8');
+    return isManagedText(text) ? { text } : 'yours';
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'yours';
   }
 };
+
+/** Whether `path` is a file yokoten wrote: it carries the managed mark. */
+const isManaged = (path: string): boolean => typeof managedFileText(path) === 'object';
 
 /**
  * Take back the shared skill: a link install made is removed, never followed. A real
  * folder is removed, kept or missing, as `removeManaged` says for its skill file.
  */
-function removeSharedSkill(file: string): 'removed' | 'kept (yours)' | 'not there' {
+function removeSharedSkill(file: string): 'removed' | 'kept (yours)' | 'kept (your edit)' | 'not there' {
   const path = dirname(file);
   try {
     readlinkSync(path);
@@ -434,10 +456,14 @@ function removeSharedSkill(file: string): 'removed' | 'kept (yours)' | 'not ther
   return 'removed';
 }
 
-/** Remove a file yokoten owns, and its folder when that is left empty. A file without the mark is the user's. */
-function removeManaged(path: string, { folder = false }: { folder?: boolean } = {}): 'removed' | 'kept (yours)' | 'not there' {
-  if (!existsSync(path)) return 'not there';
-  if (!isManaged(path)) return 'kept (yours)';
+/** Remove a file yokoten owns, and its folder when that is left empty. A file without the mark is the user's, and so is a marked file the user edited. */
+function removeManaged(path: string, { folder = false }: { folder?: boolean } = {}): 'removed' | 'kept (yours)' | 'kept (your edit)' | 'not there' {
+  // One read decides all three: missing, ours, or the user's. A check before the read would
+  // leave a gap where the file changes (CodeQL js/file-system-race).
+  const found = managedFileText(path);
+  if (found === 'missing') return 'not there';
+  if (found === 'yours') return 'kept (yours)';
+  if (isEditedManaged(found.text)) return 'kept (your edit)';
   rmSync(path);
   if (folder) {
     try {
@@ -447,6 +473,60 @@ function removeManaged(path: string, { folder = false }: { folder?: boolean } = 
     }
   }
   return 'removed';
+}
+
+/**
+ * A managed file the user edited while the kit's copy has changed since (#477). `file` is
+ * the user's copy; `kitFile` is the newer copy to compare it with.
+ */
+export type EditedKitCopy = { name: string; file: string; kitFile: string };
+
+/** A file's text, or null when it is missing or cannot be read. */
+const readTextOrNull = (file: string): string | null => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/** A folder's entries, or none when it is missing or cannot be read. */
+const listOrNone = (dir: string): string[] => {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * The managed files the user edited whose kit copy has changed since install wrote it
+ * (record 0015, #477). The hash in the mark says which version install wrote, so a
+ * different hash in the kit means a newer copy is waiting. A file with no hash came from
+ * an older yokoten and says nothing here.
+ */
+export function editedKitCopies(env: Env): EditedKitCopy[] {
+  const copies: EditedKitCopy[] = [];
+  const seen = new Set<string>();
+  const look = (file: string, kitFile: string, name: string): void => {
+    const text = readTextOrNull(file);
+    const kitText = readTextOrNull(kitFile);
+    if (text === null || kitText === null || !isEditedManaged(text) || !isNewerKitCopy(text, kitText)) return;
+    // The shared skill may be a link to Claude Code's copy: name that copy once.
+    const real = realPath(file) ?? file;
+    if (seen.has(real)) return;
+    seen.add(real);
+    copies.push({ name, file, kitFile });
+  };
+  // A project copy of the kit has no kit/user folder, so this says nothing there (#77).
+  for (const name of listOrNone(join(KIT, 'user', 'skills'))) {
+    const [claudeFile, sharedFile] = skillFiles(env, name);
+    const kitFile = join(KIT, 'user', 'skills', name, 'SKILL.md');
+    look(claudeFile, kitFile, `skill ${name}`);
+    look(sharedFile, kitFile, `skill ${name}`);
+  }
+  for (const file of listOrNone(join(KIT, 'user', 'agents'))) look(agentFile(env, file), join(KIT, 'user', 'agents', file), `agent ${file.replace(/\.md$/, '')}`);
+  return copies;
 }
 
 /**

@@ -2,6 +2,9 @@
 // skip them without a word until the user trusts the folder (#341). Each keeps that trust in a file
 // in the user's home. Doctor reads the file, read-only and offline, and never prints it:
 // it holds the user's folder names.
+//
+// `yokoten trust` writes that trust (#661); the writer is in `runtimes/codex.ts`, next to
+// the TOML reader both Codex and Grok use.
 
 import { realpathSync, statSync } from 'node:fs';
 
@@ -14,6 +17,9 @@ export interface FolderTrust<State extends string = never> {
   state: 'trusted' | 'untrusted' | 'no home' | 'no store' | 'unreadable' | State;
   store: string;
 }
+
+/** The one command that turns the guard on in every agent installed here (#661). */
+export const TRUST_COMMAND = 'run `yokoten trust`';
 
 /** Whether `dir` is a folder: an agent's home, which it makes on first run. */
 export function isFolder(dir: string): boolean {

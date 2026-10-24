@@ -29,6 +29,7 @@ import {
   walk,
   yokotenActions,
 } from '../../src/setup/road.ts';
+import { DEFAULTS } from '../../src/rules/config.ts';
 import { assertLinearEach } from '../../scripts/linear.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
@@ -337,6 +338,29 @@ test('road: the tests step stays next with only a lint step, and says what is mi
 
 test('road: the ci and titles steps count the yokoten Action and npx yokoten, and not a look-alike (#298)', () => {
   for (const [name, text, want] of CI_CASES) assert.deepEqual(ciSteps(text), want, name);
+});
+
+test('road: the tests, ci and titles steps read only the folder the code host runs (#849)', () => {
+  const sandbox = makeSandbox();
+  const workflowText = 'on: [push, pull_request]\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n      - run: node bin/yokoten.ts check\n      - run: node bin/yokoten.ts check --pr\n';
+  sandbox.write('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
+  sandbox.write('.gitea/workflows/yokoten.yml', workflowText);
+  const marks = (config = DEFAULTS) => ['tests', 'ci', 'titles'].map((key) => ROAD.find((s) => s.key === key)!.check(sandbox.repo, sandbox.env, undefined, config));
+  const done = [true, true, true];
+  const notDone = [false, false, false];
+  // No remote: nothing says a Gitea workflow runs there, so no step looks done.
+  assert.deepEqual(marks(), notDone);
+  sandbox.git('remote', 'add', 'origin', 'https://gitlab.com/me/repo.git');
+  assert.deepEqual(marks(), notDone, 'GitLab does not run .gitea/workflows');
+  sandbox.git('remote', 'set-url', 'origin', 'https://gitea.example.com/me/repo.git');
+  assert.deepEqual(marks({ ...DEFAULTS, host: 'gitea' }), done, 'a Gitea the project names in yokoten.json');
+  sandbox.git('remote', 'set-url', 'origin', 'https://gitea.com/me/repo.git');
+  assert.deepEqual(marks(), done, 'gitea.com, recognised by its address');
+  sandbox.git('remote', 'set-url', 'origin', 'https://github.com/me/repo.git');
+  assert.deepEqual(marks(), notDone, 'GitHub runs only .github/workflows');
+  // The same workflow in the folder GitHub reads marks all three done.
+  sandbox.write('.github/workflows/yokoten.yml', workflowText);
+  assert.deepEqual(marks(), done);
 });
 
 test('road: the Action and its trigger read a big workflow in linear time (#298)', () => {

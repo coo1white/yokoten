@@ -91,7 +91,7 @@ Tell the user in plain words, one step at a time, and offer to do it (as-is, lig
 
 最後の三つはサーバーの設定です。完全な `doctor` は `gh api` で読み、読むだけです。`gh`、サインイン、ネットワーク、GitHub のリモートがないときは、**can't check** であり、done にはなりません。セッションはネットワークを決して呼ばないので、そこでは常に **can't check** です。
 
-**別のホスト。** doctor はホストを `origin` リモートから読みます。GitHub では上のとおりサーバーを読みます。Gitea や GitLab など別のホストでも、中核は同じに動きます。ルール、番人、コミットチェックです。ホストだけが判断できるステップは、`tests`、`ci`、`labels`、`milestone`、`titles`、`codeowners`、`bot`、`review` と、サーバーの三つのステップです。そこではどれも **can't check** になり、何を尋ねるかを言うので、手で設定できます。それらが関所を止めることはありません。自前のサーバーの名前は決して出力しません。doctor は「このホスト」と呼びます。Gitea のアダプターが次に来ます（issue #505）。
+**別のホスト。** doctor はホストを `origin` リモートから読みます。GitHub では上のとおりサーバーを読みます。Gitea では、`yokoten.json` にホストを書いて（`"host": "gitea"`）、bot ユーザーのトークンを `GITEA_TOKEN` に入れます。すると doctor は Gitea の API で、ブランチとタグの保護、ラベル、マイルストーン、忘れられたブランチを読みます。`gitea.com` はキーなしで分かります。GitLab など別のホストでも、中核は同じに動きます。ルール、番人、コミットチェックです。ホストだけが判断できるステップは、`tests`、`ci`、`labels`、`milestone`、`titles`、`codeowners`、`bot`、`review` と、サーバーの三つのステップです。そこではどれも **can't check** になり、何を尋ねるかを言うので、手で設定できます。それらが関所を止めることはありません。自前のサーバーの名前は決して出力しません。doctor は「このホスト」と呼びます。
 
 関所 2 の `labels` と `milestone` も同じように読みます。標準のラベルは `bug`、`feat`、`docs`、`refactor`、`ci`、`owner`、`incident`、`good first issue`、`hotfix`、`security` と、ティアのラベル `tier A`、`tier B`、`tier C` です。`init` は足りないものを示し、`init --github --yes` が追加します。
 
