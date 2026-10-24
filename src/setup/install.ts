@@ -27,6 +27,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
+import { STOPS_FILE, STOPS_OFF_FILE } from '../rules/guards.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import * as copilot from '../agents/copilot.ts';
 import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
@@ -464,6 +465,17 @@ export function installedPieces(env: Env): string[] {
 }
 
 /**
+ * True when this machine has what install would put there: the runtime, and at least one
+ * of the hooks, skills or agents. A machine with only part of it counts as missing, so
+ * `yokoten` with no command installs again and repairs it (#548).
+ */
+export function isMachineSetUp(env: Env): boolean {
+  const { runtime } = paths(env);
+  if (!existsSync(join(runtime, 'bin', 'yokoten.mjs'))) return false;
+  return installedPieces(env).some((piece) => !piece.includes(runtime));
+}
+
+/**
  * Take back what install wrote: the skills and agents that carry the managed mark, the two
  * user-level hooks, and the runtime. The keys and the private marks in ~/.config/yokoten
  * stay: the user wrote them. A second run finds nothing and changes nothing.
@@ -497,6 +509,13 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const hadRuntime = existsSync(target.runtime);
   rmSync(target.runtime, { recursive: true, force: true });
   report.push(describeWrite(hadRuntime ? 'removed' : 'not there', `the runtime ${target.runtime}`));
+  // The stop log is yokoten's own, so uninstall takes it with the rest (#621).
+  const stopLog = join(target.config, STOPS_FILE);
+  const stopOff = join(target.config, STOPS_OFF_FILE);
+  const hadStopLog = existsSync(stopLog) || existsSync(stopOff);
+  rmSync(stopLog, { force: true });
+  rmSync(stopOff, { force: true });
+  report.push(`${hadStopLog ? 'removed' : 'not there'} the stop log`);
   if (existsSync(target.config)) report.push(`kept ${target.config} (your keys and private marks)`);
   return { ok: true, lines: report };
 }

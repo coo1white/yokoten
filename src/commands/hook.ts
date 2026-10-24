@@ -1,36 +1,51 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { ADAPTERS, adapterFor, askOf, contextOf, denialOf, releaseFixOf, rewriteOf, stopReaderOf } from '../agents/runtimes/runtime.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
-import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, finding, formatFinding, notRepoFinding } from '../rules/message.ts';
+import { hideHome } from '../rules/privacy.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
   type Action,
+  type Anchor,
+  type AnchorOutcome,
   bumpDoneTries,
+  bumpRepeat,
   canKeepStatus,
   changeAgentStatus,
   clearDoneTries,
   clearRefusedMarker,
+  clearRepeats,
+  commandShape,
   describeAction,
   DONE_TRY_LIMIT,
   doneTryKey,
   findStatusCheckout,
+  listAnchors,
+  recordAnchor,
   registerDesk,
   type Guard,
   guardDeadline,
   judgeWithDeadline,
   loadHookConfig,
+  logStop,
   noteRefused,
   readDoneWhen,
   type Repo,
+  repeatKeyOf,
+  repeatStopFinding,
+  REPEAT_STOP_LIMIT,
   runDoneWhen,
+  sessionIdOf,
   startFields,
   STATUS_EVERY_MS,
+  stopsState,
+  type StopAnswer,
   type StopEvent,
   wasRefusedRecently,
   writeAgentChecks,
@@ -188,24 +203,32 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   }
   const failed = findings.length > 0 || doneWhen?.ok === false;
   if (!failed) {
+    let anchor: Anchor | null = null;
     if (isWorker) {
       forgetDoneTries(env, key);
       clearRefusedMarker(folder, key);
       recordChecks(invocation, folder, 'passing', agent);
+      // The tests pass: a clean tree becomes an anchor. Only a dirty tree asks for a
+      // checkpoint commit; an anchored HEAD and a folder without git each get their own line.
+      const passing = doneWhen?.ok === true ? doneWhen.command : 'the changed-file check';
+      const outcome = root ? recordAnchor(ranIn, { ...env, YOKOTEN_ROLE: 'worker' }, passing) : null;
+      anchor = outcome && (outcome.kind === 'recorded' || outcome.kind === 'already') ? outcome.anchor : null;
+      if (!json) print(invocation, [anchorMessage(outcome)], invocation.stderr);
     } else noteLeadStop(folder, agent);
     if (!json && notes.length) print(invocation, [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)], invocation.stderr);
     // The checks pass: unread messages send the turn on once, and the next stop is checked again.
     const messages = event.active || afterMessages ? '' : await takeMessages();
     if (messages) {
       noteRefused(folder, messagesKey);
-      if (json) printJson(invocation, { blocked: true, stop: false, findings, messages: true });
+      if (json) printJson(invocation, { blocked: true, stop: false, findings, messages: true, ...(anchor ? { anchor } : {}) });
       print(invocation, [messages], invocation.stderr);
       return 2;
     }
-    if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}) });
+    if (json) printJson(invocation, { blocked: false, stop: true, findings, ...(notes.length ? { notes } : {}), ...(anchor ? { anchor } : {}) });
     return 0;
   }
   if (!isWorker) {
+    logTurnStop(invocation, agent, false, findings, doneWhen, 'refused');
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
     print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return withMessages(invocation, 2, await takeMessages());
@@ -214,12 +237,38 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
   // lets the stop through. A runtime that never sets stop_hook_active cannot trap it.
   if (bumped === null) {
-    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
+    if (event.active || wasRefusedRecently(folder, key)) {
+      logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
+      return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
+    }
     noteRefused(folder, key);
+    logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
     return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
   }
-  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
+  if (bumped > DONE_TRY_LIMIT) {
+    logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
+    return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
+  }
+  logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
   return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
+}
+
+/** What a passing worker hears about its anchor. Only a dirty tree asks for a commit (#792). */
+function anchorMessage(outcome: AnchorOutcome | null): string {
+  if (outcome === null) return 'yokoten: tests pass. No anchor: there is no project root here.';
+  if (outcome.kind === 'dirty') {
+    return 'yokoten: tests pass. Make a checkpoint commit now; that commit is your anchor. If you get lost, go back with: git switch -c try-2 <anchor>';
+  }
+  if (outcome.kind === 'no-checkout') return 'yokoten: tests pass. No anchor: this folder is not a git checkout.';
+  if (outcome.kind === 'no-commit') return 'yokoten: tests pass. No anchor: this checkout has no commit yet.';
+  if (outcome.kind === 'write-failed') {
+    return 'yokoten: tests pass. No anchor: the anchor file could not be written. A checkpoint commit still holds your work.';
+  }
+  const { commit } = outcome.anchor;
+  if (outcome.kind === 'already') {
+    return `yokoten: tests pass. HEAD ${commit.slice(0, 12)} is already your anchor; go back with: git switch -c try-2 ${commit}`;
+  }
+  return `yokoten: tests pass. Anchor ${commit.slice(0, 12)} saved; go back with: git switch -c try-2 ${commit}`;
 }
 
 /** A refusal at the end of a turn, with the unread team messages after it (#674). */
@@ -325,6 +374,16 @@ function forgetDoneTries(env: Invocation['env'], key: string): void {
   }
 }
 
+/** The rule a failing stop names first, for the log: a finding's id, or the task's done-when check. */
+function stopRule(findings: Finding[], doneWhen: { ok: boolean } | undefined): string {
+  return findings[0]?.id ?? (doneWhen?.ok === false ? 'done-when' : 'unknown');
+}
+
+/** Write one end-of-turn stop to the log (#621). The command is not logged: a turn names files, not a command. */
+function logTurnStop(invocation: Invocation, agent: string, isWorker: boolean, findings: Finding[], doneWhen: { ok: boolean } | undefined, answer: StopAnswer): void {
+  logStop(invocation.env, { vendor: agent, role: isWorker ? 'worker' : 'lead', rule: stopRule(findings, doneWhen), answer });
+}
+
 /** The lines that send a worker back, and, on the last refusal, what to tell the lead. */
 function refuseFailingStop(
   invocation: Invocation,
@@ -427,6 +486,10 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
+  // The circuit breaker (#711): one count for the session, one shape for this step. A call
+  // with no session id gets no count: the count would belong to the folder, not a session (#792).
+  const sessionKey = repeatKeyOf(sessionIdOf(input));
+  const shape = commandShape(action.command, action.paths);
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
     const fix = releaseFixOf(agent);
@@ -441,12 +504,29 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
         // Written as it is: hiding the home folder would change the command.
         else invocation.stdout.write(rewritten);
         noteToolCall(cwd, agent, action, role !== null || action.worker, null);
+        if (sessionKey !== null) clearRepeats(env, sessionKey);
         return 0;
       }
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    // The third same refusal becomes a stop message; any success starts the count again (#711).
+    if (found) {
+      const repeats = sessionKey === null ? null : bumpRepeat(env, sessionKey, found.id, shape);
+      if (repeats !== null && repeats >= REPEAT_STOP_LIMIT) found = repeatStopFinding();
+      // One line per stop, on this computer only (#621).
+      logStop(env, {
+        vendor: agent,
+        role: role !== null || action.worker ? 'worker' : 'lead',
+        rule: found.id,
+        // A guard that could not read the call has no rule answer; it still refuses the call.
+        answer: found.id === 'unreadable-command' ? 'no answer' : 'refused',
+        command: action.command ?? action.commands?.[0],
+      });
+    } else if (sessionKey !== null) {
+      clearRepeats(env, sessionKey);
+    }
     // A heavy job on a nearly full host drive asks first, and never refuses (#401).
     const ask = !found && action.command !== undefined ? askForHeavyJob(action.command, env) : null;
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
@@ -481,6 +561,57 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
 // The rules that apply to a worker only: a refusal by one of them names the mark, when the role came from it.
 const WORKER_RULES = new Set(['lead-only', 'worker-push', 'worker-mark']);
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * `yokoten stops`: the stop log's state, and the way back. `off` stops the writing and
+ * deletes the log; `on` starts it again. The log stays in the user's config folder, never
+ * in the project (#621).
+ */
+export function runStops(invocation: Invocation): number {
+  const options = parse('stops', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const [action] = options.positional;
+  const { env } = invocation;
+  const file = stopsFile(env);
+  const offFile = stopsOffFile(env);
+  if (!file || !offFile) {
+    say(invocation, "yokoten stops: no home folder, so there is no stop log to manage. Set HOME to your home folder's full path.\n", invocation.stderr);
+    return 1;
+  }
+  if (action === undefined) {
+    const state = stopsState(env);
+    print(invocation, [
+      `the stop log is ${state.isOff ? 'off' : 'on'}: ${hideHome(state.file ?? file, env)}`,
+      state.isOff ? 'yokoten writes no line while it is off.' : `${state.count} stop(s), ${state.bytes} byte(s)`,
+      'It stays on this computer. Nothing is sent anywhere.',
+      '`yokoten stops off` stops the writing and deletes the log.',
+    ]);
+    return 0;
+  }
+  if (action === 'off') {
+    try {
+      mkdirSync(dirname(offFile), { recursive: true });
+      writeFileSync(offFile, 'off\n');
+      rmSync(file, { force: true });
+    } catch (err) {
+      say(invocation, `yokoten stops: the log cannot be turned off: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+      return 1;
+    }
+    print(invocation, ['the stop log is off, and its file is deleted. `yokoten stops on` starts it again.']);
+    return 0;
+  }
+  if (action === 'on') {
+    try {
+      rmSync(offFile, { force: true });
+    } catch (err) {
+      say(invocation, `yokoten stops: the log cannot be turned on: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+      return 1;
+    }
+    print(invocation, [`the stop log is on: ${hideHome(file, env)}`]);
+    return 0;
+  }
+  return usage(invocation, `unknown action "${action}"; use off or on`);
+}
 
 /**
  * `worker mark <dir>`: mark the worktree at <dir> as a worker's (#555). The guard then
@@ -568,6 +699,37 @@ function hasLinkedWorktrees(folder: string, env: Env): boolean {
     // Git can't list them: the guard can't tell, so the checkout stays the lead's.
     return true;
   }
+}
+
+/**
+ * `anchor`: list the checkpoints a worker's passing checks recorded (#711). An anchor is
+ * a commit, so going back is `git switch -c <new> <anchor>`: nothing is reset or deleted.
+ */
+export function runAnchor(invocation: Invocation): number {
+  const options = parse('anchor', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  if (options.positional.length) return usage(invocation, 'anchor takes no arguments');
+  const root = rootOf(invocation.cwd, invocation.env);
+  if (!root) {
+    print(invocation, [formatFinding(notRepoFinding(invocation.cwd))], invocation.stderr);
+    return 1;
+  }
+  const anchors = listAnchors(invocation.cwd);
+  if (options.flags.has('--json')) {
+    printJson(invocation, { anchors });
+    return 0;
+  }
+  if (!anchors.length) {
+    print(invocation, ['yokoten anchor: no anchors yet. A worker records one when its checks pass and its tree is clean.']);
+    return 0;
+  }
+  const lines = [`yokoten anchor: ${anchors.length} checkpoint${anchors.length === 1 ? '' : 's'}, newest first.`];
+  for (const anchor of anchors) {
+    lines.push(`  ${anchor.commit.slice(0, 12)} ${anchor.at} ${anchor.check}`);
+  }
+  lines.push(`Go back without losing anything: git switch -c try-2 <commit>`);
+  print(invocation, lines);
+  return 0;
 }
 
 export function runWorker(invocation: Invocation): number | Promise<number> {
