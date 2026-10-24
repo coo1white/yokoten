@@ -126,7 +126,7 @@ test('update: the .yokoten/ copy has the kit\'s AGENTS.md, so doctor and update 
   const workflows = join('project', '.github', 'workflows');
   assert.deepEqual(
     kitFiles.filter((path) => !path.startsWith('lessons')),
-    ['project', join('project', '.github'), workflows, ...['issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
+    ['project', join('project', '.github'), workflows, ...['actions-health.yml', 'issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
     'the kit\'s AGENTS.md, workflows and their hashes, and the lessons, no more',
   );
   assert.ok(kitFiles.includes(join('lessons', 'README.md')), 'the lessons table');
