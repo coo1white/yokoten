@@ -163,8 +163,11 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
 //   `trusted_hash`, the hash of the hook as Codex reads it. A changed hook has another hash.
 // config.toml is in `$CODEX_HOME`, or `~/.codex`.
 
-/** The one step that makes Codex run the project's hooks. */
-export const TRUST_STEP = TRUST_COMMAND;
+/**
+ * The one step that makes Codex run the project's hooks: `yokoten trust` writes the
+ * folder and each hook. Codex's own `/hooks` screen still trusts both, so it stays named.
+ */
+export const TRUST_STEP = `${TRUST_COMMAND} (Codex's \`/hooks\` screen does the same)`;
 
 /** What Codex's trust says, past the shared states: the project is trusted, the hooks are not. */
 export type CodexTrust = FolderTrust<'hooks untrusted' | 'hooks changed' | 'hooks off'>;
