@@ -25,8 +25,8 @@ const writeHost = (repo: string, source: string): string => {
   return plugin;
 };
 
-const runChild = (repo: string, env: Record<string, string | undefined>, runner: string, plugin: string, payload: string) =>
-  spawnSync(process.execPath, [runner, plugin, payload, repo], {
+const runChild = (repo: string, env: Record<string, string | undefined>, runner: string, plugin: string, payload: string, directory = repo) =>
+  spawnSync(process.execPath, [runner, plugin, payload, directory], {
     cwd: repo,
     env: { ...env, YOKOTEN_ROLE: 'worker' },
     encoding: 'utf8',
@@ -62,7 +62,7 @@ const runPlugin = (repo: string, env: Record<string, string | undefined>, source
  * Run setup against a fake ctx. Each hook() returns a promise that never settles, so a
  * setup that waits on it does not return. Steps then call the recorded handlers.
  */
-const runSetup = (repo: string, env: Record<string, string | undefined>, source: string, steps: { label: string; hook: string; event: Record<string, unknown> }[]) => {
+const runSetup = (repo: string, env: Record<string, string | undefined>, source: string, steps: { label: string; hook: string; event: Record<string, unknown> }[], directory = repo) => {
   const plugin = writeHost(repo, source);
   const runner = join(repo, 'setup-runner.mjs');
   writeFileSync(
@@ -82,7 +82,7 @@ const runSetup = (repo: string, env: Record<string, string | undefined>, source:
       '  return pending;',
       '};',
       'const ctx = {',
-      '  directory: process.argv[4],',
+      '  directory: process.argv[4] || undefined,',
       '  permission: { hook: register("permission") },',
       '  shell: { hook: register("shell") },',
       '  tool: { hook: register("tool") },',
@@ -112,7 +112,7 @@ const runSetup = (repo: string, env: Record<string, string | undefined>, source:
       '',
     ].join('\n'),
   );
-  return runChild(repo, env, runner, plugin, JSON.stringify(steps));
+  return runChild(repo, env, runner, plugin, JSON.stringify(steps), directory);
 };
 
 const allow = (action: string, extra: Record<string, unknown> = {}) => ({ action, resources: [], metadata: {}, effect: 'allow', message: '', ...extra });
@@ -348,6 +348,35 @@ test("OpenCode 2 setup: a force push is denied, ls stays allowed, a failing guar
   const failed = JSON.parse(failedLine) as { results: { effect: string; message: string }[] };
   assert.equal(failed.results[0]?.effect, 'deny');
   assert.match(failed.results[0]?.message ?? '', /guard failed/);
+});
+
+test('OpenCode 2 with no folder: the server\'s own folder is the project, so ls passes and a force push is still denied (#917)', async () => {
+  const sandbox = makeSandbox();
+  const push = 'git push --force origin main';
+  const plain = await sandbox.call(['hook', '--agent', 'opencode'], {
+    input: JSON.stringify({ action: 'bash', resources: [push], directory: sandbox.repo }),
+    extra: worker,
+  });
+  assert.equal(plain.status, 2, plain.stderr);
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --protocol', 'missing runtime', { isToolCall: true }));
+  // No directory in the setup context, and no cwd on any call: what OpenCode 2 sent (#917).
+  const ran = runSetup(sandbox.repo, sandbox.env, source, [
+    { label: 'ls', hook: 'permission:evaluate', event: allow('bash', { resources: ['pwd'] }) },
+    { label: 'push', hook: 'permission:evaluate', event: allow('bash', { resources: [push] }) },
+    { label: 'shell-ls', hook: 'shell:create.before', event: { command: 'pwd' } },
+    { label: 'shell-push', hook: 'shell:create.before', event: { command: push } },
+  ], '');
+  assert.equal(ran.status, 0, `${ran.stdout}\n${ran.stderr}`);
+  const line = ran.stdout.split('\n').find((item) => item.startsWith('{'));
+  assert.ok(line, ran.stdout);
+  const results = (JSON.parse(line) as { results: { label: string; effect: string | null; message: string | null; thrown: string }[] }).results;
+  const step = (label: string) => results.find((item) => item.label === label);
+  assert.equal(step('ls')?.effect, 'allow');
+  assert.equal(step('ls')?.message, '');
+  assert.equal(step('push')?.effect, 'deny');
+  assert.equal(step('push')?.message, plain.stderr.trim());
+  assert.equal(step('shell-ls')?.thrown, '');
+  assert.equal(step('shell-push')?.thrown, plain.stderr.trim());
 });
 
 test('OpenCode 2 refuses an unknown action when any command field is refused', async () => {

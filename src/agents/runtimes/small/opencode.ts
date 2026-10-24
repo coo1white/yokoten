@@ -325,7 +325,9 @@ export function pluginSource(command: string, timeoutMs = PLUGIN_TIMEOUT_MS): st
     };
 
     const ask = (action, folder) => {
-      const project = text(folder);
+      // OpenCode 2 can send a call with no folder, and setup with none (#917): the server runs
+      // in the project, so its own folder is the project then.
+      const project = text(folder) || process.cwd();
       if (!project) return failed;
       const payload = { protocol, action, role, project };
       const options = { input: JSON.stringify(payload), encoding: 'utf8', timeout: waitMs, cwd: project };
