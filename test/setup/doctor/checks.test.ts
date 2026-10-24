@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { makeSandbox, makeTempDir, ROOT } from '../../repo/helpers.ts';
 import { DEFAULTS } from '../../../src/rules/config.ts';
 import { launcherDir, setUpLauncher } from '../../../src/setup/install.ts';
-import { doctor, launcherCheck, privacyNotes } from '../../../src/setup/doctor/index.ts';
+import { doctor, launcherCheck, privacyNotes, releaseChannel } from '../../../src/setup/doctor/index.ts';
 
 // #522: install fills the git name, so the marks are in place. One run gives one answer.
 test('install then doctor: the private-marks lines agree, in full doctor and a session (#522)', async () => {
@@ -57,6 +57,28 @@ test('doctor: the plugin, when on, stands in for install', async () => {
   assert.doesNotMatch(out, /plugin-and-install/, 'no install pieces, no note');
   writeFileSync(join(sandbox.home, '.claude', 'settings.json'), 'not json');
   assert.match(await machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
+});
+
+test('doctor: names the release channel this machine runs (#632)', async () => {
+  const sandbox = makeSandbox();
+  const version: string = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
+  mkdirSync(join(sandbox.home, '.claude'), { recursive: true });
+  const settings = (enabledPlugins: unknown) => writeFileSync(join(sandbox.home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins }));
+  const channelLine = async () => (await sandbox.call(['doctor'])).stdout.split('\n').find((line) => line.startsWith('yokoten '));
+  settings({ 'yokoten@yokoten': true });
+  assert.equal(await channelLine(), `yokoten ${version} (stable), self-test ok`);
+  settings({ 'yokoten-beta@yokoten': true });
+  assert.equal(await channelLine(), `yokoten ${version} (beta), self-test ok`);
+  assert.equal(JSON.parse((await sandbox.call(['doctor', '--json'])).stdout).channel, 'beta');
+  settings({ 'yokoten-dev@yokoten': true });
+  assert.equal(await channelLine(), `yokoten ${version} (dev), self-test ok`);
+  // Another name does not count, and no plugin means the released package.
+  settings({ 'yokoten-other@yokoten': true });
+  assert.equal(await channelLine(), `yokoten ${version} (stable), self-test ok`);
+  // yokoten's own checkout runs Dev, unless a plugin says otherwise.
+  assert.equal(releaseChannel(ROOT, sandbox.env), 'dev');
+  settings({ 'yokoten@yokoten': true });
+  assert.equal(releaseChannel(ROOT, sandbox.env), 'stable');
 });
 
 test('doctor: the plugin and install both on is a note that says to uninstall (#300)', async () => {
