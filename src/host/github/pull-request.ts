@@ -157,6 +157,8 @@ export interface OpenPull {
   branch: string;
   base: string;
   isFork: boolean;
+  /** A draft is not ready to merge, so a merge order leaves it out (#912). */
+  isDraft: boolean;
 }
 
 /** The most open pull requests `pr sync` reads: enough for one team's open work. */
@@ -185,7 +187,7 @@ function openPullsFailed(err: unknown): string {
 export function readOpenPulls(gh: Gh, repo: string): OpenPullList | string {
   let rows: unknown;
   try {
-    rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PULL_LIMIT), '--json', 'number,headRefName,baseRefName,isCrossRepository']));
+    rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PULL_LIMIT), '--json', 'number,headRefName,baseRefName,isCrossRepository,isDraft']));
   } catch (err) {
     return openPullsFailed(err);
   }
@@ -196,7 +198,7 @@ export function readOpenPulls(gh: Gh, repo: string): OpenPullList | string {
     const branch = asText(row.headRefName);
     const base = asText(row.baseRefName);
     if (!branch || !base) continue;
-    pulls.push({ number: row.number, branch, base, isFork: row.isCrossRepository === true });
+    pulls.push({ number: row.number, branch, base, isFork: row.isCrossRepository === true, isDraft: row.isDraft === true });
   }
   return { pulls, isCut: rows.length >= OPEN_PULL_LIMIT };
 }

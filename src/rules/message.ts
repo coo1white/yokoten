@@ -196,6 +196,12 @@ export const RULES = {
     check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, `yokoten worker unmark`, and an edit inside a git folder, by real path. The same holds for the yokoten config folder (~/.config/yokoten), which keeps the worker list and the bot keys: for a worker, any program that does more than read is refused when it names a path that is, is in or holds that folder, by real path (a symlink, `~+` and globs such as `~/.c*/yokoten` count). A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
     docs: guide('managing-agents-like-a-team'),
   },
+  'file-lease': {
+    rule: 'the guard stops an edit to a file that an open change is moving or deleting (#911)',
+    why: 'two changes to a file that is being moved cannot both go in cleanly',
+    check: 'when an open change moves or deletes a file, the conflict map leases that path; the tool-call guard reads the map once per call, stops an edit to a leased path from another branch, and allows when the map is missing or old',
+    docs: guide('blocked-commands'),
+  },
   email: {
     rule: 'no personal email address in the repo (core rule 11)',
     why: 'an email address points at a person, and git keeps it after the file is gone',
@@ -254,6 +260,12 @@ export const RULES = {
     rule: 'no folder holds more than 7 entries; the root is not counted (core rule 10)',
     why: 'a flat folder grows until nobody can find anything',
     check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" (paths, or globs with `*` and `**`) may grow',
+    docs: guide('the-core-rules'),
+  },
+  'structural-change': {
+    rule: 'a change that moves, renames, splits or deletes files goes in alone (#910)',
+    why: 'two changes that restructure the same files collide, and each merge makes the next conflict worse',
+    check: 'the commit check reads the paths the staged diff moves away (`git diff --cached --name-status -M`) and the conflict map at `.git/yokoten/conflicts.json`; a path an open change also moves stops the commit and names that change. A missing or stale map allows',
     docs: guide('the-core-rules'),
   },
   'stale-codeowners': {

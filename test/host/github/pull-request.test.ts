@@ -118,7 +118,7 @@ test('readOpenPulls: open rows, a fork marked, odd rows skipped, a failure is a 
     calls.push(args);
     return JSON.stringify([
       { number: 3, headRefName: 'work', baseRefName: 'main', isCrossRepository: false },
-      { number: 4, headRefName: 'from-fork', baseRefName: 'main', isCrossRepository: true },
+      { number: 4, headRefName: 'from-fork', baseRefName: 'main', isCrossRepository: true, isDraft: true },
       { number: 0, headRefName: 'bad', baseRefName: 'main' },
       { number: 5, headRefName: '', baseRefName: 'main' },
       { headRefName: 'no-number', baseRefName: 'main' },
@@ -126,12 +126,12 @@ test('readOpenPulls: open rows, a fork marked, odd rows skipped, a failure is a 
   };
   assert.deepEqual(readOpenPulls(gh, 'octo/demo'), {
     pulls: [
-      { number: 3, branch: 'work', base: 'main', isFork: false },
-      { number: 4, branch: 'from-fork', base: 'main', isFork: true },
+      { number: 3, branch: 'work', base: 'main', isFork: false, isDraft: false },
+      { number: 4, branch: 'from-fork', base: 'main', isFork: true, isDraft: true },
     ],
     isCut: false,
   });
-  assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '100', '--json', 'number,headRefName,baseRefName,isCrossRepository']]);
+  assert.deepEqual(calls, [['pr', 'list', '--repo', 'octo/demo', '--state', 'open', '--limit', '100', '--json', 'number,headRefName,baseRefName,isCrossRepository,isDraft']]);
   assert.equal(readOpenPulls(() => '{"not":"a list"}', 'o/r'), 'gh gave no pull request list: run it again');
   const missing = () => {
     throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
