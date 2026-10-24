@@ -12,7 +12,7 @@ import { readGiteaServer } from '../../host/gitea.ts';
 import { hostOf } from '../../host/hosts.ts';
 import { DEFAULTS, loadConfig } from '../../rules/config.ts';
 import { gitConfig } from '../../run/check.ts';
-import { workerRole } from '../../rules/guards.ts';
+import { workerRole } from '../../rules/guards/index.ts';
 import { canKeepStatus, changeAgentStatus, findStatusCheckout, startFields } from '../../run/hook.ts';
 import { formatFinding } from '../../rules/message.ts';
 import { hideHome } from '../../rules/privacy.ts';

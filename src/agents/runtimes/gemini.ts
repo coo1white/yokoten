@@ -13,7 +13,7 @@
 import { statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { releaseFix } from '../../rules/guards.ts';
+import { releaseFix } from '../../rules/guards/index.ts';
 import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';

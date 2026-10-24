@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { globToRegExp, loadConfig } from '../../src/rules/config.ts';
-import { checkCommand, checkEdit, isLeadOnly } from '../../src/rules/guards.ts';
+import { checkCommand, checkEdit, isLeadOnly } from '../../src/rules/guards/index.ts';
 import { findSecretHits } from '../../src/rules/privacy/secrets.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -56,7 +56,7 @@ const startUp = (moduleUrl?: string): number[] => {
   return times;
 };
 const bare = startUp();
-const guardUrl = pathToFileURL(join(ROOT, 'src/rules/guards.ts')).href;
+const guardUrl = pathToFileURL(join(ROOT, 'src/rules/guards/index.ts')).href;
 const loaded = startUp(guardUrl);
 
 process.stdout.write(`yokoten guard words: ${options.label}, ${runs} runs, Node ${process.version}, ${process.platform} ${process.arch}\n\n`);
@@ -92,7 +92,7 @@ const editRounds = 500;
 const editTimes: number[] = [];
 for (let round = 0; round <= runs; round++) {
   const start = performance.now();
-  for (let at = 0; at < editRounds; at++) checkEdit('src/rules/guards.ts', { config, env: worker });
+  for (let at = 0; at < editRounds; at++) checkEdit('src/rules/guards/index.ts', { config, env: worker });
   const per = (performance.now() - start) / editRounds;
   if (round > 0) editTimes.push(per);
 }
@@ -237,8 +237,8 @@ const matcherRounds = 1000;
 const matcherTimes = new Map([['compile each glob, each ask', [] as number[]], ['isLeadOnly, one pass', [] as number[]]]);
 for (let round = 0; round <= runs; round++) {
   for (const [name, run] of [
-    ['compile each glob, each ask', () => compileEach('src/rules/guards.ts')],
-    ['isLeadOnly, one pass', () => isLeadOnly('src/rules/guards.ts', globs)],
+    ['compile each glob, each ask', () => compileEach('src/rules/guards/index.ts')],
+    ['isLeadOnly, one pass', () => isLeadOnly('src/rules/guards/index.ts', globs)],
   ] as const) {
     const start = performance.now();
     for (let at = 0; at < matcherRounds; at++) run();

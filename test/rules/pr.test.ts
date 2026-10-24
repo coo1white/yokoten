@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { checkCommand } from '../../src/rules/guards.ts';
+import { checkCommand } from '../../src/rules/guards/index.ts';
 import { judge } from '../../src/run/hook.ts';
 import {
   finding,

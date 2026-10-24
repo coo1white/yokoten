@@ -15,7 +15,7 @@
 import { closeSync, constants, existsSync, openSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
-import { gitLinkAbove, workerMarkAt, workerRole } from '../../../rules/guards.ts';
+import { gitLinkAbove, workerMarkAt, workerRole } from '../../../rules/guards/index.ts';
 import { DESK_FILE, isDeskName, LEAD, readCapped, readRoster, teamFolderFor, vendorOf } from './team.ts';
 
 /** Who runs this command, and where its team and its read state are. */
