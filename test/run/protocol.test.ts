@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { adapterFor } from '../../src/agents/runtimes/runtime.ts';
 import { pluginSource } from '../../src/agents/runtimes/small/opencode.ts';
-import { stopsFile } from '../../src/rules/guards.ts';
+import { stopsFile } from '../../src/rules/guard/guards.ts';
 import {
   checkGuardIntegration,
   CONFORMANCE_CASES,

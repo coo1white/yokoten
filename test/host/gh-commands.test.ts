@@ -4,7 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { hostGuardMisses, hostRunRemoval } from '../../src/host/gh-commands.ts';
-import { checkCommand, commandWords } from '../../src/rules/guards.ts';
+import { checkCommand, commandWords } from '../../src/rules/guard/guards.ts';
 
 const wordsOf = (command: string): string[] => commandWords(command)[0] ?? [];
 const pathWhat = 'this `gh api` call takes its path from the shell, so the run is not clear';

@@ -1350,7 +1350,7 @@ yokoten 自己的代码守五条规矩。为什么这么定、参考了哪些资
 `test/repo/architecture.test.ts` 会检查第 2、3 条，还有函数里的 `CONSTANT_CASE`。每处不合格都会写明该怎么改：
 
 ```
-src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
+src/rules/guard/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
 ```
 
 别的项目里，`check --pr` 也会提醒两种名字：单个字母却用到很远的地方，或者超过 4 个词。它只看 PR 在 TypeScript 和 JavaScript 文件里新加的行。只是提醒，CI 不会因此失败。
@@ -1892,7 +1892,7 @@ agent，守卫都拦下这些：
 - **浏览器页面和截图。** 别把账号页面当文字读给 agent。
 
 hook 不可能认得所有命令。输出里露出了你的信息，就开一个事故 issue，再给那条命令在
-`ACCOUNT_PRINTERS`（`src/rules/guards.ts`）里加一行。
+`ACCOUNT_PRINTERS`（`src/rules/guard/guards.ts`）里加一行。
 
 ### agent 拿到的环境变量
 

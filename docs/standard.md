@@ -187,6 +187,7 @@ An adapter maps that call to one `Action`.
 There is no shared list of tool names.
 An `Action` has `command`, `commands`, `paths`, `cwd` and `worker`.
 `command` is the shell text, when the call is a shell.
+`shell` is `powershell` when the call names PowerShell, so the guard reads it with its PowerShell reader.
 `commands` holds several shell texts, when one call carries more than one; the guard checks each on its own.
 `paths` lists the files an edit would touch.
 `cwd` is the folder, when the event names one.

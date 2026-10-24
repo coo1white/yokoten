@@ -1835,7 +1835,7 @@ three-line loop is clear. The further a name travels, the more it must say.
 Each failure says what to change:
 
 ```
-src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
+src/rules/guard/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to learn what it holds. Name what it is, e.g. "index".
 ```
 
 In any project, `check --pr` notes a one-letter name used far from where it is made,
@@ -2565,7 +2565,7 @@ What is not hidden, said plainly:
 - **Browser pages and screenshots.** Don't read account pages as text.
 
 A hook can't know every command. When output shows your details, open an incident, and
-give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guards.ts`).
+give the command a row in `ACCOUNT_PRINTERS` (`src/rules/guard/guards.ts`).
 
 ### What an agent's environment holds
 

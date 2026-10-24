@@ -8,7 +8,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { join, resolve } from 'node:path';
 import type { Config, Env } from '../rules/config.ts';
 import { findUnknownKeys, matcher } from '../rules/config.ts';
-import { checkEdit, withWorkerMark } from '../rules/guards.ts';
+import { checkEdit, withWorkerMark } from '../rules/guard/guards.ts';
 import { checkBuildOutput, checkCodeOwners, checkLayout, CODEOWNERS_PLACES, codeOwnersPath } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';

@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { releaseFix } from '../../rules/guards.ts';
+import { releaseFix } from '../../rules/guard/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
@@ -20,13 +20,17 @@ import type { RuntimeDesk } from '../desk/desk.ts';
  * edit. A subagent is a worker only when its type is `worker`, or ends with `:worker`.
  */
 export function readToolCall(input: unknown): Action {
-  const call = (input ?? {}) as { cwd?: unknown; agent_type?: unknown; tool_input?: Record<string, unknown> };
+  const call = (input ?? {}) as { cwd?: unknown; agent_type?: unknown; tool_name?: unknown; tool_input?: Record<string, unknown> };
   const tool = call.tool_input ?? {};
   const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined);
+  // Claude Code's PowerShell tool names itself: its command is read as PowerShell (#332).
+  const shell = text(call.tool_name)?.toLowerCase() === 'powershell' ? 'powershell' : undefined;
   return {
     command: typeof tool.command === 'string' ? tool.command : undefined,
     paths: [tool.file_path, tool.path, tool.notebook_path].map(text).filter((p) => p !== undefined),
     cwd: text(call.cwd),
+    // Only a named PowerShell call carries the field: another reader compares the whole object.
+    ...(shell ? { shell } : {}),
     worker: isWorkerType(text(call.agent_type) ?? ''),
   };
 }

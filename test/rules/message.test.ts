@@ -25,7 +25,7 @@ import {
   checkCommand,
   checkEdit,
   privateOutput,
-} from '../../src/rules/guards.ts';
+} from '../../src/rules/guard/guards.ts';
 import {
   checkBuildOutput,
   checkCodeOwners,

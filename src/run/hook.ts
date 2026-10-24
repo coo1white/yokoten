@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guard/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import type { DeskAgent } from '../rules/pr.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
@@ -199,6 +199,8 @@ export interface Action {
   /** The files an edit touches, absolute or relative to `cwd`. */
   paths: string[];
   cwd?: string;
+  /** The language the command is written in, when the runtime names it (#332). */
+  shell?: 'powershell';
   /** The action comes from a worker, whatever the session's own role. */
   worker: boolean;
 }
@@ -1204,7 +1206,7 @@ export function judge(
     const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));
     const ruledRepos = ruled.map((repo) => ({ root: repo.root, leadOnly: repo.config.leadOnly }));
     for (const command of commands) {
-      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
+      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos, shell: action.shell });
       if (reason) return reason;
     }
   }
