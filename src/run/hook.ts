@@ -4,7 +4,7 @@
 // The hook knows nothing about any one runtime. An adapter in src/agents/ turns the
 // runtime's own call into an `Action` first.
 
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import module from 'node:module';
@@ -13,6 +13,7 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
+import type { DeskAgent } from '../rules/pr.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
 
@@ -738,6 +739,85 @@ export function readStatusText(path: string, openFile: (file: string, flags: num
   return 'text' in result ? result.text : null;
 }
 
+/** A worktree or plain clone, with the branch it has checked out. */
+interface WorktreeBranch {
+  path: string;
+  branch: string;
+}
+
+/** The worktrees git lists under `root`, or [] when git can't list them. */
+function worktreeBranches(root: string, env: Env): WorktreeBranch[] {
+  let text = '';
+  try {
+    text = execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
+  } catch {
+    return [];
+  }
+  const value = (fields: string[], key: string): string => fields.find((field) => field.startsWith(`${key} `))?.slice(key.length + 1) ?? '';
+  return text
+    .split('\0\0')
+    .map((record) => record.split('\0'))
+    .filter((fields) => fields.some((field) => field.startsWith('worktree ')))
+    .map((fields) => ({ path: value(fields, 'worktree'), branch: value(fields, 'branch').replace(/^refs\/heads\//, '') }))
+    .filter((tree) => tree.path !== '');
+}
+
+/** The plain clones `yokoten desk` started from this repo, with their branches. */
+function cloneBranches(root: string): WorktreeBranch[] {
+  const common = commonGitDir(root);
+  if (!common) return [];
+  let text = '';
+  try {
+    text = readFileSync(join(common, DESK_LIST_FILE), 'utf8');
+  } catch {
+    return [];
+  }
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((path) => path && existsSync(join(path, '.git')))
+    .map((path) => {
+      let head = '';
+      try {
+        head = readFileSync(join(path, '.git', 'HEAD'), 'utf8').trim();
+      } catch {
+        // No HEAD to read: the branch stays blank.
+      }
+      return { path, branch: head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : '' };
+    });
+}
+
+/**
+ * The desks that worked on `branch` (#756): the status file at this checkout, at each
+ * worktree of this repo, and at each clone `yokoten desk` started. A worktree on another
+ * branch is left out; an empty `branch` keeps every one. A missing, broken or refused
+ * status file is skipped, as the board does.
+ */
+export function readBranchDesks(root: string, env: Env, branch: string): DeskAgent[] {
+  const folders = new Set<string>([root]);
+  for (const tree of [...worktreeBranches(root, env), ...cloneBranches(root)]) {
+    if (branch === '' || tree.branch === branch) folders.add(tree.path);
+  }
+  const desks: DeskAgent[] = [];
+  for (const folder of folders) {
+    const text = readStatusText(join(folder, AGENT_STATUS_FILE));
+    if (!text) continue;
+    let status: unknown;
+    try {
+      status = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    if (!status || typeof status !== 'object' || Array.isArray(status)) continue;
+    const fields = status as Record<string, unknown>;
+    const field = (name: string): string => (typeof fields[name] === 'string' ? (fields[name] as string).trim() : '');
+    const vendor = field('vendor');
+    const model = field('model');
+    if (vendor || model) desks.push({ vendor, model, role: field('role').toLowerCase() });
+  }
+  return desks;
+}
+
 /** One warning line for a refused status file. It never contains the file's text. */
 function statusRefusalLine(reason: StatusRefusal): string {
   const phrase = reason === 'too large' ? 'is too large' : reason;
@@ -1179,10 +1259,18 @@ type JudgeOptions = Parameters<typeof judge>[1];
 // It starts as plain JavaScript: this module's imports are compiled before any of its
 // code runs, and the cache must be on by then. An error from the cache is ignored, as in
 // bin/yokoten.mjs.
+// The worker code uses no `require`: an eval worker is plain CommonJS on some Node versions
+// and an ES module on others, and `import()` works in both. A `require` there failed the
+// whole guard with "require is not defined in ES module scope" on Node 26.12.1.
 const workerStart = (cacheDir = module.getCompileCacheDir?.()) => `
-const { enableCompileCache } = require('node:module');
-try { enableCompileCache?.(${cacheDir === undefined ? '' : JSON.stringify(cacheDir)}); } catch {}
-import(${JSON.stringify(import.meta.url)});
+const start = async () => {
+  try {
+    const { enableCompileCache } = await import('node:module');
+    enableCompileCache?.(${cacheDir === undefined ? '' : JSON.stringify(cacheDir)});
+  } catch {}
+  await import(${JSON.stringify(import.meta.url)});
+};
+start();
 `;
 
 /** The guard worker's stack, in MB: about the main thread's. */
