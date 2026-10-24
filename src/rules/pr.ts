@@ -256,7 +256,10 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
       ),
     );
   }
-  if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body)) {
+  // The body names the kit, or says what the change does: every project gets it on its
+  // next init. The fix text asks for that sentence, so a body that says it passes too (#875).
+  const everyProjectInit = /\b(?:every|each|all)\s+(?:project|repo)s?\b[^.!?]{0,120}\binit\b/i;
+  if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body) && !everyProjectInit.test(body)) {
     problems.push(finding('pr-kit', 'body: this changes `kit/` and does not say so', 'say in the body that every project gets this change on its next init'));
   }
   return problems;
@@ -1141,6 +1144,127 @@ export function madeWithFindings(body: string): Finding[] {
   }
   if (parsed?.roles) return [];
   return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`; reviewers may follow the worker: `, reviewed by <agent> (<model>) and <agent> (<model>)`')];
+}
+
+/** One desk that worked on a branch, as its status file wrote it (#756). */
+export interface DeskAgent {
+  /** The runtime the desk ran, such as `deepseek-harness`. */
+  vendor: string;
+  /** The model the desk ran, or ''. */
+  model: string;
+  /** The status file's role: `lead`, `engineer`, `reviewer`, `verifier` or `helper`. */
+  role: string;
+}
+
+/** Vendors that mean the same company, as made-with lines and status files spell them differently. */
+const VENDOR_GROUPS: readonly (readonly string[])[] = [
+  ['claude', 'anthropic'],
+  ['grok', 'xai'],
+  ['deepseek'],
+  ['gemini', 'google'],
+  ['codex', 'openai'],
+  ['muse', 'meta'],
+  ['copilot', 'github'],
+];
+
+/** A vendor name as one lower-case word, so `Claude Code` and `claude-code` meet. */
+const vendorKey = (vendor: string): string => vendor.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** The group a vendor belongs to, or its own key when no group takes it. */
+function vendorGroup(vendor: string): string {
+  const key = vendorKey(vendor);
+  return VENDOR_GROUPS.find((words) => words.some((word) => key.includes(word)))?.[0] ?? key;
+}
+
+/** Whether two vendor names name the same vendor, whatever their spelling (#756). */
+export function isSameVendor(left: string, right: string): boolean {
+  const [one, two] = [vendorKey(left), vendorKey(right)];
+  if (!one || !two) return false;
+  return one === two || one.includes(two) || two.includes(one) || vendorGroup(left) === vendorGroup(right);
+}
+
+/** Whether a Made-with pair names the vendor and model a desk ran. An empty desk field says nothing. */
+function isSameDeskAgent(pair: MadeWithAgent, desk: DeskAgent): boolean {
+  const model = (one: string): string => one.trim().toLowerCase();
+  if (desk.model && model(pair.model) !== model(desk.model)) return false;
+  if (desk.vendor && !isSameVendor(pair.vendor, desk.vendor)) return false;
+  return Boolean(desk.vendor || desk.model);
+}
+
+/** The pairs a desk's role is written as on the line, or [] when that role is not named. */
+function pairsForRole(roles: MadeWithRoles, role: string): MadeWithAgent[] {
+  if (role === 'reviewer') return roles.reviewers;
+  if (role === 'lead') return roles.leads;
+  return roles.writers.length ? roles.writers : roles.others;
+}
+
+/**
+ * The provenance findings of a Made-with line (#756): a reviewer from the writer's own
+ * vendor (record 0021), and a desk that worked on the branch but is not named with its
+ * vendor and model. A desk the line does not name at all is skipped, so an older line
+ * that names no lead is not a finding. No desks (a run without status files) means no
+ * desk finding.
+ */
+export function provenanceFindings(roles: MadeWithRoles | null, desks: DeskAgent[]): Finding[] {
+  if (!roles) return [];
+  const problems: Finding[] = [];
+  // A solo lead writes the change; with a worker named, the worker is the writer.
+  const writers = roles.writers.length ? roles.writers : roles.others.length ? roles.others : roles.leads;
+  for (const reviewer of roles.reviewers) {
+    const writer = writers.find((pair) => isSameVendor(pair.vendor, reviewer.vendor));
+    if (!writer) continue;
+    problems.push(finding('pr-provenance', `body: the reviewer ${reviewer.vendor} (${reviewer.model}) has the writer's vendor, ${writer.vendor} (${writer.model})`, 'ask a reviewer from another vendor to review it (record 0021)'));
+  }
+  for (const desk of desks) {
+    const named = pairsForRole(roles, desk.role);
+    if (!named.length || named.some((pair) => isSameDeskAgent(pair, desk))) continue;
+    const role = desk.role === 'reviewer' ? 'reviewed by ' : desk.role === 'lead' ? 'lead ' : 'worker ';
+    problems.push(finding('pr-provenance', `body: a desk on this branch ran ${desk.vendor} (${desk.model}), but the Made-with line does not name it`, `name it as \`${role}${desk.vendor} (${desk.model})\``));
+  }
+  return problems;
+}
+
+/** One commit's provenance, from the message a squash merge leaves on `main` (#756). */
+export interface ProvenanceRecord {
+  /** The commit id. */
+  commit: string;
+  /** The commit's first line. */
+  subject: string;
+  /** The agents the line names as writers, or the old role-less pairs when it names none. */
+  writers: MadeWithAgent[];
+  /** The agents the line names as reviewers. */
+  reviewers: MadeWithAgent[];
+  /** The tier on the body's first line, or null. */
+  tier: string | null;
+  /** The issues the body links, in order, each once. */
+  issues: number[];
+}
+
+/**
+ * The roles a commit message names. A squash merge leaves `Co-authored-by` trailers
+ * after the Made-with line, so this finds the last line that starts the line, not
+ * only the message's last line (#756).
+ */
+function commitRoles(message: string): MadeWithRoles | null {
+  const lines = message.split(/\r?\n/);
+  for (let at = lines.length - 1; at >= 0; at--) {
+    if (/^(?:🤖 )?Made with /.test(lines[at].trim())) return parseMadeWith(lines[at])?.roles ?? null;
+  }
+  return parseMadeWith(message)?.roles ?? null;
+}
+
+/** Reads one commit's message as provenance: the Made-with roles, the tier and the issues. */
+export function parseProvenance(commit: string, message: string): ProvenanceRecord {
+  const roles = commitRoles(message);
+  return {
+    commit,
+    subject: message.split(/\r?\n/, 1)[0] ?? '',
+    writers: roles ? (roles.writers.length ? roles.writers : roles.others.length ? roles.others : roles.leads) : [],
+    reviewers: roles?.reviewers ?? [],
+    // The subject is the first line; the tier is the first line of the body after it.
+    tier: prTier(message.slice(message.indexOf('\n') + 1), []),
+    issues: readLinkedIssues(message),
+  };
 }
 
 /**
