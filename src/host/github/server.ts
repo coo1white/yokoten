@@ -10,7 +10,8 @@ import { type Board, type Gh, type Planning, type Unread, readLinkedBoards, read
 /** The rules that apply to the default branch, from every active ruleset. */
 export interface BranchRules {
   pullRequest: boolean;
-  codeOwnerReview: boolean;
+  /** Whether a merge needs code owner review; null when the host does not send the field. */
+  codeOwnerReview: boolean | null;
   /** Merge methods the rules allow; empty when they do not limit them. */
   mergeMethods: string[];
   requiredChecks: string[];

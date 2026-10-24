@@ -34,9 +34,10 @@ const GOOD: Record<string, unknown> = {
     default_branch: 'main',
     private: false,
     allow_squash_merge: true,
-    allow_merge_commit: false,
-    allow_rebase_merge: false,
-    delete_branch_after_merge: true,
+    allow_merge_commits: false,
+    allow_rebase: false,
+    allow_rebase_explicit: false,
+    default_delete_branch_after_merge: true,
   },
   '/repos/me/repo/branch_protections': [
     { branch_name: 'main', enable_status_check: true, status_check_contexts: ['ci'], required_approvals: 1, require_code_owner_approval: true },
@@ -87,6 +88,94 @@ test('gitea: reads the server into the neutral shape, and the road judges each f
   assert.match(review.unchecked?.(server) ?? '', /Gitea has no Actions approval switch/, 'the reason is Gitea\'s, not GitHub\'s');
   // At most a step yokoten did read can be "can't check"; the byHand list is not used.
   assert.ok(!seen.includes('/repos/me/repo/actions/permissions/workflow'), 'no GitHub-only endpoint is asked');
+});
+
+test('gitea: a tag pattern must cover a patch release to count (#849)', async () => {
+  const cases: [string, boolean][] = [
+    ['v*', true],
+    ['v*.*.*', true],
+    // These match v1.0.0 and v2.0.0, but leave v1.2.3 open.
+    ['v*.0.0', false],
+    ['*0', false],
+    // This covers v1 only, so a v2 release is outside it.
+    ['v1.*', false],
+  ];
+  for (const [pattern, expected] of cases) {
+    const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+      ...GOOD,
+      '/repos/me/repo/tag_protections': [{ name_pattern: pattern }],
+    }));
+    assert.ok(!('unread' in server), JSON.stringify(server));
+    if ('unread' in server) continue;
+    assert.equal(server.tags, expected, pattern);
+  }
+});
+
+test('gitea: a protection with no code-owner field is unknown, not off (#849)', async () => {
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo/branch_protections': [
+      { branch_name: 'main', enable_status_check: true, status_check_contexts: ['ci'], required_approvals: 1 },
+    ],
+  }));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.ok(!('unread' in server.branch));
+  if ('unread' in server.branch) return;
+  assert.equal(server.branch.codeOwnerReview, null, 'the server did not say, so it is not off');
+  const marks = serverChecks(server);
+  assert.equal(marks.find((c) => c.id === 'code-owner-review')?.mark, "can't check");
+  assert.equal(marks.find((c) => c.id === 'main-rules')?.mark, 'ok', 'the rest of the protection is still judged');
+
+  // The newer field alone is enough to say the review is on.
+  const enabled = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo/branch_protections': [{ branch_name: 'main', enable_code_owner_review: true }],
+  }));
+  assert.ok(!('unread' in enabled) && !('unread' in enabled.branch));
+  if ('unread' in enabled || 'unread' in enabled.branch) return;
+  assert.equal(enabled.branch.codeOwnerReview, true);
+});
+
+test('gitea: a 404 on a later list says which API is missing, not that the repo is (#849)', async () => {
+  const routes: Record<string, unknown> = { ...GOOD };
+  delete routes['/repos/me/repo/branch_protections'];
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(routes));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.ok('unread' in server.branch);
+  if (!('unread' in server.branch)) return;
+  assert.match(server.branch.unread, /branch protection API/);
+  assert.doesNotMatch(server.branch.unread, /did not find the repo/);
+  assert.equal(server.tags, true, 'the reads that worked are still read');
+
+  const noLabels: Record<string, unknown> = { ...GOOD };
+  delete noLabels['/repos/me/repo/labels'];
+  const withoutLabels = await readGiteaServer(HOST, TOKEN, fakeGitea(noLabels));
+  assert.ok(!('unread' in withoutLabels), JSON.stringify(withoutLabels));
+  if ('unread' in withoutLabels) return;
+  assert.ok(withoutLabels.planning && 'unread' in withoutLabels.planning);
+  if (!withoutLabels.planning || !('unread' in withoutLabels.planning)) return;
+  assert.match(withoutLabels.planning.unread, /label API/);
+  assert.doesNotMatch(withoutLabels.planning.unread, /did not find the repo/);
+});
+
+test('gitea: either rebase switch allows a rebase merge (#849)', async () => {
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea({
+    ...GOOD,
+    '/repos/me/repo': {
+      default_branch: 'main',
+      private: false,
+      allow_squash_merge: true,
+      allow_merge_commits: false,
+      allow_rebase: false,
+      allow_rebase_explicit: true,
+      default_delete_branch_after_merge: true,
+    },
+  }));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  assert.deepEqual(server.mergeMethods, ['squash', 'rebase']);
 });
 
 test('gitea: a repo with no protection, no labels and no milestone fails the steps it should (#505)', async () => {

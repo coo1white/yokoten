@@ -175,9 +175,13 @@ function matchesBranch(pattern: string, branch: string): boolean {
   return matchesPattern(pattern, branch);
 }
 
-/** True when a tag pattern covers the next release tag too, not only one tag that exists now. */
+/**
+ * True when a tag pattern covers the next release tags too, not only one tag that exists
+ * now. The samples include a patch release: `v*.0.0` matches `v1.0.0` and `v2.0.0` but
+ * leaves `v1.2.3` open, so it is not a release policy (#849).
+ */
 function coversReleaseTags(pattern: string): boolean {
-  return pattern !== '' && ['v1.0.0', 'v2.0.0'].every((tag) => matchesPattern(pattern, tag));
+  return pattern !== '' && ['v1.0.0', 'v1.2.3', 'v2.0.0'].every((tag) => matchesPattern(pattern, tag));
 }
 
 /** The default branch's rules, from the protection Gitea keeps, or none. */
@@ -190,9 +194,13 @@ function branchRules(protections: unknown[], defaultBranch: string): BranchRules
     return { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   }
   const checks = Array.isArray(found.status_check_contexts) ? found.status_check_contexts.map(asText).filter(Boolean) : [];
+  // A Gitea version that does not send either code-owner field cannot be judged: that is
+  // unknown, never off. Either field being on means code owner review is on (#849).
+  const codeOwnerValues = [asBoolean(found.require_code_owner_approval), asBoolean(found.enable_code_owner_review)];
+  const codeOwnerReview = codeOwnerValues.includes(true) ? true : codeOwnerValues.includes(false) ? false : null;
   return {
     pullRequest: true,
-    codeOwnerReview: found.require_code_owner_approval === true || found.enable_code_owner_review === true,
+    codeOwnerReview,
     // Gitea sets merge methods on the repo, not on the protection; the repo read judges them.
     mergeMethods: [],
     requiredChecks: found.enable_status_check === true ? checks : [],
@@ -226,15 +234,22 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
   // An older Gitea has no tag protection endpoint. That is unknown, never "off". The
   // repo read worked, so a 404 here is the endpoint, not the repo (#849).
   const noTagApi: Unread = { unread: 'this Gitea has no tag protection API', fix: 'protect the v* tags by hand in the repo settings, or update Gitea, then run doctor again' };
+  // A 404 here, after the repo read worked, is the endpoint or the token's rights, not a
+  // missing repo (#849). Gitea asks for an admin token to read branch protections.
+  const noProtectionApi: Unread = {
+    unread: 'this Gitea has no branch protection API that yokoten can read, or the token is not an admin',
+    fix: 'use a token for a repo admin, or protect the default branch by hand, then run doctor again',
+  };
+  const noListApi = (name: string, fix: string): Unread => ({ unread: `this Gitea has no ${name} API that yokoten can read`, fix });
 
   // The independent reads run together: doctor waits for the slowest, not the sum.
   const [protectionRead, tagRead, labelRead, milestoneRead, branchRead, pullRead] = await Promise.all([
-    ask(api, `${base}/branch_protections`),
+    ask(api, `${base}/branch_protections`, noProtectionApi),
     getAll(api, `${base}/tag_protections`, noTagApi),
-    getAll(api, `${base}/labels`),
-    getAll(api, `${base}/milestones?state=all`),
-    getAll(api, `${base}/branches`),
-    getAll(api, `${base}/pulls?state=open`),
+    getAll(api, `${base}/labels`, noListApi('label', 'add the labels by hand in the repo settings, then run doctor again')),
+    getAll(api, `${base}/milestones?state=all`, noListApi('milestone', 'add the milestones by hand in the repo settings, then run doctor again')),
+    getAll(api, `${base}/branches`, noListApi('branch list', 'list the forgotten branches by hand, then run doctor again')),
+    getAll(api, `${base}/pulls?state=open`, noListApi('pull request list', 'list the open pull requests by hand, then run doctor again')),
   ]);
 
   const branch = isUnread(protectionRead) ? protectionRead : branchRules(rowsOf(protectionRead.body), defaultBranch);
@@ -278,10 +293,15 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
     fix: 'approve each publish job by hand in the Gitea Actions log, then run doctor again',
   };
 
+  // Gitea's own repository fields, not GitHub's (#849): the merge methods are
+  // `allow_squash_merge`, `allow_merge_commits` and either rebase switch, and the
+  // delete switch is `default_delete_branch_after_merge`.
+  const rebaseValues = [asBoolean(info.allow_rebase), asBoolean(info.allow_rebase_explicit)];
+  const rebase = rebaseValues.includes(true) ? true : rebaseValues.includes(false) ? false : null;
   const methods: [string, boolean | null][] = [
     ['squash', asBoolean(info.allow_squash_merge)],
-    ['merge', asBoolean(info.allow_merge_commit)],
-    ['rebase', asBoolean(info.allow_rebase_merge)],
+    ['merge', asBoolean(info.allow_merge_commits)],
+    ['rebase', rebase],
   ];
   const mergeMethods = methods.some(([, on]) => on === null) ? null : methods.filter(([, on]) => on).map(([name]) => name);
 
@@ -293,7 +313,7 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
     actionsCanApprove: null,
     actionsApprovalNote: 'Gitea has no Actions approval switch that yokoten can read, so check the approvals by hand',
     mergeMethods,
-    deleteBranchOnMerge: asBoolean(info.delete_branch_after_merge),
+    deleteBranchOnMerge: asBoolean(info.default_delete_branch_after_merge),
     branch,
     tags,
     tagBypass,
