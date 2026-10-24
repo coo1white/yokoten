@@ -362,7 +362,10 @@ worker 用 shell 写只有 lead 能改的文件，守卫也会拦，跟拦编辑
 `git apply` 时，守卫会读补丁，看它改哪些文件，但只读不超过 1 MB 的普通文件；别的补丁文件
 一律拦下 worker。worker 的 `git commit` 如果会提交这类文件，也会被拦。原因是提交检查只能从
 `YOKOTEN_ROLE` 知道谁是 worker，而 Claude Code 的子 agent（比如 `yokoten:worker`）没有这个
-变量。`cat`、`grep` 这种只读不写的命令照常放行。跟拦编辑一样，只在用了 yokoten 的仓库（有
+变量。worker 可以提交对 `origin/<default branch>` 的合并，只要每个只有 lead 能改的文件都和那个分支一样（#684）。
+合并其他任何分支时，如果改了只有 lead 能改的文件，就会被拒绝，而且消息会写出这个文件。
+同一条规则管 `git commit`，也管会合并那个分支的 `git pull`。
+`cat`、`grep` 这种只读不写的命令照常放行。跟拦编辑一样，只在用了 yokoten 的仓库（有
 `yokoten.json`）里才拦。如果任务本来就要改这类文件，lead 启动 worker 时加上
 `YOKOTEN_LEAD_ONLY_OK=AGENTS.md,.github/workflows/ci.yml`：从仓库根目录写起的路径，用逗号
 隔开，带 `*` 的按通配符算。只写一个 `*` 就是放行所有只有 lead 能改的文件。守卫和提交检查

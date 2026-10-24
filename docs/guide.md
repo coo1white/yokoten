@@ -457,8 +457,11 @@ and `apply`. A redirect counts with its file in quotes or glued to the word befo
 (`echo x>"AGENTS.md"`). For `git apply`, the guard reads the patch to see its files, only
 from a plain file under 1 MB; any other patch file stops a worker. A `git commit` that
 would commit a lead-only file is stopped too: the commit check knows the role only from
-`YOKOTEN_ROLE`, and a Claude Code subagent such as `yokoten:worker` has none. Reads such
-as `cat` and `grep` pass. As for edits, this holds only in a repo that uses yokoten (one
+`YOKOTEN_ROLE`, and a Claude Code subagent such as `yokoten:worker` has none.
+A worker may commit a merge of `origin/<default branch>` when every lead-only file matches that branch (#684).
+A merge of any other branch that changes a lead-only file is refused, and the message names the file.
+The same rule covers `git commit` and a `git pull` that merges that branch.
+Reads such as `cat` and `grep` pass. As for edits, this holds only in a repo that uses yokoten (one
 with a `yokoten.json`). A path under `.worktrees/<issue>/` reads from that worktree, as
 if the session ran there: `.worktrees/571-x/AGENTS.md` is still lead-only (#571).
 When the brief asks for a change to a lead-only file, the lead

@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { hookEnvironment, makeGitFolder, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
@@ -1228,6 +1228,74 @@ test('lead-only files: a worker\'s git commit of a lead-only file is stopped, in
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
   result = await sandbox.call(['check', '--staged'], { extra: { ...worker, YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' } });
   assert.equal(result.status, 0, result.stderr);
+});
+
+// A bare origin whose main is pushed, with origin/HEAD pointing at that ref (#684).
+function publishOriginMain(sandbox: ReturnType<typeof yokotenSandbox>) {
+  const origin = join(dirname(sandbox.repo), 'origin.git');
+  assert.equal(sandbox.git('init', '--bare', '-q', origin).status, 0, 'bare origin');
+  assert.equal(sandbox.git('remote', 'add', 'origin', origin).status, 0);
+  assert.equal(sandbox.git('push', '-q', 'origin', 'main').status, 0);
+  assert.equal(sandbox.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main').status, 0);
+}
+
+test('lead-only files: a worker may commit a merge of origin/main, and not another branch (#684)', () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const sandbox = yokotenSandbox();
+  const run = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo });
+  sandbox.write('AGENTS.md', 'rules\n');
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  sandbox.git('checkout', '-qb', 'work');
+  sandbox.write('src/a.ts', 'b\n');
+  sandbox.git('commit', '-qam', 'work');
+  sandbox.git('checkout', '-q', 'main');
+  sandbox.write('AGENTS.md', 'from main\n');
+  sandbox.git('commit', '-qam', 'lead');
+  publishOriginMain(sandbox);
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'origin/main').status, 0);
+  assert.equal(run('git commit -m x'), null, 'the index matches origin/main');
+  assert.equal(run('git pull origin main'), null, 'pull is not a commit of the file');
+  assert.equal(run('git merge origin/main'), null, 'merge is not a commit of the file');
+  sandbox.write('AGENTS.md', 'my rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  const edited = run('git commit -m x');
+  assert.equal(edited?.id, 'lead-only');
+  assert.match(edited?.what ?? '', /this commit changes AGENTS\.md/);
+
+  // A staged lead-only file, and no merge: pull and merge are still not that finding.
+  const plain = yokotenSandbox();
+  plain.write('AGENTS.md', 'rules\n');
+  plain.git('add', '.');
+  plain.git('commit', '-qm', 'start');
+  plain.write('AGENTS.md', 'edited\n');
+  plain.git('add', 'AGENTS.md');
+  const ask = (command: string) => checkCommand(command, { env: worker, cwd: plain.repo });
+  assert.equal(ask('git pull origin main'), null);
+  assert.equal(ask('git merge origin/main'), null);
+  assert.equal(ask('git commit -m x')?.id, 'lead-only', 'a commit of the edit is still stopped');
+
+  // A merge of a branch that is not origin/main, while that remote exists.
+  const other = yokotenSandbox();
+  other.write('AGENTS.md', 'rules\n');
+  other.write('src/a.ts', 'a\n');
+  other.git('add', '.');
+  other.git('commit', '-qm', 'start');
+  other.git('checkout', '-qb', 'work');
+  other.write('src/a.ts', 'b\n');
+  other.git('commit', '-qam', 'work');
+  other.git('checkout', '-q', 'main');
+  publishOriginMain(other);
+  other.git('checkout', '-qb', 'side');
+  other.write('AGENTS.md', 'side rules\n');
+  other.git('commit', '-qam', 'side');
+  other.git('checkout', '-q', 'work');
+  assert.equal(other.git('merge', '--no-commit', '--no-ff', 'side').status, 0);
+  const refused = checkCommand('git commit -m x', { env: worker, cwd: other.repo });
+  assert.equal(refused?.id, 'lead-only');
+  assert.match(refused?.what ?? '', /this commit changes AGENTS\.md/);
 });
 
 test('lead-only files: the hook stops a shell write from the plugin agent yokoten:worker, with no YOKOTEN_ROLE (#402)', async () => {

@@ -72,6 +72,15 @@ function mergeSandbox() {
   return sandbox;
 }
 
+// A bare origin, with main pushed and origin/HEAD pointing at origin/main (#684).
+function publishOriginMain(sandbox: ReturnType<typeof mergeSandbox>) {
+  const origin = join(dirname(sandbox.repo), 'origin.git');
+  assert.equal(sandbox.git('init', '--bare', '-q', origin).status, 0, 'bare origin');
+  assert.equal(sandbox.git('remote', 'add', 'origin', origin).status, 0);
+  assert.equal(sandbox.git('push', '-q', 'origin', 'main').status, 0);
+  assert.equal(sandbox.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main').status, 0);
+}
+
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
 test('check --staged: stops a commit with a personal email or a private mark', () => {
   const sandbox = makeSandbox();
@@ -305,20 +314,46 @@ test('check --staged: binary is decided from the bytes, not .gitattributes (#244
 
 test('check --staged: in a merge, the role checks see only what the merge itself changed (#246)', async () => {
   const worker = { YOKOTEN_ROLE: 'worker' };
-  // Main changed a lead-only file and a test; a worker brings main into its branch.
+  // origin/main changed a lead-only file and a test; a worker brings that branch in (#684).
   let sandbox = mergeSandbox();
+  sandbox.write('AGENTS.md', 'new rules\n');
+  sandbox.write('test/a.test.ts', 'new\n');
+  sandbox.git('commit', '-qam', 'lead');
+  publishOriginMain(sandbox);
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'origin/main').status, 0);
+  let result = await sandbox.call(['check', '--staged'], { extra: worker });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'origin/main changed AGENTS.md');
+  result = await sandbox.call(['check', '--staged'], { extra: { ...worker, YOKOTEN_FIX_TASK: '1' } });
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'origin/main changed a test, in a fix task');
+  // An edit made during the merge is the worker's own.
+  sandbox.write('AGENTS.md', 'my rules\n');
+  sandbox.git('add', 'AGENTS.md');
+  result = await sandbox.call(['check', '--staged'], { extra: worker });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+
+  // A local main, with no origin, is not that branch: the lead-only file is refused.
+  // The test file still comes in, as any ordinary file from a side branch does.
+  sandbox = mergeSandbox();
   sandbox.write('AGENTS.md', 'new rules\n');
   sandbox.write('test/a.test.ts', 'new\n');
   sandbox.git('commit', '-qam', 'lead');
   sandbox.git('checkout', '-q', 'work');
   assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
-  let result = await sandbox.call(['check', '--staged'], { extra: worker });
-  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed AGENTS.md');
   result = await sandbox.call(['check', '--staged'], { extra: { ...worker, YOKOTEN_FIX_TASK: '1' } });
-  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed a test, in a fix task');
-  // An edit made during the merge is the worker's own.
-  sandbox.write('AGENTS.md', 'my rules\n');
-  sandbox.git('add', 'AGENTS.md');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+  assert.doesNotMatch(result.stderr, /test\/a\.test\.ts/);
+
+  // origin/main exists, and the merge is some other branch: still refused.
+  sandbox = mergeSandbox();
+  publishOriginMain(sandbox);
+  sandbox.git('checkout', '-qb', 'side');
+  sandbox.write('AGENTS.md', 'side rules\n');
+  sandbox.git('commit', '-qam', 'side');
+  sandbox.git('checkout', '-q', 'work');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'side').status, 0);
   result = await sandbox.call(['check', '--staged'], { extra: worker });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
@@ -327,10 +362,11 @@ test('check --staged: in a merge, the role checks see only what the merge itself
   sandbox = mergeSandbox();
   sandbox.write('AGENTS.md', 'lead rules\n');
   sandbox.git('commit', '-qam', 'lead');
+  publishOriginMain(sandbox);
   sandbox.git('checkout', '-q', 'work');
   sandbox.write('AGENTS.md', 'worker rules\n');
   sandbox.git('commit', '-qam', 'worker edit');
-  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 1, 'a conflict');
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'origin/main').status, 1, 'a conflict');
   sandbox.write('AGENTS.md', 'both rules\n');
   sandbox.git('add', 'AGENTS.md');
   result = await sandbox.call(['check', '--staged'], { extra: worker });
@@ -344,6 +380,25 @@ test('check --staged: in a merge, the role checks see only what the merge itself
   result = await sandbox.call(['check', '--staged'], { extra: worker });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
+});
+
+test('check --staged: origin/main with no origin/HEAD, and origin/master, are still the default tip (#684)', async () => {
+  const worker = { YOKOTEN_ROLE: 'worker' };
+  const bring = async (ref: string, push: string[]) => {
+    const sandbox = mergeSandbox();
+    sandbox.write('AGENTS.md', 'new rules\n');
+    sandbox.git('commit', '-qam', 'lead');
+    const origin = join(dirname(sandbox.repo), 'origin.git');
+    assert.equal(sandbox.git('init', '--bare', '-q', origin).status, 0);
+    assert.equal(sandbox.git('remote', 'add', 'origin', origin).status, 0);
+    assert.equal(sandbox.git('push', '-q', 'origin', ...push).status, 0);
+    sandbox.git('checkout', '-q', 'work');
+    assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', ref).status, 0);
+    const result = await sandbox.call(['check', '--staged'], { extra: worker });
+    assert.deepEqual([result.status, result.stderr], [0, ''], ref);
+  };
+  await bring('origin/main', ['main']);
+  await bring('origin/master', ['main:master']);
 });
 
 test('check --staged: in a merge, a merged-in file is still checked for privacy (#246)', async () => {
@@ -408,14 +463,15 @@ test('check --staged: a move is role-checked at its old path too (#259)', async 
 
 test('check --staged: in a merge, a move is the worker\'s only if the merge made it (#259)', async () => {
   const worker = { YOKOTEN_ROLE: 'worker' };
-  // Main moved AGENTS.md; a worker brings main in.
+  // origin/main moved AGENTS.md; a worker brings that branch in (#684).
   let sandbox = mergeSandbox();
   assert.equal(sandbox.git('mv', 'AGENTS.md', 'RULES.md').status, 0);
   sandbox.git('commit', '-qm', 'lead move');
+  publishOriginMain(sandbox);
   sandbox.git('checkout', '-q', 'work');
-  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+  assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'origin/main').status, 0);
   let result = await sandbox.call(['check', '--staged'], { extra: worker });
-  assert.deepEqual([result.status, result.stderr], [0, ''], 'main moved AGENTS.md');
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'origin/main moved AGENTS.md');
 
   // The worker moves AGENTS.md away during a merge of main.
   sandbox = mergeSandbox();
@@ -433,7 +489,7 @@ test('check --staged: in a merge, a move is the worker\'s only if the merge made
 test('check --staged: in a merge, removing a lead-only file only the other side has is the worker\'s (#259)', async () => {
   const worker = { YOKOTEN_ROLE: 'worker' };
   // Main moves .github/a.yml to .github/b.yml; a worker merges main in, then runs `then`.
-  const merged = (then: string[][], extra: Record<string, string>) => {
+  const merged = (then: string[][], extra: Record<string, string>, fromOrigin = false) => {
     const sandbox = makeSandbox();
     sandbox.write('.github/a.yml', 'on: push\n');
     sandbox.write('src/a.ts', 'a\n');
@@ -445,8 +501,9 @@ test('check --staged: in a merge, removing a lead-only file only the other side 
     sandbox.git('checkout', '-q', 'main');
     assert.equal(sandbox.git('mv', '.github/a.yml', '.github/b.yml').status, 0);
     sandbox.git('commit', '-qm', 'lead move');
+    if (fromOrigin) publishOriginMain(sandbox);
     sandbox.git('checkout', '-q', 'work');
-    assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', 'main').status, 0);
+    assert.equal(sandbox.git('merge', '--no-commit', '--no-ff', fromOrigin ? 'origin/main' : 'main').status, 0);
     for (const args of then) assert.equal(sandbox.git(...args).status, 0, args.join(' '));
     return sandbox.call(['check', '--staged'], { extra });
   };
@@ -460,8 +517,8 @@ test('check --staged: in a merge, removing a lead-only file only the other side 
   assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead moves it');
   result = await merged([['rm', '-qf', '.github/b.yml']], {});
   assert.deepEqual([result.status, result.stderr], [0, ''], 'the lead removes it');
-  result = await merged([], worker);
-  assert.deepEqual([result.status, result.stderr], [0, ''], 'a clean merge of the move');
+  result = await merged([], worker, true);
+  assert.deepEqual([result.status, result.stderr], [0, ''], 'a clean merge of origin/main');
 });
 
 test('check --staged: a staged entry git can\'t read fails, not passes as empty (#244)', async () => {
