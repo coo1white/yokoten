@@ -18,7 +18,7 @@ import { fakeMachine, GB, NOW } from '../../repo/helpers.ts';
 
 const marks = (s: ServerSettings | Unread) => Object.fromEntries(serverChecks(s).map((c) => [c.id, c.mark]));
 
-const SERVER_KEYS = ['protection', 'merge-settings', 'security-settings'];
+const SERVER_KEYS = ['protection', 'merge-settings', 'security-settings', 'tag-bypass', 'release-reviewer', 'release-tag-rule'];
 
 const serverSteps = () => ROAD.filter((s) => SERVER_KEYS.includes(s.key));
 
@@ -41,7 +41,7 @@ test('server: a repo with every setting on is ok, and doctor only reads (#7)', (
   const s = readServer(fake.gh, REPO);
   assert.deepEqual(marks(s), {
     'main-rules': 'ok', 'required-checks': 'ok', 'code-owner-review': 'ok', 'squash-only': 'ok',
-    'delete-branch': 'ok', 'tag-rules': 'ok', 'security-switches': 'ok', 'forgotten-branches': 'note',
+    'delete-branch': 'ok', 'tag-rules': 'ok', 'tag-bypass': 'ok', 'release-reviewer': 'ok', 'release-tag-rule': 'ok', 'security-switches': 'ok', 'forgotten-branches': 'note',
   });
   const note = serverChecks(s).find((c) => c.id === 'forgotten-branches');
   assert.match(note?.finding.what ?? '', /^1 branch\(es\) with no open pull request \(old\/b\)$/, 'a branch of a fork with the same name does not count');
@@ -61,7 +61,7 @@ test('server: each setting off is MISSING, with what and the fix (#7)', () => {
     ...GOOD,
     [`repos/${REPO}`]: { default_branch: 'trunk', allow_squash_merge: true, allow_merge_commit: true, allow_rebase_merge: false, delete_branch_on_merge: false, security_and_analysis: { secret_scanning: { status: 'disabled' } } },
     [`repos/${REPO}/rules/branches/trunk`]: [{ type: 'pull_request', parameters: {} }],
-    [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] },
+    [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
     [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false },
     [`repos/${REPO}/vulnerability-alerts`]: undefined,
     [`repos/${REPO}/branches?per_page=100`]: 'trunk\nfeat/a\n',
@@ -81,7 +81,7 @@ test("server: gh missing, signed out or refused is \"can't check\" with the fix,
   // A free private repo, read by someone who is not an admin: rulesets refused, settings hidden.
   const refused = { ...GOOD, [`repos/${REPO}`]: { default_branch: 'main' }, [`repos/${REPO}/rules/branches/main`]: said(403), [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: said(403), [`repos/${REPO}/private-vulnerability-reporting`]: said(403), [`repos/${REPO}/vulnerability-alerts`]: undefined };
   const checks = serverChecks(readServer(serverGh(refused).gh, REPO));
-  for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules', 'security-switches']) {
+  for (const id of ['main-rules', 'required-checks', 'code-owner-review', 'squash-only', 'delete-branch', 'tag-rules', 'tag-bypass', 'security-switches']) {
     assert.equal(checks.find((c) => c.id === id)?.mark, "can't check", id);
   }
   assert.match(checks.find((c) => c.id === 'tag-rules')?.finding.fix ?? '', /GitHub Pro/);
@@ -90,16 +90,40 @@ test("server: gh missing, signed out or refused is \"can't check\" with the fix,
 
 test('road: the server steps are stage 5, and pass a repo with every setting on (#7)', () => {
   assert.deepEqual(serverSteps().map((s) => [s.key, s.stage]), SERVER_KEYS.map((key) => [key, 5]));
-  assert.deepEqual(serverFound(readServer(serverGh(GOOD).gh, REPO)), { protection: true, 'merge-settings': true, 'security-settings': true });
+  assert.deepEqual(serverFound(readServer(serverGh(GOOD).gh, REPO)), { protection: true, 'merge-settings': true, 'security-settings': true, 'tag-bypass': true, 'release-reviewer': true, 'release-tag-rule': true });
 });
 
 test('road: each server step catches its setting off, and says what and the fix (#7)', () => {
   const each: [string, Record<string, unknown>, RegExp][] = [
     ['protection', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { allowed_merge_methods: ['squash'] } }] }, /no rule for no force push, no deletion; no CI check must pass before a merge; code owner review is not required/],
-    ['protection', { [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }] } }, /^no active tag ruleset on v\*/],
+    ['protection', {
+      // Ruleset 7 blocks deletion only, and 8 blocks creation with a bypass: tag-rules fails, tag-bypass passes.
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'deletion' }], bypass_actors: [] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+    }, /^no active tag ruleset on v\*/],
     ['merge-settings', { [`repos/${REPO}`]: { ...(GOOD[`repos/${REPO}`] as object), delete_branch_on_merge: false } }, /^merged branches are not deleted$/],
     ['merge-settings', { [`repos/${REPO}/rules/branches/main`]: [{ type: 'pull_request', parameters: { require_code_owner_review: true, allowed_merge_methods: ['squash', 'rebase'] } }, ...(GOOD[`repos/${REPO}/rules/branches/main`] as object[]).slice(1)] }, /not only by squash/],
     ['security-settings', { [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false } }, /^private vulnerability reporting is off$/],
+    ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [] } }, /bypass list does not name Repository admin/],
+    ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] } }, /bypass list names the bot/],
+    // Two v* rulesets both block tag creation, and a push meets both: a bypass on one is not enough (#850).
+    ['tag-bypass', {
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }], bypass_actors: [] },
+    }, /bypass list does not name Repository admin/],
+    // A bypass on another v* ruleset, one that does not block tag creation, is no way to push a tag (#537).
+    ['tag-bypass', {
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'required_signatures' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+    }, /bypass list does not name Repository admin/],
+    ['release-reviewer', { [`repos/${REPO}/environments/release`]: { protection_rules: [] } }, /^the release environment has no required reviewer/],
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [] } }, /^the release environment has no tag rule for v\*$/],
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'branch' }] } }, /v\* rule is a branch rule/],
+    // A tag rule and a branch rule named v* together let a branch deploy (#537).
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'tag' }, { id: 2, name: 'v*', type: 'branch' }] } }, /also accepts a branch named v\*/],
   ];
   for (const [key, change, what] of each) {
     const server = readServer(serverGh({ ...GOOD, ...change }).gh, REPO);
@@ -112,6 +136,58 @@ test('road: each server step catches its setting off, and says what and the fix 
   }
 });
 
+test('server: a bypass counts only where a push meets it, and both tag-bypass faults are named (#850)', () => {
+  const list = `repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`;
+  const vTags = { conditions: { ref_name: { include: ['refs/tags/v*'] } } };
+  const admin = [{ actor_id: 5, actor_type: 'RepositoryRole' }];
+  // A bot on a v* ruleset that does not block creation cannot push a tag, so it is no fault (#850).
+  const outside = readServer(serverGh({
+    ...GOOD,
+    [list]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+    [`repos/${REPO}/rulesets/7`]: { ...vTags, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: admin },
+    [`repos/${REPO}/rulesets/8`]: { ...vTags, rules: [{ type: 'update' }], bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] },
+  }).gh, REPO);
+  assert.equal(marks(outside)['tag-bypass'], 'ok');
+  // When the owner cannot push and a bot can, the line names both, not only the bot.
+  const both = readServer(serverGh({
+    ...GOOD,
+    [`repos/${REPO}/rulesets/7`]: { ...vTags, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] },
+  }).gh, REPO);
+  const f = stepFinding(ROAD.find((s) => s.key === 'tag-bypass')!, '.', {}, { server: both });
+  assert.match(f.what, /does not name Repository admin.*; .*names the bot/);
+});
+
+test('doctor: the tag bypass and the release environment each show one line with the place to click (#537)', () => {
+  const root = makeTempDir('yokoten-release-');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${REPO}.git`], { cwd: root });
+  const run = (routes: Record<string, unknown>) => doctor(root, { env: { HOME: root, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: serverGh(routes).gh });
+  const lineOf = (routes: Record<string, unknown>, key: string) => run(routes).lines.find((line) => new RegExp(`^ {4}(done|to do) +${key}\\b`).test(line)) ?? '';
+  // All set: no line for these asks the owner for anything.
+  for (const key of ['tag-bypass', 'release-reviewer', 'release-tag-rule']) assert.match(lineOf(GOOD, key), /^ {4}done /, key);
+  // Positive control: each known-bad setting is caught, with its own line and GitHub's menu.
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [] } }, /Repository admin/],
+    ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [{ actor_id: 9, actor_type: 'Integration' }] } }, /names the bot/],
+    // A bypass on another v* ruleset, one that does not block tag creation, leaves the owner unable to push a tag (#537).
+    ['tag-bypass', {
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'required_signatures' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+    }, /Repository admin/],
+    ['release-reviewer', { [`repos/${REPO}/environments/release`]: { protection_rules: [] } }, /no required reviewer/],
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'branch' }] } }, /branch rule/],
+    // A tag rule with a branch rule named v* lets a branch deploy (#537).
+    ['release-tag-rule', { [`repos/${REPO}/environments/release/deployment-branch-policies`]: { branch_policies: [{ id: 1, name: 'v*', type: 'tag' }, { id: 2, name: 'v*', type: 'branch' }] } }, /also accepts a branch named v\*/],
+  ];
+  for (const [key, change, what] of cases) {
+    const line = lineOf({ ...GOOD, ...change }, key);
+    assert.match(line, new RegExp(`^ {4}to do +${key}: `), key);
+    assert.match(line, what, key);
+    assert.match(line, /; in Settings, (Rules|Environments), /, `${key}: says where to click`);
+  }
+});
+
 test("road: with no gh, no network, a non-GitHub remote or a session, the server steps are can't check, never done (#7)", () => {
   const unreads = [
     undefined, // a session
@@ -120,7 +196,7 @@ test("road: with no gh, no network, a non-GitHub remote or a session, the server
     readServer(() => { throw new Error('getaddrinfo ENOTFOUND api.github.com'); }, REPO),
     { unread: 'the origin remote is not on a host yokoten knows (GitHub for now)', fix: 'add a GitHub origin remote, or check these settings by hand' },
   ];
-  for (const server of unreads) assert.deepEqual(serverFound(server), { protection: null, 'merge-settings': null, 'security-settings': null });
+  for (const server of unreads) assert.deepEqual(serverFound(server), { protection: null, 'merge-settings': null, 'security-settings': null, 'tag-bypass': null, 'release-reviewer': null, 'release-tag-rule': null });
   const protection = ROAD.find((s) => s.key === 'protection')!;
   assert.equal(protection.unchecked?.(undefined), 'a session never calls the network; run `yokoten doctor`');
   assert.match(protection.unchecked?.(unreads[1]) ?? '', /^gh is not installed; get it from https:\/\/cli\.github\.com/);
@@ -195,7 +271,7 @@ test("doctor: a slow server read stops in time, and each step says it can't be c
 });
 
 // The steps that only the code host can judge (#504): on a host with no adapter, each says what it asks.
-const FORGE_STEPS = ['tests', 'ci', 'test-budget', 'labels', 'milestone', 'titles', 'codeowners', 'bot', 'review', 'protection', 'merge-settings', 'security-settings'];
+const FORGE_STEPS = ['tests', 'ci', 'test-budget', 'labels', 'milestone', 'titles', 'codeowners', 'bot', 'review', 'protection', 'merge-settings', 'security-settings', 'tag-bypass', 'release-reviewer', 'release-tag-rule'];
 // What only GitHub has: its menus, its CLI, init's GitHub flag, the GitHub App. A standard's name ("GitHub community profile") and yokoten's own docs are not instructions.
 const GITHUB_ONLY = /github\.com(?!\/yokoten-labs\/yokoten\/)|\bgh\b|--github|in Settings, |GitHub App|Rulesets|Dependabot alerts/;
 

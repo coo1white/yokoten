@@ -19,7 +19,9 @@ const HELP = [
   '',
   ...commandList(),
   '',
-  'Start: `yokoten install` once on this machine, then `yokoten init` in your project.',
+  "Start: run `yokoten` with no command in your project. It installs what is missing.",
+  'It adds the rules to the project and shows the next step.',
+  'To run each step yourself, use `yokoten install`, then `yokoten init`.',
   'Run `yokoten <command> --help` for its options and an example.',
   '--json on check, doctor, hook, explain and adopt: data on stdout,',
   'for an agent or a script.',
@@ -94,6 +96,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/setup.ts').then((m) => m.runUpdate(invocation));
     case 'bot':
       return import('../src/commands/merge/bot.ts').then((m) => m.runBot(invocation));
+    case 'pr':
+      return import('../src/commands/check.ts').then((m) => m.runPr(invocation));
     case 'train':
       return import('../src/commands/merge/train.ts').then((m) => m.runTrain(invocation));
     case 'board':
@@ -123,6 +127,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return 0;
     }
     case undefined:
+      // No command in a project is not an error: it is the start (#548).
+      return import('../src/commands/setup.ts').then((m) => m.runStart(invocation));
     case '--help':
     case '-h':
       break;
@@ -133,13 +139,17 @@ function dispatch(invocation: Invocation): number | Promise<number> {
   return 0;
 }
 
+/** Where an error line starts: the command, or `yokoten` alone when there is none (#548). */
+export const errorLabel = (command: string | undefined): string => `yokoten${command ? ` ${command}` : ''}`;
+
 /** Run one command line, and give its exit code. Exit 1, not 2, on an error: a broken guard should be seen, not block every tool call. */
 export function main(invocation: Invocation): Promise<number> {
   return Promise.resolve(invocation)
     .then(dispatch)
     .catch((err: Error) => {
       printJsonError(invocation, String(err?.message ?? err).split('\n')[0]);
-      say(invocation, `yokoten ${invocation.command}: ${err.message}\n`, invocation.stderr);
+      // No command (the one-command start, #548) has no name to print: never "yokoten undefined".
+      say(invocation, `${errorLabel(invocation.command)}: ${err.message}\n`, invocation.stderr);
       return 1;
     });
 }
