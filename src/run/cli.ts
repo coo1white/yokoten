@@ -370,6 +370,18 @@ export const COMMANDS: Command[] = [
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },
   {
+    name: 'anchor',
+    summary: "list a worker's checkpoints: commits whose checks passed",
+    usage: '[--json]',
+    text: [
+      'Lists the anchors recorded in this checkout, newest first. A worker records one when',
+      'its checks pass and its tree is clean. An anchor is a commit, so going back is a new',
+      'branch from it: `git switch -c try-2 <commit>`. Nothing is reset or deleted.',
+    ],
+    options: [{ name: '--json', text: 'the anchors as JSON on stdout' }],
+    example: 'yokoten anchor',
+  },
+  {
     name: 'stops',
     summary: 'the log of the guard stops on this computer, or turn it off and on',
     usage: '[off | on]',

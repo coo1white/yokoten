@@ -136,6 +136,12 @@ export const RULES = {
     check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
     docs: guide('what-it-doesnt-do'),
   },
+  'repeat-stop': {
+    rule: 'a session stops after the same step fails three times (#711)',
+    why: 'a loop does not find a way through, and every extra try costs the team time and money',
+    check: 'the tool-call guard counts, per session, the same refusal for the same command shape and the same failing command; at the third repeat it stops with a stop message; a call that succeeds resets the count. The worker stop check stops a task after its time limit',
+    docs: guide('the-core-rules'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
