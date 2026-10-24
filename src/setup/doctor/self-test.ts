@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
 import { checkCommand, checkEdit } from '../../rules/guards.ts';
 import { DEFAULTS } from '../../rules/config.ts';
-import { checkBuildOutput, checkLayout } from '../../rules/layout.ts';
+import { checkBuildOutput, checkCodeOwners, checkLayout } from '../../rules/layout.ts';
 import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy.ts';
 import { SECRET_CONTROL } from '../../rules/privacy/secrets.ts';
 import { judge } from '../../run/hook.ts';
@@ -36,6 +36,7 @@ export function selfTest(): string[] {
   if (scanText(SECRET_CONTROL, { file: 'control' }).length < 2) failed.push('secret check');
   if (!notUtc('A <a@example.com> 1760745600 +0700') || notUtc('A <a@example.com> 1760745600 +0000')) failed.push('time zone check');
   if (checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS).length !== 1) failed.push('layout check');
+  if (checkCodeOwners(['src/a.ts'], 'src/gone.ts @lead\n').length !== 1) failed.push('CODEOWNERS check');
   if (checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS).length !== 2) failed.push('build output check');
   if (!isUnsavedControlCaught()) failed.push('unsaved work check');
   failed.push(...roadControl());
