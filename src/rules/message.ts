@@ -256,6 +256,12 @@ export const RULES = {
     check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" (paths, or globs with `*` and `**`) may grow',
     docs: guide('the-core-rules'),
   },
+  'structural-change': {
+    rule: 'a change that moves, renames, splits or deletes files goes in alone (#910)',
+    why: 'two changes that restructure the same files collide, and each merge makes the next conflict worse',
+    check: 'the commit check reads the paths the staged diff moves away (`git diff --cached --name-status -M`) and the conflict map at `.git/yokoten/conflicts.json`; a path an open change also moves stops the commit and names that change. A missing or stale map allows',
+    docs: guide('the-core-rules'),
+  },
   'stale-codeowners': {
     rule: 'every CODEOWNERS line names a path that exists',
     why: 'a moved or renamed file leaves its line behind, so the new path has no owner review',

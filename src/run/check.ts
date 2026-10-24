@@ -215,6 +215,105 @@ function stagedFiles(root: string, env: Env): Staged[] {
   return files;
 }
 
+// ---- The move window (#910) ----
+//
+// A change that moves, renames, splits or deletes files goes in alone. The commit check
+// reads the paths this commit moves away and the conflict map (#909), and refuses a path an
+// open change also moves, naming that change. A missing or stale map allows: the commit is
+// never blocked by a map nobody rebuilt. `run/` may not import `commands/`, where the map's
+// shapes and MAP_FILE live, so this copy reads only the fields it needs.
+
+/** The map is stale after this long; `conflicts/types.ts` holds the shared value (#910). */
+const MAP_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** One open change, as the refusal needs it: the branch it is on, its label, and what it moves. */
+interface MapChange {
+  branch: string;
+  label: string;
+  moves: string[];
+}
+
+/** The paths the next commit moves away: a rename's old path, or a deleted path (#910). */
+function stagedMoves(root: string, env: Env): string[] {
+  // -z --name-status gives "R100", the old path, the new path; a delete gives "D", the path.
+  const out = list(git(root, env, ['diff', '--cached', '--name-status', '-M', '--diff-filter=RD', '-z']));
+  const moves: string[] = [];
+  for (let i = 0; i < out.length; ) {
+    const isRename = out[i]?.startsWith('R') === true;
+    const path = out[i + 1];
+    if (path !== undefined) moves.push(path);
+    i += isRename ? 3 : 2;
+  }
+  return moves;
+}
+
+/**
+ * The map's open changes, or none when the map is missing, stale, of a version this copy
+ * does not know, or broken. None allows the commit (#910).
+ */
+function mapChanges(root: string, env: Env, now = Date.now()): MapChange[] {
+  let mapPath: string;
+  try {
+    mapPath = resolve(root, git(root, env, ['rev-parse', '--git-common-dir']).trim(), 'yokoten/conflicts.json');
+  } catch {
+    return [];
+  }
+  let map: { version?: unknown; builtAt?: unknown; changes?: unknown };
+  try {
+    map = JSON.parse(readFileSync(mapPath, 'utf8'));
+  } catch {
+    return [];
+  }
+  if (map === null || typeof map !== 'object' || map.version !== 1 || typeof map.builtAt !== 'string') return [];
+  const builtAt = Date.parse(map.builtAt);
+  if (!Number.isFinite(builtAt) || now - builtAt > MAP_MAX_AGE_MS) return [];
+  if (!Array.isArray(map.changes)) return [];
+  const changes: MapChange[] = [];
+  for (const change of map.changes as Array<Record<string, unknown>>) {
+    if (typeof change?.branch !== 'string' || typeof change?.label !== 'string' || !Array.isArray(change?.moves)) continue;
+    changes.push({
+      branch: change.branch,
+      label: change.label,
+      moves: change.moves.filter((path): path is string => typeof path === 'string'),
+    });
+  }
+  return changes;
+}
+
+/**
+ * True when a merge is being committed: MERGE_HEAD is there, also for a merge git would
+ * otherwise fast-forward. That commit brings another branch's moves, not its own (#910).
+ */
+function isMerging(root: string, env: Env): boolean {
+  try {
+    return existsSync(resolve(root, git(root, env, ['rev-parse', '--git-path', 'MERGE_HEAD']).trim()));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The refusal for a commit that moves a path an open change also moves (#910). One finding
+ * per path, so the unstage line can name it; the first finding names the change to wait for.
+ */
+function moveWindowProblems(root: string, env: Env): Finding[] {
+  const moves = stagedMoves(root, env);
+  if (!moves.length) return [];
+  // A merge brings another branch's moves, and the commit that made them was checked on its
+  // own branch. A map built before that change merged can still list it, so a merge allows.
+  if (isMerging(root, env)) return [];
+  const branch = git(root, env, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+  const problems: Finding[] = [];
+  for (const change of mapChanges(root, env)) {
+    if (change.branch === branch) continue;
+    for (const path of [...new Set(change.moves)]) {
+      if (!moves.includes(path)) continue;
+      problems.push(finding('structural-change', `${change.label} moves ${path} too`, `wait for ${change.label} to go in, then move ${path}`, { file: path }));
+    }
+  }
+  return problems;
+}
+
 /** A path as a shell word: as it is when it has only plain characters, else in single quotes. */
 const shellWord = (path: string): string => (/^[\w./@+=,-]+$/.test(path) ? path : `'${path.replaceAll("'", "'\\''")}'`);
 
@@ -431,6 +530,8 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     // git sets GIT_INDEX_FILE for the commit hooks, so an empty commit or an amend is
     // still checked. Run by hand with nothing staged, there is no commit to check (#208).
     const isCommitting = files.length > 0 || env.GIT_INDEX_FILE !== undefined;
+    // A change that moves files goes in alone (#910).
+    if (isCommitting) problems.push(...moveWindowProblems(root, env));
     if (!isCommitting) notes.push(finding('time-zone', 'nothing is staged', 'stage a change with `git add`, then run it again', { why: 'with nothing staged there is no commit to check' }));
     // The commit about to be made: git var gives its author and committer, time included.
     if (isCommitting && config.privacy.utc && ['GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT'].some((v) => notUtc(git(root, env, ['var', v])))) {
