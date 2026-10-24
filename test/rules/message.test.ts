@@ -24,6 +24,7 @@ import {
 import {
   checkCommand,
   checkEdit,
+  checkSafeguardEdit,
   privateOutput,
 } from '../../src/rules/guards.ts';
 import {
@@ -153,6 +154,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const mainRepo = makeTempDir('yokoten-default-main-');
   execFileSync('git', ['init', '-q', '-b', 'main', mainRepo]);
   add(checkCommand('git branch -D main', { cwd: mainRepo, env: {} }));
+  // A repo without yokoten.json keeps its CI files and hooks (#815).
+  add(checkSafeguardEdit(join(mainRepo, '.github/workflows/ci.yml')));
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   add(checkCommand('git push', { cwd: process.cwd(), env }));
