@@ -1,6 +1,6 @@
 // One desk for every worker, whatever the vendor (#637). A desk is a folder (the worker's
 // own clone) and a fence around the agent that works in it. The fence is one contract,
-// the same for Claude Code, Codex (and DeepSeek through it), Grok and Muse:
+// the same for Claude Code, Codex (and DeepSeek through it), Grok, Muse and OpenCode:
 //
 // 1. The desk folder, `.git` included, and the desk's own state folder for the agent are
 //    writable. The lead's state folder (~/.claude, ~/.codex...) is never shown: the desk
@@ -33,6 +33,7 @@ import { DESK as CLAUDE_CODE } from '../runtimes/claude-code.ts';
 import { DESK as CODEX } from '../runtimes/codex.ts';
 import { DESK as GROK } from '../runtimes/grok.ts';
 import { DESK as MUSE } from '../runtimes/muse.ts';
+import { DESK as OPENCODE } from '../runtimes/small/opencode.ts';
 import { buildAgentEnv } from './agent-env.ts';
 import { DESK_FILE, modelOf, prepareDeskTeam, vendorOf } from './team/team.ts';
 
@@ -42,6 +43,11 @@ export interface RuntimeDesk {
   leadState: (env: Env) => string[];
   /** The login files to copy from the lead's state into the desk's: `to` is relative to the desk's state folder. */
   login: (env: Env) => { from: string; to: string }[];
+  /**
+   * A login that lives in a database: copy it into the desk's `state` folder, keeping only
+   * the login rows. OpenCode 2 keeps its login in `opencode.db`, next to its sessions.
+   */
+  loginCopy?: (env: Env, state: string) => void;
   /** Files to write in a new desk state folder, relative to it, when they are missing. */
   starter?: Readonly<Record<string, string>>;
   /** The names that point the agent at the desk's state folder. */
@@ -50,16 +56,23 @@ export interface RuntimeDesk {
   programParts?: (env: Env) => string[];
   /** The API hosts the agent program may reach, on port 443. */
   hosts: readonly string[];
+  /**
+   * Whether the agent starts a private server on a loopback port and talks to it
+   * (OpenCode 2's `--standalone`). A fence that keeps loopback closed can open it only
+   * when the lead says so (`--allow-loopback`): see `deskProblem` in start.ts.
+   */
+  loopback?: boolean;
   /** The model and provider the agent's own config names (#748), or null when it names none. */
   identity?: (env: Env) => { model: string; provider: string } | null;
 }
 
-/** The runtimes a desk can start, by the name `--agent` takes elsewhere. DeepSeek runs through Codex. */
+/** The runtimes a desk can start, by the name `--agent` takes elsewhere. DeepSeek runs through Codex or OpenCode. */
 export const DESK_RUNTIMES: Readonly<Record<string, RuntimeDesk>> = {
   'claude-code': CLAUDE_CODE,
   codex: CODEX,
   grok: GROK,
   muse: MUSE,
+  opencode: OPENCODE,
 };
 
 /** The contract for one desk, as plain data. Every path is absolute. */
@@ -76,6 +89,13 @@ export interface DeskPlan {
   locked: string[];
   /** The hosts the proxy lets the agent reach. */
   hosts: string[];
+  /** Whether the sandbox must let the agent listen on, and reach, a loopback port. */
+  loopback?: boolean;
+  /**
+   * Whether the lead accepted opening loopback for this desk. A fence with its own network
+   * (Linux, WSL2) needs no such choice; macOS does, and says so before it starts.
+   */
+  allowLoopback?: boolean;
   /** The agent's environment. The backend adds the proxy names. */
   env: Record<string, string>;
   /** The agent command and its words. */
@@ -92,6 +112,11 @@ export interface DeskRequest {
   extraReadable?: string[];
   /** Extra API hosts (`--host`), for example a DeepSeek host for Codex. */
   extraHosts?: string[];
+  /**
+   * Whether the lead accepted that a fence without its own network opens loopback for this
+   * desk (`--allow-loopback`), because the agent's private server picks the port itself.
+   */
+  allowLoopback?: boolean;
   /** yokoten runtime folders to show read-only: this copy and the installed one. */
   runtimes?: string[];
   /** The private-marks file, shown read-only only when the lead asks (`--marks`). Off by default until #665. */
@@ -245,6 +270,7 @@ export function prepareDeskState(runtime: RuntimeDesk, name: string, desk: strin
     const target = join(state, file);
     if (!existsSync(target)) writeFileSync(target, text, { flag: 'wx' });
   }
+  runtime.loginCopy?.(env, state);
   return state;
 }
 
@@ -254,7 +280,7 @@ export function prepareDeskState(runtime: RuntimeDesk, name: string, desk: strin
  */
 export function planDesk(request: DeskRequest): DeskPlan {
   const runtime = Object.hasOwn(DESK_RUNTIMES, request.runtime) ? DESK_RUNTIMES[request.runtime] : undefined;
-  if (!runtime) throw new Error(`a desk starts ${Object.keys(DESK_RUNTIMES).join(', ')}; not "${request.runtime}". DeepSeek runs through codex.`);
+  if (!runtime) throw new Error(`a desk starts ${Object.keys(DESK_RUNTIMES).join(', ')}; not "${request.runtime}". DeepSeek runs through codex or opencode.`);
   if (!request.command.length) throw new Error('no agent command after --');
   const { env } = request;
   const platform = request.platform ?? process.platform;
@@ -333,16 +359,26 @@ export function planDesk(request: DeskRequest): DeskPlan {
     hidden,
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
+    loopback: runtime.loopback,
+    allowLoopback: runtime.loopback ? request.allowLoopback === true : undefined,
     env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }
 
-/** The names that point an agent at the proxy. Upper and lower case: programs read either. */
-export function proxyEnv(url: string): Record<string, string> {
+/**
+ * The names that point an agent at the proxy. Upper and lower case: programs read either.
+ * `loopback` adds the loopback names to `NO_PROXY`, for an agent whose own server listens
+ * on a loopback port (OpenCode's private server). Other agents keep it empty.
+ */
+export function proxyEnv(url: string, loopback = false): Record<string, string> {
   const names = ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY'];
   // NODE_USE_ENV_PROXY: Node's own fetch reads the names above only with it (Node 22.21 and 24).
-  return { ...Object.fromEntries(names.flatMap((name) => [[name, url], [name.toLowerCase(), url]])), NODE_USE_ENV_PROXY: '1', NO_PROXY: '', no_proxy: '' };
+  // NO_PROXY: a program that talks to itself on loopback (OpenCode 2's `--standalone`
+  // server) must not send that call through the proxy. A wildcard such as `127.*` is not
+  // understood; the names are listed as they are. Every other desk keeps it empty.
+  const noProxy = loopback ? '127.0.0.1,localhost,::1' : '';
+  return { ...Object.fromEntries(names.flatMap((name) => [[name, url], [name.toLowerCase(), url]])), NODE_USE_ENV_PROXY: '1', NO_PROXY: noProxy, no_proxy: noProxy };
 }
 
 /** A command that starts the agent inside the fence. */
@@ -358,6 +394,12 @@ export interface DeskBackend {
   name: string;
   /** Null when the backend can run here; else the reason, in one line. */
   problem: (env: Env) => string | null;
+  /**
+   * Whether the fence gives the desk its own network (bwrap's `--unshare-all`), so a
+   * loopback port inside reaches nothing on this machine. False when the sandbox shares
+   * this machine's network, as Seatbelt does.
+   */
+  ownNetwork: boolean;
   /** Where the proxy listens outside: a socket path in `scratch`, or a port (0 for any). */
   proxyAddress: (scratch: string) => string | number;
   /** The command that starts `plan` inside the fence, with the proxy at `address` and a private scratch folder. */

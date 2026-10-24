@@ -20,6 +20,18 @@ export function chooseBackend(platform: NodeJS.Platform, env: Env): DeskBackend 
 }
 
 /**
+ * The plain reason a plan cannot start on `backend`, or null when it can. A fence that
+ * shares this machine's network (Seatbelt) cannot open one loopback port for an agent whose
+ * private server picks its own: it would open every loopback port. Nothing is started until
+ * the lead accepts that with `--allow-loopback`. A fence with its own network (bwrap) has
+ * nothing to ask: its loopback reaches only the desk.
+ */
+export function deskProblem(plan: DeskPlan, backend: DeskBackend): string | null {
+  if (!plan.loopback || plan.allowLoopback || backend.ownNetwork) return null;
+  return `${backend.name} cannot fence one loopback port, and this agent's private server picks the port itself, so the desk would open every loopback port: the agent could reach a local service, and a local process could reach a port it binds. Nothing was started. Add --allow-loopback if you accept that, or run the desk on Linux or WSL2, where its network is its own.`;
+}
+
+/**
  * The exit code and the lines for a fenced program that a signal ended: 128 plus the
  * signal's number, as a shell gives. When the program may have said nothing on stderr (`quiet`),
  * the system sandbox may have stopped it, and on macOS its log says why.
@@ -53,6 +65,8 @@ export interface DeskResult {
  * A signal that ends the desk command is passed on to the agent first.
  */
 export async function startDesk(plan: DeskPlan, backend: DeskBackend, { stdio, onEvent, platform = process.platform }: DeskStreams): Promise<DeskResult> {
+  const problem = deskProblem(plan, backend);
+  if (problem) throw new Error(problem);
   // The real path: on macOS the temp folder is a link, and Seatbelt matches real paths.
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'yokoten-desk-')));
   mkdirSync(join(scratch, 'tmp'));

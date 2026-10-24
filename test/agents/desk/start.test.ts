@@ -13,10 +13,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import type { DeskPlan } from '../../../src/agents/desk/desk.ts';
 import { planDesk } from '../../../src/agents/desk/desk.ts';
+import { BWRAP } from '../../../src/agents/desk/bwrap.ts';
 import { appendMessage } from '../../../src/agents/desk/team/outbox.ts';
 import { LEAD, prepareDeskTeam } from '../../../src/agents/desk/team/team.ts';
-import { chooseBackend, signalEnd, startDesk } from '../../../src/agents/desk/start.ts';
+import { SEATBELT } from '../../../src/agents/desk/seatbelt.ts';
+import { chooseBackend, deskProblem, signalEnd, startDesk } from '../../../src/agents/desk/start.ts';
 import { markWorktree } from '../../../src/commands/hook.ts';
 import { CLI, makeTempDir } from '../../repo/helpers.ts';
 
@@ -27,8 +30,24 @@ test('chooseBackend: native Windows is experimental and sent to WSL2, an unknown
   assert.match(chooseBackend('aix', {}) as string, /not on aix/);
 });
 
-test('signalEnd: the real signal number, the signal named, and the sandbox hint when quiet', () => {
-  const abort = signalEnd('SIGABRT', 'darwin', true);
+/** A plan with only what a check needs: paths and words that never touch this machine. */
+const minimalPlan = (patch: Partial<DeskPlan>): DeskPlan => ({ desk: '/work/projects/desk', state: [], readable: [], hidden: [], locked: [], hosts: [], env: {}, command: ['agent'], ...patch });
+
+test('deskProblem: a fence that shares this machine\'s loopback asks the lead before it opens it (#770)', () => {
+  const refused = deskProblem(minimalPlan({ loopback: true }), SEATBELT) ?? '';
+  assert.match(refused, /open every loopback port/);
+  assert.match(refused, /Nothing was started/);
+  assert.match(refused, /--allow-loopback/, 'the way past is named');
+  assert.equal(deskProblem(minimalPlan({ loopback: true, allowLoopback: true }), SEATBELT), null);
+  assert.equal(deskProblem(minimalPlan({}), SEATBELT), null, 'no agent of this desk needs a port of its own');
+  assert.equal(deskProblem(minimalPlan({ loopback: true }), BWRAP), null, 'bwrap gives the desk its own network, so nothing is loosened');
+});
+
+test('startDesk: a plan the backend cannot hold is refused before anything starts (#770)', async () => {
+  await assert.rejects(startDesk(minimalPlan({ loopback: true }), SEATBELT, { stdio: 'pipe' }), /--allow-loopback/);
+});
+
+test('signalEnd: the real signal number, the signal named, and the sandbox hint when quiet', () => {  const abort = signalEnd('SIGABRT', 'darwin', true);
   assert.equal(abort.code, 134);
   assert.match(abort.lines[0], /SIGABRT \(exit 134\)/);
   assert.match(abort.lines.join('\n'), /sandbox may have stopped it/);

@@ -891,7 +891,7 @@ export async function runDesk(invocation: Invocation): Promise<number> {
     return 1;
   };
   if (workerRole(invocation.env, [invocation.cwd]) !== null) return fail('only the lead starts a desk: this session is a worker.');
-  const [{ planDesk }, { chooseBackend, startDesk }, { paths }, team, { teamFolderFor, teamName }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/who.ts'), import('../agents/desk/team/team.ts')]);
+  const [{ planDesk }, { chooseBackend, deskProblem, startDesk }, { paths }, team, { teamFolderFor, teamName }] = await Promise.all([import('../agents/desk/desk.ts'), import('../agents/desk/start.ts'), import('../setup/install.ts'), import('../agents/desk/team/who.ts'), import('../agents/desk/team/team.ts')]);
   const backend = chooseBackend(process.platform, invocation.env);
   if (typeof backend === 'string') return fail(backend);
   const list = (name: string) => (options.values[name] ?? '').split(',').map((word) => word.trim()).filter(Boolean);
@@ -911,6 +911,7 @@ export async function runDesk(invocation: Invocation): Promise<number> {
       env: invocation.env,
       extraReadable: list('--read').map((path) => resolve(invocation.cwd, path)),
       extraHosts: list('--host'),
+      allowLoopback: options.flags.has('--allow-loopback'),
       runtimes: [installed.runtime],
       marks: options.flags.has('--marks') ? installed.marks : undefined,
       team: typeof main === 'string' && name !== null ? { folder: teamFolderFor(main), name } : undefined,
@@ -919,7 +920,9 @@ export async function runDesk(invocation: Invocation): Promise<number> {
   } catch (error) {
     return fail((error as Error).message);
   }
-  print(invocation, [`yokoten desk: ${runtime} in ${plan.desk} (${backend.name}); the agent may reach ${plan.hosts.join(', ')}.`], invocation.stderr);
+  const problem = deskProblem(plan, backend);
+  if (problem) return fail(problem);
+  print(invocation, [`yokoten desk: ${runtime} in ${plan.desk} (${backend.name}); the agent may reach ${plan.hosts.join(', ')}${plan.allowLoopback ? ', and every loopback port: you allowed that with --allow-loopback' : ''}.`], invocation.stderr);
   // The board shows the desk's agent (#685). A desk that can't be noted still starts.
   const unlisted = registerDesk(invocation.cwd, plan.desk);
   if (unlisted) print(invocation, [`yokoten desk: the board won't show this desk: ${unlisted}.`], invocation.stderr);

@@ -484,6 +484,8 @@ On a team, the team folder is read-only, and only that agent's outbox is writabl
 | `hidden` | When they exist: `/home`, `/root`, `/mnt`, `/media`, `/run`, plus home and the desk's parent. On `darwin`: `/Users`, `/Volumes`, plus home and the parent. |
 | `locked` | `.git/config`, `.git/hooks` and `.git/yokoten-worker` stay read-only. On a team, `.git/yokoten-desk.json` is locked too. |
 | `hosts` | API hosts only, through a proxy that runs outside. CONNECT only. Port `443`, unless the host entry names a port. At most `64` tunnels. A quiet tunnel closes after `10 minutes`. The proxy does not read the tunnel. |
+| `loopback` | Set when the agent starts a server on a port the server picks. Such a desk needs `--allow-loopback` on macOS. |
+| `allowLoopback` | The lead's yes to opening loopback for that desk. `--allow-loopback` sets it. |
 | `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. When the model is known, `YOKOTEN_MODEL` names it. `YOKOTEN_VENDOR` is set only when its vendor is not the runtime's own, so the agent knows what it really is. |
 | `command` | The command the lead passed. |
 
@@ -530,6 +532,15 @@ The backend sets `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY`.
 It sets the same three names in lower case.
 It sets `NODE_USE_ENV_PROXY`.
 `NO_PROXY` and `no_proxy` are set empty.
+A program that talks to itself on `loopback` does not use the proxy there.
+For that agent only, `NO_PROXY` and `no_proxy` name `127.0.0.1,localhost,::1`.
+A wildcard such as `127.*` is not understood.
+
+A desk whose agent starts a server on a port the server picks needs loopback.
+Linux and WSL2 give the desk its own network, so that loopback reaches nothing here.
+macOS shares this machine's loopback, so one port cannot be opened alone.
+There the desk starts nothing until the lead adds `--allow-loopback`.
+The flag opens every loopback port: the agent can reach a local service.
 
 Linux and WSL2 use `bwrap`.
 macOS uses `sandbox-exec`, and the profile denies by default.

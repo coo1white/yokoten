@@ -952,7 +952,7 @@ It puts three safe defaults in `.github/` too:
 | `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. A plain clone, such as a desk, is marked too: the mark goes in its own `.git` (#672). The lead marks a clone from its own checkout. The main checkout (the clone the lead runs in, or one with worktrees) and a submodule are never marked. A worker can't mark or unmark. See [Works with](#works-with) |
 | `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. `desk` starts an agent with it. See [What an agent's environment holds](#what-an-agents-environment-holds) |
 | `msg send <to> [<text>]`, `msg inbox`, `msg who`, `msg log` | Agents of every vendor message each other through files on this machine. Only the lead runs `log`. See [Messages between agents](#messages-between-agents) |
-| `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
+| `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] [--allow-loopback] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay; the stop log is removed. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. `gh pr edit` does the same for a new title or body, and removes the old tier label when the body sets a new tier. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <seconds>]` | Merges an approved, green queue in the order given, as the bot, and stops at the first pull request that needs a person. It records every base before the first merge, so a pull request stacked on a squash-merged branch merges from the base it truly shares with that branch. A conflict made only of import lines takes the union; a real conflict, a failing test, a failing `check` or a missing approval stops the train. Each merged tree is tested before the push, and CI must pass on the pushed merge; `--wait` sets how long to wait (default 1800 seconds). Only the lead runs it |
@@ -2016,6 +2016,7 @@ next start. Remove the state folder with the desk.
 | Codex, and DeepSeek through Codex | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`, `api.deepseek.com` | `codex exec --sandbox danger-full-access "<brief>"` |
 | Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<brief>"` |
 | Muse Code | `muse` | `XDG_CONFIG_HOME`, `XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<brief>"` |
+| OpenCode | `opencode` | `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` | `opencode.db` (the login rows only) | `opencode.ai`, `api.opencode.ai`, `models.opencode.ai` | `opencode run --standalone "<brief>"` |
 
 - **Claude Code** renews a login at `platform.claude.com`. A token from `claude setup-token`
   in `CLAUDE_CODE_OAUTH_TOKEN`, or an API key, needs no renewal and passes in as a login.
@@ -2024,12 +2025,21 @@ next start. Remove the state folder with the desk.
   desk is the fence instead. Your `config.toml` stays out: give a provider with `-c` on the
   command. A ChatGPT login also needs `--host chatgpt.com,auth.openai.com`.
 - **Grok**: turn off `--sandbox` inside the desk if it stops a commit or a test.
+- **OpenCode**: run it with `--standalone` inside the desk, so it starts a private server
+  instead of using the one on your machine. Its login lives in `opencode.db`, not in a
+  file called `auth.json`; the desk copies the login rows and leaves your sessions behind.
+  The server talks to itself on loopback, so the desk sets `NO_PROXY` for
+  `127.0.0.1,localhost,::1`. On macOS the desk stops first: add `--allow-loopback` to let
+  that server through.
+- **Loopback**: `--allow-loopback` is for macOS. It lets an agent whose own server picks a
+  port reach it. The desk then opens every loopback port: the agent can reach a local
+  service, and a local process can reach a port it binds. Linux and WSL2 need no choice.
 - **More hosts**: `--host <host>` lets the agent reach another API host on port 443.
   Separate several with commas.
 - **More files**: `--read <path>` shows another path, read-only. A path that would open
   your home, a hidden folder or your own agent state is refused.
 
-**The proxy.** Each of the four agents names `HTTPS_PROXY` in its program, and the desk sets
+**The proxy.** Each agent names `HTTPS_PROXY` in its program, and the desk sets
 `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` in both cases. It also sets
 `NODE_USE_ENV_PROXY=1`, so Node's own `fetch` uses the proxy too. The proxy takes `CONNECT`
 only, to a listed host, and never reads the traffic. It keeps at most 64 tunnels open, and

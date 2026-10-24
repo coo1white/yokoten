@@ -61,6 +61,7 @@ export function bwrapArgs(plan: DeskPlan, socket: string): string[] {
 
 export const BWRAP: DeskBackend = {
   name: 'bwrap',
+  ownNetwork: true,
   problem: (env: Env) => {
     const found = spawnSync('bwrap', ['--version'], { env, encoding: 'utf8' });
     if (found.error || found.status !== 0) return 'bwrap is not installed. Install bubblewrap (Debian and Ubuntu: `sudo apt install bubblewrap`), then run it again.';
@@ -72,6 +73,6 @@ export const BWRAP: DeskBackend = {
   fence: (plan: DeskPlan, address: string | number, _: string): FencedCommand => ({
     file: 'bwrap',
     args: [...bwrapArgs(plan, String(address)), process.execPath, ENTRY, 'desk', '--bridge', INSIDE_SOCKET, String(INSIDE_PORT), '--', ...plan.command],
-    env: { ...plan.env, ...proxyEnv(`http://127.0.0.1:${INSIDE_PORT}`) },
+    env: { ...plan.env, ...proxyEnv(`http://127.0.0.1:${INSIDE_PORT}`, plan.loopback === true) },
   }),
 };
