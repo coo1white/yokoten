@@ -48,10 +48,17 @@ Fix task: yes|no   (yes = make the existing test pass; never change the test)
 Your way: if you see a better way to reach the goal, say so or take it, and say why.
 Anchor: after each test you touch passes, commit. That commit is your anchor.
 Resume: if the worktree already has commits, read them first and continue from the last one.
+        To go back: `git switch -c try-2 <anchor>`. Nothing is reset or deleted.
 Stuck: if the task can't be done, or the brief looks wrong, stop and say so in the report.
-       That is a good report, not a failure. Stop after the same step fails 3 times.
+       That is a good report, not a failure.
+Stop: after the same step fails three times, or the guard refuses three times, stop.
+      Go back to your last anchor, or write your report. Stopping is good work.
 Report: what you changed, the commands you ran with their output, what you are unsure of.
 ```
+
+The runner or the board gives every worker a time limit, three hours unless
+yokoten.json sets `worker.timeLimitMinutes`. Before it ends, commit and write the
+report, so the lead always hears.
 
 Keep the hard lines few: only what the guard can't catch. A long list of warnings
 makes a worker anxious, not careful.

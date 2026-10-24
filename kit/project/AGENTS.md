@@ -20,14 +20,6 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 - **A worker** is a session the lead starts for one task, in its own worktree, with
   `YOKOTEN_ROLE=worker`. It changes code and tests, and reports back. It never pushes.
 
-## The safe exit
-
-- Stop after the same step fails three times in a row. Report where you stopped.
-  Stopping is good work, not failure.
-- Commit after each test you touch passes. That commit is the anchor you resume from.
-- A new session in a worktree reads `git log --oneline -5` and `git status` first.
-  Then continue from the last commit.
-
 ## Core rules
 
 | # | Rule | Why | Check |

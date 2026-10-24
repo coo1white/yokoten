@@ -21,18 +21,21 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
+import { releaseFix } from '../../../rules/guards.ts';
 import { docsLink } from '../../../rules/message.ts';
 import { homeIn, homeOf } from '../../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState } from '../../hooks-file.ts';
 import type { RuntimeEnv } from '../../desk/agent-env.ts';
+import { readToolCall } from '../claude-code.ts';
+import type { AgentAdapter } from '../runtime.ts';
 
 /**
  * A PreToolUse call, as an Action. The payload is Claude Code's, and its reader goes by the
  * fields, not the tool's name: `command` for bash, `file_path` for write and edit. A relative
  * `file_path` is resolved against `cwd` by the guard, as in Claude Code.
  */
-export { readToolCall } from '../claude-code.ts';
+export { readToolCall };
 
 /**
  * The tools the guard sees: the shell and the two edit tools. `pwsh` is dsh's shell on
@@ -133,11 +136,11 @@ export function profilesWithBridge(env: Env): { found: string[]; all: string[] }
 export const pluginAddCommands = (profile: string): string[] => PACKAGES.map((pkg) => `dsh plugin --profile ${profile} add @deepseek-ai/${pkg}@${VERSION}`);
 
 /**
- * What `init` prints after writing the files. On Windows it says the calls are not checked
- * yet, instead of how to turn on a guard that would let every call through.
+ * What `init` prints after writing the files, after the lines it wrote for them. On Windows
+ * it says the calls are not checked yet, instead of how to turn on a guard that would let
+ * every call through.
  */
-export function initLines(added: { guard: Added; patch: Added }, platform: string = process.platform): string[] {
-  const files = [`${added.guard} the DeepSeek Harness tool-call hook in ${HOOKS_FILE}`, `${added.patch} the DeepSeek Harness launch patch in ${PATCH_FILE}`];
+export function initLines(files: string[], platform: string = process.platform): string[] {
   if (platform === 'win32') return [...files, WINDOWS_GAP];
   return [
     ...files,
@@ -148,3 +151,19 @@ export function initLines(added: { guard: Added; patch: Added }, platform: strin
 
 /** The names this runtime's agent gets on top of the shared ones (#613). DeepSeek Harness takes a DeepSeek API key. */
 export const AGENT_ENV: RuntimeEnv = { login: ['DEEPSEEK_API_KEY'], config: ['DSH_HOME'] };
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'deepseek-harness',
+  label: 'DeepSeek Harness (`dsh`)',
+  projectHook: '`.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it',
+  userHook: null,
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: false, hasStopHook: false, needsTrust: false, failsOpen: true, passesRole: true },
+  readToolCall,
+  releaseFix: releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
+  agentEnv: AGENT_ENV,
+  call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
+};

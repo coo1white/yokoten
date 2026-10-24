@@ -22,6 +22,8 @@ const SERVER_CONTROL: ServerRead = {
   deleteBranchOnMerge: false,
   branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
+  tagBypass: { admin: false, bot: false },
+  release: { reviewer: false, tagRule: false, branchRule: false },
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
   planning: { repo: 'octo/demo', labels: [], milestones: [{ title: 'v0.1', open: false }] },

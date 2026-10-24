@@ -17,7 +17,7 @@
 // Stop only for processes this board started, and every start and stop in a log file.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { appendFileSync, existsSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as codex from '../../../agents/runtimes/codex.ts';
 import * as deepseekHarness from '../../../agents/runtimes/small/deepseek-harness.ts';
@@ -27,6 +27,8 @@ import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readGit } from '../../../run/check.ts';
 import { hookCliPath } from '../../../setup/init.ts';
+import { type MachineState, type ScheduleRoom, type ScheduleSettings, type ScheduleSummary, roomStateOf, SCHEDULE_DEFAULTS, takeStarts } from '../schedule.ts';
+import { planOf, roomOf } from './waiting.ts';
 import { markWorktree } from '../../hook.ts';
 import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
@@ -62,14 +64,27 @@ const BOARD_MODEL_FLAGS: Record<string, string> = {
   antigravity: '--model',
 };
 
-/** The board's limits: how many agents run at once, and how many of one model. */
+/** The board's limits: how many agents run at once, how many of one model, and the memory a start keeps free. */
 export interface BoardLimits {
   maxAgents: number;
   byModel: Record<string, number>;
+  /** Free memory the machine keeps for itself before another agent starts, in MB (#709). */
+  memoryFloorMb: number;
 }
 
-/** The board's limits at start: three agents at once, and no per-model cap. */
-export const BOARD_DEFAULT_LIMITS: BoardLimits = { maxAgents: 3, byModel: {} };
+/** The board's limits at start: three agents at once, no per-model cap, and a 1024 MB memory floor. */
+export const BOARD_DEFAULT_LIMITS: BoardLimits = { maxAgents: 3, byModel: {}, memoryFloorMb: SCHEDULE_DEFAULTS.memoryFloorMb };
+
+/** How long a worker the board starts may run: three hours unless yokoten.json says otherwise (#711). */
+export const BOARD_TIME_LIMIT_MS = 3 * 60 * 60 * 1000;
+
+/** The report the board writes when the time limit ends a worker that wrote none (#711). */
+export const BOARD_REPORT_PREFIX = 'REPORT-';
+
+/** Where the worker's own report goes: REPORT-<issue>.md in its worktree. */
+export function boardReportPath(worktree: string, issue: string): string {
+  return join(worktree, `${BOARD_REPORT_PREFIX}${issue}.md`);
+}
 
 /** One agent the board started. Its output stays while it runs and after it stops. */
 export interface BoardRun {
@@ -79,8 +94,10 @@ export interface BoardRun {
   model: string;
   worktree: string;
   pid: number | null;
-  /** Running, or stopped by the owner. A start that fails never joins the list. */
+  /** Running, or stopped by the owner or its time limit. A start that fails never joins the list. */
   status: 'running' | 'stopped';
+  /** Who ended a stopped run: the owner, or the time limit (#711). */
+  stoppedBy?: 'owner' | 'time limit';
   startedAt: string;
   stoppedAt: string;
   exitCode: number | null;
@@ -99,6 +116,10 @@ export interface BoardIssue {
   updatedAt: string;
   /** Issue numbers on a "Depends on" line. The timeline shows them on the row. */
   dependsOn: number[];
+  /** The issue's labels, for the schedule's priority (#709). Missing when a reader has none. */
+  labels?: string[];
+  /** The issue's milestone title, or '' (#709). P1 when it has one. */
+  milestone?: string;
 }
 
 /** One hold-up an agent reports in its status file: a guard stop or a question. */
@@ -194,11 +215,13 @@ export interface BoardControls {
   handles: Map<string, BoardChild>;
   logPath: string;
   spawner: BoardSpawner;
+  /** How long each started worker may run, in milliseconds (#711). */
+  timeLimitMs: number;
 }
 
 /** Fresh controls for a board: default limits, no runs, the log at the given path. */
-export function createBoardControls(logPath: string, spawner: BoardSpawner = spawnBoardChild): BoardControls {
-  return { limits: { ...BOARD_DEFAULT_LIMITS, byModel: {} }, runs: [], seen: [], handles: new Map(), logPath, spawner };
+export function createBoardControls(logPath: string, spawner: BoardSpawner = spawnBoardChild, timeLimitMs = BOARD_TIME_LIMIT_MS): BoardControls {
+  return { limits: { ...BOARD_DEFAULT_LIMITS, byModel: {} }, runs: [], seen: [], handles: new Map(), logPath, spawner, timeLimitMs };
 }
 
 /** One line in the board's log: when, and what started, stopped, or changed. Never throws. */
@@ -240,10 +263,40 @@ export function boardBrief(issue: string, worktree: string, model: string, ancho
     `Worktree: ${worktree}`,
     `Model: ${model}`,
     'Goal: do the issue in this worktree as a yokoten worker. Follow AGENTS.md. Commit the work. Never push.',
-    'Stop: after the same step fails 3 times, stop. Tell the lead where you stopped and what is left. Stopping is good work, not failure.',
+    `Report: write ${BOARD_REPORT_PREFIX}${issue}.md in the worktree before you stop.`,
+    'Stop: after the same step fails 3 times, or the guard refuses 3 times, stop. Tell the lead where you stopped and what is left. Stopping is good work, not failure.',
     'Anchor: after the tests you touched pass, commit. That commit is where you resume.',
     `Resume: ${anchor ? `the last commit is ${anchor}. ` : ''}Read \`git log --oneline -5\` and \`git status\` first, then continue. Do not undo the earlier work.`,
   ].join('\n');
+}
+
+/**
+ * Write a short report for a worker the time limit stopped, when it wrote none (#711).
+ * It uses the last output lines the board kept, so the lead still hears where it
+ * stopped. A report the worker wrote is never touched.
+ */
+export function writeStopReport(run: BoardRun, limitMs: number): string | null {
+  const path = boardReportPath(run.worktree, run.issue);
+  if (existsSync(path)) return null;
+  const minutes = Math.round(limitMs / 60_000);
+  const last = run.output.slice(-20);
+  const text = [
+    `# Report for issue #${run.issue}`,
+    '',
+    `Stopped by the time limit after ${minutes} minutes. The worker wrote no report.`,
+    `Vendor: ${run.vendor}; model: ${run.model}; issue: #${run.issue}.`,
+    '',
+    '## Last output',
+    '',
+    ...(last.length ? last.map((line) => `    ${line}`) : ['    (no output)']),
+    '',
+  ].join('\n');
+  try {
+    writeFileSync(path, text);
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -307,17 +360,35 @@ export function boardGuardReady(vendor: string, dir: string, env: Env): string |
   return null;
 }
 
-/** The ask as given, or the plain reason it is refused. */
-export function readBoardStartAsk(fields: Record<string, string>): BoardStartAsk | string {
-  const issue = (fields.issue ?? '').trim();
-  if (!/^[1-9]\d*$/.test(issue)) return 'give the issue by its number, such as 603';
+/** The vendor and the model, or the plain reason they are refused. */
+function readVendorModel(fields: Record<string, string>): { vendor: string; model: string } | string {
   const vendor = (fields.vendor ?? '').trim();
   if (!Object.hasOwn(BOARD_START_COMMANDS, vendor)) {
     return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${vendor || 'that vendor'} by hand`;
   }
   const model = (fields.model ?? '').trim();
   if (!BOARD_MODEL_PATTERN.test(model)) return 'name the model in letters, numbers, dots and dashes, such as muse-spark-1.3';
-  return { issue, vendor, model };
+  return { vendor, model };
+}
+
+/** The ask as given, or the plain reason it is refused. */
+export function readBoardStartAsk(fields: Record<string, string>): BoardStartAsk | string {
+  const issue = (fields.issue ?? '').trim();
+  if (!/^[1-9]\d*$/.test(issue)) return 'give the issue by its number, such as 603';
+  const vendorModel = readVendorModel(fields);
+  if (typeof vendorModel === 'string') return vendorModel;
+  return { issue, ...vendorModel };
+}
+
+/** One "start the next ready issues" request: a vendor and a model, no issue number. */
+export interface BoardStartNextAsk {
+  vendor: string;
+  model: string;
+}
+
+/** The ask for the next ready issues as given, or the plain reason it is refused. */
+export function readBoardStartNext(fields: Record<string, string>): BoardStartNextAsk | string {
+  return readVendorModel(fields);
 }
 
 /** The worktree for the issue, made when missing, or the plain reason git cannot make it. */
@@ -403,12 +474,14 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
     if (run.output.length > BOARD_OUTPUT_LINES) run.output.splice(0, run.output.length - BOARD_OUTPUT_LINES);
   };
   let child: BoardChild;
+  let timer: NodeJS.Timeout | undefined;
   try {
     child = controls.spawner(command, args, { cwd: made.dir, env: { ...env, YOKOTEN_ROLE: 'worker', YOKOTEN_MODEL: ask.model } }, {
       line: push,
       // An exit by itself stops the run: its limits slot and waiting rows free, and
       // a later stop answers already-stopped instead of signalling a dead child.
       exit: (code) => {
+        if (timer !== undefined) clearTimeout(timer);
         run.exitCode = code;
         run.status = 'stopped';
         run.stoppedAt = new Date().toISOString();
@@ -423,7 +496,85 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
   controls.handles.set(name, child);
   controls.runs.push(run);
   appendBoardLog(controls, boardLogLine(`start ${name} pid ${child.pid ?? '?'} issue #${ask.issue} ${ask.vendor} ${ask.model} ${made.dir} ${command} ${args.join(' ')}`));
+  // The time limit (#711): stop the worker, keep its work, and leave a report for the lead.
+  timer = setTimeout(() => {
+    if (run.status !== 'running') return;
+    try {
+      child.kill();
+    } catch {
+      // Already gone: the exit event reports it.
+    }
+    run.status = 'stopped';
+    run.stoppedBy = 'time limit';
+    run.stoppedAt = new Date().toISOString();
+    controls.handles.delete(name);
+    writeStopReport(run, controls.timeLimitMs);
+    appendBoardLog(controls, `limit ${name} pid ${run.pid ?? '?'} issue #${run.issue} stopped after ${Math.round(controls.timeLimitMs / 60_000)} minutes`);
+  }, controls.timeLimitMs);
+  timer.unref?.();
   return run;
+}
+
+/** What one "start the next ready issues" did. */
+export interface BoardStarts {
+  /** The runs it started, in start order. */
+  runs: BoardRun[];
+  /** The ready issues it left waiting, in start order. */
+  waiting: number[];
+  /** Why it left them: the agent cap, the memory floor, or nothing else ready. */
+  heldBy: 'slots' | 'memory' | 'none';
+  /** Why a start in the list was refused, or '' when each one it took started. */
+  refused: string;
+}
+
+/** What a test or a caller already knows about the machine, so a start needs no reading of it. */
+export interface BoardStartNextOptions {
+  /** The machine now. The board reads it when missing. */
+  machine?: MachineState;
+}
+
+/** The settings a start is held by: the board's agent cap and its memory floor. */
+function settingsOf(controls: BoardControls): ScheduleSettings {
+  return { maxAgents: controls.limits.maxAgents, memoryFloorMb: controls.limits.memoryFloorMb };
+}
+
+/** Plain words for why the machine cannot take another agent now. */
+function roomRefusal(room: ScheduleRoom, settings: ScheduleSettings): string {
+  if (room.hold === 'memory') return `the machine has ${room.freeMemoryMb} MB free, under the ${settings.memoryFloorMb} MB floor: lower the floor, or free some memory`;
+  return `the board already runs ${room.running} agents of ${settings.maxAgents}: stop one before starting another`;
+}
+
+/**
+ * Start the next ready issues, in the schedule's heap order (#709): priority, then the
+ * smallest number. The agent cap and the memory floor hold the rest: the first start
+ * that would break either stops the list, so the start order is the heap's. An issue the
+ * board already runs is skipped, so a second press never starts it twice.
+ */
+export function startBoardNext(root: string, env: Env, controls: BoardControls, ask: BoardStartNextAsk, issues: BoardIssue[] | string, options: BoardStartNextOptions = {}): BoardStarts | string {
+  const plan = planOf(issues);
+  if (!plan) {
+    return typeof issues === 'string'
+      ? `${issues}: the board starts nothing until it can read the open issues`
+      : 'the open issue list was cut off: a closed issue could look open, so the board starts nothing';
+  }
+  const isRunning = new Set(controls.runs.filter((run) => run.status === 'running').map((run) => run.issue));
+  const ready = plan.ready.filter((issue) => !isRunning.has(String(issue.number)));
+  if (!ready.length) return 'no open issue is ready to start: each one waits on another, or the list was cut off';
+  const settings = settingsOf(controls);
+  const room = options.machine ? roomStateOf(options.machine, settings) : roomOf(controls);
+  const starts = takeStarts(ready, room, settings);
+  if (!starts.started.length) return roomRefusal(room, settings);
+  const runs: BoardRun[] = [];
+  for (const number of starts.started) {
+    const run = startBoardAgent(root, env, controls, { issue: String(number), vendor: ask.vendor, model: ask.model });
+    if (typeof run === 'string') {
+      // A refused start ends the run of starts: the rest would meet the same guard.
+      if (!runs.length) return run;
+      return { runs, waiting: ready.slice(runs.length).map((issue) => issue.number), heldBy: starts.stoppedBy ?? 'none', refused: run };
+    }
+    runs.push(run);
+  }
+  return { runs, waiting: ready.slice(runs.length).map((issue) => issue.number), heldBy: starts.stoppedBy ?? 'none', refused: '' };
 }
 
 /**
@@ -444,15 +595,17 @@ export function stopBoardAgent(controls: BoardControls, name: string): BoardRun 
     return `the board could not stop ${clean}: run it again`;
   }
   run.status = 'stopped';
+  run.stoppedBy = 'owner';
   run.stoppedAt = new Date().toISOString();
   appendBoardLog(controls, `stop ${run.name} pid ${run.pid ?? '?'} issue #${run.issue} ${run.vendor} ${run.model}`);
   return run;
 }
 
-/** One limits change: a new cap, a new per-model map, or both. Missing stays as it is. */
+/** One limits change: a new cap, a new per-model map, a new memory floor, or several. Missing stays as it is. */
 export interface BoardLimitChange {
   maxAgents?: number;
   byModel?: Record<string, number>;
+  memoryFloorMb?: number;
 }
 
 /** The limits change as given, or the plain reason it is refused. */
@@ -476,17 +629,23 @@ export function readBoardLimitChange(fields: Record<string, string>): BoardLimit
     }
     change.byModel = byModel;
   }
-  if (change.maxAgents === undefined && change.byModel === undefined) return 'set maxAgents, models, or both';
+  const memoryText = (fields.memory ?? '').trim();
+  if (memoryText !== '') {
+    if (!/^\d+$/.test(memoryText) || Number(memoryText) > 65536) return 'set memory to a whole number of MB from 0 to 65536';
+    change.memoryFloorMb = Number(memoryText);
+  }
+  if (change.maxAgents === undefined && change.byModel === undefined && change.memoryFloorMb === undefined) return 'set maxAgents, models, memory, or all';
   return change;
 }
 
-/** The new limits, or the plain reason they are refused. Setting one keeps the other. */
+/** The new limits, or the plain reason they are refused. Setting one keeps the others. */
 export function setBoardLimits(controls: BoardControls, fields: Record<string, string>): BoardLimits | string {
   const change = readBoardLimitChange(fields);
   if (typeof change === 'string') return change;
   if (change.maxAgents !== undefined) controls.limits.maxAgents = change.maxAgents;
   if (change.byModel !== undefined) controls.limits.byModel = change.byModel;
-  appendBoardLog(controls, `limits maxAgents ${controls.limits.maxAgents} models ${JSON.stringify(controls.limits.byModel)}`);
+  if (change.memoryFloorMb !== undefined) controls.limits.memoryFloorMb = change.memoryFloorMb;
+  appendBoardLog(controls, `limits maxAgents ${controls.limits.maxAgents} memoryFloorMb ${controls.limits.memoryFloorMb} models ${JSON.stringify(controls.limits.byModel)}`);
   return { ...controls.limits, byModel: { ...controls.limits.byModel } };
 }
 
@@ -496,6 +655,10 @@ export interface BoardSnapshot {
   issues: BoardIssue[] | string;
   runs: BoardRun[];
   limits: BoardLimits;
+  /** The dependency order of the open issues, and the longest chain still open (#709). */
+  schedule: ScheduleSummary;
+  /** The machine's room now: agents running, free memory, and why a start waits (#709). */
+  room: ScheduleRoom;
 }
 
 export {
@@ -504,4 +667,5 @@ export {
   readBoardIssues,
   readBoardIssuesLater,
   readBoardSnapshot,
+  scheduleOf,
 } from './waiting.ts';
