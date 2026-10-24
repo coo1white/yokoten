@@ -38,7 +38,7 @@ test('hook --agent muse: bash by command, the edit tools by path; a refusal is e
   let result = await call('bash', { command: 'git push --tags origin', description: 'Push tags', workdir: sandbox.repo });
   assert.equal(result.status, 2);
   assert.equal(result.stdout, '');
-  assert.match(result.stderr, /^yokoten: the guard refused this call: git push --tags pushes tags\.[\s\S]*Only the owner decides when to release/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: Only the owner decides when to release/);
   result = await call('bash', { command: 'git status', description: 'Status', workdir: null });
   assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
   // Muse cuts YOKOTEN_ROLE from a hook's env, so a real Muse session is always the lead.

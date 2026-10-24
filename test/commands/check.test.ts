@@ -4,6 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -20,7 +21,7 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { borrowedIssue, cutPoint, hasOpenIssue } from '../../src/commands/check.ts';
+import { borrowedIssue, cutPoint, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
 import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
@@ -880,6 +881,71 @@ test('marks: the count names both files when the setting adds one (#656)', async
   assert.ok(!VALUES.test(counts.stdout + counts.stderr));
 });
 
+// #756: `yokoten provenance <ref>` reads a squashed commit's message and the host's
+// Approve, in plain text and with --json.
+test('provenance: a commit names its writer, reviewers, approver, tier and issue (#756)', async () => {
+  const sandbox = makeSandbox();
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const gh = (body: string, code = 0) => {
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\n${body}\nexit ${code}\n`);
+    chmodSync(join(bin, 'gh'), 0o755);
+  };
+  const path = { PATH: `${bin}:${process.env.PATH}` };
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const message = join(sandbox.home, 'message');
+  writeFileSync(message, ['feat(guard): a pipe is refused (#12)', '', 'tier: B', '', 'Closes #12', 'Refs #13', '', '## Why', 'x', '', '🤖 Made with worker Grok (grok-4.7), reviewed by Claude Code (claude-opus-5-5), lead Claude Code (claude-opus-5-5)', '', 'Co-authored-by: someone <someone@example.com>', ''].join('\n'));
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-F', message);
+  gh('printf "coo1white\\t2026-10-20T00:00:00Z\\n"');
+  let result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^[0-9a-f]{7} feat\(guard\): a pipe is refused \(#12\)\n  writer: Grok \(grok-4\.7\)\n  reviewers: Claude Code \(claude-opus-5-5\)\n  approver: coo1white\n  tier: B\n  issue: #12, #13$/m);
+  const json = JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout);
+  assert.equal(json.length, 1);
+  assert.equal(json[0].approver, 'coo1white');
+  assert.deepEqual(json[0].writers, [{ vendor: 'Grok', model: 'grok-4.7' }]);
+  assert.deepEqual(json[0].reviewers, [{ vendor: 'Claude Code', model: 'claude-opus-5-5' }]);
+  assert.equal(json[0].tier, 'B');
+  assert.deepEqual(json[0].issues, [12, 13]);
+  // gh that cannot answer leaves the approver unknown, not an error.
+  gh('exit 1');
+  result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /  approver: unknown$/m);
+  assert.equal(JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout)[0].approver, null);
+});
+
+test('provenance: a range shows each commit, and a bad ref is one finding (#756)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const commit = (title: string, line: string) => {
+    const file = join(sandbox.home, 'message');
+    writeFileSync(file, `${title}\n\ntier: C\n\nCloses #7\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\n${line}\n`);
+    sandbox.write(`docs/${title.split(':')[0]}.md`, `${title}\n`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-q', '-F', file);
+  };
+  commit('docs: first (#7)', 'Made with lead Claude Code (claude-opus-5-5)');
+  commit('docs: second (#8)', 'Made with worker Grok (grok-4.7)');
+  const result = await sandbox.call(['provenance', 'HEAD~2..HEAD']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal((result.stdout.match(/^  writer: /gm) ?? []).length, 2, result.stdout);
+  assert.match(result.stdout, /docs: first \(#7\)/);
+  assert.match(result.stdout, /docs: second \(#8\)/);
+  const bad = await sandbox.call(['provenance', 'not-a-ref']);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /^yokoten provenance: git can't answer, so the check stopped without looking: `git log .+` gave no answer: /);
+  const usage = await sandbox.call(['provenance']);
+  assert.equal(usage.status, 1);
+  assert.match(usage.stderr, /give a commit or a range/);
+});
+
 // ---- Borrowed code (record 0024): the issue, and the command ----
 
 test('borrowed: the issue names the source and the security fix, and a second run sees it open', () => {
@@ -922,4 +988,46 @@ test('borrowed --dry-run: a repo with no wheel writes nothing and says so', asyn
   const result = await sandbox.call(['borrowed', '--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /borrowed: 0 file\(s\), 0 source\(s\) changed, 0 unreadable/);
+});
+// #432: `pr sync` lists the open pull requests first. With none, it needs no bot and no
+// network, and says so in one line. The merge itself is tested in test/run/check.test.ts.
+test('pr sync: no open pull requests is one line, and no bot is needed (#432)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), '#!/usr/bin/env node\nprocess.stdout.write("[]")\n');
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten pr sync: no open pull requests$/m);
+});
+
+test('pr sync: a missing action is a usage error, not a silent no-op (#432)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['pr']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /give the action: `yokoten pr sync`/);
+});
+
+test('pr sync: every git call runs as UTC, so the merge commit does too (#809)', () => {
+  assert.equal(prSyncEnv({ ...process.env, TZ: 'America/New_York' }).TZ, 'UTC');
+});
+
+test('pr sync: each report line names the real base branch (#809)', () => {
+  assert.equal(pullLine({ number: 1, branch: 'work', base: 'release', state: 'merged' }), '#1 work: merged release');
+  assert.equal(pullLine({ number: 2, branch: 'fix', base: 'main', state: 'resolved', hunks: 2 }), '#2 fix: resolved 2 hunks then merged main');
+  assert.equal(pullLine({ number: 3, branch: 'docs', base: 'next', state: 'up-to-date' }), '#3 docs: up to date with next');
+});
+
+test('pr sync: a list that stops at the limit says so (#809)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const rows = Array.from({ length: 100 }, (_, at) => ({ number: at + 1, headRefName: `work-${at + 1}`, baseRefName: 'main' }));
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(rows))})\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.match(result.stdout, /the open pull request list stops at 100/);
 });

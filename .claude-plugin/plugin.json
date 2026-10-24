@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs\" ] 2>/dev/null || { echo 'yokoten: this plugin copy is gone; restart Claude Code' >&2; exit 2; }; node \"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs\" tool \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs\" hook --commands-only"
+            "command": "[ -f \"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs\" ] 2>/dev/null || { echo 'yokoten: this plugin copy is gone; restart Claude Code' >&2; exit 2; }; node \"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs\" tool \"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs\" hook --commands-only --agent claude-code"
           }
         ]
       }

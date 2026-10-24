@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeGitFolder, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
+import { hookEnvironment, makeGitFolder, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -181,6 +181,47 @@ test('release: tag pushes, release commands and publishing are the owner\'s', ()
 test('release: the refusal names the whole push, remote included (#557)', () => {
   assert.equal(checkCommand('git push origin v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push origin v1.2.0 pushes a release tag');
   assert.equal(checkCommand('git push v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push v1.2.0 pushes a release tag');
+});
+
+test('release: creating a local tag is the owner\'s too, not only pushing it (#812)', () => {
+  for (const command of [
+    'git tag v1.2.3',
+    'git tag -a v1.2.3 -m "release 1.2.3"',
+    'git tag -s v1.2.3 -m "release 1.2.3"',
+    'git tag -f v1.2.3',
+    'git tag v1.2.3 HEAD~1',
+    'git -C ../other tag v1.2.3',
+    // A listing option does not turn a named tag into a listing (#873).
+    'git tag -a v1.2.3 --sort=creatordate -m msg',
+    'git tag -a v1.2.3 --sort creatordate -m msg',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag -a v1.2.3 --format=%(refname) -m msg',
+    'git tag -a v1.2.3 --column -m msg',
+    'git tag --column=always v1.2.3',
+    'git tag --sort creatordate -- v1.2.3',
+    // The word reader keeps a git format atom whole without hiding what follows it (#873).
+    'echo %(git push --tags)',
+    'git tag --format=%(refname; git push --tags)',
+    'git tag --format=%(refname\ngit push --tags',
+    // A short-flag group with a writing letter still writes.
+    'git tag -an v1.2.3 -m msg',
+  ]) blocked(command);
+  // Listing, and changing a tag that already exists, publish nothing.
+  allowed('git tag');
+  allowed('git tag -l');
+  allowed('git tag --contains HEAD');
+  allowed('git tag -n v1');
+  allowed('git tag -ln v1');
+  allowed('git tag -nl v1');
+  allowed('git tag -d old-tag');
+  allowed('git tag --sort=creatordate');
+  allowed('git tag --sort creatordate');
+  allowed('git tag --format=%(refname)');
+  allowed('git tag --format %(refname)');
+  allowed('git tag --column');
+  allowed('git tag -l --format=%(refname)');
+  allowed('git tag v1.2.3', { YOKOTEN_RELEASE_APPROVAL: '1' });
 });
 
 test('release: the owner\'s approval lets it through', () => {
@@ -1633,7 +1674,7 @@ test('bash: a command the reader cannot read is refused with exit 2, not let thr
   const tooBig = `bash -c "${':;'.repeat(300000)}"`;
   assert.equal(checkCommand(tooBig, { cwd: process.cwd(), env: {} })?.id, 'unreadable-command');
   const done = await invoke(['hook'], {
-    env: { ...process.env },
+    env: hookEnvironment(),
     cwd: tmpdir(),
     stdin: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
   });

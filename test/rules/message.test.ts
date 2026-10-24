@@ -39,11 +39,13 @@ import {
   measureWork,
   noteWork,
   notRepoFinding,
+  parseRefusal,
   type Rule,
   RULES,
 } from '../../src/rules/message.ts';
 import {
   checkApprovalFreshness,
+  provenanceFindings,
   checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
@@ -68,7 +70,7 @@ import {
   readGit,
   timeZoneNote,
 } from '../../src/run/check.ts';
-import { lateFinding } from '../../src/run/hook.ts';
+import { lateFinding, repeatStopFinding } from '../../src/run/hook.ts';
 import {
   lintCallResult,
   lintServerEntry,
@@ -141,7 +143,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     found.push(f);
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
-  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
+  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git tag v1.2.3', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
   add(checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
   add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { cwd: process.cwd(), env: {} })); // too many commands to read
   add(checkCommand('alias x=y', { cwd: process.cwd(), env: {} }));
@@ -159,6 +161,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkCommand('git push', { cwd: process.cwd(), env }));
   add(checkCommand('git worktree remove ../wt', { cwd: process.cwd(), env }));
   add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
+  // The third same refusal in one session (#711): the count needs a session, so the message
+  // is asked for here, as `late` is.
+  add(repeatStopFinding());
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));
   add(scanText(`// ${['yokoten', 'ignore'].join('-')} secret`, { file: 'a.md' })[0]);
   add(addedIgnores('a.ts', `// ${['yokoten', 'ignore'].join('-')} secret: a fixture`, new Set([1]), {})[0]);
@@ -168,6 +173,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   // An Approve on an older commit, with code changes after it (#612).
   add(checkApprovalFreshness({ tier: 'A', head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 2, sameDiff: true }));
+  add(provenanceFindings({ writers: [{ vendor: 'Claude Code', model: 'm' }], reviewers: [{ vendor: 'Anthropic', model: 'n' }], leads: [], others: [] }, [])[0]);
   found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
   found.push(...checkIssueLabels([], ['feat', 'tier A']));
   add(largeDiff(500));
@@ -287,7 +293,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The server, with every setting off, and with nothing readable.
   const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
-  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, tagBypass: { admin: false, bot: false }, release: { reviewer: false, tagRule: false, branchRule: false }, security, forgotten: ['old'] };
   // Work only on this machine (#365): one case of each, as facts, so no git runs here.
   found.push(...unsavedNotes(UNSAVED_CONTROL, { home: undefined, now: 1 }));
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
@@ -306,6 +312,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...lintStdout(['starting server']));
   found.push(...lintServerEntry('demo', { command: 'npx', args: ['-y', 'demo'] }));
   found.push(...lintServerEntry('demo', {}));
+
+  // The event log's daily anchor check (#768): one finding of each shape, so the rule is reached.
+  found.push(finding('anchor', '2026-10-20 no longer matches its anchor: Rekor holds no entry for this hash', 'restore the line the chain names, or keep this log and start a new one'));
 
   const known = new Set(ids());
   for (const f of found) {
@@ -343,22 +352,6 @@ test('docs: every link goes to a heading of docs/guide.md, so a renamed heading 
   }
 });
 
-test('refusal: a person reads one labelled line per field (#707)', () => {
-  const found = finding('skip-check', '`git commit --no-verify` skips the commit check', 'fix what the check reports instead');
-  assert.equal(formatRefusal(found), [
-    'yokoten: the guard refused this call: `git commit --no-verify` skips the commit check.',
-    '  why  The commit check is the inspection step, and a skipped check makes a broken commit look reviewed.',
-    '  fix  Fix what the check reports instead.',
-    '  rule skip-check · `yokoten explain skip-check`',
-    `  docs ${DOCS_URL}#the-core-rules`,
-  ].join('\n'));
-  const plain = finding('large-diff', 'big', 'split it');
-  assert.ok(!formatRefusal(plain).includes('  docs '), 'no section fits: no link line');
-  assert.equal(formatRefusal(plain).split('\n').length, 4, 'what, why, fix and rule');
-  // A file and a line stay in front of the what, as in the text form.
-  assert.match(formatRefusal({ ...plain, file: 'a.md', line: 3 }), /^yokoten: the guard refused this call: a\.md:3: big\./);
-});
-
 test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)', () => {
   const link = `${DOCS_URL}#the-core-rules`;
   const found = finding('skip-check', 'it skips the check', 'run it again');
@@ -373,6 +366,32 @@ test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)'
   assert.equal(explained && explainLines(explained).at(-1), `Docs: ${link}`);
   const step = explain('commit-check');
   assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
+});
+
+// #707: every refusal has the same four parts, the rule id in its title, and a link even
+// when the finding has no section of its own.
+test('refusal: title, why, do instead and more, the same for every rule (#707)', () => {
+  const refused = finding('release', 'git push --tags pushes tags', 'ask the owner to start a new session');
+  const text = formatRefusal(refused);
+  assert.equal(
+    text,
+    `yokoten stopped this: git push --tags pushes tags [release]\nWhy: Only the owner decides when to release.\nDo instead: Ask the owner to start a new session.\nMore: ${DOCS_URL}#the-core-rules`,
+  );
+  for (const id of Object.keys(RULES) as (keyof typeof RULES)[]) {
+    const link = (RULES[id] as Rule).docs ?? DOCS_URL;
+    const one = formatRefusal(finding(id, 'something was refused', 'do the safe thing'));
+    assert.match(one, /^yokoten stopped this: something was refused \[[\w-]+\]\nWhy: .+\nDo instead: .+\nMore: https:\/\/\S+$/, id);
+    assert.ok(one.includes(link), `${id}: the link is always there`);
+    assert.ok(!one.includes('\u001b'), `${id}: no ANSI code in a refusal`);
+  }
+  // The board reads the same parts back, past a runtime's wrapper.
+  const parsed = parseRefusal(`PreToolUse:Bash hook error:\n${text}\n`);
+  assert.equal(parsed?.id, 'release');
+  assert.equal(parsed?.title, 'yokoten stopped this: git push --tags pushes tags [release]');
+  assert.equal(parsed?.why, 'Only the owner decides when to release.');
+  assert.equal(parsed?.fix, 'Ask the owner to start a new session.');
+  assert.equal(parsed?.docs, `${DOCS_URL}#the-core-rules`);
+  assert.equal(parseRefusal('yokoten: an older form'), null);
 });
 
 test('docs: no message names a docs/<file>.md path without a link (#524)', () => {

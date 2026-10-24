@@ -31,13 +31,19 @@ yokoten 在你已經在用的 agent 上面，再補三件事。hook、沙箱、�
 只需要 [Node](https://nodejs.org/) 22.23.4 以上（Node 24 要 24.22.1 以上，Node 26 要 26.12.1 以上）。其他不用裝。
 
 ```sh
-npx yokoten install      # 每台電腦一次
 cd your-project
+npx yokoten             # 一次就好：裝好 yokoten，加上規則，顯示下一步
+```
+
+這就是全部的開始。在任何專案裡再執行一次 `npx yokoten`，它只做還缺的部分。想一步一步來的話：
+
+```sh
+npx yokoten install      # 每台電腦一次
 npx yokoten init         # 每個專案一次
 npx yokoten doctor       # 你在第幾關，下一步做什麼
 ```
 
-用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
+用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。選擇[要安裝哪個版本](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)：Stable（預設）、Beta 或 Dev。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
 
 ## 你會看到的畫面
 

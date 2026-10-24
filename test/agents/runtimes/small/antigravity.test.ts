@@ -28,7 +28,7 @@ test('hook --agent antigravity: run_command by CommandLine, the edit tools by Ta
   assert.equal(result.status, 0, 'agy reads the decision, not the exit code');
   const denial = JSON.parse(result.stdout);
   assert.equal(denial.decision, 'deny');
-  assert.match(denial.reason, /^yokoten: the guard refused this call: git push --tags pushes tags\.[\s\S]*Only the owner decides when to release/);
+  assert.match(denial.reason, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: Only the owner decides when to release/);
   assert.match(result.stderr, /owner decides when to release/);
   result = await call('run_command', { CommandLine: 'git status', Cwd: sandbox.repo });
   assert.deepEqual([result.status, result.stdout], [0, ''], 'an allowed call leaves stdout empty: agy goes on');

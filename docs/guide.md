@@ -578,6 +578,25 @@ Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copi
 skills only. A skill is advice to the agent; the guard is what stops a command. So skills
 alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
 
+### Which version to install
+
+There are three release channels. Stable is the safe default.
+
+| Channel | Plugin | npm | What you get | For |
+|---|---|---|---|---|
+| Stable | `yokoten` | `latest` | The latest release tag, such as v0.1.0, with a changelog | Everyone |
+| Beta | `yokoten-beta` | `next` | The latest pre-release tag, such as v0.2.0-beta.1 | People who want new features early and can report problems |
+| Dev | `yokoten-dev` | none | The default branch, every merged pull request | Contributors, and our own tests |
+
+`/plugin install yokoten@yokoten` gets Stable. Use `yokoten-beta@yokoten` for Beta, or
+`yokoten-dev@yokoten` for Dev. Install one channel, not several. To switch, run
+`/plugin uninstall yokoten@yokoten`, then install the other name. From a shell,
+`claude plugin uninstall` and `claude plugin install` do the same. `doctor` names the
+channel and version at the top of its output.
+
+A pre-release can break before the stable release. Dev changes on every merge and has
+no changelog.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -610,7 +629,8 @@ Claude Code runs the plugin's `.ts` files with `node`. Node can do this because 
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
 does not update on its own until you turn on auto-update for it. From your shell,
-`claude plugin update yokoten@yokoten` does the same. The next tool call runs the updated
+`claude plugin update yokoten@yokoten` does the same; for Beta or Dev, use
+`yokoten-beta@yokoten` or `yokoten-dev@yokoten`. The next tool call runs the updated
 guard. A session which still has the old hook command needs one restart. If Claude Code
 removes the old plugin folder while a session still runs, the tool call is refused and
 asks for a restart. When the plugin is older than the yokoten that runs `doctor`,
@@ -630,8 +650,14 @@ to the plugin, run `yokoten uninstall`. It removes what `install` wrote and keep
 For Codex CLI and Gemini CLI, or without the plugin:
 
 ```sh
-npx yokoten install      # this machine: skills, agents, hooks
 cd your-project
+npx yokoten             # once: installs what is missing, then the road
+```
+
+Run it again in any project and it does only what is still missing. One step at a time:
+
+```sh
+npx yokoten install      # this machine: skills, agents, hooks
 npx yokoten init         # this project: adds files, never overwrites
 npx yokoten doctor       # the road: where you are, what's next
 ```
@@ -744,9 +770,11 @@ action skips `check --pr` and leaves a notice: the pull request check runs on
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
 follow it yet can start with `pr-check: false`. A pull request Dependabot opens gets
 the title check, and the other rules show as notes, because Dependabot writes its own
-body. The `init` workflow in the kit still
-runs `.yokoten/`. It moves to the action after the first release, so it never depends
-on `@main`.
+body. The kit's `check` workflow runs the project's copy in `.yokoten/` first: the same
+yokoten, and so the same check, as the commit hook. It then runs the action, pinned to
+the first release's commit, so a pull request that changes `.yokoten/` still meets a
+check it cannot edit; Dependabot keeps that pin current. The kit's `pr` and `issue`
+workflows run the project's copy.
 
 ### A private repo without CI
 
@@ -893,19 +921,23 @@ It puts three safe defaults in `.github/` too:
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines are notes. A `Made with` model that disagrees with the worker's status file is a note on the machine with its desk. CI cannot see that file, so CI never notes it |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. The line is checked against the desk status files on the branch: a desk the line does not name, or a reviewer from the writer's own vendor, is a finding. A `Made with` model that disagrees with the worker's status file is a note on the machine with its desk. CI cannot see that file, so CI never notes it. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines are notes |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
+| `check --anchor [--repo <owner/name>]` | Each past UTC day of the event log against its hash in Sigstore Rekor, and names the day when the log no longer matches. Only the day's 64 hex characters go to Rekor; no line, path or name leaves the machine. `--repo` names the repo whose anchor workflow signed the entries |
+| `provenance <ref> [--json]` | For a commit, or each commit of a range: the writer, reviewers, approver, tier and issue, from the squashed message and the host's latest Approve. `--json` prints the records. See [Provenance](standard.md#provenance) |
 | `borrowed [--dry-run] [--json]` | Compares each file in `src/borrowed/` with upstream's default branch, through `gh`, and opens one issue per source that changed. A security fix is called out in the title. `--dry-run` shows the report and opens nothing; `--json` prints the report as data. See [Borrowed code](#borrowed-code) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
+| `anchor [--json]` | Lists the anchors recorded in this checkout, newest first. A worker records one when its checks pass and its tree is clean. An anchor is a commit: go back with `git switch -c try-2 <commit>`, and nothing is reset or deleted. See [The stop check](#the-stop-check) |
 | `changelog [--write]` | Shows the entries the files in `changes/` add under `[Unreleased]`. `--write` puts them into `CHANGELOG.md` and deletes the files; run it before a release. See [The changelog](#the-changelog) |
 | `mcp [dir] [--command "<command>"] [--json]` | Starts each stdio server in `.mcp.json`, `.vscode/mcp.json` or `mcp.json` and checks its tools for every client: schema, names, annotations, count, result shape and stray stdout. `--command` checks a server with no config entry; `--json` prints the findings. A Windows warning does not fail it. See [Shipping an MCP server](#shipping-an-mcp-server-that-works-in-every-agent) |
 | `learn <issue> [--write]` | Drafts a check from an incident issue, for a person to review. `--write` adds the files in `lessons/`. See [Learning from an incident](#learning-from-an-incident) |
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
-| `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode` |
+| `pr sync` | Brings each open pull request up to date with its base branch after a merge. It merges the base in, resolves only two mechanical conflicts (both sides added a whole block, or both changed the same import list), runs typecheck and the tests of the touched files after every merge, clean or resolved, then pushes as the bot. Anything else stops with the files, the hunks and a dispatch brief. Each report line names the base it merged. The open list stops at 100 pull requests, and the report says when it did. It never force-pushes, rebases or resolves on GitHub. Run it after every merge. See [Managing agents like a team](#managing-agents-like-a-team) |
+| `hook [--agent <name>] [--commands-only] [--denial <mode>] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode`. With `--denial exit2`, a refusal keeps exit 2 and the reason on stderr, for a host that reads the exit code alone |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `stops [off \| on]` | Shows the stop log at `~/.config/yokoten/stops.jsonl`, and whether yokoten writes it. `off` stops the writing and deletes the log; `on` starts it again. The log stays on this computer. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
@@ -914,7 +946,7 @@ It puts three safe defaults in `.github/` too:
 | `msg send <to> [<text>]`, `msg inbox`, `msg who`, `msg log` | Agents of every vendor message each other through files on this machine. Only the lead runs `log`. See [Messages between agents](#messages-between-agents) |
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay; the stop log is removed. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. `gh pr edit` does the same for a new title or body, and removes the old tier label when the body sets a new tier. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <seconds>]` | Merges an approved, green queue in the order given, as the bot, and stops at the first pull request that needs a person. It records every base before the first merge, so a pull request stacked on a squash-merged branch merges from the base it truly shares with that branch. A conflict made only of import lines takes the union; a real conflict, a failing test, a failing `check` or a missing approval stops the train. Each merged tree is tested before the push, and CI must pass on the pushed merge; `--wait` sets how long to wait (default 1800 seconds). Only the lead runs it |
 | `board [--text] [--no-open] [--role name] [--vendor name]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, each pull request stage, and each agent's estimated API cost. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests, worktrees and usage as plain text. With `--text`, `--role` and `--vendor` keep only that role's or vendor's usage rows. See [The team board](#the-team-board) |
 
@@ -1780,8 +1812,9 @@ Rules 1 and 5 need judgement, so the reviewer checks them.
 
 The setup treats agents like staff on a line, each with a clear role and limited rights:
 
-- **The owner** (you) decides what gets built and when it ships. Only you approve pull
-  requests, create release tags, and change repo settings.
+- **The owner** (you) decides what gets built and when it ships. Only you approve a hard
+  line, create release tags, and change repo settings. An area lead may approve its area
+  (record 0026).
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
 - **Workers** are sessions the lead starts for one task each, in their own worktree
@@ -1812,7 +1845,7 @@ is to undo (record 0004):
 |------|----------------|-------------|
 | C | Standard: docs, wording, styles | The lead |
 | B | Normal: other code, with tests | Another vendor's agent reviews; the lead approves |
-| A | Hard to undo: owned files, or a change that makes a rule looser | The owner |
+| A | Hard to undo: owned files, or a change that makes a rule looser | The owner, or another vendor's area lead for a path that is neither a hard line nor a looser change |
 
 In yokoten's own repo, `.github/CODEOWNERS` lists the owned files: the core rules,
 CODEOWNERS, CI that publishes or holds a secret, the bot token, guard config and
@@ -1839,6 +1872,43 @@ refuses: the Approve is on <old commit>; <n> commits with changes came after it;
 the owner to approve again. `gh pr status` through the bot shows the same check for
 tier A pull requests. Keep GitHub's dismiss-stale-approvals setting on too, but
 yokoten never depends on a host setting a project may not have.
+
+### Area leads approve in their area
+
+Record [0026](records/0026-the-owner-is-the-board.md) moves the lock for paths that are
+not a hard line from your code-owner review to yokoten's merge check. An area lead
+approves with a GitHub review. The last line of the review body names the lead, its
+vendor and its model:
+
+```text
+Approved by area lead Grok (xAI, Grok 4.7)
+```
+
+GitHub records the commit the review was given on. A later commit needs a new review.
+The check refuses a lead of the same vendor that wrote the change, read from the
+`Made with` line. A file that `.github/CODEOWNERS` owns, and a looser change, still needs
+your approval. Until the diff tier check (#697) lands, a change to a test that already
+exists counts as looser; a new test does not.
+
+Nothing here changes your repository settings. When you are ready, follow these steps.
+
+1. **Check that `.github/CODEOWNERS` lists only the hard lines.** In this repo it already
+   does (record 0037): the core rules, `.github/CODEOWNERS` itself, CI that publishes or
+   holds a secret, the bot token, guard config and `package.json`. If a path there is not
+   a hard line, remove it: a path you remove becomes lead-approvable.
+2. **Keep one required approval.** A lead's review is a real GitHub review, so keep
+   "Required approvals" at 1. Do not let GitHub Actions approve a pull request.
+3. **Keep the CI check required.** The branch ruleset should still require the CI check
+   that runs `yokoten check --pr`. The bot's merge check is the second lock: it reads the
+   lead approval before `gh pr merge`.
+4. **Turn off "Require review from Code Owners" when the hard lines are safe.** After
+   step 1 the setting names only hard lines, so leaving it on still asks you only for
+   those. Turning it off lets the bot's check decide the rest.
+
+`yokoten doctor` still expects code-owner review today. Expect that one step to note the
+change until it learns the new lock. When a merge is refused, the message names the
+reason and the next step: another vendor's lead, a new review on the head, or the owner
+for a hard line or a looser change.
 
 A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
 needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
@@ -1880,6 +1950,20 @@ add one: it names yokoten's own next step.
 
 yokoten's findings on the pull request page come from its own checks only. It does not
 repeat another bot's findings or review the code a second time (#91).
+
+### Keeping pull requests up to date
+
+Every merge leaves the other open pull requests behind. A conflict waits for nobody, so
+the lead runs `yokoten pr sync` after every merge. It merges each branch's base branch in,
+runs typecheck and the tests of the touched files, and pushes as the bot. This runs after
+every merge, clean or resolved, and in UTC so the merge commit is too. It resolves only
+two mechanical conflicts: two added blocks at one spot, and two changed import lists.
+Anything else stops with the files and the hunks, and the lead hands them to a worker with
+the dispatch brief. Each report line names the base it merged. The list stops at 100 open
+pull requests, and the report says when it did.
+
+The owner never resolves a conflict on GitHub. The web editor would commit as the
+owner, and the bot must be the one that pushes. Related: issue #320, the merge train.
 
 ### The desk
 
