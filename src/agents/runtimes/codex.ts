@@ -365,6 +365,27 @@ function mainCheckout(root: string): string | null {
 }
 
 /**
+ * The model and provider the user's `config.toml` names (#748): top-level `model` and
+ * `model_provider`, as Codex reads them. Null when the file is missing, unreadable, or
+ * names no model: the harness then keeps its own default. Read-only, no git.
+ */
+export function readModelIdentity(env: Env): { model: string; provider: string } | null {
+  const user = homeOf(env);
+  const home = env.CODEX_HOME || (user ? join(user, '.codex') : '');
+  if (!home) return null;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseToml(readFileSync(join(home, 'config.toml'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').slice(0, 64) : '');
+  const model = text(parsed.model);
+  if (!model) return null;
+  return { model, provider: text(parsed.model_provider) };
+}
+
+/**
  * Whether Codex runs yokoten's hooks in the project at `root`, from its config.toml.
  * Read-only. Only hooks that run `--agent codex` count: those are the ones init writes.
  */
@@ -1003,4 +1024,5 @@ export const DESK: RuntimeDesk = {
   login: (env) => [{ from: join(env.CODEX_HOME || join(homeIn(env), '.codex'), 'auth.json'), to: 'auth.json' }],
   stateEnv: (state) => ({ CODEX_HOME: state }),
   hosts: ['api.openai.com', 'api.deepseek.com'],
+  identity: readModelIdentity,
 };

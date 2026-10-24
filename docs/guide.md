@@ -892,7 +892,7 @@ It puts three safe defaults in `.github/` too:
 | `doctor [--session] [--json]` | The road: every stage and step, and what this machine is missing. `--session` prints only the next step, for the start of a session. With `--agent gemini`, it prints the step as the JSON that Gemini CLI reads |
 | `adopt [--json]` | A draft of the adoption table for an old project: what it does today, and a proposed decision for each step. `--json` prints the rows. Writes nothing |
 | `check [--staged] [--json]` | Layout, privacy and lead-only files, for the tree or the next commit. A commit may not add build output or binaries. Each change file is read the way `changelog` reads it, so a wrong one fails at commit. With nothing staged, `--staged` notes it and is ok. For the tree, a translation behind its English source is a note. See [Translations](#translations) |
-| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines, are notes |
+| `check --pr` | In CI: the pull request's title, `tier:` line, sections, linked issue, change file, milestone and labels. See [The changelog](#the-changelog). The last line names each AI and model: `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs. Reviewers may be added: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)` (one or two reviewers, never more). A file that CODEOWNERS owns needs `tier: A`. Long sentences in changed Markdown, hard-to-read names in changed code, and a diff over 400 changed lines are notes. A `Made with` model that disagrees with the worker's status file is a note on the machine with its desk. CI cannot see that file, so CI never notes it |
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `borrowed [--dry-run] [--json]` | Compares each file in `src/borrowed/` with upstream's default branch, through `gh`, and opens one issue per source that changed. A security fix is called out in the title. `--dry-run` shows the report and opens nothing; `--json` prints the report as data. See [Borrowed code](#borrowed-code) |
@@ -1795,6 +1795,12 @@ The fence is one contract. Each system builds it its own way:
 
 The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
 which the desk hides, so a worktree is refused.
+
+**Who the agent is.** The desk reads the model and provider from the agent's own config:
+for Codex, `model` and `model_provider` in `config.toml`. The board shows that model. When
+its vendor is not the harness's own, the session starts with one line that says who the
+agent is, and that the harness is its tool. A DeepSeek model runs through Codex, whose
+prompt names OpenAI; without the line, the worker signs its work as OpenAI.
 
 **The desk's state folder.** Each desk gets its own state folder for the agent, next to
 it: `<desk>.state/<agent>`. The desk points the agent there with the agent's own variable.
