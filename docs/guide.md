@@ -744,9 +744,11 @@ action skips `check --pr` and leaves a notice: the pull request check runs on
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
 follow it yet can start with `pr-check: false`. A pull request Dependabot opens gets
 the title check, and the other rules show as notes, because Dependabot writes its own
-body. The `init` workflow in the kit still
-runs `.yokoten/`. It moves to the action after the first release, so it never depends
-on `@main`.
+body. The kit's `check` workflow runs the project's copy in `.yokoten/` first: the same
+yokoten, and so the same check, as the commit hook. It then runs the action, pinned to
+the first release's commit, so a pull request that changes `.yokoten/` still meets a
+check it cannot edit; Dependabot keeps that pin current. The kit's `pr` and `issue`
+workflows run the project's copy.
 
 ### A private repo without CI
 
