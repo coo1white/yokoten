@@ -78,6 +78,8 @@ agent 试着强推。yokoten 拦住它，说清原因，给出改法。然后 `d
 团队页面只是预览。
 它不在 0.1 的发布里。
 
+yokoten 在 PR 之前工作，也和 [PR 审查机器人](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/guide.md#在-pr-上会看到的审查机器人) 一起工作。
+
 ## 能配合什么
 
 **Agent。** yokoten 用同一套规则守着九个 AI 写代码 agent：Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI 和 OpenCode。其中七个做了端到端验证。Gemini CLI 和 OpenCode 已经写进代码，但还没有做端到端运行。

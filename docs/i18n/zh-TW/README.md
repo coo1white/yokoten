@@ -78,6 +78,8 @@ agent 嘗試強制 push。yokoten 把它擋下，說明原因，並給出改法�
 團隊頁面只是預覽。
 它不在 0.1 的發布裡。
 
+yokoten 在 PR 之前工作，也和 [PR 審查機器人](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) 一起工作。
+
 ## 支援範圍
 
 **Agent。** yokoten 用同一套規則守著九個 AI 寫程式 agent：Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI 和 OpenCode。其中七個做了端對端驗證。Gemini CLI 和 OpenCode 已經寫進程式，但還沒有做端對端執行。

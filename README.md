@@ -67,6 +67,8 @@ The same rules hold at each checkpoint:
 New kinds of safeguard can be added the same way: your project's own rules, and rules other projects share.
 A lesson one project learns can protect every project.
 
+yokoten works before the pull request and alongside [PR review bots](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests).
+
 ## Install
 
 You need [Node](https://nodejs.org/) 22.23.4 or later (24.22.1 or later on Node 24, 26.12.1
