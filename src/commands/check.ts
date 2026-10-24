@@ -137,11 +137,18 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       const printNotes = (found: Finding[], label: string) => {
         if (found.length && !json) print(invocation, [`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
       };
-      // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
+      // One diff with renames found, so a moved file is not noted as all new. Fixed
+      // prefixes and plain paths, whatever the user's git settings say.
+      const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+      const added = pr.files.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
+      // Plain English (record 0005): a long sentence on a line the pull request adds is a
+      // note, never a failure. Old lines are left alone, as with names: a small change in a
+      // long page must not bury the check's problems under notes about text it did not write.
       const long: Finding[] = [];
       for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
         const text = readAtHead(file);
-        if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
+        const lines = added.get(file) ?? new Set<number>();
+        if (text !== null) for (const s of longSentences(text)) if (lines.has(s.line)) long.push(longSentenceNote(file, s));
       }
       notes.push(...long);
       printNotes(long, 'long sentence(s)');
@@ -149,10 +156,6 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       // are notes too. Old lines are left alone, so a project is not noted all at once.
       const names: Finding[] = [];
       const codeFiles = pr.files.filter(isCodeFile);
-      // One diff with renames found, so a moved file is not noted as all new. Fixed
-      // prefixes and plain paths, whatever the user's git settings say.
-      const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-      const added = pr.files.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
       for (const file of codeFiles) {
         const text = added.has(file) ? readAtHead(file) : null;
         if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));

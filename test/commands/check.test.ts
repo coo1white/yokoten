@@ -58,6 +58,37 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   assert.match(result.stdout, /no pull request in this run/);
 });
 
+test('check --pr: a long sentence is noted only on a line the pull request adds (#647)', async () => {
+  const sandbox = makeSandbox();
+  const oldSentence = `${Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')}.\n`;
+  // A different long sentence, so git cannot match it to the old one and call it unchanged.
+  const newSentence = `${Array.from({ length: 30 }, (_, i) => `v${i}`).join(' ')}.\n`;
+  sandbox.write('README.md', `Short.\n${oldSentence}`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const head = (firstLine: string, extra = '') => {
+    sandbox.write('README.md', `${firstLine}\n${oldSentence}${extra}`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'head');
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  const event = (sha: string) => {
+    const file = join(sandbox.home, 'event.json');
+    const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nMade with worker (opus)\n';
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  // The old long sentence is on a line this commit does not touch: no note.
+  let result = await sandbox.call(['check', '--pr'], { extra: event(head('Shorter.')) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /long sentence/);
+  // A second long sentence on the line this commit adds is noted, and the old one still is not.
+  result = await sandbox.call(['check', '--pr'], { extra: event(head('Shorter.', newSentence)) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /note: 1 long sentence\(s\)\n- README\.md:3: a sentence of 30 words/);
+});
+
 test('check --pr: a change file counts as the changelog entry, and its form is checked (#132)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('README.md', 'Short.\n');
