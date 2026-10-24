@@ -363,6 +363,18 @@ export const COMMANDS: Command[] = [
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },
   {
+    name: 'stops',
+    summary: 'the log of the guard stops on this computer, or turn it off and on',
+    usage: '[off | on]',
+    text: [
+      'Shows where the stop log is, and whether yokoten writes it. `off` stops the writing',
+      'and deletes the log; `on` starts it again. The log stays on this computer.',
+    ],
+    options: [],
+    arguments: ['action'],
+    example: 'yokoten stops off',
+  },
+  {
     name: 'worker',
     summary: "mark a worktree as a worker's, so the guard treats every agent there as a worker",
     usage: 'mark <dir> | unmark <dir> | env [runtime]',
@@ -431,6 +443,21 @@ export const COMMANDS: Command[] = [
     options: [{ name: '--json', text: 'the explanation, or the ids, as JSON on stdout' }],
     argument: 'id',
     example: 'yokoten explain release',
+  },
+  {
+    name: 'pr',
+    summary: 'keep open pull requests up to date and resolve mechanical conflicts',
+    usage: 'sync',
+    text: [
+      'For each open pull request whose branch is behind its base branch, merges the base',
+      'in, resolves only the mechanical conflicts (two added blocks, or two changed import',
+      'lists), runs typecheck and the tests of the touched files, and pushes as the bot.',
+      'Anything else stops with the files, the hunks and a dispatch brief. It never',
+      'force-pushes, rebases or resolves on GitHub. Run it after every merge.',
+    ],
+    options: [],
+    argument: 'action',
+    example: 'yokoten pr sync',
   },
   {
     name: 'bot',

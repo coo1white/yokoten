@@ -9,6 +9,7 @@
 // (#434). A mark is never printed, logged or repeated back. Marks the owner added are never
 // touched by `off`, `on` or install.
 
+import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -17,13 +18,13 @@ import { checkAnchors } from '../host/sigstore/anchor.ts';
 import { findAnchor, workflowIdentity } from '../host/sigstore/rekor.ts';
 import { readEventLog } from '../host/sigstore/record.ts';
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
-import { asText, borrowedHost, type Gh, ghIn, isObject, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
-import { loadConfig } from '../rules/config.ts';
+import { asText, botConfig, botEnv, borrowedHost, type Gh, ghIn, installationToken, isObject, OPEN_PULL_LIMIT, readCodeOwners, readIssue, readNumberedPullRequest, readOpenPulls, readPullRequest, readRepoLabelNames, repoOf } from '../host/github/index.ts';
+import { type Env, loadConfig } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, madeWithModelNote, splitForDependabot } from '../rules/pr.ts';
 import { BOARD_AGENT_FILE, parseBoardAgent, readBoardWorktrees } from './advice/board/agents.ts';
 import { parseChange } from '../run/changelog.ts';
-import { check, checkHistory, borrowedFiles, type BorrowedChange, GitReadError, gitReadFinding, historyTimeZones, indexFiles, readGit, timeZoneNote, unstageHint, watchBorrowed } from '../run/check.ts';
+import { check, checkHistory, borrowedFiles, type BorrowedChange, GitReadError, gitReadFinding, type GitRun, historyTimeZones, indexFiles, readGit, syncPull, timeZoneNote, unstageHint, verifyMerge, watchBorrowed } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, hideHome, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
@@ -773,4 +774,137 @@ export async function runBorrowed(invocation: Invocation): Promise<number> {
   }
   print(invocation, [`borrowed: ${files.length} file(s), ${watch.changed.length} source(s) changed, ${watch.unreadable.length} unreadable`]);
   return failed ? 1 : 0;
+}
+// ---- `yokoten pr sync` (#432) ----
+//
+// The lead runs this after every merge. Each open pull request whose branch is behind its
+// base gets the base merged in, the two mechanical conflicts resolved, typecheck and the
+// touched tests run, and the branch pushed as the bot. Anything else stops with the files,
+// the hunks and a dispatch brief. It never force-pushes, rebases or edits on GitHub.
+
+/** How long one git or gh call in the sync may take. */
+const PR_SYNC_TIMEOUT_MS = 120_000;
+
+/** The environment for every git call of the sync: no prompt, and UTC commit times (#809). */
+export function prSyncEnv(env: Env): Env {
+  return { ...env, GIT_TERMINAL_PROMPT: '0', TZ: 'UTC' };
+}
+
+/** One open pull request's branches, as `gh pr list` gives them. */
+export async function runPr(invocation: Invocation): Promise<number> {
+  const options = parse('pr', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const action = options.positional[0];
+  if (action !== 'sync') {
+    return usage(invocation, action === undefined ? 'give the action: `yokoten pr sync`' : `"${action}" is not an action of pr; the one action is sync`);
+  }
+  const { env, cwd } = invocation;
+  const root = requireRoot(invocation, cwd);
+  if (!root) return 1;
+
+  let remote = '';
+  try {
+    remote = execFileSync('git', ['config', '--get', 'remote.origin.url'], { cwd: root, env: prSyncEnv(env), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    // Reported below, with the same words whatever git said.
+  }
+  const repo = repoOf(remote);
+  if (!repo) {
+    print(invocation, ['yokoten pr sync: the origin remote is not a GitHub repo, so there is nothing to list'], invocation.stderr);
+    return 1;
+  }
+
+  let open: ReturnType<typeof readOpenPulls>;
+  try {
+    open = readOpenPulls(ghIn(root, env, GH_TIMEOUT_MS), repo);
+  } catch (err) {
+    print(invocation, [`yokoten pr sync: gh could not list the open pull requests: ${(err as Error).message.split('\n')[0]}`], invocation.stderr);
+    return 1;
+  }
+  if (typeof open === 'string') {
+    print(invocation, [`yokoten pr sync: ${open}`], invocation.stderr);
+    return 1;
+  }
+  if (open.isCut) {
+    print(invocation, [`yokoten pr sync: the open pull request list stops at ${OPEN_PULL_LIMIT}, so some pull requests are not synced`]);
+  }
+  if (!open.pulls.length) {
+    print(invocation, ['yokoten pr sync: no open pull requests']);
+    return 0;
+  }
+
+  // The branches and base branches must be here before any merge. One fetch is enough.
+  const fetched = spawnSync('git', ['fetch', '--prune', 'origin'], { cwd: root, env: prSyncEnv(env), encoding: 'utf8', timeout: PR_SYNC_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+  if (fetched.status !== 0) {
+    print(invocation, [`yokoten pr sync: git fetch origin failed: ${String(fetched.stderr || fetched.stdout).trim().split('\n')[0]}`], invocation.stderr);
+    return 1;
+  }
+
+  const git = (args: string[], worktree: string): GitRun => {
+    const result = spawnSync('git', ['--no-replace-objects', ...args], {
+      cwd: worktree,
+      env: prSyncEnv(env),
+      encoding: 'utf8',
+      timeout: PR_SYNC_TIMEOUT_MS,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  };
+  // The token is asked for once, and only when a branch is ready to push.
+  let token: Promise<string> | null = null;
+  const push = async (worktree: string, branch: string): Promise<{ ok: boolean; said: string }> => {
+    try {
+      token ??= (async () => {
+        const config = botConfig(env);
+        if (typeof config === 'string') throw new Error(config);
+        return installationToken(config, repo);
+      })();
+      const value = await token;
+      const pushed = spawnSync('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], {
+        cwd: worktree,
+        env: botEnv(env, value),
+        encoding: 'utf8',
+        timeout: PR_SYNC_TIMEOUT_MS,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      if (pushed.error) return { ok: false, said: pushed.error.message.split('\n')[0] };
+      return { ok: pushed.status === 0, said: String(pushed.stderr || pushed.stdout).trim().split('\n').slice(-1)[0] ?? '' };
+    } catch (err) {
+      return { ok: false, said: (err as Error).message.split('\n')[0] };
+    }
+  };
+
+  let needsAgent = false;
+  for (const pull of open.pulls) {
+    if (pull.isFork) {
+      print(invocation, [`#${pull.number} ${pull.branch}: needs an agent (the branch is in a fork, which yokoten does not push)`]);
+      needsAgent = true;
+      continue;
+    }
+    const outcome = await syncPull({
+      root,
+      number: pull.number,
+      branch: pull.branch,
+      base: pull.base,
+      git,
+      push,
+      verify: (worktree, files) => verifyMerge(worktree, files, env),
+      tempRoot: join(root, '.tmp', 'yokoten-pr-sync'),
+    });
+    print(invocation, [pullLine({ ...outcome, base: pull.base })]);
+    if (outcome.files?.length) print(invocation, ['', 'Files:', ...outcome.files.map((file) => `- ${file}`)]);
+    if (outcome.hunksText?.length) print(invocation, ['', 'Conflict hunks:', ...outcome.hunksText.flatMap((hunk) => hunk.split('\n'))]);
+    if (outcome.brief) print(invocation, ['', 'Dispatch brief:', ...outcome.brief.split('\n')]);
+    if (outcome.state === 'needs-agent') needsAgent = true;
+  }
+  return needsAgent ? 1 : 0;
+}
+
+/** The one line a pull request gets in the sync's report, naming the base it merged. */
+export function pullLine(outcome: { number: number; branch: string; base: string; state: string; hunks?: number }): string {
+  const head = `#${outcome.number} ${outcome.branch}: `;
+  if (outcome.state === 'up-to-date') return `${head}up to date with ${outcome.base}`;
+  if (outcome.state === 'merged') return `${head}merged ${outcome.base}`;
+  if (outcome.state === 'resolved') return `${head}resolved ${outcome.hunks ?? 0} hunk${outcome.hunks === 1 ? '' : 's'} then merged ${outcome.base}`;
+  return `${head}needs an agent`;
 }
