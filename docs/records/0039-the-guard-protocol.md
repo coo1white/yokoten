@@ -92,8 +92,8 @@ for the guard by name, so silence is never an allow.
 3. Read the decision from the JSON. Do not read stderr: it holds warnings only.
 4. A crash, a signal, a timeout, or another version means refuse.
 
-A tool that cannot ask the owner treats `ask` as `allow`, and shows `reason.message`. The
-answer is still the truth; the owner decides when the tool can ask.
+A tool that cannot ask the owner treats `ask` as `allow`, and shows `reason.message` when
+it has a place to show it. The owner decides when the tool can ask.
 
 ## The conformance test
 
