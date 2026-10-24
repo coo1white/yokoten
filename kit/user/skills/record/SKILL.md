@@ -2,7 +2,7 @@
 name: record
 description: Write down a decision so it is not argued again. Use when the user decides something about scope, design, process or a trade-off, or asks why something is the way it is.
 ---
-<!-- managed by yokoten; `yokoten install` replaces this file -->
+<!-- managed by yokoten; `yokoten install` updates this file, and keeps your edits -->
 
 > **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
 > doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one

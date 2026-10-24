@@ -2,7 +2,7 @@
 name: rca
 description: Find the root cause of a process failure and turn the fix into a check, then spread it to every project. Use when an agent broke a rule, a bad change got through, or the user says "this happened again".
 ---
-<!-- managed by yokoten; `yokoten install` replaces this file -->
+<!-- managed by yokoten; `yokoten install` updates this file, and keeps your edits -->
 
 > **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
 > doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one

@@ -18,7 +18,7 @@ import * as gemini from '../../agents/runtimes/gemini.ts';
 import * as grok from '../../agents/runtimes/grok.ts';
 import { hostGuardMisses } from '../../host/gh-commands.ts';
 import { UNSAVED_CONTROL, unsavedNotes } from '../advice/unsaved.ts';
-import { HOME_DIR } from '../files.ts';
+import { HOME_DIR, isNewerKitCopy, sealManaged } from '../files.ts';
 import { compareCoreRules } from '../init.ts';
 import { coreRulesControl, roadControl } from './lessons.ts';
 import { leftoverControl, machineControl } from './machine.ts';
@@ -41,6 +41,10 @@ export function selfTest(): string[] {
   failed.push(...roadControl());
   const kit = '# rules\n\n## This project\n';
   if (compareCoreRules('# old rules\n\n## This project\n', kit).state !== 'behind' || compareCoreRules('# rules\n', kit).state !== "can't compare") failed.push('core rules check');
+  // A note must catch an edited file behind an older kit copy, and stay quiet on the same copy.
+  const kitMark = '<!-- managed by yokoten; a test mark -->\n';
+  const olderCopy = sealManaged(`${kitMark}old body\n`);
+  if (!isNewerKitCopy(olderCopy, `${kitMark}new body\n`) || isNewerKitCopy(olderCopy, `${kitMark}old body\n`)) failed.push('edited kit note');
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
   failed.push(...leftoverControl());

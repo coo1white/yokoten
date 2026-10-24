@@ -20,7 +20,7 @@ import type { FolderTrust } from '../../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../../agents/hooks-file.ts';
 import { runtimeVersion, VERSION } from '../files.ts';
 import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init.ts';
-import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, installedSkillDirs, projectSkillDirs, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
+import { EMPTY_MARKS_FIX, editedKitCopies, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, installedSkillDirs, projectSkillDirs, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
 
 export interface Practice {
   name: string;
@@ -451,6 +451,25 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   const tip = readDefaultBranch(root, env);
   if (!tip || tip === plugin.commit || !isAncestor(root, plugin.commit, tip, env)) return null;
   return note(plugin.commit.slice(0, 12), tip.slice(0, 12));
+}
+
+/**
+ * A note when the user edited a managed skill or agent and the kit's copy has changed
+ * since install wrote it (#477, record 0015). The edit stays; the newer copy waits until
+ * the user compares the two. A note, never a failure: the file is theirs.
+ */
+export function editedKitCheck(env: Env): Finding | null {
+  if (homeOf(env) === null) return null;
+  const copies = editedKitCopies(env);
+  if (!copies.length) return null;
+  const home = homeIn(env);
+  const shown = (file: string): string => file.replace(home, '~');
+  const here = copies.map((copy) => `${copy.name} (${shown(copy.file)})`);
+  const which = here.length === 1 ? `the ${here[0]} you edited` : `${here.length} files you edited: ${here.join(', ')}`;
+  const diffs = copies.map((copy) => `\`diff ${shown(copy.file)} ${shown(copy.kitFile)}\``);
+  return finding('edited-kit', `a newer kit copy is waiting for ${which}`, `${diffs.join('; ')}; to take the new copy, save your edit elsewhere, delete the managed file, then run \`yokoten install\``, {
+    why: 'your edit stays, and a kit fix reaches the files you did not change (record 0015)',
+  });
 }
 
 /**

@@ -16,8 +16,11 @@ export const HOME_DIR = homeDirOf(fileURLToPath(import.meta.url));
 export const VERSION: string = JSON.parse(readFileSync(join(HOME_DIR, 'package.json'), 'utf8')).version;
 export const KIT = join(HOME_DIR, 'kit');
 
-/** A line that marks a file yokoten owns. Install replaces such a file; it never touches others. */
+/** A line that marks a file yokoten owns. Install updates such a file, and keeps one the user changed. */
 export const MANAGED = 'managed by yokoten';
+
+/** The hash in a managed file's mark: what install wrote, so the next install can tell an edit from an old copy. */
+const MANAGED_HASH = /;? sha256=([0-9a-f]{64})/;
 
 /** How a copy of the runtime went: written, or kept because `dest` is or holds the copy running now (#204). */
 export type CopyResult = 'wrote' | 'kept';
@@ -119,21 +122,113 @@ export function writeNew(path: string, content: string, { mode }: { mode?: numbe
   return 'wrote';
 }
 
-/** Write a file yokoten owns: new, or replacing an older yokoten copy. A file without the mark is the user's. */
-export function writeManaged(path: string, content: string): 'wrote' | 'updated' | 'same' | 'kept (yours)' {
+/** `text` with the first `search` replaced by `replacement`, both read as plain text, so a `$` in either stays a `$`. */
+const replaceOnce = (text: string, search: string, replacement: string): string => {
+  const at = text.indexOf(search);
+  return at < 0 ? text : `${text.slice(0, at)}${replacement}${text.slice(at + search.length)}`;
+};
+
+/**
+ * Whether a line is yokoten's mark: a comment whose own text starts with the phrase.
+ * A heading or a sentence that names the phrase is the user's prose, not a mark (#848).
+ */
+const isMarkLine = (line: string): boolean => {
+  const text = line.trimStart();
+  const prefix = /^(?:<!--|#|rem\s|;|\/\/)\s*/i.exec(text);
+  return prefix !== null && text.slice(prefix[0].length).toLowerCase().startsWith(MANAGED);
+};
+
+/**
+ * A managed file's mark line as it is, the same line without a hash, the hash of the file
+ * without the hash (`hash`, and `lfHash` when every line end counts the same), and the hash
+ * the line records (`null` for a copy from an older yokoten). `null` when the file has no mark.
+ * A line with a hash wins over a line that only reads as one: a file's own text can say
+ * "managed by yokoten", and that sentence must not hide the real mark (#848).
+ */
+function managedMark(text: string): { line: string; plain: string; hash: string; lfHash: string; recorded: string | null } | null {
+  const marked = text.split(/\r?\n/).filter(isMarkLine);
+  const line = marked.find((each) => MANAGED_HASH.test(each)) ?? marked[0];
+  if (line === undefined) return null;
+  // The mark without its hash, with one space before an HTML comment's `-->`, so the hash
+  // does not change when a second install seals the same file again.
+  const bare = line.replace(MANAGED_HASH, '');
+  // A slice, not a regex: CodeQL flags a regex that strips an HTML comment marker,
+  // because filtering with one is incomplete by nature.
+  const end = '-->';
+  const withoutEnd = bare.endsWith(end) ? bare.slice(0, -end.length).trimEnd() : bare;
+  const plain = bare.trimEnd().endsWith(end) ? `${withoutEnd} ${end}` : bare;
+  const unsealed = replaceOnce(text, line, plain);
+  const hash = createHash('sha256').update(unsealed).digest('hex');
+  // A Windows checkout writes every line end as CRLF, and that is the same file (#456).
+  const lfHash = createHash('sha256').update(lfText(unsealed)).digest('hex');
+  return { line, plain, hash, lfHash, recorded: line.match(MANAGED_HASH)?.[1] ?? null };
+}
+
+/**
+ * `content` with the hash of its bytes in the managed mark. A later install compares that
+ * hash with the file: a match is yokoten's own copy, a mismatch is the user's edit (0015).
+ * Text with no mark is as it is.
+ */
+export function sealManaged(content: string): string {
+  const mark = managedMark(content);
+  if (!mark) return content;
+  const line = mark.plain.endsWith(' -->')
+    ? `${mark.plain.slice(0, -' -->'.length)}; sha256=${mark.hash} -->`
+    : `${mark.plain} sha256=${mark.hash}`;
+  return replaceOnce(content, mark.line, line);
+}
+
+/**
+ * Whether the text carries yokoten's own mark, not only a phrase that names it. Prose in a
+ * skill is the user's, so install keeps it and uninstall leaves it (#848).
+ */
+export const isManagedText = (text: string): boolean => managedMark(text) !== null;
+
+/** The hash a managed file records for the copy install wrote, or `null` when it has no mark or no hash. */
+export const recordedManagedHash = (text: string): string | null => managedMark(text)?.recorded ?? null;
+
+/**
+ * Whether the kit's copy of a managed file has changed since install wrote it (#477). The
+ * recorded hash says which version was written; a different hash in `kit` means a newer
+ * copy waits. A file with no hash came from an older yokoten, so it says nothing.
+ */
+export function isNewerKitCopy(text: string, kit: string): boolean {
+  const recorded = recordedManagedHash(text);
+  const waiting = recordedManagedHash(sealManaged(kit));
+  return recorded !== null && waiting !== null && recorded !== waiting;
+}
+
+/**
+ * Whether the user changed a managed file: it records a hash, and its bytes no longer match
+ * it. A file whose only change is CRLF line ends is yokoten's copy still (#456).
+ */
+export function isEditedManaged(content: string): boolean {
+  const mark = managedMark(content);
+  return mark !== null && mark.recorded !== null && mark.recorded !== mark.hash && mark.recorded !== mark.lfHash;
+}
+
+/**
+ * Write a file yokoten owns: new, or replacing an older yokoten copy. A file without the
+ * mark is the user's, and so is a marked file the user changed since install wrote it.
+ * A marked file with no hash comes from an older yokoten, which left no way to tell, so it
+ * is replaced once and gets a hash (0015).
+ */
+export function writeManaged(path: string, content: string): 'wrote' | 'updated' | 'same' | 'kept (yours)' | 'kept (your edit)' {
+  const wanted = sealManaged(content);
   const existed = existsSync(path);
   if (existed) {
     const old = readFileSync(path, 'utf8');
-    if (!old.includes(MANAGED)) return 'kept (yours)';
-    if (old === content) return 'same';
+    if (managedMark(old) === null) return 'kept (yours)';
+    if (old === wanted) return 'same';
+    if (isEditedManaged(old)) return 'kept (your edit)';
   }
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content);
+  writeFileSync(path, wanted);
   return existed ? 'updated' : 'wrote';
 }
 
 /** How a write or a removal ended, as install, init and uninstall report it. */
-export type ReportState = 'wrote' | 'updated' | 'added' | 'linked' | 'same' | 'kept (yours)' | 'removed' | 'not there';
+export type ReportState = 'wrote' | 'updated' | 'added' | 'linked' | 'same' | 'kept (yours)' | 'kept (your edit)' | 'removed' | 'not there';
 
 /**
  * One report line for one write or removal. A file that was already right is "kept", so a
