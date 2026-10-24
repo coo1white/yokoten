@@ -1,0 +1,3 @@
+Changed
+
+A refusal now reads the same everywhere, at a tool call and at the end of a turn: `yokoten stopped this: <what> [<rule>]`, then `Why:`, `Do instead:` and `More:`. Only a hook installed as Claude Code's (`--agent claude-code`) gets the deny as JSON on exit 0; every other reader, including a host that runs the shared `.claude/settings.json`, keeps exit 2. On a terminal, `yokoten doctor` and other commands use colour and lined-up columns, and `NO_COLOR` turns the colour off. A command inside a coloured line no longer ends the colour for the rest of the line. The board draws a refusal by the same four parts. `YOKOTEN_HOOK_DENIAL=exit2` keeps the older hook answer. (#707)

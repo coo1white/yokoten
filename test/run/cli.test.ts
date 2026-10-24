@@ -258,10 +258,10 @@ test('help: the help table and the parser list the same commands and options (#2
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');
   const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
   // Every parse call names a command in the table; no option list is written outside it.
-  const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
+  const parsed = [...source.matchAll(/\bparse\('([a-z]+(?:-[a-z]+)*)'/g)].map((m) => m[1]);
   assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
   assert.doesNotMatch(source, /flags: \[/, 'no option list outside the help table');
-  const cases = [...source.matchAll(/^ {4}case '([a-z]+)':/gm)].map((m) => m[1]);
+  const cases = [...source.matchAll(/^ {4}case '([a-z]+(?:-[a-z]+)*)':/gm)].map((m) => m[1]);
   assert.deepEqual([...cases].sort(), COMMANDS.map((command) => command.name).sort(), 'each command in the switch has a help entry, and the reverse');
   // Each option the help lists is accepted: with it, the parser gives no "unknown option".
   const sandbox = makeSandbox();
