@@ -4,7 +4,6 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -884,26 +883,32 @@ test('marks: the count names both files when the setting adds one (#656)', async
 
 // ---- Actions health (#647) ----
 
-/** A gh first on PATH that answers only the listed calls, one line each, and fails the rest. */
+/**
+ * A gh first on PATH that answers only the listed calls, one line each, and fails the rest.
+ * The stub is fixed text: its answers and its log path arrive in the environment, as data (#368).
+ */
 function healthGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string, string>): Record<string, string> {
   const bin = join(sandbox.home, 'bin');
+  const answersFile = join(sandbox.home, 'gh-answers.json');
+  const log = join(sandbox.home, 'gh.log');
   mkdirSync(bin, { recursive: true });
+  writeFileSync(answersFile, JSON.stringify(answers));
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
 // A dynamic import works whether Node loads this file as CommonJS or as an ES module.
-import('node:fs').then(({ appendFileSync }) => {
-  const answers = ${JSON.stringify(answers)};
+import('node:fs').then(({ appendFileSync, readFileSync }) => {
   const call = process.argv.slice(2).join(' ');
-  appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+  appendFileSync(process.env.YOKOTEN_HEALTH_GH_LOG, call + '\\n');
+  const answers = JSON.parse(readFileSync(process.env.YOKOTEN_HEALTH_GH_ANSWERS, 'utf8'));
   const key = Object.keys(answers).find((one) => call === one || call.startsWith(one + ' '));
   if (key === undefined) process.exit(1);
   console.log(answers[key]);
 });
 `,
+    { mode: 0o755 },
   );
-  chmodSync(join(bin, 'gh'), 0o755);
-  return { PATH: `${bin}:${process.env.PATH}` };
+  return { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_HEALTH_GH_ANSWERS: answersFile, YOKOTEN_HEALTH_GH_LOG: log };
 }
 
 const healthCalls = (sandbox: ReturnType<typeof makeSandbox>): string[] => {
