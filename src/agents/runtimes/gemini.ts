@@ -13,11 +13,14 @@
 import { statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, isObject, type Problem, readTable, type ReadOptions, type Settings, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
+import { readStop } from './claude-code.ts';
+import type { AgentAdapter } from './runtime.ts';
 
 /** How yokoten reads a Gemini CLI settings file: comments allowed, as Gemini CLI allows them. */
 const READ: ReadOptions = { comments: true };
@@ -87,7 +90,7 @@ export function projectHooksState(root: string, cli: string): { guard: HookState
 }
 
 /** An AfterAgent event: the same fields as Claude Code's Stop (`cwd`, `stop_hook_active`). */
-export { readStop } from './claude-code.ts';
+export { readStop };
 
 /**
  * What a SessionStart hook prints: Gemini CLI reads the agent's context from JSON
@@ -198,3 +201,20 @@ export function sandboxProblem(root: string): { what: string; fix: string } | nu
 
 /** The names this runtime's agent gets on top of the shared ones (#613). Gemini CLI: only its own key. GOOGLE_API_KEY and GOOGLE_APPLICATION_CREDENTIALS open all of Google Cloud, so a Vertex AI setup needs the lead to pass them on purpose. */
 export const AGENT_ENV: RuntimeEnv = { login: ['GEMINI_API_KEY'], config: ['GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION', 'GOOGLE_GENAI_USE_VERTEXAI'] };
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'gemini',
+  label: 'Gemini CLI',
+  projectHook: '`.gemini/settings.json`: BeforeTool and AfterAgent',
+  userHook: '~/.gemini/settings.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: false, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: false },
+  readToolCall,
+  readStop,
+  releaseFix: releaseFix(`${approve('gemini')} (if its strict environment sanitization is on, the variable is dropped: the owner releases outside Gemini CLI)`),
+  agentEnv: AGENT_ENV,
+  call: (command) => ({ cwd: '/repo', tool_name: 'run_shell_command', tool_input: { command } }),
+};

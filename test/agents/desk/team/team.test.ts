@@ -44,6 +44,8 @@ test('vendorOf and modelOf: the model names the vendor first, then the runtime',
   assert.equal(vendorOf('claude-code', 'model not named'), 'Anthropic');
   assert.equal(vendorOf('muse', 'model not named'), 'Meta');
   assert.equal(vendorOf('grok', 'grok-4.7'), 'xAI');
+  assert.equal(vendorOf('codex', 'flash', 'deepseek'), 'DeepSeek', 'a provider name counts when the model name does not (#748)');
+  assert.equal(vendorOf('codex', 'gpt-6.1-sol', 'openai'), 'OpenAI');
   assert.equal(modelOf(['claude', '--model', 'claude-opus-5-5', '-p', 'x']), 'claude-opus-5-5');
   assert.equal(modelOf(['codex', '--model=deepseek-v4.1-flash']), 'deepseek-v4.1-flash');
   assert.equal(modelOf(['grok', '-m', 'grok-4.7']), 'grok-4.7');
