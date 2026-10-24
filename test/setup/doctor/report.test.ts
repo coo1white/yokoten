@@ -107,6 +107,12 @@ test('road: each server step catches its setting off, and says what and the fix 
     ['security-settings', { [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false } }, /^private vulnerability reporting is off$/],
     ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [] } }, /bypass list does not name Repository admin/],
     ['tag-bypass', { [`repos/${REPO}/rulesets/7`]: { ...(GOOD[`repos/${REPO}/rulesets/7`] as object), bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] } }, /bypass list names the bot/],
+    // Two v* rulesets both block tag creation, and a push meets both: a bypass on one is not enough (#850).
+    ['tag-bypass', {
+      [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+      [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }] },
+      [`repos/${REPO}/rulesets/8`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }], bypass_actors: [] },
+    }, /bypass list does not name Repository admin/],
     // A bypass on another v* ruleset, one that does not block tag creation, is no way to push a tag (#537).
     ['tag-bypass', {
       [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
@@ -128,6 +134,27 @@ test('road: each server step catches its setting off, and says what and the fix 
     assert.match(f.what, what);
     assert.match(f.fix, /^in Settings, /);
   }
+});
+
+test('server: a bypass counts only where a push meets it, and both tag-bypass faults are named (#850)', () => {
+  const list = `repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`;
+  const vTags = { conditions: { ref_name: { include: ['refs/tags/v*'] } } };
+  const admin = [{ actor_id: 5, actor_type: 'RepositoryRole' }];
+  // A bot on a v* ruleset that does not block creation cannot push a tag, so it is no fault (#850).
+  const outside = readServer(serverGh({
+    ...GOOD,
+    [list]: [{ id: 7, target: 'tag', enforcement: 'active' }, { id: 8, target: 'tag', enforcement: 'active' }],
+    [`repos/${REPO}/rulesets/7`]: { ...vTags, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: admin },
+    [`repos/${REPO}/rulesets/8`]: { ...vTags, rules: [{ type: 'update' }], bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] },
+  }).gh, REPO);
+  assert.equal(marks(outside)['tag-bypass'], 'ok');
+  // When the owner cannot push and a bot can, the line names both, not only the bot.
+  const both = readServer(serverGh({
+    ...GOOD,
+    [`repos/${REPO}/rulesets/7`]: { ...vTags, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }], bypass_actors: [{ actor_id: 99, actor_type: 'Integration' }] },
+  }).gh, REPO);
+  const f = stepFinding(ROAD.find((s) => s.key === 'tag-bypass')!, '.', {}, { server: both });
+  assert.match(f.what, /does not name Repository admin.*; .*names the bot/);
 });
 
 test('doctor: the tag bypass and the release environment each show one line with the place to click (#537)', () => {

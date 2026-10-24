@@ -600,9 +600,9 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'tag-bypass': {
-    rule: 'the v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and names no bot (core rule 3)',
+    rule: 'each v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and names no bot (core rule 3)',
     why: 'the owner must be able to push a release tag, and no agent must be able to',
-    check: `${SERVER_CHECK}: the active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and no GitHub App`,
+    check: `${SERVER_CHECK}: every active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and none names a GitHub App`,
     docs: guide('the-core-rules'),
   },
   'release-reviewer': {

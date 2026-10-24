@@ -420,10 +420,14 @@ export function serverChecks(settings: ServerSettings | Unread, { isCiOff: isOff
     .filter(([, on]) => on === false).map(([name]) => name);
   const unknown = Object.values(sec).some((on) => on === null);
   const bypass = settings.tagBypass;
-  const bypassOk = 'unread' in bypass ? bypass : bypass.admin && !bypass.bot;
-  const bypassWhat = 'unread' in bypass ? '' : bypass.bot
-    ? 'the v* tag ruleset\'s bypass list names the bot, so the bot can push a release tag'
-    : 'the v* tag ruleset\'s bypass list does not name Repository admin, so you cannot push a release tag';
+  // Two faults can hold at once: you cannot push the tag, and a bot can. Say both, so one
+  // sentence does not hide the other (#850).
+  const bypassFaults = 'unread' in bypass ? [] : [
+    bypass.admin ? '' : 'the v* tag ruleset\'s bypass list does not name Repository admin, so you cannot push a release tag',
+    bypass.bot ? 'the v* tag ruleset\'s bypass list names the bot, so the bot can push a release tag' : '',
+  ].filter(Boolean);
+  const bypassOk = 'unread' in bypass ? bypass : bypassFaults.length === 0;
+  const bypassWhat = 'unread' in bypass ? '' : bypassFaults.join('; ');
   const release = settings.release;
   const reviewerOk = 'unread' in release ? release : release.reviewer;
   // A tag rule alone is not the lock: with a branch rule named v* too, a branch can deploy (#537).
@@ -983,11 +987,11 @@ export const ROAD: Step[] = [
     how: 'through the code host\'s API, in full doctor only: secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on; some are visible only to a repo admin',
   }),
   serverStep('tag-bypass', {
-    lacking: 'the v* tag ruleset\'s bypass list does not let you push a release tag',
+    lacking: 'the v* tag ruleset\'s bypass list does not let you push a release tag, or names a bot',
     fix: TAG_BYPASS_FIX,
     byHand: 'the v* tag ruleset lets you, and no bot, create, move or delete a release tag',
     why: 'a tag that nobody can push blocks a release, and a bot on the list can push one',
-    how: 'through the code host\'s API, in full doctor only: the active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and no bot',
+    how: 'through the code host\'s API, in full doctor only: every active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and none names a bot',
   }),
   serverStep('release-reviewer', {
     lacking: 'the release environment has no required reviewer',

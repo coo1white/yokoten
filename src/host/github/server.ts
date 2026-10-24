@@ -41,7 +41,7 @@ export interface ServerSettings {
   branch: BranchRules | Unread;
   /** A ruleset on v* tags limits creation, update and deletion. */
   tags: boolean | Unread;
-  /** The v* tag ruleset's bypass list: whether it names Repository admin, and whether it names a bot (an App). */
+  /** Every v* tag ruleset that blocks creation: whether each names Repository admin, and whether one names a bot (an App). */
   tagBypass: { admin: boolean; bot: boolean } | Unread;
   /** The `release` environment: a required reviewer, a tag rule on v*, and whether a branch rule on v* is there instead. */
   release: { reviewer: boolean; tagRule: boolean; branchRule: boolean } | Unread;
@@ -124,11 +124,17 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
   });
   // The owner pushes a release tag through the bypass list; a bot on it can push one too.
   // A bypass only helps on the ruleset that blocks the push: a bypass on another v* ruleset,
-  // with no creation rule, leaves the owner unable to push a tag (#537).
+  // with no creation rule, leaves the owner unable to push a tag (#537). Two v* rulesets can
+  // both block creation, and a push meets both, so one bypass is not enough: every such
+  // ruleset must name it (#850).
   const blocksCreation = (s: Ruleset) => (s.rules ?? []).some((r) => r.type === 'creation');
+  const creationRulesets = 'unread' in tagRules ? [] : tagRules.filter((s) => targetsV(s) && blocksCreation(s));
+  const namesAdmin = (s: Ruleset) => (s.bypass_actors ?? []).some((a) => a.actor_type === 'RepositoryRole' && a.actor_id === REPOSITORY_ADMIN_ROLE_ID);
+  const namesBot = (s: Ruleset) => (s.bypass_actors ?? []).some((a) => a.actor_type === 'Integration');
   const tagBypass = 'unread' in tagRules ? tagRules : {
-    admin: tagRules.some((s) => targetsV(s) && blocksCreation(s) && (s.bypass_actors ?? []).some((a) => a.actor_type === 'RepositoryRole' && a.actor_id === REPOSITORY_ADMIN_ROLE_ID)),
-    bot: tagRules.some((s) => targetsV(s) && (s.bypass_actors ?? []).some((a) => a.actor_type === 'Integration')),
+    // With no v* ruleset blocking creation, the tag is free to push and needs no bypass.
+    admin: creationRulesets.every(namesAdmin),
+    bot: creationRulesets.some(namesBot),
   };
 
   // The `release` environment. A missing environment answers 404: it then has neither piece.
