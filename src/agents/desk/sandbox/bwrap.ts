@@ -14,8 +14,8 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Env } from '../../rules/config.ts';
-import { type DeskBackend, type DeskPlan, type FencedCommand, proxyEnv } from './desk.ts';
+import type { Env } from '../../../rules/config.ts';
+import { type DeskBackend, type DeskPlan, type FencedCommand, proxyEnv } from '../desk.ts';
 
 /** Where the proxy's socket is inside the desk. */
 export const INSIDE_SOCKET = '/tmp/.yokoten-desk-proxy.sock';
@@ -24,7 +24,7 @@ export const INSIDE_SOCKET = '/tmp/.yokoten-desk-proxy.sock';
 export const INSIDE_PORT = 3128;
 
 /** yokoten's entry, which starts the bridge: bin/ here, and dist/bin/ in the built package. */
-const ENTRY = fileURLToPath(new URL('../../../bin/yokoten.mjs', import.meta.url));
+const ENTRY = fileURLToPath(new URL('../../../../bin/yokoten.mjs', import.meta.url));
 
 /** How a mount kind sorts at the same depth: a folder is hidden before things are shown in it. */
 const KIND_ORDER = { hide: 0, read: 1, write: 2, lock: 3 } as const;

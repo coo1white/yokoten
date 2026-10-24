@@ -217,10 +217,25 @@ export const COMMANDS: Command[] = [
     text: ['Shows every stage and step of the road, and what this machine is missing.', 'It exits 1 on a problem: a failed self-test, or a core-rules, tree or machine line', 'marked MISSING. Steps left on the road are to do, not problems. Always 0 with --session.'],
     options: [
       { name: '--session', text: 'only the next step, for the start of a session' },
-      { name: '--json', text: 'the report as JSON on stdout' },
+      { name: '--json', text: 'the report as JSON on stdout, with the desks gc would remove' },
       { name: '--agent', value: 'name', text: 'with --session: claude-code (the default), codex, muse, or gemini for Gemini CLI JSON' },
     ],
     example: 'yokoten doctor --session',
+  },
+  {
+    name: 'gc',
+    summary: 'sweep finished desks, keep what is not saved',
+    usage: '[--dry-run]',
+    text: [
+      'Removes the desks of finished agents: a clone or worktree whose tip is on the',
+      'default branch and on the remote, with no live agent and no change of its own,',
+      'ignored files included. It keeps the main checkout, the session\'s own checkout,',
+      'and any desk a root holds: an open pull request, a commit on no remote branch,',
+      'a change, or a fresh session log. A desk the marker can\'t decide on is listed,',
+      'never removed.',
+    ],
+    options: [{ name: '--dry-run', text: 'print what would go; remove nothing' }],
+    example: 'yokoten gc --dry-run',
   },
   {
     name: 'adopt',

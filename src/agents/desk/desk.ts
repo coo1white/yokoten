@@ -19,10 +19,10 @@
 //    YOKOTEN_TEAM say where the agent is (team/who.ts).
 //
 // This file turns a request into a `DeskPlan`: plain lists of paths, hosts and names. A
-// backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
-// seatbelt.ts on macOS. Native Windows has no backend yet (#669), but its plan is built
-// here: no case in a path, every profile folder and other drive hidden, and a command
-// found with PATHEXT. Those rules stay testable on every system.
+// backend per system turns the plan into a command: sandbox/bwrap.ts on Linux and WSL2,
+// sandbox/seatbelt.ts on macOS. Native Windows has no backend yet (#669), but its plan is
+// built here: no case in a path, every profile folder and other drive hidden, and a
+// command found with PATHEXT. Those rules stay testable on every system.
 
 import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';

@@ -932,5 +932,13 @@ export async function runDesk(invocation: Invocation): Promise<number> {
   });
   if (result.stderr) invocation.stderr.write(result.stderr);
   if (refused.size) print(invocation, [`yokoten desk: the proxy refused ${[...refused].join(', ')}. Add an API host with --host if the agent needs it.`], invocation.stderr);
+  // The runner's done step (#708): sweep the desks that finished, this one too when
+  // nothing in it is unsaved. A failure here must not fail the desk.
+  const root = rootOf(invocation.cwd, invocation.env);
+  if (root) {
+    const { sweepQuietly } = await import('./advice/doctor.ts');
+    const swept = sweepQuietly(invocation, root);
+    if (swept.length) print(invocation, swept, invocation.stderr);
+  }
   return result.code;
 }

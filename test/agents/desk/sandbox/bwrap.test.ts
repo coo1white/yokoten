@@ -1,11 +1,11 @@
-// Tests for src/agents/desk/bwrap.ts: the words bwrap gets. That the fence holds is
+// Tests for src/agents/desk/sandbox/bwrap.ts: the words bwrap gets. That the fence holds is
 // checked by the contract test in start.test.ts.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BWRAP, bwrapArgs, INSIDE_PORT, INSIDE_SOCKET, orderMounts } from '../../../src/agents/desk/bwrap.ts';
-import type { DeskPlan } from '../../../src/agents/desk/desk.ts';
+import { BWRAP, bwrapArgs, INSIDE_PORT, INSIDE_SOCKET, orderMounts } from '../../../../src/agents/desk/sandbox/bwrap.ts';
+import type { DeskPlan } from '../../../../src/agents/desk/desk.ts';
 
 const PLAN: DeskPlan = {
   desk: '/work/projects/desk',

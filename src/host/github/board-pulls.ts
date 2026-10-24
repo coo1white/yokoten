@@ -238,6 +238,21 @@ export function readBoardPulls(gh: Gh, repo: string): BoardPull[] | string {
   return boardPullsOf(answers);
 }
 
+/**
+ * The branches of `repo`'s open pull requests, for the sweep (#708), or the reason gh
+ * can't read them. A draft is an open pull request too: its desk keeps its work.
+ */
+export function readOpenPullBranches(gh: Gh, repo: string): string[] | string {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'headRefName', '--limit', '1000']));
+  } catch (error) {
+    return boardPullsFailed(error);
+  }
+  if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+  return rows.filter(isObject).map((row) => asText(row.headRefName)).filter(Boolean);
+}
+
 /** readBoardPulls without blocking (#688): both queries run at once, and `signal` stops them. */
 export async function readBoardPullsLater(gh: GhLater, repo: string, signal?: AbortSignal): Promise<BoardPull[] | string> {
   let answers: string[];

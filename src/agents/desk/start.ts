@@ -2,14 +2,15 @@
 // the agent inside the fence, and clean up when it ends. The plan comes from desk.ts.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { BWRAP } from './bwrap.ts';
+import { BWRAP } from './sandbox/bwrap.ts';
 import type { DeskBackend, DeskPlan } from './desk.ts';
+import { DESK_PID_FILE } from './gc.ts';
 import { type ProxyEvent, startProxy } from './network/proxy.ts';
-import { SEATBELT } from './seatbelt.ts';
+import { SEATBELT } from './sandbox/seatbelt.ts';
 
 /** The backend for a system, or the plain reason there is none. */
 export function chooseBackend(platform: NodeJS.Platform, env: Env): DeskBackend | string {
@@ -62,6 +63,14 @@ export async function startDesk(plan: DeskPlan, backend: DeskBackend, { stdio, o
     const listened = typeof address === 'string' ? address : (address?.port ?? 0);
     const fenced = backend.fence(plan, listened, scratch);
     const child = spawn(fenced.file, fenced.args, { cwd: plan.desk, env: fenced.env, stdio: ['inherit', stdio, stdio] });
+    // The sweep roots on a live agent (#708). The pid file goes with the desk and is
+    // removed when the agent ends; a desk without one is still kept by a fresh log.
+    const pidFile = join(plan.desk, '.git', DESK_PID_FILE);
+    try {
+      writeFileSync(pidFile, `${child.pid ?? ''}\n`);
+    } catch {
+      // A desk git folder that can't be written: the log root still holds the desk.
+    }
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     child.stdout?.on('data', (chunk: Buffer) => out.push(chunk));
@@ -85,6 +94,8 @@ export async function startDesk(plan: DeskPlan, backend: DeskBackend, { stdio, o
     for (const [signal, handler] of handlers) process.off(signal, handler);
     return { code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') };
   } finally {
+    // The agent has ended: its desk is no longer rooted by a live process (#708).
+    rmSync(join(plan.desk, '.git', DESK_PID_FILE), { force: true });
     await proxy.close();
     rmSync(scratch, { recursive: true, force: true });
   }

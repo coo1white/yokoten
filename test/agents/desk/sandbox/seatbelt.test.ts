@@ -1,15 +1,15 @@
-// Tests for src/agents/desk/seatbelt.ts: the profile sandbox-exec gets. This machine may
+// Tests for src/agents/desk/sandbox/seatbelt.ts: the profile sandbox-exec gets. This machine may
 // not be a Mac, so the profile is checked as text here; start.test.ts checks the contract
 // for real when it runs on macOS.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { DeskPlan } from '../../../src/agents/desk/desk.ts';
-import { parentFolders, SEATBELT, sbplString, seatbeltProfile } from '../../../src/agents/desk/seatbelt.ts';
-import { makeTempDir } from '../../repo/helpers.ts';
+import type { DeskPlan } from '../../../../src/agents/desk/desk.ts';
+import { parentFolders, SEATBELT, sbplString, seatbeltProfile } from '../../../../src/agents/desk/sandbox/seatbelt.ts';
+import { makeTempDir } from '../../../repo/helpers.ts';
 
 const PLAN: DeskPlan = {
   desk: '/Users/someone/projects/desk',

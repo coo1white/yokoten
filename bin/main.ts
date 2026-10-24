@@ -92,6 +92,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/learn.ts').then((m) => m.runLearn(invocation));
     case 'doctor':
       return import('../src/commands/advice/doctor.ts').then((m) => m.runDoctor(invocation));
+    case 'gc':
+      return import('../src/commands/advice/doctor.ts').then((m) => m.runGc(invocation));
     case 'explain':
       return import('../src/commands/advice/doctor.ts').then((m) => m.runExplain(invocation));
     case 'adopt':
