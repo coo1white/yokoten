@@ -3,11 +3,20 @@
 
 # yokoten · 横展
 
-### どの AI エージェントにも、同じルールを。
+### AI が考える。yokoten は、考えることから実行までの一歩を守るプログラムです。
 
-AI でコードを書くのは安くなりました。管理は違います。yokoten は、どのベンダーのエージェントにもあなたのルールを守らせ、チーム全体を一つのボードに出します。決めるのはあなたです。
+yokoten はプログラムです。AI ではありません。
+言葉でルールを曲げさせることはできません。
+同じコマンドは、毎回同じ答えになります。1 回のチェックは 100 ミリ秒未満で、費用はかかりません。
+どのルールにもテストがあります。
 
-AI が書いたコードにとっての yokoten は、電気製品にとっての UL 認証のようなものです。製品は作らず、どのメーカーにも同じ安全基準を守らせます。
+すでに使っている AI のコーディングツールの中で動きます。
+ツールは、コマンドや編集の前に yokoten へ尋ねます。
+一度インストールすれば、ほかに覚えることはありません。
+ターミナルでも、デスクトップアプリでも、エディタでも動きます。Orca のように、多くのエージェントを動かすツールの下でも動きます。
+それらのツールの代わりにはなりません。
+
+いまの yokoten は、AI エージェントでも、チャットツールでも、チームのページでもありません。
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; [English](https://github.com/yokoten-labs/yokoten/blob/main/README.md) | [简体中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/README.md) | [繁體中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-TW/README.md) | 日本語
 
@@ -18,15 +27,28 @@ AI が書いたコードにとっての yokoten は、電気製品にとって�
 
 </div>
 
-<sub>このページは英語版からの翻訳です。不自然な表現や誤りに気づいたら、issue や pull request で教えてください。</sub>
-
 ## 何をするか
 
-yokoten は、今使っているエージェントの上に、三つのことを足します。フックもサンドボックスも設定も、各エージェント自身のものを使います。別の仕組みには取り替えません。
+yokoten は五つを守ります。あなたの作業、秘密、公開、実行するコード、そしてこの保護そのものです。
 
-1. **どのエージェントにも、同じルール。** 番人が、コマンドと編集を実行前に見ます。force push、リリースタグ、コミットチェックの省略、修正タスクでのテスト書き換え、エージェントが投稿する内容に含まれる秘密情報や個人情報は止めます。なぜダメか、代わりに何をすればよいかも、エージェントに伝えます。
-2. **ルールは、各エージェント自身の形で。** `yokoten init` が、対応しているエージェントごとにフックを書き、Claude Code、Codex、Gemini CLI、Grok にはサンドボックスの設定も書きます。エージェントがいなくても、コミットのチェックと CI が、問題のある変更を止めます。
-3. **エージェントのチームのためのボード。** ベンダーが違っても、エージェントはそれぞれ囲われたデスクで並んで働きます。一つのページで、全員の様子が分かります。
+その一部は、いまから有効です。番人は force push、`.git` の削除、タグの push、パッケージの公開、ダウンロードをシェルへ流し込むこと、コミットチェックの省略を止めます。
+コミットチェックはコミットに含まれる秘密を止めます。プロジェクトで `yokoten init` を先に実行する必要があります。
+五つの保護の残りは、v0.1.1 で来ます。
+
+番人は目に見えません。何も入力しなくても働きます。
+人が打つコマンドはわずかです。例えば `yokoten install` と `yokoten doctor` です。
+チーム用のコマンドは v0.1.2 を予定しています（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。
+
+yokoten は九つの AI コーディングエージェントを同じルールで守ります。Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI、OpenCode です。
+そのうち七つはエンドツーエンドで検証済みです。Gemini CLI と OpenCode はコードにありますが、エンドツーエンドではまだ実行していません。
+
+yokoten が止めたとき、コードを書かない人でも、その答えで動けます。
+止めたこと、理由、どうすればよいかを伝え、ガイドへのリンクを示します。
+
+```
+yokoten: git push origin v1.2.0 pushes a release tag. Only the owner decides when to release. If the owner asked for this, they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 claude` (or your agent's command); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
+```
 
 ## インストール
 
@@ -55,21 +77,19 @@ Claude Code ではプラグインも使えます。`/plugin marketplace add yoko
 
 <img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/demo.svg" width="680" alt="ターミナル。エージェントが git push --force origin main を実行すると、yokoten のフックがそれを止め、何が起きたか、なぜ危険か、直し方（--force-with-lease を使う）を示します。続いて yokoten doctor が 5 段階中の第 1 段階にいることを示し、次の一手としてテストの追加を挙げます。">
 
-## エージェントのチームを動かす
+## この次
 
-yokoten 自身も、このようなチームで作っています。リードのエージェントが計画とレビューをし、別々のベンダーのエンジニアが issue を一つずつ受け持ちます。
-
-- **エンジニアごとに、一つのデスク。** `yokoten desk` は、エージェントを自分のクローンで起動します。ネットワークは、そのエージェント自身の API 以外にはつながりません。トークンは渡さず、あなたのホームフォルダは隠します。プッシュはできません。自分が従うルールも変えられません。
-- **ボットがプルリクエストを開きます。** どのプルリクエストにも、リスクの大きさ（ティア A、B、C）が書いてあります。リスクの高いものは、あなたの承認を待ちます。チェックが緑になるまで、マージはできません。
-- **一つのボード。** `yokoten board` は、あなたのコンピューターでページを出します。各エージェントが何をしているか、各プルリクエストが「作成」「チェック」「あなた（ティア A のみ）」「マージ」のどこにいるか、あなたの対応が必要なことが分かります。スマートフォンでも使え、四つの言語で表示します。インターネットからは何も読み込みません。
-
-ボードとデスクは `main` にあります。次のリリースで npm に入ります。
+チーム用のコマンドは v0.1.2 を予定しています（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。
+コマンドラインから、エージェント、タスク、マシンを追加、一覧、変更、削除できるようになります。
+チームのページはプレビューです。
+0.1 のリリースには入っていません。
 
 yokoten はプルリクエストの前に動き、[PR レビューボット](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) と並んで働きます。
 
 ## 対応しているもの
 
-**エージェント。** 番人は、Claude Code、Codex CLI、GitHub Copilot CLI、Antigravity CLI、Muse Code、DeepSeek Harness、Grok CLI で動きます。Gemini CLI は一覧にありますが、端から端まではまだ確認していません。[エージェント表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)に、それぞれの試し方が書いてあります。
+**エージェント。** yokoten は九つの AI コーディングエージェントを同じルールで守ります。Claude Code、GitHub Copilot CLI、Antigravity CLI、Codex CLI、Muse Code、DeepSeek Harness、Grok CLI、Gemini CLI、OpenCode です。そのうち七つはエンドツーエンドで検証済みです。Gemini CLI と OpenCode はコードにありますが、エンドツーエンドではまだ実行していません。
+[エージェント表](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)に、それぞれの試し方が書いてあります。
 
 **言語。** プロジェクトの言語は問いません。番人、個人情報と秘密情報のチェック、CI、issue とプルリクエストのチェックは、どの言語でも同じように動きます。`doctor` は、JavaScript と TypeScript、Python、Go、Rust、Java、.NET、Ruby、PHP、Swift、Elixir、Dart、そして `make test` があるプロジェクトについて、テストのコマンドを見つけます。Go、Python、Rust、.NET、Ruby、PHP では、`init` がテストを走らせる CI のジョブを書きます。
 
@@ -94,7 +114,7 @@ yokoten はプルリクエストの前に動き、[PR レビューボット](htt
 |---|---|---|
 | 1 | **番人**：危険な操作の前に、エージェントを止めます | ✅ 完了 |
 | 2 | **道案内**：`doctor` が初心者を五つの関所で案内します。エージェントが、古いプロジェクトへの入れ方を下書きします | 🚧 いま |
-| 3 | **チーム、どのツールでも、どのホスティングでも**：どのベンダーのエージェントも、一つのルールと一つのボードの下で働きます。GitHub、Gitea、GitLab | 🚧 チームのボードはいま、Meta のハッカソンの頃。次は Windows と Gitea |
+| 3 | **チームのコマンド**：コマンドラインからエージェント、タスク、マシンを追加、一覧、変更、削除します | 🚧 v0.1.2 を予定しています（[issue #823](https://github.com/yokoten-labs/yokoten/issues/823)）。チームのページはプレビューで、0.1 のリリースには入りません |
 | 4 | **開発サイクル全体**：短い仕様から、開発、テスト、レビュー、リリース、保守まで | あとで |
 | 5 | **横展**：一つのプロジェクトの教訓がチェックになり、そのチェックがすべてのプロジェクトに広がります | 目標 |
 

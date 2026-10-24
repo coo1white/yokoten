@@ -2,13 +2,20 @@
 
 # yokoten · 横展
 
-### Every AI agent. One set of rules.
+### AI does the thinking. yokoten is a program that guards the step from thinking to doing.
 
-AI made writing code cheap, not managing it. yokoten holds every agent to your rules,
-from any vendor, and shows the whole team on one board. You make the calls.
+yokoten is a program, not an AI.
+It cannot be talked out of a rule.
+The same command gets the same answer every time, in under 100 ms, at no cost.
+Every rule has a test.
 
-yokoten is to AI-written code what UL certification is to electrical appliances: it
-doesn't build the product, it holds every maker to the same safety rules.
+It lives inside the AI coding tools you already use.
+Before each command or edit, the tool asks yokoten.
+You install it once, and there is nothing else to learn.
+It works in a terminal, a desktop app, or an editor, and under tools that run many agents, such as Orca.
+It does not replace those tools.
+
+It is not an AI agent, not a chat tool, and not a team page.
 
 **[yokoten.app](https://yokoten.app/?from=github)** &nbsp;·&nbsp; English | [简体中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-CN/README.md) | [繁體中文](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/zh-TW/README.md) | [日本語](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/README.md)
 
@@ -21,18 +28,44 @@ doesn't build the product, it holds every maker to the same safety rules.
 
 ## What it does
 
-yokoten adds three things on top of the agents you already use. It uses each agent's own
-hooks, sandbox and settings, and doesn't replace them.
+yokoten protects five things: your work, your secrets, your releases, the code you run,
+and the safeguard itself.
 
-1. **One set of rules for every agent.** A guard checks each command and edit before it
-   runs. It stops a force push, a release tag, a skipped commit check, a test edited in a
-   fix task, and a secret or private detail in what an agent posts. It tells the agent why
-   and what to do instead.
-2. **The rules, in each agent's own language.** `yokoten init` writes the hooks for each
-   agent it supports, and the sandbox settings for Claude Code, Codex, Gemini CLI and Grok.
-   The commit check and CI stop a bad change even when no agent is involved.
-3. **A board for a team of agents.** Agents from different vendors work side by side,
-   each in its own fenced desk, and you see all of them on one page.
+Some of that is on now. The guard stops a force push, a delete of `.git`, a tag push, a
+package publish, a download piped into a shell, and a skipped commit check.
+The commit check stops a secret in a commit. It needs `yokoten init` in the project.
+The rest of the five protections come in v0.1.1.
+
+The guard is invisible: it works when you type nothing.
+A few commands are for you, such as `yokoten install` and `yokoten doctor`.
+Team commands are planned for v0.1.2 ([issue #823](https://github.com/yokoten-labs/yokoten/issues/823)).
+
+yokoten guards nine AI coding agents with the same rules: Claude Code, GitHub Copilot CLI,
+Antigravity CLI, Codex CLI, Muse Code, DeepSeek Harness, Grok CLI, Gemini CLI, and OpenCode.
+Seven are verified end to end. Gemini CLI and OpenCode are in the code but not run end to end.
+
+When yokoten stops an action, a non-coder can act on the answer.
+It says what was stopped, why, and what to do instead, then links the guide.
+
+```
+yokoten: git push origin v1.2.0 pushes a release tag. Only the owner decides when to release. If the owner asked for this, they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 claude` (or your agent's command); do not look for another way.
+  docs: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
+```
+
+## One engine, many safeguards
+
+yokoten is a library of safeguards with one engine behind it.
+The five protections are the first set of rules, and they come on for everyone in v0.1.1.
+Each rule says three things: where it checks, what it looks for, and what it says when it stops an action.
+
+The same rules hold at each checkpoint:
+
+- between the AI and its coding tool, before a command or an edit runs;
+- at a commit, and in CI, even when no agent is involved;
+- later, between a sandbox and the internet, to see where data goes.
+
+New kinds of safeguard can be added the same way: your project's own rules, and rules other projects share.
+A lesson one project learns can protect every project.
 
 yokoten works before the pull request and alongside [PR review bots](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests).
 
@@ -72,34 +105,27 @@ An agent tries a force push. yokoten stops it, says why, and gives the fix. Then
 
 <img src="https://raw.githubusercontent.com/yokoten-labs/yokoten/main/docs/assets/demo.svg" width="680" alt="A terminal. An agent runs git push --force origin main. The yokoten hook blocks it and says what happened, why, and the fix: use --force-with-lease. Then yokoten doctor shows stage 1 of 5 and names the next step: add tests.">
 
-## Run a team of agents
+## Coming next
 
-yokoten is built by such a team: a lead agent plans and reviews, and engineers from
-different vendors each take one issue.
-
-- **A desk for each engineer.** `yokoten desk` starts an agent in its own clone, with no
-  network but its own API, no tokens, and your home folder hidden. It can't push, and it
-  can't change the rules it works under.
-- **A bot opens the pull requests.** Every pull request says how risky it is (tier A, B
-  or C). The risky ones wait for your approval; checks must be green before anything merges.
-- **One board.** `yokoten board` serves a page on your machine: every agent and what it
-  is doing, each pull request as Built, Checked, You (tier A only), Merged, and what needs you. It works
-  on a phone, in four languages, and loads nothing from the internet.
-
-The board and the desk are on `main` and come to npm with the next release.
+Team commands are planned for v0.1.2 ([issue #823](https://github.com/yokoten-labs/yokoten/issues/823)).
+You will add, list, change, and remove agents, tasks, and machines from the command line.
+A team page is a preview.
+It is not part of the 0.1 releases.
 
 ## Works with
 
-**Agents.** The guard runs in Claude Code, Codex CLI, GitHub Copilot CLI, Antigravity CLI,
-Muse Code, DeepSeek Harness and Grok CLI. Gemini CLI is listed but not verified end to end.
+**Agents.** yokoten guards nine AI coding agents with the same rules: Claude Code, GitHub
+Copilot CLI, Antigravity CLI, Codex CLI, Muse Code, DeepSeek Harness, Grok CLI, Gemini
+CLI, and OpenCode. Seven are verified end to end. Gemini CLI and OpenCode are in the code
+but not run end to end.
 The [agent table](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#works-with)
 says how each one was tested.
 
 **Languages.** Your project can be in any language: the guard, the privacy and secrets
 check, CI and the issue and pull request checks work the same in all of them. `doctor`
 finds the test command for JavaScript and TypeScript, Python, Go, Rust, Java, .NET, Ruby,
-PHP, Swift, Elixir, Dart and any `make test`, and for Go, Python, Rust, .NET,
-Ruby and PHP `init` writes the CI job that runs it.
+PHP, Swift, Elixir, Dart, and any `make test`. For Go, Python, Rust, .NET,
+Ruby and PHP, `init` writes the CI job that runs it.
 
 ## Why
 
@@ -126,7 +152,7 @@ The dream: anyone can build software the way good teams do.
 |---|---|---|
 | 1 | **Guard**: agents are stopped before a dangerous action | ✅ done |
 | 2 | **Guide**: `doctor` walks a beginner through five stages; an agent drafts how an old project adopts yokoten | 🚧 now |
-| 3 | **A team, any tool, any host**: agents from every vendor under one set of rules and one board; GitHub, Gitea and GitLab | 🚧 the team board now, around the Meta hackathon; Windows and Gitea next |
+| 3 | **Team commands**: add, list, change, and remove agents, tasks, and machines from the command line | 🚧 planned for v0.1.2 ([issue #823](https://github.com/yokoten-labs/yokoten/issues/823)); a team page is a preview, not in the 0.1 releases |
 | 4 | **The whole cycle**: from a short spec to build, test, review, release and upkeep | later |
 | 5 | **Yokoten**: a lesson one project learns becomes a check, and the check spreads to every project | the goal |
 
