@@ -291,6 +291,37 @@ test('a Gitea host names the open pull requests, and a draft stays a draft', asy
   assert.equal(map.changes[0]?.draft, true);
 });
 
+test('a fresh clone reads origin\'s copies: origin/main, and a branch it never checked out', () => {
+  const sandbox = makeSandbox();
+  withBase(sandbox);
+  branchFiles(sandbox, 'one', { 'a.txt': 'ONE\ntwo\nthree\n' });
+  branchFiles(sandbox, 'old', { 'b.txt': 'old\n' });
+  // origin has the branch one step on, and a main that moved since the local one.
+  for (const branch of ['one', 'old']) sandbox.git('update-ref', `refs/remotes/origin/${branch}`, branch);
+  sandbox.git('switch', '-q', 'old');
+  sandbox.write('b.txt', 'newer\n');
+  sandbox.git('commit', '-q', '-am', 'pushed later');
+  sandbox.git('update-ref', 'refs/remotes/origin/old', 'HEAD');
+  sandbox.git('reset', '-q', '--hard', 'HEAD~1');
+  sandbox.git('switch', '-q', 'main');
+  sandbox.write('c.txt', 'main moved\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-q', '-m', 'main moved');
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  sandbox.git('reset', '-q', '--hard', 'HEAD~1');
+  sandbox.git('branch', '-q', '-D', 'one');
+
+  assert.equal(mainRef(sandbox.repo, sandbox.env)?.rev, 'refs/remotes/origin/main');
+  const { map } = build(sandbox, [
+    { id: 'pr:1', label: 'PR #1', branch: 'one', draft: false },
+    { id: 'pr:2', label: 'PR #2', branch: 'old', draft: false },
+  ]);
+  assert.deepEqual(map.changes.map((change) => [change.id, change.head]), [
+    ['pr:1', sandbox.git('rev-parse', 'refs/remotes/origin/one').stdout.trim().slice(0, 8)],
+    ['pr:2', sandbox.git('rev-parse', 'refs/remotes/origin/old').stdout.trim().slice(0, 8)],
+  ]);
+});
+
 test('main is the branch this clone compares against, and a repo with none builds no map', () => {
   const sandbox = makeSandbox();
   withBase(sandbox);

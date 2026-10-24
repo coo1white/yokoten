@@ -42,8 +42,9 @@ function issueExample(): ConflictMap {
 test('the summary says what collides and what to merge first, in the issue\'s words', () => {
   assert.deepEqual(summaryLines(issueExample()), [
     '2 changes collide with main: PR #12, PR #15.',
+    'Merge next: PR #20, because it moves or deletes 1 file, so it goes first and alone.',
     'PR #12 and PR #15 both change src/app.ts. Merge PR #12 first, then PR #15.',
-    'PR #20 moves 1 file that 3 other changes touch. It goes in alone, first.',
+    'PR #20 moves 1 file that 3 other changes touch. It goes in alone, before them.',
   ]);
 });
 
@@ -68,6 +69,7 @@ test('a draft is listed but not ordered, and a hot path is named', () => {
   const lines = summaryLines(mapOf([draft, one], [], ['src/app.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts']));
   assert.deepEqual(lines, [
     '1 change collides with main: PR #18.',
+    'Merge next: PR #12, because it collides with no other open change.',
     'PR #18 is a draft, so it is listed here, but not ordered.',
     '4 files are hot: src/app.ts, src/b.ts, src/c.ts, and 1 more. Three or more open changes touch them, or an open change moves them.',
   ]);

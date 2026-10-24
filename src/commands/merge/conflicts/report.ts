@@ -6,6 +6,7 @@
 import { formatFinding } from '../../../rules/message.ts';
 import { type Invocation, parse, print, printJson, requireRoot, say, usage } from '../../shared.ts';
 import { beforeChange, buildMap, openChanges, writeMap } from './map.ts';
+import { mergeOrder } from './order.ts';
 import { rebuildPrompt } from './rebuild.ts';
 import type { Change, Collision, ConflictMap } from './types.ts';
 
@@ -83,6 +84,12 @@ export function summaryLines(map: ConflictMap): string[] {
   if (withMain.length) {
     lines.push(`${one(withMain.length, 'change')} ${withMain.length === 1 ? 'collides' : 'collide'} with main: ${labelsText(withMain)}.`);
   }
+  // The merge order (#912) decides which of a pair goes first, so every line agrees with it.
+  // A draft has no place in it, so the other change of its pair goes first.
+  const order = mergeOrder(map);
+  const rank = new Map(order.map((pick, index) => [pick.id, index]));
+  const next = order[0] && map.changes.find((change) => change.id === order[0]?.id);
+  if (next && (withMain.length || map.collisions.length)) lines.push(`Merge next: ${next.label}, because ${order[0]?.why}.`);
   const pairs: { collision: Collision; pair: [Change, Change] }[] = [];
   for (const collision of map.collisions) {
     const pair = pairOf(map, collision.first, collision.second);
@@ -90,7 +97,9 @@ export function summaryLines(map: ConflictMap): string[] {
   }
   for (const { collision, pair } of pairs.slice(0, MAX_PAIRS)) {
     const [left, right] = pair;
-    const first = firstOf(left, right);
+    const leftRank = rank.get(left.id) ?? Infinity;
+    const rightRank = rank.get(right.id) ?? Infinity;
+    const first = leftRank === rightRank ? firstOf(left, right) : leftRank < rightRank ? left : right;
     const second = first === left ? right : left;
     lines.push(`${first.label} and ${second.label} both change ${pathsText(collision.files)}. Merge ${first.label} first, then ${second.label}.`);
   }
@@ -98,7 +107,7 @@ export function summaryLines(map: ConflictMap): string[] {
   if (morePairs > 0) lines.push(`${one(morePairs, 'more pair')} collide: \`yokoten conflicts --json\` names every one.`);
   const moving = movers(map);
   for (const { change, others } of moving.slice(0, MAX_MOVERS)) {
-    lines.push(`${change.label} moves ${one(change.moves.length, 'file')} that ${one(others.length, 'other change')} ${others.length === 1 ? 'touches' : 'touch'}. It goes in alone, first.`);
+    lines.push(`${change.label} moves ${one(change.moves.length, 'file')} that ${one(others.length, 'other change')} ${others.length === 1 ? 'touches' : 'touch'}. It goes in alone, before them.`);
   }
   if (moving.length > MAX_MOVERS) lines.push(`${one(moving.length - MAX_MOVERS, 'more change')} move files that others touch: \`yokoten conflicts --json\` names every one.`);
   const drafts = map.changes.filter((change) => change.draft && (change.mainConflicts?.length || map.collisions.some((collision) => collision.first === change.id || collision.second === change.id)));

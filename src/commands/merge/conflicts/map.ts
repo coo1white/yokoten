@@ -103,11 +103,23 @@ function commitOf(git: GitRead, rev: string): string | null {
 }
 
 /**
- * The branch this clone compares against: local `main` first, then `origin/main`, then the
- * branch `origin/HEAD` names. Null when this clone has no main at all, which no map can do.
+ * The newest copy of `branch` here: the local branch when it holds origin's copy (commits not
+ * pushed yet), else origin's copy, since a local branch left behind is old work. A fresh
+ * clone has only origin's copy; a clone with no host has only the local one.
+ */
+function branchCommit(git: GitRead, branch: string): string | null {
+  const local = commitOf(git, `refs/heads/${branch}`);
+  const remote = commitOf(git, `refs/remotes/origin/${branch}`);
+  if (local === null || remote === null || local === remote) return local ?? remote;
+  return git(['merge-base', '--is-ancestor', remote, local])?.status === 0 ? local : remote;
+}
+
+/**
+ * The branch this clone compares against: `origin/main` first, since a local `main` is often
+ * behind it, then local `main` (a clone with no host), then the branch `origin/HEAD` names. Null when this clone has no main at all, which no map can do.
  */
 export function mainRef(root: string, env: Env, git: GitRead = gitReadIn(root, env)): MainRef | null {
-  for (const rev of ['refs/heads/main', 'refs/remotes/origin/main']) {
+  for (const rev of ['refs/remotes/origin/main', 'refs/heads/main']) {
     const commit = commitOf(git, rev);
     if (commit) return { name: 'main', rev, commit };
   }
@@ -296,7 +308,7 @@ export function buildMap(root: string, env: Env, options: MapOptions): MapBuild 
   let unknown = 0;
   let unknownPairs = 0;
   for (const listed of wanted) {
-    const commit = commitOf(git, `refs/heads/${listed.branch}`);
+    const commit = branchCommit(git, listed.branch);
     const paths = commit === null ? null : changedPaths(git, main.commit, commit);
     if (commit === null || paths === null) {
       skipped++;
