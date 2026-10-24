@@ -195,6 +195,7 @@ An `Action` has `command`, `commands`, `paths`, `cwd` and `worker`.
 A record asked for one transcript for every vendor.
 The code has no such mapper yet.
 What the adapters share today is `Action`.
+A tool with no adapter sends the guard protocol instead: [the guard protocol](records/0039-the-guard-protocol.md).
 
 | Runtime | Names the hook watches | How a call becomes an Action | Fields the reader uses |
 | --- | --- | --- | --- |

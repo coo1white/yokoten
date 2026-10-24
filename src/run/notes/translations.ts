@@ -35,8 +35,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
-import type { Env } from '../rules/config.ts';
-import { type Finding, finding } from '../rules/message.ts';
+import type { Env } from '../../rules/config.ts';
+import { type Finding, finding } from '../../rules/message.ts';
 
 const MARKER = /^<!--\s*source:\s*(\S+?)(?:\s+blob\s+([0-9a-f]{7,64}))?\s*-->\s*$/;
 const TRANSLATION_FILE = /\.(md|markdown|html?)$/i;

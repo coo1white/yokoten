@@ -68,6 +68,31 @@ yokoten turns those lessons into something that checks itself:
 
 All of this is on from the start, for everyone: you don't answer a question or edit a file to be safe. Every setting that changes it has a way back to the default. [Record 0014](records/0014-safe-by-default.md) says how yokoten decides what it does by itself, what it asks first, and what it never does.
 
+## The safeguard
+
+The same five protections are on from the start, for every person and every agent. They
+hold with no `yokoten init` and no setting.
+
+1. **Lose your work**: no force push, no hard reset, no deleting `.git` or its history.
+2. **Leak a secret**: no key, token, email address or home path in a commit or a post.
+3. **Publish for you**: no tag, no release, no package publish, no making a repo public.
+4. **Run code from the internet unread**: no download piped into a shell.
+5. **Take the safeguard apart**: no turning off a check or a hook; a worker cannot edit CI or the rules, and you review a lead's change to them.
+
+When it stops something, it shows the same four parts:
+
+```
+yokoten stopped this: creating the tag v1.2.0 [release]
+Why: A tag publishes a release, and only you decide when to release.
+Do instead: If the owner asked for this, they run `git tag v1.2.0` themselves.
+More: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-safeguard
+```
+
+The first line names the exact tag, file or branch, and the rule. `Why` says what could go
+wrong. `Do instead` says the safe way, in words a beginner can use without reading code.
+`More` links the rule. Only the owner makes the changes in the fifth protection; an agent
+asks the owner.
+
 ## Three checks and a lock
 
 ```mermaid
@@ -947,7 +972,7 @@ It puts three safe defaults in `.github/` too:
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
 | `pr sync` | Brings each open pull request up to date with its base branch after a merge. It merges the base in, resolves only two mechanical conflicts (both sides added a whole block, or both changed the same import list), runs typecheck and the tests of the touched files after every merge, clean or resolved, then pushes as the bot. Anything else stops with the files, the hunks and a dispatch brief. Each report line names the base it merged. The open list stops at 100 pull requests, and the report says when it did. It never force-pushes, rebases or resolves on GitHub. Run it after every merge. See [Managing agents like a team](#managing-agents-like-a-team) |
-| `hook [--agent <name>] [--commands-only] [--denial <mode>] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode`. With `--denial exit2`, a refusal keeps exit 2 and the reason on stderr, for a host that reads the exit code alone |
+| `hook [--agent <name>] [--commands-only] [--denial <mode>] [--json] [--protocol]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode`. With `--denial exit2`, a refusal keeps exit 2 and the reason on stderr, for a host that reads the exit code alone. With `--protocol`, any tool sends the guard protocol and reads its answer: see [the guard protocol](records/0039-the-guard-protocol.md) |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `test [--heavy] [--print] [-- <runner words>]` | Runs the tests light, for a machine other work shares (#461): `node --test` under `nice -n 10` (not on Windows), with `--test-concurrency` at most half the cores and one per GB of free memory, and 1 at least. Words after `--` go to the runner: test files, or its options. It is on by default. `YOKOTEN_LIGHT_TESTS=0` turns it off for every call, `--heavy` for one. `--print` shows the command and why, and runs nothing |
 | `stops [off \| on]` | Shows the stop log at `~/.config/yokoten/stops.jsonl`, and whether yokoten writes it. `off` stops the writing and deletes the log; `on` starts it again. The log stays on this computer. See [The stop check](#the-stop-check) |
