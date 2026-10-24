@@ -63,7 +63,7 @@ test('board right: Needs you is not listed here, and a pull request still shows'
     ],
     issues: [],
     runs: [],
-    limits: { maxAgents: 3, byModel: {} },
+    limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 },
   };
   const right = renderRight(makeState(data), data, Date.now()) as unknown as FakeNode;
   assert.equal(/Needs you\d/.test(right.textContent), false, 'the right column does not list Needs you');

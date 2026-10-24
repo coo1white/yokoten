@@ -22,6 +22,8 @@ import {
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
 import { type ActionsHealth, cutPoint, readActionsRuns, readHealthPullChecks, renderActionsHealth, summarizeActionsHealth } from '../../src/commands/check.ts';
+import { borrowedIssue, hasOpenIssue } from '../../src/commands/check.ts';
+import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
@@ -1015,3 +1017,47 @@ test('ci-health: opens and pins the one report issue, then edits it in place', a
 
 /** The exported shape, so a field rename is a type error in the tests too. */
 export type HealthShape = ActionsHealth;
+
+// ---- Borrowed code (record 0024): the issue, and the command ----
+
+test('borrowed: the issue names the source and the security fix, and a second run sees it open', () => {
+  const source = 'https://github.com/example/upstream/blob/main/src/thing.ts';
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const older = 'fedcba9876543210fedcba9876543210fedcba98';
+  const path = 'src/borrowed/thing.ts';
+  const host: BorrowedHost = {
+    commits: () => [
+      { sha: older, message: 'fix: CVE-2026-1 remote code execution' },
+      { sha, message: 'taken' },
+    ],
+  };
+  const change = watchBorrowed([{ path, source, commit: sha, license: 'MIT' }], host).changed[0];
+  const issue = borrowedIssue(change);
+  assert.match(issue.title, /^check: /);
+  assert.ok(issue.title.length <= 60, issue.title);
+  assert.ok(issue.body.includes(source));
+  assert.ok(issue.body.includes(path));
+  assert.ok(issue.body.includes('security'));
+  assert.deepEqual(issue.labels, ['bug', 'hotfix', 'tier B']);
+  assert.deepEqual(borrowedIssue({ ...change, isSecurity: false }).labels, ['bug', 'tier B']);
+  assert.equal(borrowedIssue({ ...change, isSecurity: false }).title, 'check: review borrowed code upstream');
+  const calls: string[][] = [];
+  const gh = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 7, body: `Upstream changed \`${source}\`` }]);
+  };
+  assert.equal(hasOpenIssue(gh, source), true);
+  assert.equal(hasOpenIssue(gh, 'https://github.com/example/elsewhere/blob/main/x.ts'), false);
+  assert.match(calls[0].join(' '), /issue list --state open/);
+  // An answer that is not a list is a gap: stop, never open a duplicate (#676).
+  for (const answer of ['not json', '{}', 'null']) {
+    assert.throws(() => hasOpenIssue(() => answer, source), /did not give an issue list/, answer);
+  }
+});
+
+test('borrowed --dry-run: a repo with no wheel writes nothing and says so', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['borrowed', '--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /borrowed: 0 file\(s\), 0 source\(s\) changed, 0 unreadable/);
+});

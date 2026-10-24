@@ -68,6 +68,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
     case 'ci-health':
       return import('../src/commands/check.ts').then((m) => m.runCiHealth(invocation));
+    case 'borrowed':
+      return import('../src/commands/check.ts').then((m) => m.runBorrowed(invocation));
     case 'redact':
       return import('../src/commands/check.ts').then((m) => m.runRedact(invocation));
     case 'marks':

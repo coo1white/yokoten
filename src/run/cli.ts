@@ -261,6 +261,20 @@ export const COMMANDS: Command[] = [
     example: 'yokoten ci-health --dry-run',
   },
   {
+    name: 'borrowed',
+    summary: 'compare borrowed code with its upstream, and open issues when it moved',
+    usage: '[--dry-run] [--json]',
+    text: [
+      "Compares each file in src/borrowed/ with upstream's default branch, through gh.",
+      'It opens one issue per source that changed, and calls out a security fix.',
+    ],
+    options: [
+      { name: '--dry-run', text: 'show the report and the issues it would open, and write nothing' },
+      { name: '--json', text: 'the report as JSON on stdout' },
+    ],
+    example: 'yokoten borrowed --dry-run',
+  },
+  {
     name: 'redact',
     summary: 'command output with your name, emails, logins and private hosts hidden',
     usage: '',
