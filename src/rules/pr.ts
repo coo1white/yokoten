@@ -1032,6 +1032,26 @@ export function madeWithFindings(body: string): Finding[] {
 }
 
 /**
+ * A note when the worker part of a `Made with` line names no model that the worker's own
+ * checkout filed (#748): a harness's prompt can lead a worker to sign as the harness's
+ * vendor. Only the worker role counts, in its full form or its short form `worker (<model>)`;
+ * a lead or a reviewer that names the status model does not hide a wrong worker model. `statusModel` is the model in the status file at the
+ * worker's branch, and '' when there is none: then there is nothing to compare, and no note.
+ */
+export function madeWithModelNote(body: string, statusModel: string, branch: string): Finding | null {
+  const model = statusModel.replace(/\s+/g, ' ').trim();
+  const roles = parseMadeWith(body)?.roles;
+  if (!model || !roles) return null;
+  // A short `worker (<model>)` has no vendor role, so the parser files it as `worker` in others.
+  const workers = [...roles.writers, ...roles.others.filter((agent) => agent.vendor.toLowerCase() === 'worker')];
+  if (!workers.length) return null;
+  const named = workers.map((agent) => agent.model.replace(/\s+/g, ' ').trim());
+  if (named.some((one) => one.toLowerCase() === model.toLowerCase())) return null;
+  const models = [...new Set(named)].join(' and ');
+  return finding('pr-made-with', `body: the \`Made with\` line names worker ${models}, but the status file of ${branch} says the worker ran ${model}`, `name the model the worker ran (${model}), as its status file says`);
+}
+
+/**
  * The issues whose milestone `gh pr create` (or `new`) should take: null for any other
  * command, one that gives `--milestone` or `-m`, a run-together word it can't read, or a
  * body that links no issue (the body check says so).
