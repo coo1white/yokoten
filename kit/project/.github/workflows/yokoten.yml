@@ -13,10 +13,10 @@ on:
 # No job gets a permission it does not name.
 permissions: {}
 # A newer run cancels the one still going for the same pull request: only its newest
-# commit can merge. A push to main never cancels a run: every commit stays in history,
-# and a cancelled run leaves a ✗ on it (#660).
+# commit can merge. Every other event gets a group of its own, so a run on main is never
+# cancelled, waiting or running: every commit stays in history (#660, #798).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under
@@ -80,6 +80,15 @@ jobs:
         with:
           node-version: '^22.23.4'
       - run: node {{cli}} check
+      # yokoten as a released Action (#129), pinned to the first release by its full
+      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the
+      # release's own copy, so a pull request that changes .yokoten/ still meets a check
+      # it cannot edit. pr.yml and issue.yml still run the project's copy.
+      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0
+        with:
+          pr-check: 'false'
+          issue-check: 'false'
+          node-version: '^22.23.4'
   # The workflows themselves: actionlint finds mistakes, zizmor finds security problems.
   lint:
     runs-on: ubuntu-latest
