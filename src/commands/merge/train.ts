@@ -27,6 +27,8 @@ import type { Env } from '../../rules/config.ts';
 import { workerRole } from '../../rules/guards/index.ts';
 import { runGit } from '../../run/check.ts';
 import { runBot } from './bot.ts';
+import { listPullRequests, nextPick } from './conflicts/order.ts';
+import { MAP_FILE, type ConflictMap } from './conflicts/types.ts';
 import { type Invocation, type Output, parse, print, requireRoot, usage } from '../shared.ts';
 
 /** How long one test or check run may take, in ms. */
@@ -585,20 +587,67 @@ function checksOf(list: unknown): PullRequest['checks'] {
   return pending ? 'pending' : 'green';
 }
 
+/**
+ * The conflict map this clone built, or a plain reason there is none to read. The reason
+ * names the map file, never a full path, so it says nothing about the person's machine.
+ */
+function readConflictMap(root: string, env: Env): ConflictMap | string {
+  const commonDir = text(runGit(root, ['rev-parse', '--git-common-dir'], { env }).stdout);
+  const path = resolve(root, commonDir, MAP_FILE);
+  if (!existsSync(path)) return `no conflict map at ${MAP_FILE} in this clone; build the map first, then run the train again`;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return `the conflict map at ${MAP_FILE} is not readable JSON; build the map again`;
+  }
+  if (!isConflictMap(parsed)) return `the conflict map at ${MAP_FILE} has a shape this version cannot read; build the map again with this version of yokoten`;
+  return parsed;
+}
+
+/** Whether the parsed file is a map this version reads. A version it does not know counts as missing. */
+function isConflictMap(value: unknown): value is ConflictMap {
+  if (typeof value !== 'object' || value === null) return false;
+  const map = value as Partial<ConflictMap>;
+  return map.version === 1 && Array.isArray(map.changes) && Array.isArray(map.collisions);
+}
+
 /** `yokoten train <pr>...`: the command's entry, which refuses a worker and reads the queue. */
 export async function runTrain(invocation: Invocation): Promise<number> {
   const options = parse('train', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
-  const prs = options.positional.map((word) => Number(word));
-  if (!prs.length || prs.some((number) => !Number.isInteger(number) || number <= 0)) return usage(invocation, 'name at least one pull request number, as in `yokoten train 1207 1209`');
-  const wait = options.values['--wait'] === undefined ? WAIT_SECONDS : Number(options.values['--wait']);
-  if (!Number.isInteger(wait) || wait <= 0) return usage(invocation, '--wait takes a whole number of seconds');
+  const isNext = options.flags.has('--next');
+  if (isNext && options.positional.length) return usage(invocation, '--next prints the next pick; leave the pull request numbers out');
+  const given = options.positional.map((word) => Number(word));
+  if (given.some((number) => !Number.isInteger(number) || number <= 0)) return usage(invocation, 'a pull request number is a whole number above zero, as in `yokoten train 1207 1209`');
   const root = requireRoot(invocation, invocation.cwd);
   if (!root) return 1;
   if (workerRole(invocation.env, [invocation.cwd, root]) !== null) {
     print(invocation, ['yokoten train: only the lead runs the train; report to the lead instead'], invocation.stderr);
     return 1;
   }
+  const map = isNext || !given.length ? readConflictMap(root, invocation.env) : null;
+  if (typeof map === 'string') {
+    print(invocation, [`yokoten train: ${map}`], invocation.stderr);
+    return 1;
+  }
+  if (map && isNext) {
+    const pick = nextPick(map);
+    if (!pick) {
+      print(invocation, ['yokoten train: no open change to merge in the conflict map']);
+      return 0;
+    }
+    const label = map.changes.find((change) => change.id === pick.id)?.label ?? pick.id;
+    print(invocation, [`yokoten train: next is ${label}: ${pick.why}`]);
+    return 0;
+  }
+  const prs = given.length ? given : map ? listPullRequests(map) : [];
+  if (!prs.length) {
+    print(invocation, ['yokoten train: the conflict map names no pull request to merge; name one, as in `yokoten train 1207`'], invocation.stderr);
+    return 1;
+  }
+  const wait = options.values['--wait'] === undefined ? WAIT_SECONDS : Number(options.values['--wait']);
+  if (!Number.isInteger(wait) || wait <= 0) return usage(invocation, '--wait takes a whole number of seconds');
   const config = botConfig(invocation.env);
   if (typeof config === 'string') {
     print(invocation, [`yokoten train: ${config}`], invocation.stderr);

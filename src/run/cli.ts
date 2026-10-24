@@ -555,10 +555,11 @@ export const COMMANDS: Command[] = [
   {
     name: 'train',
     summary: 'merge an approved queue one pull request at a time, with a gate between each',
-    usage: '<pr>... [--wait <seconds>]',
+    usage: '[<pr>...] [--wait <seconds>] [--next]',
     text: [
-      'Merges each pull request in the order given, as the bot, and stops at the first one',
-      'that needs a person. Only the lead runs it.',
+      'Merges each pull request in the given order, as the bot, and stops at the first one',
+      'that needs a person. Only the lead runs it. With no numbers it takes the queue from',
+      'the conflict map, in the order that map gives.',
       'Before the first merge it records every base branch, because GitHub forgets a base',
       'when it deletes the branch. A pull request stacked on a squash-merged branch then',
       'merges from the base it really shares with its old branch, not an older one.',
@@ -566,8 +567,12 @@ export const COMMANDS: Command[] = [
       'conflict, a failing test or a missing approval stops the train.',
       'Each merged tree runs the project\'s tests and `check` before it is pushed, and CI',
       'must pass on the pushed merge before the squash.',
+      'With --next it says which pull request is next and why, and merges nothing.',
     ],
-    options: [{ name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' }],
+    options: [
+      { name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' },
+      { name: '--next', text: 'print the next pull request to merge and why, and merge nothing' },
+    ],
     many: true,
     example: 'yokoten train 1207 1209 1211',
   },
