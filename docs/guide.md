@@ -2246,6 +2246,8 @@ refuses the start with a plain reason when they will not (trust the folder first
 or run `yokoten init`). The run shows in `/data`, and stops through `/agents/stop`.
 Stopping keeps the worktree and its commits. A process
 that exits by itself counts as stopped: its slot frees and a later Stop says so.
+Starting the same issue again reuses that worktree, and the brief names the last
+commit. The agent reads `git log` and `git status` first, then continues from there.
 
 The limits say how many agents run at once (three at first), and how many of one
 model. Over the limit, the board refuses a start with a plain reason.
