@@ -4,6 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -20,7 +21,7 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { borrowedIssue, cutPoint, hasOpenIssue } from '../../src/commands/check.ts';
+import { borrowedIssue, cutPoint, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
 import { type BorrowedHost, watchBorrowed } from '../../src/run/check/inspect.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
@@ -958,4 +959,46 @@ test('borrowed --dry-run: a repo with no wheel writes nothing and says so', asyn
   const result = await sandbox.call(['borrowed', '--dry-run']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /borrowed: 0 file\(s\), 0 source\(s\) changed, 0 unreadable/);
+});
+// #432: `pr sync` lists the open pull requests first. With none, it needs no bot and no
+// network, and says so in one line. The merge itself is tested in test/run/check.test.ts.
+test('pr sync: no open pull requests is one line, and no bot is needed (#432)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), '#!/usr/bin/env node\nprocess.stdout.write("[]")\n');
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten pr sync: no open pull requests$/m);
+});
+
+test('pr sync: a missing action is a usage error, not a silent no-op (#432)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['pr']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /give the action: `yokoten pr sync`/);
+});
+
+test('pr sync: every git call runs as UTC, so the merge commit does too (#809)', () => {
+  assert.equal(prSyncEnv({ ...process.env, TZ: 'America/New_York' }).TZ, 'UTC');
+});
+
+test('pr sync: each report line names the real base branch (#809)', () => {
+  assert.equal(pullLine({ number: 1, branch: 'work', base: 'release', state: 'merged' }), '#1 work: merged release');
+  assert.equal(pullLine({ number: 2, branch: 'fix', base: 'main', state: 'resolved', hunks: 2 }), '#2 fix: resolved 2 hunks then merged main');
+  assert.equal(pullLine({ number: 3, branch: 'docs', base: 'next', state: 'up-to-date' }), '#3 docs: up to date with next');
+});
+
+test('pr sync: a list that stops at the limit says so (#809)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const rows = Array.from({ length: 100 }, (_, at) => ({ number: at + 1, headRefName: `work-${at + 1}`, baseRefName: 'main' }));
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(rows))})\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.match(result.stdout, /the open pull request list stops at 100/);
 });

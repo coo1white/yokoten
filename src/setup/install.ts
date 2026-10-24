@@ -465,6 +465,17 @@ export function installedPieces(env: Env): string[] {
 }
 
 /**
+ * True when this machine has what install would put there: the runtime, and at least one
+ * of the hooks, skills or agents. A machine with only part of it counts as missing, so
+ * `yokoten` with no command installs again and repairs it (#548).
+ */
+export function isMachineSetUp(env: Env): boolean {
+  const { runtime } = paths(env);
+  if (!existsSync(join(runtime, 'bin', 'yokoten.mjs'))) return false;
+  return installedPieces(env).some((piece) => !piece.includes(runtime));
+}
+
+/**
  * Take back what install wrote: the skills and agents that carry the managed mark, the two
  * user-level hooks, and the runtime. The keys and the private marks in ~/.config/yokoten
  * stay: the user wrote them. A second run finds nothing and changes nothing.

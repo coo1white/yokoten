@@ -25,6 +25,7 @@ const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access;
 const BY_HAND = [
   'main: a ruleset with pull request required, the CI check required, code owner review, no force push, no deletion; squash merge only, delete branch on merge',
   'tags: a ruleset on v* so only you create, move or delete a release tag',
+  'release: in Settings, Environments, create release, add yourself as a required reviewer, and add a Tag rule named v*',
   'security: in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
 
