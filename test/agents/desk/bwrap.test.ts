@@ -3,9 +3,12 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { BWRAP, bwrapArgs, INSIDE_PORT, INSIDE_SOCKET, orderMounts } from '../../../src/agents/desk/bwrap.ts';
+import { BWRAP, bwrapArgs, INSIDE_PORT, INSIDE_SOCKET, orderMounts, SYSTEM_SETTINGS } from '../../../src/agents/desk/bwrap.ts';
 import type { DeskPlan } from '../../../src/agents/desk/desk.ts';
+import { makeTempDir } from '../../repo/helpers.ts';
 
 const PLAN: DeskPlan = {
   desk: '/work/projects/desk',
@@ -41,6 +44,18 @@ test('bwrapArgs: the system read-only, its own network, hidden folders read-only
   for (const folder of PLAN.hidden) assert.ok(text.includes(`--remount-ro ${folder} `), `${folder} is read-only`);
   assert.ok(!args.includes('--share-net'), 'no network but the proxy');
   assert.deepEqual(args.slice(-3), ['--chdir', PLAN.desk, '--']);
+});
+
+test('bwrapArgs: a system settings folder is mounted read-only when it exists (#771)', () => {
+  assert.ok(SYSTEM_SETTINGS.includes('/etc/grok'));
+  const root = makeTempDir('settings-');
+  const settings = join(root, 'grok');
+  mkdirSync(settings);
+  const missing = join(root, 'missing');
+  const args = bwrapArgs(PLAN, '/tmp/scratch/proxy.sock', [settings, missing]);
+  const text = args.join(' ');
+  assert.ok(text.includes(`--ro-bind ${settings} ${settings}`), 'the folder is there, so it is shown');
+  assert.ok(!text.includes(missing), 'a folder this machine lacks is not mounted');
 });
 
 test('BWRAP.fence: the bridge starts first, then the agent, with the proxy names set', () => {

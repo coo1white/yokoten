@@ -21,8 +21,8 @@
 // - A deny is `permissionDecision: "deny"` on stdout; at exit 2 its reason, whole, is
 //   what the model reads (stderr alone gives only its first line).
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
@@ -307,15 +307,44 @@ export function sandboxProblem(root: string, env: Env): { what: string; fix: str
 export const AGENT_ENV: RuntimeEnv = { login: ['XAI_API_KEY', 'GROK_API_KEY'], config: ['GROK_HOME'] };
 
 /**
+ * The real file `grok` on PATH runs, with the installer's link followed, or null. macOS
+ * puts a link in `~/.local/bin/grok` that points into `~/.grok/downloads`.
+ */
+function findGrokProgram(path: string | undefined): string | null {
+  for (const folder of (path ?? '').split(delimiter)) {
+    if (!isAbsolute(folder)) continue;
+    const file = join(folder, 'grok');
+    try {
+      if (!statSync(file).isFile()) continue;
+      return realpathSync(file);
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * What a desk shows of Grok's install: its `bin` folder, and the real file the `grok` on
+ * PATH points to. That one file is enough to start Grok; the rest of `~/.grok` stays hidden.
+ */
+function grokProgramParts(env: Env): string[] {
+  const state = env.GROK_HOME || join(homeIn(env), '.grok');
+  const parts = [join(state, 'bin')];
+  const program = findGrokProgram(env.PATH);
+  if (program !== null) parts.push(program);
+  return parts;
+}
+
+/**
  * What a desk (#637) gives Grok CLI. GROK_HOME points at the desk's own folder; only
- * `auth.json` is copied in. Grok's program sits in the lead's `~/.grok/bin`, so that one
- * folder is shown read-only. Host: xAI's API. The binary names HTTPS_PROXY.
+ * `auth.json` is copied in. Grok's program sits in `~/.grok/bin`, or wherever the `grok`
+ * link on PATH points (macOS: `~/.grok/downloads`), and that is shown read-only while the
+ * rest of `~/.grok` stays hidden. Host: xAI's API. The binary names HTTPS_PROXY.
  */
 export const DESK: RuntimeDesk = {
   leadState: (env) => [env.GROK_HOME || join(homeIn(env), '.grok')],
   login: (env) => [{ from: join(env.GROK_HOME || join(homeIn(env), '.grok'), 'auth.json'), to: 'auth.json' }],
   stateEnv: (state) => ({ GROK_HOME: state }),
-  programParts: (env) => [join(env.GROK_HOME || join(homeIn(env), '.grok'), 'bin')],
+  programParts: grokProgramParts,
   hosts: ['api.x.ai'],
 };
 

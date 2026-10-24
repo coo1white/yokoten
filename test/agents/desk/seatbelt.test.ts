@@ -63,6 +63,14 @@ test('seatbeltProfile: dyld may list the root folder and use /dev/dtracehelper, 
   assert.doesNotMatch(profile, /file-read[^\n]*\(subpath "\/Users"\)/);
 });
 
+test('seatbeltProfile: /etc/grok is readable, so a missing settings file reads as missing (#771)', () => {
+  const profile = seatbeltProfile(PLAN, 3128, '/private/var/folders/xy/scratch');
+  const reads = profile.split('\n').find((line) => line.startsWith('(allow file-read* ')) ?? '';
+  assert.ok(reads.includes('(subpath "/etc/grok")'), 'the program may look in /etc/grok');
+  const writes = profile.split('\n').filter((line) => line.startsWith('(allow file-write*'));
+  assert.ok(!writes.some((line) => line.includes('/etc/grok')), 'system settings stay read-only');
+});
+
 test('seatbeltProfile: git may look for its config in a hidden home, and finds nothing', () => {
   const profile = seatbeltProfile({ ...PLAN, env: { ...PLAN.env, HOME: '/Users/someone' } }, 3128, '/private/var/folders/xy/scratch');
   const reads = profile.split('\n').find((line) => line.startsWith('(allow file-read* ')) ?? '';
