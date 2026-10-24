@@ -185,8 +185,9 @@ Tests: [test/commands/advice/board/feed/steps.test.ts](../test/commands/advice/b
 Every vendor sends a tool call in its own shape.
 An adapter maps that call to one `Action`.
 There is no shared list of tool names.
-An `Action` has `command`, `paths`, `cwd` and `worker`.
+An `Action` has `command`, `commands`, `paths`, `cwd` and `worker`.
 `command` is the shell text, when the call is a shell.
+`commands` holds several shell texts, when one call carries more than one; the guard checks each on its own.
 `paths` lists the files an edit would touch.
 `cwd` is the folder, when the event names one.
 `worker` is true when the call comes from a worker.
@@ -203,6 +204,7 @@ What the adapters share today is `Action`.
 | `muse` | `bash`, `write_file`, `edit_file`, `apply_patch` | The shell name is a shell. The edit names are edits. | `command`, `workdir`, `path`, `tool_name`, `cwd`, `tool_input` |
 | `deepseek-harness` | `bash`, `pwsh`, `edit`, `write` | The reader is the Claude Code function. The matcher uses these names. | `command`, `file_path`, `path`, `notebook_path`, `cwd` |
 | `grok` | `run_terminal_command`, `run_terminal_cmd`, `Bash`, `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `EditNotebook`, `search_replace`, `write`, `write_file` | Read-only names are neither: `read_file`, `grep`, `list_dir`, `web_search`, `web_fetch`, `todo_write`, `spawn_subagent`, `task`. Any other name with a file path is an edit, unless the name contains `__`. | `command`, `cwd`, `file_path`, `path`, `notebook_path`, `toolName`, `tool_name`, `toolInput`, `tool_input`, `subagentType` |
+| `opencode` | every tool, through the plugin | A `command` or `code` is a shell. `filePath`, `path` or `file_path` is an edit. An action that is not read-only (`read`, `glob`, `grep`, `list`, `search`) and names no command and no path is refused. | `action`, `resources`, `metadata`, `tool`, `args`, `command`, `code`, `filePath`, `path`, `file_path` |
 
 Who writes. The vendor agent, in its own event shape.
 Who reads. The tool-call hook, after the adapter builds an `Action`.
@@ -214,10 +216,12 @@ Version 1. `Action` has no version field.
 - [src/agents/runtimes/claude-code.ts](../src/agents/runtimes/claude-code.ts) and [test/agents/runtimes/claude-code.test.ts](../test/agents/runtimes/claude-code.test.ts).
 - [src/agents/runtimes/codex.ts](../src/agents/runtimes/codex.ts) and [test/agents/runtimes/codex.test.ts](../test/agents/runtimes/codex.test.ts).
 - [src/agents/runtimes/gemini.ts](../src/agents/runtimes/gemini.ts) and [test/agents/runtimes/gemini.test.ts](../test/agents/runtimes/gemini.test.ts).
-- [src/agents/runtimes/antigravity.ts](../src/agents/runtimes/antigravity.ts) and [test/agents/runtimes/antigravity.test.ts](../test/agents/runtimes/antigravity.test.ts).
+- [src/agents/runtimes/small/antigravity.ts](../src/agents/runtimes/small/antigravity.ts) and [test/agents/runtimes/small/antigravity.test.ts](../test/agents/runtimes/small/antigravity.test.ts).
 - [src/agents/runtimes/muse.ts](../src/agents/runtimes/muse.ts) and [test/agents/runtimes/muse.test.ts](../test/agents/runtimes/muse.test.ts).
-- [src/agents/runtimes/deepseek-harness.ts](../src/agents/runtimes/deepseek-harness.ts) and [test/agents/runtimes/deepseek-harness.test.ts](../test/agents/runtimes/deepseek-harness.test.ts).
+- [src/agents/runtimes/small/deepseek-harness.ts](../src/agents/runtimes/small/deepseek-harness.ts) and [test/agents/runtimes/small/deepseek-harness.test.ts](../test/agents/runtimes/small/deepseek-harness.test.ts).
 - [src/agents/runtimes/grok.ts](../src/agents/runtimes/grok.ts) and [test/agents/runtimes/grok.test.ts](../test/agents/runtimes/grok.test.ts).
+- [src/agents/runtimes/runtime.ts](../src/agents/runtimes/runtime.ts) and [test/agents/runtimes/runtime.test.ts](../test/agents/runtimes/runtime.test.ts).
+- [src/agents/runtimes/small/opencode.ts](../src/agents/runtimes/small/opencode.ts) and [test/agents/runtimes/small/opencode.test.ts](../test/agents/runtimes/small/opencode.test.ts).
 
 ## The status file
 
@@ -282,6 +286,7 @@ The board skips a file that is not a JSON object.
 | `task` | the agent | text |
 | `worktree` | the agent | text |
 | `doing` | the agent | text |
+| `log` | the agent | text. An absolute path to a plain text log inside the worktree or a runtime's log folder. The board reads it when it finds no session log. |
 | `updated` | the agent, and the stop hook | text. The hook writes UTC time with no milliseconds, such as `2026-10-23T00:00:00Z`. |
 | `started` | the agent | text, the same form as `updated`: when this work started. The board falls back to the file's birth time, then to `updated`. |
 | `role` | the agent | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. Any other word, including `worker`, becomes empty. |
@@ -379,7 +384,7 @@ How yokoten checks it. `parseMadeWith` reads the last line. `madeWithFindings` r
 Version 1. The line has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
-- [src/commands/bot.ts](../src/commands/bot.ts) and [test/commands/bot.test.ts](../test/commands/bot.test.ts).
+- [src/commands/merge/bot.ts](../src/commands/merge/bot.ts) and [test/commands/merge/bot.test.ts](../test/commands/merge/bot.test.ts).
 
 ## Provenance
 
@@ -459,7 +464,7 @@ On a team, the team folder is read-only, and only that agent's outbox is writabl
 | `hidden` | When they exist: `/home`, `/root`, `/mnt`, `/media`, `/run`, plus home and the desk's parent. On `darwin`: `/Users`, `/Volumes`, plus home and the parent. |
 | `locked` | `.git/config`, `.git/hooks` and `.git/yokoten-worker` stay read-only. On a team, `.git/yokoten-desk.json` is locked too. |
 | `hosts` | API hosts only, through a proxy that runs outside. CONNECT only. Port `443`, unless the host entry names a port. At most `64` tunnels. A quiet tunnel closes after `10 minutes`. The proxy does not read the tunnel. |
-| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. |
+| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. When the model is known, `YOKOTEN_MODEL` names it. `YOKOTEN_VENDOR` is set only when its vendor is not the runtime's own, so the agent knows what it really is. |
 | `command` | The command the lead passed. |
 
 `/run` is hidden because sockets there can start programs outside the fence.

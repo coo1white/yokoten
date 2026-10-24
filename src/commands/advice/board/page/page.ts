@@ -8,6 +8,7 @@ import { COLUMN_FUNCTIONS } from './browser/column.ts';
 import { DESK_FUNCTIONS } from './browser/desk.ts';
 import { PAGE_FUNCTIONS } from './browser/script.ts';
 import { STREAM_FUNCTIONS } from './browser/stream.ts';
+import { USAGE_FUNCTIONS } from './browser/usage.ts';
 import { LANG_NAMES, WORDS } from './words.ts';
 
 /** How often the page asks for new data, in seconds. */
@@ -83,6 +84,18 @@ h2.sh{line-height:inherit}
 .sh .sum{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400;font-size:11px}
 .sh .act,.act{margin-left:auto;font-family:inherit;text-transform:none;letter-spacing:0;font-weight:500;font-size:11px;color:var(--mut-fg);padding:1px 6px;border-radius:5px;cursor:pointer}
 .act:hover{background:var(--accent);color:var(--fg)}
+.usage{padding:10px 6px 4px;margin-top:10px;border-top:1px solid var(--border)}
+.usage .ubar{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 6px}
+.usage .ub{height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--mut-fg)}
+.usage .ub.on{background:var(--accent);color:var(--fg);border-color:var(--ring)}
+.usage .urow,.usage .utotal{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:5px 2px;border-top:1px solid var(--border);font-size:12px}
+.usage .urow:first-of-type{border-top:0}
+.usage .uwho{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.usage .umodel{flex-basis:100%;color:var(--mut-fg);font-size:11px}
+.usage .utok{flex-basis:100%;color:var(--mut-fg);font-size:11px}
+.usage .ucost{margin-left:auto;font-weight:500}
+.usage .ucost.partial{color:var(--wait)}
+.usage .utotal{font-weight:600}
 .row{display:block;width:100%;text-align:left;padding:8px 8px 9px 10px;border-radius:8px;position:relative;margin-bottom:2px}
 .row:hover{background:var(--side-accent)}
 .row[aria-current=true]{background:var(--side-accent);box-shadow:inset 0 0 0 1px var(--border)}
@@ -204,12 +217,21 @@ h2.sh{line-height:inherit}
 .lead-desk .answers{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 0}
 .lead-desk .ans{display:inline-flex;align-items:center;height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px;background:var(--muted);font-size:12px}
 .lead-desk .reply{display:block;width:100%;text-align:left;font-size:12px;color:var(--fg)}
+.queue{border:1px solid var(--border);background:var(--card);border-radius:8px;padding:8px 10px 10px;margin:12px 20px 0}
+.queue h3{margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut-fg)}
+.queue h3 .n{margin-left:6px;color:var(--fg)}
+.queue .q-row{margin:2px 0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.queue .q-row .num{color:var(--mut-fg)}
+.queue .q-cycle{margin:4px 0;font-size:12px;color:var(--bad)}
+.queue .q-start{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.queue .q-start select,.queue .q-start input{max-width:190px}
 .gantt{display:flex;flex-direction:column;gap:8px;padding:12px 20px 24px;overflow:auto}
 .gantt .scale{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut-fg)}
 .gantt-row{display:grid;grid-template-columns:minmax(0,34%) minmax(0,1fr);gap:8px;align-items:center}
 .gantt-name{min-width:0}
 .gantt-name .ttl{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gantt-name .waits{display:block;font-size:11px;color:var(--mut-fg)}
+.gantt-row.critical .ttl{font-weight:700}
 .gantt-track{position:relative;height:16px;border-radius:8px;background:var(--track)}
 .gantt-bar{position:absolute;top:3px;height:10px;border-radius:5px;min-width:4px}
 .gantt-bar.live{animation:desk-breathe 2.4s ease-in-out infinite}
@@ -241,6 +263,7 @@ h2.sh{line-height:inherit}
 .tool{height:40px;min-width:40px}
 #lang-name,.logo .word,.pill .live-word{display:none}
 .top{gap:6px;padding:0 6px 0 12px}
+.needs-panel{position:fixed;left:8px;right:8px;top:60px;width:auto;max-height:min(70dvh,420px)}
 #center{position:static;height:auto}
 }
 `;
@@ -301,7 +324,7 @@ export function boardScript(): string {
   const settings = { refreshMs: BOARD_REFRESH_SECONDS * 1000, agentFile: BOARD_AGENT_FILE, words: WORDS, langNames: LANG_NAMES, data: null, ui: null, live: 'loading', isMenuOpen: false, toast: null, toastTimer: 0, readAt: 0 };
   return [
     '"use strict";',
-    ...[...PAGE_FUNCTIONS, ...COLUMN_FUNCTIONS, ...STREAM_FUNCTIONS, ...DESK_FUNCTIONS].map(String),
+    ...[...PAGE_FUNCTIONS, ...COLUMN_FUNCTIONS, ...STREAM_FUNCTIONS, ...DESK_FUNCTIONS, ...USAGE_FUNCTIONS].map(String),
     `const state = ${JSON.stringify(settings).replace(/</g, '\\u003c')};`,
     'startPage(state);',
   ].join('\n');

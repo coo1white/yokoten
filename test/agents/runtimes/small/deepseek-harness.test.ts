@@ -1,13 +1,13 @@
-// Tests for src/agents/runtimes/deepseek-harness.ts.
+// Tests for src/agents/runtimes/small/deepseek-harness.ts.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHooks, initLines, PATCH, profilesWithBridge, projectHooksState, readToolCall, WINDOWS_GAP } from '../../../src/agents/runtimes/deepseek-harness.ts';
-import { agentHooks } from '../../../src/setup/doctor/index.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { addProjectHooks, initLines, PATCH, profilesWithBridge, projectHooksState, readToolCall, WINDOWS_GAP } from '../../../../src/agents/runtimes/small/deepseek-harness.ts';
+import { agentHooks } from '../../../../src/setup/doctor/index.ts';
+import { makeSandbox } from '../../../repo/helpers.ts';
 
 /** A PreToolUse payload in the shape the dsh 0.2.1-rc.2 hook bridge sent it in a real run (#334). */
 const payload = (cwd: string, name: string, input: Record<string, unknown>) =>
@@ -77,7 +77,7 @@ test('deepseek-harness project files: init writes the guard and the launch patch
   assert.equal(patch, PATCH);
   assert.match(patch, /^- insert:\n {4}- id: hooks-claude-code\n {6}name: '@deepseek-ai\/dsh-hooks-claude-code'\n {6}config:\n {8}configPath: \.dsh\/hooks\.json\n$/m);
   assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', patch: 'same' });
-  assert.match((await sandbox.call(['init'])).stdout, /same the DeepSeek Harness tool-call hook/);
+  assert.match((await sandbox.call(['init'])).stdout, /kept the DeepSeek Harness tool-call hook/);
   // The bridge in the profile: can't check without a dsh home, never "done".
   assert.match(await doctor(), /note +deepseek-harness-hook: can't check the bridge: no dsh home/);
   const modules = join(dshHome, 'profiles', 'tui', 'node_modules', '@deepseek-ai');
@@ -119,9 +119,10 @@ test('deepseek-harness on Windows: dsh runs hooks in PowerShell, so doctor notes
   const linux = dshCheck('linux');
   assert.equal(linux?.ok, true, 'unchanged off Windows');
   assert.match(linux?.detail ?? '', /the bridge is in profile tui; .*Only a real deny proves it/);
-  const added = { guard: 'same', patch: 'same' } as const;
-  const onWindows = initLines(added, 'win32');
+  const files = ['kept the DeepSeek Harness tool-call hook in .dsh/hooks.json', 'kept the DeepSeek Harness launch patch in .dsh/yokoten.patch.yml'];
+  const onWindows = initLines(files, 'win32');
+  assert.deepEqual(onWindows.slice(0, 2), files, 'the lines init wrote come first');
   assert.equal(onWindows.at(-1), WINDOWS_GAP);
   assert.ok(!onWindows.some((line) => /dsh plugin|--patch/.test(line)), 'no steps that imply a guard');
-  assert.match(initLines(added, 'linux').join('\n'), /dsh plugin --profile <profile> add .*\n.*dsh <profile> --patch \.dsh\/yokoten\.patch\.yml/);
+  assert.match(initLines(files, 'linux').join('\n'), /dsh plugin --profile <profile> add .*\n.*dsh <profile> --patch \.dsh\/yokoten\.patch\.yml/);
 });

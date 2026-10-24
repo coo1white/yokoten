@@ -55,9 +55,11 @@ import {
   POSITIVE_CONTROL,
   scanText,
 } from '../../src/rules/privacy.ts';
-import { SECRET_CONTROL } from '../../src/rules/secrets.ts';
+import { SECRET_CONTROL } from '../../src/rules/privacy/secrets.ts';
 import { parseChange } from '../../src/run/changelog.ts';
 import {
+  BORROWED_DIR,
+  borrowedProblems,
   check,
   checkHistory,
   GitReadError,
@@ -65,7 +67,13 @@ import {
   readGit,
   timeZoneNote,
 } from '../../src/run/check.ts';
-import { lateFinding } from '../../src/run/hook.ts';
+import { lateFinding, repeatStopFinding } from '../../src/run/hook.ts';
+import {
+  lintCallResult,
+  lintServerEntry,
+  lintStdout,
+  lintTools,
+} from '../../src/commands/advice/mcp.ts';
 import { nameNotes } from '../../src/run/names.ts';
 import { translationNotes } from '../../src/run/translations.ts';
 import { readCurrentPullRequest } from '../../src/host/current-pr.ts';
@@ -98,6 +106,7 @@ import {
   upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor/index.ts';
+import { openCodePluginNote } from '../../src/setup/doctor/checks.ts';
 import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
@@ -131,7 +140,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     found.push(f);
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
-  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
+  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git tag v1.2.3', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
   add(checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
   add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { cwd: process.cwd(), env: {} })); // too many commands to read
   add(checkCommand('alias x=y', { cwd: process.cwd(), env: {} }));
@@ -149,6 +158,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkCommand('git push', { cwd: process.cwd(), env }));
   add(checkCommand('git worktree remove ../wt', { cwd: process.cwd(), env }));
   add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
+  // The third same refusal in one session (#711): the count needs a session, so the message
+  // is asked for here, as `late` is.
+  add(repeatStopFinding());
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));
   add(scanText(`// ${['yokoten', 'ignore'].join('-')} secret`, { file: 'a.md' })[0]);
   add(addedIgnores('a.ts', `// ${['yokoten', 'ignore'].join('-')} secret: a fixture`, new Set([1]), {})[0]);
@@ -172,6 +184,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${translated.root}`, shallow], { stdio: 'ignore' });
   found.push(...checkHistory(shallow, { config: DEFAULTS, env: {} }));
   found.push(...parseChange('changes/1-a.md', 'Improved\n\nA thing.\n').problems);
+  // A wheel with no header (#676).
+  found.push(...borrowedProblems(`${BORROWED_DIR}thing.ts`, ''));
   translated.git('update-index', '--add', '--info-only', '--cacheinfo', `100644,${'1'.repeat(40)},ghost.md`);
   add(check(translated.root, { config: DEFAULTS, env: {}, staged: true }).find((f) => f.id === 'missing-blob'));
   // A git read a gate depends on, which git can't answer (#403).
@@ -217,9 +231,15 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));
   add(leftoverTempCheck({ YOKOTEN_TEMP_DIRS: temp }, { ...fullMachine, now: () => new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) })?.finding);
-  // The Codex, Gemini CLI, Grok CLI and Muse Code user hooks: only once their folders exist.
+  // The user hooks of Codex, Gemini CLI, Antigravity CLI, Copilot CLI, Grok CLI, Muse Code and OpenCode: only once their folders exist.
   for (const folder of ['.codex', '.gemini', '.grok']) mkdirSync(join(dir, folder));
+  mkdirSync(join(dir, '.gemini', 'config'));
   mkdirSync(join(dir, '.config', 'muse'), { recursive: true });
+  mkdirSync(join(dir, '.config', 'opencode'), { recursive: true });
+  // A project that uses OpenCode without the plugin (#767).
+  const openProject = makeTempDir();
+  mkdirSync(join(openProject, '.opencode'));
+  add(openCodePluginNote(openProject, 'yokoten')?.finding);
   for (const c of userAgentHooks({ HOME: dir })) add(c.finding);
   // Command output (#390): the mailmap note, and the refusal for an agent that can't rewrite.
   // Claude's user rules file is there, and so is Muse's hook file. With no project root the
@@ -269,10 +289,25 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   // The server, with every setting off, and with nothing readable.
   const off = { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 };
   const security = { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false };
-  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, security, forgotten: ['old'] };
+  const server = { repo: 'octo/demo', defaultBranch: 'main', isPrivate: false, actionsCanApprove: false, mergeMethods: ['merge', 'squash'], deleteBranchOnMerge: false, branch: off, tags: false, tagBypass: { admin: false, bot: false }, release: { reviewer: false, tagRule: false, branchRule: false }, security, forgotten: ['old'] };
   // Work only on this machine (#365): one case of each, as facts, so no git runs here.
   found.push(...unsavedNotes(UNSAVED_CONTROL, { home: undefined, now: 1 }));
   for (const c of [...serverChecks(server), ...serverChecks({ unread: 'gh is not installed', fix: 'get it' })]) add(c.finding);
+  // The MCP traps (#370): one known-bad input for each: a tool that breaks every schema,
+  // name and annotation rule, a list at the small-client limit, a result with one form, a
+  // stray stdout line, and a Windows launch entry beside an entry with no command.
+  const cleanTool = {
+    name: 'read',
+    inputSchema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  };
+  const badTool = { name: 'x'.repeat(65), inputSchema: { type: 'object', properties: { 'a b': { type: 'string' } } } };
+  found.push(...lintTools([badTool]));
+  found.push(...lintTools(Array.from({ length: 40 }, () => cleanTool)));
+  found.push(...lintCallResult('status', { structuredContent: { reply: 'ok' } }));
+  found.push(...lintStdout(['starting server']));
+  found.push(...lintServerEntry('demo', { command: 'npx', args: ['-y', 'demo'] }));
+  found.push(...lintServerEntry('demo', {}));
 
   const known = new Set(ids());
   for (const f of found) {

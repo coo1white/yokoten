@@ -187,7 +187,7 @@ agent 离开以后，它的列表也丢掉。
 每家厂商的工具调用长得不一样。
 适配器把它收成同一个 `Action`。
 没有一份大家共用的工具名清单。
-`Action` 有 `command`、`paths`、`cwd` 和 `worker`。
+`Action` 有 `command`、`commands`、`paths`、`cwd` 和 `worker`。
 是 shell 时，`command` 就是那条命令。
 `paths` 是这次编辑会碰到的文件。
 事件里写了目录时，`cwd` 就是那个目录。
@@ -205,6 +205,7 @@ agent 离开以后，它的列表也丢掉。
 | `muse` | `bash`、`write_file`、`edit_file`、`apply_patch` | shell 那个名字是 shell。编辑那些名字是编辑。 | `command`、`workdir`、`path`、`tool_name`、`cwd`、`tool_input` |
 | `deepseek-harness` | `bash`、`pwsh`、`edit`、`write` | 读取器就是 Claude Code 那个函数。匹配器用的是这些名字。 | `command`、`file_path`、`path`、`notebook_path`、`cwd` |
 | `grok` | `run_terminal_command`、`run_terminal_cmd`、`Bash`、`Edit`、`Write`、`MultiEdit`、`NotebookEdit`、`EditNotebook`、`search_replace`、`write`、`write_file` | 只读的名字两边都不是：`read_file`、`grep`、`list_dir`、`web_search`、`web_fetch`、`todo_write`、`spawn_subagent`、`task`。别的名字只要带了文件路径，就算编辑，除非名字里有 `__`。 | `command`、`cwd`、`file_path`、`path`、`notebook_path`、`toolName`、`tool_name`、`toolInput`、`tool_input`、`subagentType` |
+| `opencode` | 所有工具，经插件 | 有 `command` 或 `code` 就是 shell。有 `filePath`、`path` 或 `file_path` 就是编辑。不是只读动作（`read`、`glob`、`grep`、`list`、`search`）又读不出命令和路径的，直接拒绝。 | `action`、`resources`、`metadata`、`tool`、`args`、`command`、`code`、`filePath`、`path`、`file_path` |
 
 谁来写。厂商的 agent，用它自己的事件形状。
 谁来读。工具调用的 hook，在适配器做成 `Action` 之后。
@@ -216,10 +217,12 @@ agent 离开以后，它的列表也丢掉。
 - [src/agents/runtimes/claude-code.ts](../../../src/agents/runtimes/claude-code.ts) 和 [test/agents/runtimes/claude-code.test.ts](../../../test/agents/runtimes/claude-code.test.ts)。
 - [src/agents/runtimes/codex.ts](../../../src/agents/runtimes/codex.ts) 和 [test/agents/runtimes/codex.test.ts](../../../test/agents/runtimes/codex.test.ts)。
 - [src/agents/runtimes/gemini.ts](../../../src/agents/runtimes/gemini.ts) 和 [test/agents/runtimes/gemini.test.ts](../../../test/agents/runtimes/gemini.test.ts)。
-- [src/agents/runtimes/antigravity.ts](../../../src/agents/runtimes/antigravity.ts) 和 [test/agents/runtimes/antigravity.test.ts](../../../test/agents/runtimes/antigravity.test.ts)。
+- [src/agents/runtimes/small/antigravity.ts](../../../src/agents/runtimes/small/antigravity.ts) 和 [test/agents/runtimes/small/antigravity.test.ts](../../../test/agents/runtimes/small/antigravity.test.ts)。
 - [src/agents/runtimes/muse.ts](../../../src/agents/runtimes/muse.ts) 和 [test/agents/runtimes/muse.test.ts](../../../test/agents/runtimes/muse.test.ts)。
-- [src/agents/runtimes/deepseek-harness.ts](../../../src/agents/runtimes/deepseek-harness.ts) 和 [test/agents/runtimes/deepseek-harness.test.ts](../../../test/agents/runtimes/deepseek-harness.test.ts)。
+- [src/agents/runtimes/small/deepseek-harness.ts](../../../src/agents/runtimes/small/deepseek-harness.ts) 和 [test/agents/runtimes/small/deepseek-harness.test.ts](../../../test/agents/runtimes/small/deepseek-harness.test.ts)。
 - [src/agents/runtimes/grok.ts](../../../src/agents/runtimes/grok.ts) 和 [test/agents/runtimes/grok.test.ts](../../../test/agents/runtimes/grok.test.ts)。
+- [src/agents/runtimes/runtime.ts](../../../src/agents/runtimes/runtime.ts) 和 [test/agents/runtimes/runtime.test.ts](../../../test/agents/runtimes/runtime.test.ts)。
+- [src/agents/runtimes/small/opencode.ts](../../../src/agents/runtimes/small/opencode.ts) 和 [test/agents/runtimes/small/opencode.test.ts](../../../test/agents/runtimes/small/opencode.test.ts)。
 
 ## 状态文件
 
@@ -284,6 +287,7 @@ agent 离开以后，它的列表也丢掉。
 | `task` | agent | 文本 |
 | `worktree` | agent | 文本 |
 | `doing` | agent | 文本 |
+| `log` | agent | 文本。纯文本日志的绝对路径，必须在工位内或运行时的日志文件夹内。看板找不到会话日志时就读它。 |
 | `updated` | agent，还有停止 hook | 文本。hook 写成没有毫秒的 UTC 时间，例如 `2026-10-23T00:00:00Z`。 |
 | `started` | agent | 文本，格式和 `updated` 一样：这份工作开始的时间。没有就用文件创建的时间，再没有就用 `updated`。 |
 | `role` | agent | `lead`、`engineer`、`reviewer`、`verifier` 或 `helper`。别的词，包括 `worker`，都变成空。 |
@@ -381,7 +385,7 @@ Dependabot 开的 PR，这一行有问题只是提醒，不算失败。
 版本 1。这一行没有版本字段。
 
 - [src/rules/pr.ts](../../../src/rules/pr.ts) 和 [test/rules/pr.test.ts](../../../test/rules/pr.test.ts)。
-- [src/commands/bot.ts](../../../src/commands/bot.ts) 和 [test/commands/bot.test.ts](../../../test/commands/bot.test.ts)。
+- [src/commands/merge/bot.ts](../../../src/commands/merge/bot.ts) 和 [test/commands/merge/bot.test.ts](../../../test/commands/merge/bot.test.ts)。
 
 ## 来源
 
@@ -461,7 +465,7 @@ CI 里从基础分支读 CODEOWNERS。
 | `hidden` | 这些目录如果存在就藏起来：`/home`、`/root`、`/mnt`、`/media`、`/run`，再加上家目录和工位的上一级。在 `darwin` 上是 `/Users`、`/Volumes`，再加上家目录和上一级。 |
 | `locked` | `.git/config`、`.git/hooks` 和 `.git/yokoten-worker` 保持只读。在团队里，`.git/yokoten-desk.json` 也锁上。 |
 | `hosts` | 只能到 API 主机，而且要经过外面的代理。只接受 CONNECT。端口是 `443`，除非主机那一项自己写了端口。隧道最多 `64` 条。`10 minutes` 没有数据就关掉。代理不读隧道里的内容。 |
-| `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。 |
+| `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。知道模型时，`YOKOTEN_MODEL` 写出模型。只有当厂商不是运行环境自己的厂商时，才设置 `YOKOTEN_VENDOR`，让 agent 知道自己实际是谁。 |
 | `command` | lead 传进来的那条命令。 |
 
 `/run` 要藏起来，因为那里的 socket 能在栅栏外面启动程序。

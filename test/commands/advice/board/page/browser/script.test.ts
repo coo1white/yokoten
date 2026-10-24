@@ -115,7 +115,7 @@ function makeState(data: PageData, lang = 'en'): PageState {
 }
 
 function makeData(fields: Partial<PageData>): PageData {
-  return { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} }, ...fields };
+  return { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 }, ...fields };
 }
 
 test('board script: three or more routine steps fold; waits, failures and the latest step never do', () => {
@@ -256,7 +256,7 @@ test('board script: the controls start and stop agents from the page', () => {
       { name: 'issue-603-codex', issue: '603', vendor: 'codex', model: 'model-a', worktree: '~/repo/.worktrees/603', pid: 1000, status: 'running', startedAt: '', stoppedAt: '', exitCode: null, output: ['hello', 'world'] },
       { name: 'issue-604-codex', issue: '604', vendor: 'codex', model: 'model-a', worktree: '', pid: null, status: 'stopped', startedAt: '', stoppedAt: '', exitCode: 1, output: [] },
     ],
-    limits: { maxAgents: 2, byModel: { 'model-a': 1 } },
+    limits: { maxAgents: 2, byModel: { 'model-a': 1 }, memoryFloorMb: 1024 },
   });
   const state = makeState(data);
   const byId = (root: FakeNode, id: string) => root.all().find((node) => node.getAttribute('id') === id);
@@ -270,7 +270,8 @@ test('board script: the controls start and stop agents from the page', () => {
   const limits = renderLimits(state, data.limits) as unknown as FakeNode;
   assert.ok(byId(limits, 'limits-max'), 'the cap field');
   assert.ok(byId(limits, 'limits-models'), 'the per-model field');
-  assert.match(limits.textContent, /Now: 2 at once · model-a: 1/);
+  assert.ok(byId(limits, 'limits-memory'), 'the memory floor field');
+  assert.match(limits.textContent, /Now: 2 at once, 1024 MB free kept · model-a: 1/);
   assert.ok(limits.all().some((node) => node.tag === 'button' && node.getAttribute('data-limits') === '1' && node.textContent === 'Save'), 'the save button');
   const runs = renderRuns(state, data.runs) as unknown as FakeNode;
   assert.match(runs.textContent, /Started here2/);
@@ -448,9 +449,15 @@ test('board script: a working chip breathes, and the bar counts free seats', () 
   assert.match(withSeats, /19 free/);
   assert.match(withSeats, /Grok · 1 working · 15 free/);
   assert.match(withSeats, /Claude · 0 working · 0 free/);
+  assert.match(withSeats, /DeepSeek · 0 working · 4 free/, 'a vendor with seats but no agent still has a line');
   const clamped = renderBar(state, { ...data, seats: { grok: 0 } }).map((node) => (node as unknown as FakeNode).textContent).join('\n');
   assert.match(clamped, /Grok · 1 working · 0 free/);
   assert.match(clamped, /^0 free/m);
+  // A seats file may use the runtime names the hooks file (#693).
+  const aliased = renderBar(state, { ...data, seats: { 'claude-code': 4, 'deepseek-harness': 2 } }).map((node) => (node as unknown as FakeNode).textContent).join('\n');
+  assert.match(aliased, /6 free/);
+  assert.match(aliased, /Claude · 0 working · 4 free/);
+  assert.match(aliased, /DeepSeek · 0 working · 2 free/);
 });
 
 // #737: the bell opens and closes, the badge counts, a new row pulses once, and a

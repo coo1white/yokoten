@@ -2,7 +2,7 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -65,8 +65,8 @@ test('doctor: the plugin and install both on is a note that says to uninstall (#
   const file = join(sandbox.home, '.claude', 'settings.json');
   writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), enabledPlugins: { 'yokoten@yokoten': true } }));
   const out = (await sandbox.call(['doctor'])).stdout;
-  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; remove them with `yokoten uninstall`/m);
-  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /^yokoten: the yokoten plugin is on, and `yokoten install` put these here too: .*Remove them with `yokoten uninstall`/m);
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; remove the home copy with `yokoten uninstall`/m);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /^yokoten: the yokoten plugin is on, and `yokoten install` put these here too: .*Remove the home copy with `yokoten uninstall`/m);
   // An older runtime from install, with the plugin on: remove it, never install again.
   writeFileSync(join(sandbox.home, '.local/share/yokoten/VERSION'), '0.0.1\n');
   assert.match((await sandbox.call(['doctor'])).stdout, /MISSING runtime: the installed runtime is 0\.0\.1, this yokoten is \S+; remove it with `yokoten uninstall`; the plugin brings its own/);
@@ -76,6 +76,55 @@ test('doctor: the plugin and install both on is a note that says to uninstall (#
   assert.doesNotMatch(after, /plugin-and-install/);
   assert.match(after, /ok {6}runtime/);
   assert.match(after, /ok {6}session-doctor/);
+});
+
+test('doctor: a skills-only copy alone is a note that names the duplicate (#540)', async () => {
+  const sandbox = makeSandbox();
+  const settings = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  const skill = readFileSync(join(ROOT, 'kit/user/skills/inspect/SKILL.md'), 'utf8');
+  const copy = join(sandbox.home, '.agents/skills/inspect/SKILL.md');
+  mkdirSync(dirname(copy), { recursive: true });
+  writeFileSync(copy, skill);
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and a skills-only copy is here too: the skills in ~\/\.agents\/skills; remove the home copy with `yokoten uninstall`; the plugin brings its own/m);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /a skills-only copy is here too/);
+});
+
+test('doctor: a home install and a project copy each get their own fix (#540)', async () => {
+  const sandbox = makeSandbox();
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  const file = join(sandbox.home, '.claude', 'settings.json');
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), enabledPlugins: { 'yokoten@yokoten': true } }));
+  sandbox.write('.agents/skills/dispatch/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/dispatch/SKILL.md'), 'utf8'));
+  sandbox.write('.claude/skills/rca/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8'));
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: the SessionStart doctor and the command guard in ~\/\.claude\/settings\.json; the skills in ~\/\.claude\/skills and ~\/\.agents\/skills; the agents in ~\/\.claude\/agents; ~\/\.local\/share\/yokoten; `npx skills add` put a copy in this project too: `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; remove the home copy with `yokoten uninstall` and delete `\.agents\/skills\/dispatch` and `\.claude\/skills\/rca`; the plugin brings its own/m);
+  assert.doesNotMatch(out, /delete `\.agents\/skills`(?!\/)|delete `\.claude\/skills`(?!\/)/, 'the fix never names a whole skills folder');
+});
+
+test('doctor: a runtime-only home with a project copy says only which folder to delete (#540)', async () => {
+  const sandbox = makeSandbox();
+  const settings = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  mkdirSync(join(sandbox.home, '.local/share/yokoten'), { recursive: true });
+  sandbox.write('.agents/skills/rca/SKILL.md', readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8'));
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `yokoten install` put these here too: ~\/\.local\/share\/yokoten; `npx skills add` put a copy in this project too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
+  assert.doesNotMatch(out, /plugin-and-install: .*remove the home copy/, 'the runtime is not a skill copy, so nothing at home is called one');
+});
+
+test('doctor: a project skills-only copy is named, and the fix deletes it (#540)', async () => {
+  const sandbox = makeSandbox();
+  const settings = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(settings), { recursive: true });
+  writeFileSync(settings, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  const skill = readFileSync(join(ROOT, 'kit/user/skills/rca/SKILL.md'), 'utf8');
+  sandbox.write('.agents/skills/rca/SKILL.md', skill);
+  const out = (await sandbox.call(['doctor'])).stdout;
+  assert.match(out, /^ {2}note {4}plugin-and-install: the yokoten plugin is on, and `npx skills add` put a copy in this project too: `\.agents\/skills\/rca`; delete `\.agents\/skills\/rca`; the plugin brings its own/m);
 });
 
 // #211: Codex's and Gemini CLI's user hooks, only once the CLI's folder exists; a note
@@ -176,7 +225,7 @@ test('doctor: notes an installed plugin older than this yokoten (#198)', async (
   install({ gitCommitSha: 'abc123' });
   pluginVersion('0.0.1');
   const lines = (await full()).split('\n');
-  const line = `  note    plugin: the yokoten plugin is older than this yokoten (0.0.1 < ${version}); update it: \`claude plugin update yokoten@yokoten\`, then restart Claude Code`;
+  const line = `  note    plugin: the yokoten plugin is older than this yokoten (0.0.1 < ${version}); update it: \`claude plugin update yokoten@yokoten\`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart`;
   assert.ok(lines.includes(line), lines.join('\n'));
   assert.ok(!lines.some((l) => l.includes('MISSING plugin')));
   assert.match((await sandbox.call(['doctor', '--session'])).stdout, olderNote);
@@ -258,12 +307,84 @@ test('doctor: in a yokoten checkout, a plugin commit behind the default branch i
   assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, olderNote, 'no main ref');
 });
 
+test('doctor: counts merge commits whose time is not UTC, and prints one command that shows them (#760)', async () => {
+  const withMerge = (zone: string | null) => {
+    const sandbox = makeSandbox();
+    sandbox.write('one.md', 'one\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'one');
+    sandbox.git('checkout', '-qb', 'topic');
+    sandbox.write('two.md', 'two\n');
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'two');
+    sandbox.git('checkout', '-q', 'main');
+    const extra = zone === null ? {} : { GIT_AUTHOR_DATE: `2026-10-18T09:00:00${zone}`, GIT_COMMITTER_DATE: `2026-10-18T09:00:00${zone}` };
+    const merge = spawnSync('git', ['merge', '--no-ff', '-q', '-m', 'merge topic', 'topic'], { cwd: sandbox.repo, env: { ...sandbox.env, ...extra }, encoding: 'utf8' });
+    assert.equal(merge.status, 0, merge.stderr);
+    return sandbox;
+  };
+
+  // Positive control: one merge in another zone is counted, and the zone itself is not printed.
+  const zoned = withMerge('+0900');
+  const out = (await zoned.call(['doctor'])).stdout;
+  const line = out.split('\n').find((text) => text.includes('time-zone:'));
+  assert.ok(line, out);
+  assert.match(line, /^ {2}note {4}time-zone: 1 merge commit\(s\) among the last 200 commits on the default branch carry an author or committer time zone other than UTC; see them with /);
+  assert.doesNotMatch(out, /\+0900/, 'the time zone value is never printed');
+  // The command doctor prints really shows the merge commit.
+  const command = /`(git log[^`]+)`/.exec(line)?.[1];
+  assert.ok(command, line);
+  if (process.platform !== 'win32') {
+    const shown = execFileSync('sh', ['-c', command], { cwd: zoned.repo, env: zoned.env, encoding: 'utf8' });
+    assert.match(shown, new RegExp(execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: zoned.repo, env: zoned.env, encoding: 'utf8' }).trim()));
+  }
+
+  // All UTC: no line at all.
+  const plain = withMerge(null);
+  assert.doesNotMatch((await plain.call(['doctor'])).stdout, /time-zone:/);
+});
+
+test('doctor: the time zone count and the command it prints cover the same commits (#760, #775)', async () => {
+  const sandbox = makeSandbox();
+  const when = '2026-09-01T00:00:00+0000';
+  const env = { ...sandbox.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when };
+  const commit = (message: string) => execFileSync('git', ['commit', '--allow-empty', '-q', '-m', message], { cwd: sandbox.repo, env });
+  const merge = (zone: string) => {
+    execFileSync('git', ['checkout', '-q', '-B', 'topic'], { cwd: sandbox.repo, env });
+    commit('on topic');
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: sandbox.repo, env });
+    const zoned = { ...env, GIT_AUTHOR_DATE: `2026-09-02T00:00:00${zone}`, GIT_COMMITTER_DATE: `2026-09-02T00:00:00${zone}` };
+    execFileSync('git', ['merge', '--no-ff', '-q', '-m', `merge ${zone}`, 'topic'], { cwd: sandbox.repo, env: zoned });
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sandbox.repo, env, encoding: 'utf8' }).trim();
+  };
+  // 216 commits on main: an old merge at #16, outside the last 200, and a new one at #216.
+  for (let i = 0; i < 15; i++) commit(`plain ${i}`);
+  const old = merge('+0900');
+  for (let i = 0; i < 199; i++) commit(`plain ${i}`);
+  const recent = merge('+0900');
+
+  const out = (await sandbox.call(['doctor'])).stdout;
+  const line = out.split('\n').find((text) => text.includes('time-zone:'));
+  assert.ok(line, out);
+  assert.match(line, /1 merge commit\(s\) among the last 200 commits on the default branch/);
+  // The printed command shows exactly that one merge, not the older one outside the window.
+  const command = /`(git log[^`]+)`/.exec(line)?.[1];
+  assert.ok(command, line);
+  if (process.platform !== 'win32') {
+    const shown = execFileSync('sh', ['-c', command], { cwd: sandbox.repo, env: sandbox.env, encoding: 'utf8' }).trim();
+    const lines = shown === '' ? [] : shown.split('\n');
+    assert.equal(lines.length, 1, shown);
+    assert.match(shown, new RegExp(recent.slice(0, 7)), 'the newer merge is shown');
+    assert.doesNotMatch(shown, new RegExp(old.slice(0, 7)), 'the older merge is outside the window');
+  }
+});
+
 test('privacyNotes: the mailmap, and the kinds of mark yokoten cannot find; never a value (#390)', () => {
   const home = makeTempDir('yokoten-privacy-');
   const env = { HOME: home, GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
   const notes = () => privacyNotes(env, null).map((note) => `${note.name}: ${note.finding.what}; ${note.finding.fix}`);
   // No marks at all: the private-marks check says so, and no offer adds a second answer (#522).
-  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it sets a git mailmap outside every repo']);
+  assert.deepEqual(notes(), ['mailmap: git log and git show print your name and email as they are; run `yokoten install`; it writes ~/.config/yokoten/mailmap and sets `git config --global mailmap.file ~/.config/yokoten/mailmap`, so git prints a private address in place of your email']);
   execFileSync('git', ['config', '--global', 'mailmap.file', '~/.config/yokoten/mailmap'], { env: { ...process.env, ...env } });
   mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
   // Only the name install found: the other kinds are an optional offer. The name is not asked for (#434).

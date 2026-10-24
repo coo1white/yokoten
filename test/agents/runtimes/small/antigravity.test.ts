@@ -1,12 +1,12 @@
-// Tests for src/agents/runtimes/antigravity.ts.
+// Tests for src/agents/runtimes/small/antigravity.ts.
 
-import '../../repo/home.ts';
+import '../../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { addProjectHook, projectHookState, readToolCall } from '../../../src/agents/runtimes/antigravity.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { addProjectHook, addUserHooks, hasUserDir, projectHookState, readToolCall, removeUserHooks, userHooksFile, userHooksState } from '../../../../src/agents/runtimes/small/antigravity.ts';
+import { makeSandbox } from '../../../repo/helpers.ts';
 
 /** A PreToolUse payload as agy 1.4.2 sent it in a real run (#30): camelCase, the call under `toolCall`. */
 const payload = (workspace: string, name: string, args: Record<string, unknown>) =>
@@ -74,4 +74,40 @@ test('antigravity project hook: init writes the yokoten entry, keeps the others,
   assert.equal(readFileSync(file, 'utf8'), '{ not json', 'a file yokoten cannot read stays as it was');
   sandbox.write('.agents/hooks.json', '{ "yokoten": [] }');
   assert.deepEqual(projectHookState(sandbox.repo, cli), { kind: 'shape', hint: '`yokoten` should be an object' });
+});
+
+// #342: agy runs its user hooks in every workspace. The positive control is doctor's
+// "added" before install, and the other entry in the file staying as it was.
+test('antigravity user hook: install writes the guard in ~/.gemini/config/hooks.json and uninstall takes it out (#342)', () => {
+  const sandbox = makeSandbox();
+  const env = { HOME: sandbox.home };
+  const file = join(sandbox.home, '.gemini', 'config', 'hooks.json');
+  const cli = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
+  const missing = 'yokoten: the runtime at ~/.local/share/yokoten is missing; run the install again';
+  assert.equal(userHooksFile(env), '~/.gemini/config/hooks.json');
+  assert.equal(hasUserDir(env), false, 'no ~/.gemini/config: agy looks unused');
+  mkdirSync(dirname(file), { recursive: true });
+  assert.equal(hasUserDir(env), true);
+  writeFileSync(file, JSON.stringify({ lint: { PreToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] } }));
+  assert.deepEqual(userHooksState(env, cli, missing), { guard: 'added' });
+  assert.deepEqual(addUserHooks(env, cli, missing), { guard: 'added' });
+  assert.deepEqual(userHooksState(env, cli, missing), { guard: 'same' });
+  const written = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(written.lint, "another entry stays");
+  assert.deepEqual(Object.keys(written), ['lint', 'yokoten']);
+  assert.equal(written.yokoten.PreToolUse[0].matcher, 'run_command', 'the user guard is commands only');
+  const command = written.yokoten.PreToolUse[0].hooks[0].command as string;
+  assert.ok(command.startsWith(`[ -f ${cli} ] 2>/dev/null || { echo '${missing}' >&2; exit 1; };`), 'a missing runtime refuses the call');
+  assert.match(command, / hook --agent antigravity --commands-only /);
+  assert.match(command, /node --max-old-space-size=256/);
+  writeFileSync(file, JSON.stringify({ yokoten: { ...written.yokoten, enabled: false } }));
+  assert.deepEqual(userHooksState(env, cli, missing), { guard: 'updated' }, 'a disabled guard is not the guard');
+  assert.equal(addUserHooks(env, cli, missing).guard, 'updated');
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).yokoten.enabled, undefined);
+  assert.equal(removeUserHooks(env), 'removed');
+  assert.equal(userHooksState(env, cli, missing).guard, 'added');
+  assert.equal(removeUserHooks(env), 'not there');
+  writeFileSync(file, '{ not json');
+  assert.equal(removeUserHooks(env), null);
+  assert.equal(readFileSync(file, 'utf8'), '{ not json', 'a file yokoten cannot read stays as it was');
 });

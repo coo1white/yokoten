@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { longSentences } from '../../src/rules/pr.ts';
+import { parseSourceMarker } from '../../src/run/translations.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -21,23 +22,23 @@ type ManifestoPage = {
 const PAGES: ManifestoPage[] = [
   {
     file: 'docs/assets/manifesto.md',
-    has: ['eight agents', 'not verified end to end'],
-    lacks: 'seven agents',
+    has: ['nine agents', 'not verified end to end'],
+    lacks: 'eight agents',
   },
   {
     file: 'docs/i18n/zh-CN/manifesto.md',
-    has: ['八个', '还没有完整跑过'],
-    lacks: '七个 agent',
+    has: ['九个', '还没有完整跑过'],
+    lacks: '八个 agent',
   },
   {
     file: 'docs/i18n/zh-TW/manifesto.md',
-    has: ['八個', '還沒有完整跑過'],
-    lacks: '七個 agent',
+    has: ['九個', '還沒有完整跑過'],
+    lacks: '八個 agent',
   },
   {
     file: 'docs/i18n/ja/manifesto.md',
-    has: ['八つ', '端から端まではまだ確認していません'],
-    lacks: '7つの',
+    has: ['九つ', '端から端まではまだ確認していません'],
+    lacks: '八つの',
   },
 ];
 
@@ -61,10 +62,10 @@ function listGuardedAgents(guide: string): string[] {
   return names;
 }
 
-/** The failure text when `names` is not eight rows. Empty when the count is eight. */
+/** The failure text when `names` is not nine rows. Empty when the count is nine. */
 function agentCountReport(names: string[]): string {
-  if (names.length === 8) return '';
-  return `the Works with table lists ${names.length} agents, not 8: ${names.join(', ')}`;
+  if (names.length === 9) return '';
+  return `the Works with table lists ${names.length} agents, not 9: ${names.join(', ')}`;
 }
 
 /** Phrases `text` must show, and one phrase it must not. Empty when the page agrees. */
@@ -77,7 +78,7 @@ function phraseProblems(text: string, has: readonly string[], lacks: string): st
   return problems;
 }
 
-test('docs: manifestos match the guide list of eight agents (#487)', () => {
+test('docs: manifestos match the guide list of nine agents (#487)', () => {
   const shortGuide = [
     '## Other',
     '| Agent | Note |',
@@ -100,12 +101,12 @@ test('docs: manifestos match the guide list of eight agents (#487)', () => {
   ].join('\n');
   const shortNames = listGuardedAgents(shortGuide);
   assert.deepEqual(shortNames, ['Claude Code', 'Codex CLI']);
-  assert.equal(agentCountReport(shortNames), 'the Works with table lists 2 agents, not 8: Claude Code, Codex CLI');
-  assert.equal(agentCountReport(['Claude Code', 'Copilot', 'Antigravity', 'Codex', 'Muse', 'DeepSeek', 'Grok', 'Gemini']), '');
-  assert.deepEqual(phraseProblems('The same rules run in seven agents today.', ['eight agents', 'not verified end to end'], 'seven agents'), [
-    'missing: eight agents',
+  assert.equal(agentCountReport(shortNames), 'the Works with table lists 2 agents, not 9: Claude Code, Codex CLI');
+  assert.equal(agentCountReport(['Claude Code', 'Copilot', 'Antigravity', 'Codex', 'Muse', 'DeepSeek', 'Grok', 'Gemini', 'OpenCode']), '');
+  assert.deepEqual(phraseProblems('The same rules run in eight agents today.', ['nine agents', 'not verified end to end'], 'eight agents'), [
+    'missing: nine agents',
     'missing: not verified end to end',
-    'still says: seven agents',
+    'still says: eight agents',
   ]);
 
   const names = listGuardedAgents(readFileSync(join(ROOT, 'docs/guide.md'), 'utf8'));
@@ -117,6 +118,14 @@ test('docs: manifestos match the guide list of eight agents (#487)', () => {
     const text = readFileSync(join(ROOT, page.file), 'utf8');
     assert.deepEqual(phraseProblems(text, page.has, page.lacks), [], page.file);
   }
+});
+
+test('docs: every Japanese page names its English source (#121, #87)', () => {
+  // A page without the marker is invisible to the stale-translation check (#87), so a
+  // Japanese reader can be given an old page with no note.
+  const dir = join(ROOT, 'docs/i18n/ja');
+  const pages = readdirSync(dir).filter((name) => name.endsWith('.md'));
+  assert.deepEqual(pages.filter((name) => parseSourceMarker(readFileSync(join(dir, name), 'utf8')) === null), []);
 });
 
 const ENGLISH = 'docs/standard.md';
@@ -348,7 +357,7 @@ function collectWords(): string[] {
   const wanted = /const wanted = \[([\s\S]*?)\];/.exec(desk);
   if (!wanted) throw new Error('desk readable list changed');
   words.push(...quotedStrings(wanted[1]));
-  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,120}?TZ: '([^']+)'/.exec(desk);
+  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,300}?TZ: '([^']+)'/.exec(desk);
   if (!roleSet) throw new Error('desk role env changed');
   words.push('YOKOTEN_ROLE', roleSet[1], 'TZ', roleSet[2]);
   for (const match of desk.matchAll(/\b(YOKOTEN_[A-Z0-9_]+)\b/g)) words.push(match[1]);
@@ -409,8 +418,8 @@ function holderPaths(): string[] {
     'test/commands/advice/board/view.test.ts',
     'src/rules/pr.ts',
     'test/rules/pr.test.ts',
-    'src/commands/bot.ts',
-    'test/commands/bot.test.ts',
+    'src/commands/merge/bot.ts',
+    'test/commands/merge/bot.test.ts',
     'src/agents/desk/desk.ts',
     'test/agents/desk/desk.test.ts',
     'src/agents/desk/agent-env.ts',

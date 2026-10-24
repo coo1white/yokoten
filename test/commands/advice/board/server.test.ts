@@ -222,8 +222,8 @@ test('board server: /data serves the waiting list, issues, runs and limits', asy
   const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh);
   try {
     const data = JSON.parse((await boardRead(url, 'data')).text) as Record<string, unknown>;
-    for (const key of ['waiting', 'issues', 'runs', 'limits']) assert.ok(key in data, `the page reads ${key} from /data`);
-    assert.deepEqual(data.limits, { maxAgents: 3, byModel: {} });
+    for (const key of ['waiting', 'issues', 'runs', 'limits', 'schedule', 'room']) assert.ok(key in data, `the page reads ${key} from /data`);
+    assert.deepEqual(data.limits, { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 });
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
@@ -437,6 +437,44 @@ test('board server: over the limit the start is refused', async () => {
     assert.equal(capped.status, 409);
     assert.match(capped.text, /model-a/, 'names the model');
     assert.equal((await boardPost(url, 'agents/start', 'issue=14&vendor=grok&model=model-b')).status, 200, 'another model still starts');
+  } finally {
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+// #709: "Start next" starts the ready issue the schedule puts first, and a memory floor
+// that is set too high holds it.
+test('board server: start next takes the ready issue from the schedule', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'git@github.com:octo/demo.git');
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const rows = [
+    { number: 12, title: 'first', url: 'https://example.com/issues/12', body: '', createdAt: '2026-10-01T00:00:00Z', updatedAt: '', labels: [], milestone: null },
+    { number: 13, title: 'second', url: 'https://example.com/issues/13', body: 'Depends on issue #12', createdAt: '', updatedAt: '', labels: [], milestone: null },
+  ];
+  const gh = async (args: string[]) => args[0] === 'issue' ? JSON.stringify(rows) : '[]';
+  const github = createBoardGitHub();
+  const { server, url } = await startBoardServer(sandbox.repo, sandbox.env, gh, { controls, github });
+  try {
+    assert.equal((await boardRead(url, 'data')).status, 200);
+    await github.reading;
+    // A high floor holds the start; the page's own button says why in plain words.
+    assert.equal((await boardPost(url, 'agents/limits', 'memory=65536')).status, 200);
+    const held = await boardPost(url, 'agents/start', 'next=1&vendor=claude-code&model=model-a');
+    assert.equal(held.status, 409, 'a full memory floor starts nothing');
+    assert.match(held.text, /under the 65536 MB floor/);
+    assert.equal(agents.started.length, 0);
+    // With the floor off, the smallest ready number starts; 13 waits on 12.
+    assert.equal((await boardPost(url, 'agents/limits', 'memory=0')).status, 200);
+    const started = await boardPost(url, 'agents/start', 'next=1&vendor=claude-code&model=model-a');
+    assert.equal(started.status, 200, started.text);
+    const body = JSON.parse(started.text) as { started: { issue: string }[]; waiting: number[]; heldBy: string };
+    assert.deepEqual(body.started.map((run) => run.issue), ['12'], 'the ready list holds 12 alone');
+    assert.deepEqual(body.waiting, [], '13 waits on 12');
+    assert.equal(agents.started.length, 1);
+    assert.equal(agents.started[0].cwd, join(sandbox.repo, '.worktrees', '12'));
+    assert.equal((await boardPost(url, 'agents/start', 'next=1&vendor=gemini&model=model-a')).status, 400, 'an unknown vendor is refused');
   } finally {
     await new Promise<void>((done) => server.close(() => done()));
   }
