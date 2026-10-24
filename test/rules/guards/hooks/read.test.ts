@@ -38,6 +38,9 @@ test('hooks setting: a folder whose pre-commit runs the check, or the value alre
     pass('npm install && git config core.hooksPath .husky/_');
     pass(`git -C ${cwd} config core.hooksPath .husky/_`, tmpdir());
     pass('git config core.hooksPath hooks/own');
+    // `--git-dir` still names a folder the guard can read: `.git` here is this repo's own,
+    // so the check is the same as the plain form (#865).
+    pass('git --git-dir=.git config core.hooksPath .husky/_');
     for (const command of [
       'git config core.hooksPath hooks/plain',
       'git config core.hooksPath hooks/none',
@@ -47,7 +50,7 @@ test('hooks setting: a folder whose pre-commit runs the check, or the value alre
       'git config --global core.hooksPath .husky/_',
       'git config --system core.hooksPath .husky/_',
       'git config -f other.config core.hooksPath .husky/_',
-      'git --git-dir=.git config core.hooksPath .husky/_',
+      'git --git-dir=/tmp/elsewhere/.git config core.hooksPath .husky/_',
       'git -c core.hooksPath=/tmp/x commit -m x',
       'git -c core.hooksPath=.husky/_ commit -m x',
     ]) stop(command);
