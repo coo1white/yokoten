@@ -19,7 +19,7 @@ import * as grok from '../../agents/runtimes/grok.ts';
 import { hostGuardMisses } from '../../host/gh-commands.ts';
 import { UNSAVED_CONTROL, unsavedNotes } from '../advice/unsaved.ts';
 import { HOME_DIR } from '../files.ts';
-import { compareCoreRules } from '../init.ts';
+import { compareCoreRules } from '../init/index.ts';
 import { coreRulesControl, roadControl } from './lessons.ts';
 import { leftoverControl, machineControl } from './machine.ts';
 

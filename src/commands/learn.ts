@@ -8,7 +8,7 @@ import { loadConfig } from '../rules/config.ts';
 import { loadMarks, NO_HOME } from '../rules/privacy.ts';
 import { draftLesson, exportLesson, formatDraft, formatLessonPack, importLesson, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, makeNoteCleaner, NOTE_ID, type NotePlace, originParts, redactNote, removeNote, shipLesson, terminalText, upstreamDir, writeDraft, writeLessonFiles, writeNote } from '../run/learn.ts';
 import { HOME_DIR, VERSION } from '../setup/files.ts';
-import { isSelf } from '../setup/init.ts';
+import { isSelf } from '../setup/init/index.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
 import { readOriginUrl } from '../setup/plan.ts';
 import { bullets, type Invocation, type Parsed, parse, print, rootOf, usage } from './shared.ts';

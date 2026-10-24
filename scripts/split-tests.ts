@@ -72,7 +72,7 @@ const MAPPING: [string, string[]][] = [
     ['bot:JWT', 'bot:token', 'bot:config', 'bot:repo', 'bot:env', 'bot:child env', 'bot:bot program', 'bot:command title', 'bot:annotations', 'bot:step summary', 'bot:incident', 'bot:board sync', 'cli:bot'],
   ],
   ['setup/doctor.test.ts', ['cli:doctor', 'cli:doctor --session', 'cli:doctor --session --agent', 'rules:self-test', 'bot:doctor', 'bot:road', 'bot:server']],
-  ['setup/init.test.ts', ['cli:init', 'rules:core rules', 'cli:update']],
+  ['setup/init/index.test.ts', ['cli:init', 'rules:core rules', 'cli:update']],
   ['setup/install.test.ts', ['cli:install', 'cli:uninstall']],
   ['setup/plan.test.ts', ['bot:planning', 'bot:milestone']],
   ['setup/road.test.ts', ['road:road']],

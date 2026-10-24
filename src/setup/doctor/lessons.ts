@@ -7,7 +7,7 @@ import { type Env } from '../../rules/config.ts';
 import { type Finding } from '../../rules/message.ts';
 import { type LessonPlace, listLessons, runLessons } from '../../run/learn.ts';
 import { HOME_DIR, KIT } from '../files.ts';
-import { withGitReads } from '../init.ts';
+import { withGitReads } from '../init/index.ts';
 import { assumeEmptyFolder } from '../../run/check.ts';
 import { road, ROAD, type ServerRead, stepText } from '../road.ts';
 import { coreRulesCheck } from './checks.ts';

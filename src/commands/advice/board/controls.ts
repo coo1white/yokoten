@@ -26,7 +26,7 @@ import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { readGit } from '../../../run/check.ts';
-import { hookCliPath } from '../../../setup/init.ts';
+import { hookCliPath } from '../../../setup/init/index.ts';
 import { type MachineState, type ScheduleRoom, type ScheduleSettings, type ScheduleSummary, roomStateOf, SCHEDULE_DEFAULTS, takeStarts } from '../schedule.ts';
 import { planOf, roomOf } from './waiting.ts';
 import { markWorktree } from '../../hook.ts';

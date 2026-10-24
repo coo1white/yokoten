@@ -14,7 +14,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import { fixture, makeSandbox, makeTempDir } from '../repo/helpers.ts';
-import { codeOwnersText, withGitReads } from '../../src/setup/init.ts';
+import { codeOwnersText, withGitReads } from '../../src/setup/init/index.ts';
 import {
   catchLongLines,
   type Found,

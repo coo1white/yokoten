@@ -111,7 +111,7 @@ import {
   userAgentHooks,
 } from '../../src/setup/doctor/index.ts';
 import { openCodePluginNote } from '../../src/setup/doctor/checks.ts';
-import { workflowNotes } from '../../src/setup/init.ts';
+import { workflowNotes } from '../../src/setup/init/index.ts';
 import {
   ROAD,
   serverChecks,

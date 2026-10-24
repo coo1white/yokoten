@@ -12,7 +12,7 @@ import { GUARD_HEAP } from '../../run/cli.ts';
 import { type Finding, finding } from '../../rules/message.ts';
 import { tempDir as claudeTempDir } from '../../agents/runtimes/claude-code.ts';
 import { findTempDirs } from '../advice/unsaved.ts';
-import { compareVersions } from '../init.ts';
+import { compareVersions } from '../init/index.ts';
 import { machineStateFile, readMachineState, saveMachineState, writeFileAtomic } from '../install.ts';
 import { type Practice } from './checks.ts';
 import { type DiskSpace, formatSpace, HOST_DISK_FIX, HOST_DRIVE, hostDiskCache, type HostDiskCache, isFreshReading, isLowOnSpace } from './host-disk.ts';

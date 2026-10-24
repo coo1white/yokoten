@@ -11,7 +11,7 @@ import { type Gh, readServer, type ServerSettings, type Unread } from '../../hos
 import { type Host, hostOf, isNoAdapter, noAdapter } from '../../host/hosts.ts';
 import { readUnsaved, unsavedNotes } from '../advice/unsaved.ts';
 import { VERSION } from '../files.ts';
-import { hookCliPath, isSelf, withGitReads, workflowNotes } from '../init.ts';
+import { hookCliPath, isSelf, withGitReads, workflowNotes } from '../init/index.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';

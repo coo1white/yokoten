@@ -6,7 +6,7 @@ import { ghIn } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { formatFinding } from '../rules/message.ts';
-import { init, updateCoreRules } from '../setup/init.ts';
+import { init, updateCoreRules } from '../setup/init/index.ts';
 import { type Ask, install, isMachineSetUp, uninstall } from '../setup/install.ts';
 import { readOriginUrl, setUpPlanning } from '../setup/plan.ts';
 import { type Invocation, noRootFinding, type Output, parse, print, requireRoot, rootOf, usage } from './shared.ts';

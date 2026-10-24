@@ -19,7 +19,7 @@ import * as opencode from '../../agents/runtimes/small/opencode.ts';
 import type { FolderTrust } from '../../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../../agents/hooks-file.ts';
 import { runtimeVersion, VERSION } from '../files.ts';
-import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init.ts';
+import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init/index.ts';
 import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, installedSkillDirs, projectSkillDirs, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
 
 export interface Practice {
