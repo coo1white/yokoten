@@ -77,7 +77,7 @@ hold with no `yokoten init` and no setting.
 2. **Leak a secret**: no key, token, email address or home path in a commit or a post.
 3. **Publish for you**: no tag, no release, no package publish, no making a repo public.
 4. **Run code from the internet unread**: no download piped into a shell.
-5. **Take the safeguard apart**: no turning off a check or a hook, and no editing CI or the rules.
+5. **Take the safeguard apart**: no turning off a check or a hook; a worker cannot edit CI or the rules, and you review a lead's change to them.
 
 When it stops something, it shows the same five short lines:
 

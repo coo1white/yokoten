@@ -108,12 +108,40 @@ export function hasReleaseWorkflow(root: string | null | undefined): boolean {
 }
 
 /** The tag a release finding stopped, when it names one. */
-const stoppedTag = (what: string): string | undefined => /creating the tag (\S+)/.exec(what)?.[1];
+export const stoppedTag = (what: string): string | undefined => /creating the tag (\S+)/.exec(what)?.[1];
 /** The path an edit finding stopped, when it names one. */
 const stoppedPath = (what: string): string | undefined =>
   /^(\S+) is (?:lead-only|a test file)/.exec(what)?.[1] ??
   /writes (\S+), which is lead-only/.exec(what)?.[1] ??
   /changes (\S+), which is lead-only/.exec(what)?.[1];
+
+// A URL a refusal may hand back: the person copies the run line and runs it, so no character
+// the shell acts on may survive (backtick, $, ;, |, &, quotes, <, >, space). A URL with one
+// gets the `<url>` placeholder, never a shortened URL that fetches a different file.
+const DOWNLOAD_URL = /(?:https?|ftp):\/\/[^\s'"|;)]+/;
+const SAFE_DOWNLOAD_URL = /^(?:https?|ftp):\/\/[A-Za-z0-9._~:/?#\[\]@+,=%-]+$/;
+
+/** The download URL a `pipe-to-shell` finding names, when it is safe to put in a run line. */
+function safeDownloadUrl(what: string): string | undefined {
+  const url = DOWNLOAD_URL.exec(what)?.[0];
+  return url !== undefined && SAFE_DOWNLOAD_URL.test(url) ? url : undefined;
+}
+
+/** `word` as one shell word, so nothing inside it runs: single quotes, with `'` escaped. */
+const shellWord = (word: string): string => `'${word.replaceAll("'", "'\\''")}'`;
+
+// A git ref the refusal may hand back: letters, digits and `._/-`, which the shell leaves alone.
+const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
+
+/**
+ * A push command the refusal may hand back as it is. Anything the shell would act on
+ * (a `$`, a backtick, `;`, `|`, `&`, a quote, a redirect) gets the placeholder instead.
+ */
+function safePushCommand(push: string): string {
+  const safeWord = /^[A-Za-z0-9._:/@+,=-]+$/;
+  const words = push.split(' ');
+  return push.startsWith('git push ') && words.length >= 3 && words.every((word) => safeWord.test(word)) ? push : 'git push origin <tag>';
+}
 
 /** The command in a fix, when it holds one in backticks, or the general explanation. */
 const commandInFix = (f: Finding): string => {
@@ -147,8 +175,10 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
         return { tell: zh ? '这个软件包我自己来发布。' : 'I will publish this package myself.', run: 'npm publish' };
       }
       const push = /^(git push .+?) (?:pushes|publishes)\b/.exec(finding.what)?.[1];
-      if (push !== undefined) return { tell: zh ? '这些 tag 我自己来推。' : 'I will push these tags myself.', run: push };
-      if (tag !== undefined) return { tell: zh ? '这个版本我自己来发布。' : 'I will publish this release myself.', run: `git tag ${tag}` };
+      if (push !== undefined) return { tell: zh ? '这些 tag 我自己来推。' : 'I will push these tags myself.', run: safePushCommand(push) };
+      if (tag !== undefined) {
+        return { tell: zh ? '这个版本我自己来发布。' : 'I will publish this release myself.', run: `git tag ${SAFE_REF.test(tag) ? tag : '<tag>'}` };
+      }
       if (/gh release/i.test(finding.what)) return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: 'gh release create <tag>' };
       return { tell: zh ? '这次发布我自己来。' : 'I will publish this release myself.', run: commandInFix(finding) };
     }
@@ -199,7 +229,7 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
         run: 'git log --oneline -5',
       };
     case 'pipe-to-shell': {
-      const url = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(finding.what)?.[0];
+      const url = safeDownloadUrl(finding.what);
       return {
         tell: zh ? '先把文件下载下来给我看，再运行。' : 'Download the file and show it to me before anything runs it.',
         run: url === undefined ? 'curl -fsSL <url> -o download.sh' : `curl -fsSL ${url} -o download.sh`,
@@ -224,7 +254,7 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
       const path = stoppedPath(finding.what) ?? '<test file>';
       return {
         tell: zh ? '不要改测试；改代码直到测试通过。' : 'Do not change the test; fix the code until the test passes.',
-        run: `git diff -- ${path}`,
+        run: `git diff -- ${shellWord(path)}`,
       };
     }
     case 'lead-only': {
@@ -232,7 +262,7 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
       if (worker) {
         return {
           tell: zh ? `这是 lead 的文件；请把它报告给 lead。` : 'This file belongs to my lead; report it to your lead.',
-          run: `yokoten msg send lead "${zh ? `请修改 ${path}` : `please change ${path}`}"`,
+          run: `yokoten msg send lead ${shellWord(zh ? `请修改 ${path}` : `please change ${path}`)}`,
         };
       }
       const noConfig = context.hasConfig === false;
@@ -266,7 +296,7 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
       const file = finding.file ?? '<file>';
       return {
         tell: zh ? '把密钥移到 git 忽略的文件里，然后换掉这个密钥。' : 'Move the key to a file git ignores, then rotate it.',
-        run: `git check-ignore -v ${file}`,
+        run: `git check-ignore -v ${shellWord(file)}`,
       };
     }
     case 'email':
@@ -274,7 +304,7 @@ function refusalWays(finding: Finding, context: RefusalContext): RefusalWays {
     case 'private-mark':
       return {
         tell: zh ? '提交前把它换成占位内容。' : 'Replace it with a placeholder before you commit.',
-        run: finding.file === undefined ? `yokoten explain ${finding.id}` : `git diff --cached -- ${finding.file}`,
+        run: finding.file === undefined ? `yokoten explain ${finding.id}` : `git diff --cached -- ${shellWord(finding.file)}`,
       };
     case 'gh-token':
       return {

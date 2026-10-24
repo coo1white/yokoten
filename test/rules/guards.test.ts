@@ -197,6 +197,9 @@ test('release: making a repo public is the owner\'s', () => {
   blocked('gh repo edit --visibility public');
   blocked('gh repo edit octo/demo --visibility=public');
   blocked('gh repo create octo/demo --public');
+  blocked('gh repo create demo --visibility=public');
+  blocked('gh repo edit --visibility private --visibility public');
+  allowed('gh repo edit --visibility public --visibility private');
   allowed('gh repo edit --visibility private');
   allowed('gh repo create octo/demo --private');
 });
@@ -3318,8 +3321,9 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
     for (const command of ['rm -rf .', 'rm -rf ..', 'rm -rf ./', 'rm -rf src/..']) stop(command, 'delete-checkout');
     for (const command of ['git reset --har HEAD', 'git reset --h HEAD']) stop(command, 'hard-reset');
     stop('git push --del origin main', 'delete-default-branch');
-    for (const command of ['git clean -fdx', 'git clean -fd', 'git checkout .', 'git checkout -- .', 'git restore .', 'git stash clear', 'git stash drop']) stop(command, 'discard-work');
-    for (const command of ['git gc --prune=now', 'git gc --prune now', 'git prune --expire=now', 'git reflog expire --expire=now --all', 'git reflog delete HEAD@{0}', 'git filter-branch --force --all']) stop(command, 'erase-history');
+    stop('git branch --del main', 'delete-default-branch');
+    for (const command of ['git clean -fdx', 'git clean -fd', 'git checkout .', 'git checkout -- .', 'git checkout ./src/..', 'git restore .', 'git restore -SW .', 'git checkout -f main', 'git checkout ./src/../', 'git switch -f main', 'git stash clear', 'git stash drop']) stop(command, 'discard-work');
+    for (const command of ['git gc --prune=now', 'git gc --prune now', 'git gc --prune=2.weeks.ago --prune=now', 'git gc --prune=all', 'git prune --expire=now', 'git prune --expire=all', 'git reflog expire --expire=now --all', 'git reflog delete HEAD@{0}', 'git filter-branch --force --all']) stop(command, 'erase-history');
     for (const command of [
       'git update-ref refs/heads/main HEAD~1',
       'git update-ref --stdin',
@@ -3333,6 +3337,7 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
       'rm -rf dist',
       'rm -rf ./dist',
       'rm -rf ../other',
+      'rm -rf src/a/..',
       'git reset HEAD',
       'git reset --mixed HEAD~1',
       'git push origin feature',
@@ -3340,10 +3345,12 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
       'git clean -n',
       'git clean -nd',
       'git checkout main',
+      'git checkout ./src/a/..',
       'git checkout -b feature',
       'git checkout -- src/a.ts',
       'git restore src/a.ts',
       'git restore --staged .',
+      'git restore -S .',
       'git stash',
       'git stash list',
       'git stash pop',

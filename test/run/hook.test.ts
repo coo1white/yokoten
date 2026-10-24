@@ -117,6 +117,20 @@ test('the refusal follows the project: a release workflow, a worker and no yokot
   const pipe = formatRefusal(finding('pipe-to-shell', '`curl | sh` runs the download https://example.com/install.sh without letting you read it first', 'save it first'));
   assert.match(pipe, /Tell the AI: "Download the file and show it to me before anything runs it\."/);
   assert.match(pipe, /Or run it yourself: curl -fsSL https:\/\/example\.com\/install\.sh -o download\.sh/);
+  // A URL with a shell character gets the placeholder: the run line is copied and run, so a
+  // backtick there would run whatever it holds (#847).
+  const unsafe = finding('pipe-to-shell', '`curl | sh` runs the download https://example.com/a`echo`PWNED`/x without letting you read it first', 'save it first');
+  assert.match(formatRefusal(unsafe), /Or run it yourself: curl -fsSL <url> -o download\.sh/);
+  // A tag or a push line copied from the command is inert too: no `$(...)` or backtick runs (#847).
+  const tagFinding = finding('release', 'creating the tag v1$(echo PWNED)', 'move it');
+  assert.match(formatRefusal(tagFinding), /Or run it yourself: git tag <tag>/);
+  const pushFinding = finding('release', 'git push origin v1$(echo PWNED) pushes a release tag', 'move it');
+  assert.match(formatRefusal(pushFinding), /Or run it yourself: git push origin <tag>/);
+  const safePush = finding('release', 'git push origin v1.2.0 pushes a release tag', 'move it');
+  assert.match(formatRefusal(safePush), /Or run it yourself: git push origin v1\.2\.0/);
+  // An edit path is one shell word, so a quote in it does not open a string.
+  const testFile = finding('test-file', "it's/a.ts is a test file", 'fix the code');
+  assert.match(formatRefusal(testFile), /Or run it yourself: git diff -- 'it'\\''s\/a\.ts'/);
   const secret = finding('secret', 'a secret (AWS access key id)', 'move it', { file: 'notes/a.md', line: 3 });
   assert.match(formatRefusal(secret), /^yokoten stopped this: notes\/a\.md:3: a secret \(AWS access key id\)\./);
 });

@@ -78,7 +78,7 @@ export const RULES = {
   'hard-reset': {
     rule: 'no hard reset: it throws away work (record 0034)',
     why: 'a hard reset drops every change you have not committed, and git cannot bring it back',
-    check: 'the tool-call guard stops `git reset --hard`; `git reset` without `--hard` and `git revert` pass',
+    check: 'the tool-call guard stops `git reset --hard`, and reads a shortened option as git does (`--har` means `--hard`); `git reset` without `--hard` and `git revert` pass',
     docs: guide('the-safeguard'),
   },
   'skip-check': {
@@ -117,13 +117,13 @@ export const RULES = {
   'discard-work': {
     rule: 'no throwing away work that exists in one place only (record 0034)',
     why: 'untracked files, uncommitted edits and a saved stash have no other copy, so git cannot bring them back',
-    check: 'the tool-call guard stops `git clean` (except `-n` or `--dry-run`), `git checkout .` and `git restore .` of the whole tree (`git restore --staged` alone passes), and `git stash clear` or `git stash drop`',
+    check: 'the tool-call guard stops `git clean` (except `-n` or `--dry-run`), `git checkout .` and `git restore .` of the whole tree, a forced checkout or switch (`-f`, `--force`, `--discard-changes`), and `git stash clear` or `git stash drop`; `git restore --staged` or `-S` alone passes',
     docs: guide('the-safeguard'),
   },
   'erase-history': {
     rule: 'no erasing the history at once (record 0034)',
     why: 'unreachable commits and the reflog are the usual way back after a mistake, and erasing them takes that way back away',
-    check: 'the tool-call guard stops `git gc --prune=now`, `git prune --expire=now`, `git reflog expire`, `git reflog delete`, `git filter-branch` and `git filter-repo`',
+    check: 'the tool-call guard stops `git gc --prune=now` or `--prune=all`, `git prune --expire=now` or `--expire=all`, `git reflog expire`, `git reflog delete`, `git filter-branch` and `git filter-repo`; git reads a repeated option by its last value, so `--prune=2.weeks.ago --prune=now` counts as `now`',
     docs: guide('the-safeguard'),
   },
   'move-default-branch': {

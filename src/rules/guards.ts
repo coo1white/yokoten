@@ -1815,7 +1815,7 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
         return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
       }
       // `.` is the checkout and `..` holds it: one word removes every file and every commit (#828).
-      const whole = targets.find(isCheckoutPath);
+      const whole = targets.find((word) => isCheckoutPath(word, cwd));
       if (whole !== undefined) {
         return finding('delete-checkout', `\`${name}\` on \`${whole}\` would delete the whole checkout, including every file and every commit`, DELETE_CHECKOUT_FIX);
       }
@@ -1850,17 +1850,30 @@ function isGitLongOption(word: string, name: string): boolean {
   return given.startsWith('--') && given.length > 2 && name.startsWith(given);
 }
 
-/** Whether git's long option `name` is set to `value`, written `--name=value`, `--name value`, or shortened. */
+/**
+ * Whether git's long option `name` is set to `value`, written `--name=value`, `--name value`,
+ * or shortened. Git keeps the last value when an option is given twice, so the last one counts.
+ */
 function gitOptionIs(args: string[], name: string, value: string): boolean {
+  let last: string | undefined;
   for (const [at, word] of args.entries()) {
     if (!isGitLongOption(word, name)) continue;
-    return (word.includes('=') ? word.slice(word.indexOf('=') + 1) : args[at + 1]) === value;
+    last = word.includes('=') ? word.slice(word.indexOf('=') + 1) : args[at + 1];
   }
-  return false;
+  return last === value;
 }
 
-/** Whether `path` is the folder the command runs in, or a parent: removing it removes the checkout. */
-function isCheckoutPath(path: string): boolean {
+/**
+ * Whether `path` is the folder the command runs in, or one that holds it: removing it removes
+ * the checkout. `.` and `..` are read as the shell reads them, so `src/a/..` is `src`.
+ */
+function isCheckoutPath(path: string, cwd: string | null): boolean {
+  if (cwd !== null) {
+    const target = resolve(cwd, path);
+    return target === cwd || cwd.startsWith(target.endsWith(sep) ? target : `${target}${sep}`);
+  }
+  // Without the folder, a path that still ends in `..` after its own parts cancel is as close
+  // to the checkout as the guard can tell, so it answers the safe way.
   const parts = path.split(/[\\/]+/).filter((part) => part !== '' && part !== '.');
   return parts.length === 0 || parts[parts.length - 1] === '..';
 }
@@ -1896,11 +1909,18 @@ function checkGitLoseWork(words: string[], cwd: string | null, env: Env): Findin
 
   // A whole-tree checkout or restore throws away every uncommitted edit. `restore --staged`
   // alone only unstages, which is the way back from `git add`, so it passes.
-  if (sub === 'checkout' || sub === 'restore') {
+  if (sub === 'checkout' || sub === 'switch' || sub === 'restore') {
     const stagedOnly = sub === 'restore'
-      && args.some((arg) => isGitLongOption(arg, '--staged'))
-      && !args.some((arg) => arg === '-W' || isGitLongOption(arg, '--worktree'));
-    const whole = plain.find((word) => word === '.' || word === './' || word === ':/');
+      && args.some((arg) => isGitLongOption(arg, '--staged') || /^-[A-Za-z]*S[A-Za-z]*$/.test(arg))
+      && !args.some((arg) => isGitLongOption(arg, '--worktree') || /^-[A-Za-z]*W[A-Za-z]*$/.test(arg));
+    // A forced checkout or switch writes over uncommitted edits, whichever revision it names.
+    const forceFlag = (sub === 'checkout' || sub === 'switch')
+      ? args.find((arg) => arg === '-f' || isGitLongOption(arg, '--force') || isGitLongOption(arg, '--discard-changes'))
+      : undefined;
+    if (forceFlag !== undefined) {
+      return finding('discard-work', `\`git ${sub} ${forceFlag}\` writes over every uncommitted edit in the checkout`, DISCARD_WORK_FIX);
+    }
+    const whole = plain.find((word) => word === ':/' || isCheckoutPath(word, directory));
     if (whole !== undefined && !stagedOnly) {
       return finding('discard-work', `\`git ${sub} ${whole}\` throws away every uncommitted edit in the checkout`, DISCARD_WORK_FIX);
     }
@@ -1911,9 +1931,10 @@ function checkGitLoseWork(words: string[], cwd: string | null, env: Env): Findin
     return finding('discard-work', `\`git stash ${plain[0]}\` destroys saved work that has no other copy`, DISCARD_WORK_FIX);
   }
 
-  // Erasing unreachable commits and the reflog takes away the usual way back.
-  const erases = (sub === 'gc' && gitOptionIs(args, '--prune', 'now'))
-    || (sub === 'prune' && gitOptionIs(args, '--expire', 'now'))
+  // Erasing unreachable commits and the reflog takes away the usual way back. Git reads
+  // `--prune=all` and `--expire=all` as "now" too, and keeps the last of two values.
+  const erases = (sub === 'gc' && (gitOptionIs(args, '--prune', 'now') || gitOptionIs(args, '--prune', 'all')))
+    || (sub === 'prune' && (gitOptionIs(args, '--expire', 'now') || gitOptionIs(args, '--expire', 'all')))
     || (sub === 'reflog' && (plain[0] === 'expire' || plain[0] === 'delete'))
     || sub === 'filter-branch'
     || sub === 'filter-repo';
@@ -2883,9 +2904,9 @@ function looksLikeGitDelete(args: string[]): boolean {
 const DELETE_BRANCH_FIX = 'delete only the branch you mean (`git branch -d <branch>`), and leave the default branch alone';
 const deleteBranchFinding = (what: string) => finding('delete-default-branch', what, DELETE_BRANCH_FIX);
 
-/** The branches a `git branch -d`, `-D` or `--delete` removes, or null when it removes none. */
+/** The branches a `git branch -d`, `-D` or `--delete` (or a shortened `--del`) removes, or null when it removes none. */
 function findDeletedBranches(args: string[]): string[] | null {
-  const deletes = args.some((arg) => arg === '--delete' || (/^-[A-Za-z]+$/.test(arg) && /[dD]/.test(arg)));
+  const deletes = args.some((arg) => isGitLongOption(arg, '--delete') || (/^-[A-Za-z]+$/.test(arg) && /[dD]/.test(arg)));
   return deletes ? plainArgs(args) : null;
 }
 
@@ -4195,6 +4216,18 @@ function readText(path: string): string {
   }
 }
 
+/** The visibility a `gh repo` call ends up with: `--visibility[=]x`, `--public`, `--private`; the last one wins. */
+function visibilityOf(args: string[]): string | undefined {
+  let value: string | undefined;
+  for (const [at, word] of args.entries()) {
+    if (word.startsWith('--visibility=')) value = word.slice('--visibility='.length);
+    else if (word === '--visibility') value = args[at + 1];
+    else if (word === '--public') value = 'public';
+    else if (word === '--private' || word === '--internal') value = 'private';
+  }
+  return value;
+}
+
 // A word anywhere after the program counts, so an option in between (`npm --tag x publish`)
 // does not hide it. `npm run publish` blocks too: the script may well publish.
 function checkPublish(words: string[], env: Env): Finding | null {
@@ -4207,9 +4240,10 @@ function checkPublish(words: string[], env: Env): Finding | null {
   const sub = gh.indexOf('release');
   if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
   const repo = gh.indexOf('repo');
-  if (repo !== -1 && gh[repo + 1] === 'create' && gh.includes('--public')) return release('creating a public repo');
-  if (repo !== -1 && gh[repo + 1] === 'edit' && gh.some((a) => a === '--visibility=public' || (a === '--visibility' && gh[gh.indexOf(a) + 1] === 'public'))) {
-    return release('making the repo public');
+  const repoCall = repo === -1 ? '' : gh[repo + 1] ?? '';
+  // gh keeps the last value when a visibility flag comes twice, so the last one counts.
+  if ((repoCall === 'create' || repoCall === 'edit') && visibilityOf(gh.slice(repo + 2)) === 'public') {
+    return release(repoCall === 'create' ? 'creating a public repo' : 'making the repo public');
   }
   if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;

@@ -47,6 +47,7 @@ import {
   sessionIdOf,
   startFields,
   STATUS_EVERY_MS,
+  stoppedTag,
   stopsState,
   type StopAnswer,
   type StopEvent,
@@ -565,7 +566,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     const reason = formatRefusal(found, {
       lang: refusalLanguage(invocation.env),
       worker: role !== null || action.worker,
-      hasReleaseWorkflow: hasReleaseWorkflow(root),
+      hasReleaseWorkflow: stoppedTag(found.what) === undefined ? false : hasReleaseWorkflow(root),
       hasConfig: root !== null && existsSync(join(root, 'yokoten.json')),
       workerNote: markReason,
     });
