@@ -184,5 +184,7 @@ test('gitea: doctor judges the forge steps through the adapter, not by hand (#50
   assert.equal(mark('security-settings'), "can't check", 'Gitea core has no security switches');
   const text = result.lines.join('\n');
   assert.ok(!text.includes("yokoten can't check this on"), 'the by-hand wording is for a host with no adapter');
-  assert.ok(!text.includes('gitea.example.com'), 'a self-hosted address is never printed');
+  // Read the host from the host under test, not a URL literal: a scanner sees a bare host
+  // in `includes` as a URL check, and this assertion is about the text, not a URL (#849).
+  assert.ok(!text.includes(new URL(HOST.api).hostname), 'a self-hosted address is never printed');
 });
