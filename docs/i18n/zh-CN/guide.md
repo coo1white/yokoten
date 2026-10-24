@@ -603,9 +603,10 @@ jobs:
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
 Dependabot 开的 PR 只查标题，其他几条只提醒、不算失败，因为它的正文是 Dependabot 自己写的。
-kit 里 `init` 放的 `check` workflow 现在用这个 action，钉在第一个正式版本的 commit 上，这样就不会
-依赖 `@main`；Dependabot 会把这个 pin 更新到新版本。kit 的 `pr` 和 `issue` workflow 还是跑
-项目里 `.yokoten/` 的那份。
+kit 里 `init` 放的 `check` workflow 先跑项目里 `.yokoten/` 的那份：它和提交钩子用的是同一个
+yokoten，检查也一样。然后才跑这个 action，钉在第一个正式版本的 commit 上，这样改了 `.yokoten/`
+的 PR 也得过一份它改不了的检查；Dependabot 会把这个 pin 更新到新版本。kit 的 `pr` 和
+`issue` workflow 跑项目里 `.yokoten/` 的那份。
 
 ### 命令
 

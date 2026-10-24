@@ -173,8 +173,8 @@ test('init: adds the practices, keeps what is there, and doctor asks for the rem
   assert.match(readFileSync(join(sandbox.repo, 'changes/README.md'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts changelog --write/, 'the change files folder (#132)');
   assert.ok(statSync(join(sandbox.repo, '.githooks', 'pre-commit')).mode & 0o100);
   const workflow = readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8');
-  assert.match(workflow, /uses: yokoten-labs\/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0\.1\.0/, 'the check is the released Action, pinned to a commit (#129)');
-  assert.doesNotMatch(workflow, /node \.yokoten\/bin\/yokoten\.ts check/, 'the check no longer runs the project copy (#129)');
+  assert.match(workflow, /- run: node \.yokoten\/bin\/yokoten\.ts check\n/, 'the check is the project\'s copy, the same as the commit hook (#129, core rule 6)');
+  assert.match(workflow, /uses: yokoten-labs\/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0\.1\.0/, 'and the released Action, pinned to a commit (#129)');
   assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
   assert.match(workflow, /^  ci:\n    if: always\(\)\n    needs: \[changes, check, lint\]$/m, 'one required check that waits for the rest (#36)');
   assert.match(readFileSync(join(sandbox.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
@@ -1903,10 +1903,10 @@ const withTestsJob = (yml: string): string =>
 /** The kit's yokoten.yml before #451, rebuilt from the newest: one of the versions init wrote. */
 const oldYokotenYml = () =>
   kitWorkflow('yokoten.yml')
-    // Before #129, the kit ran its own copy of yokoten, not the released Action.
+    // Before #129, the kit ran only its own copy of yokoten, not the released Action.
     .replace(
-      "      # yokoten as a released Action (#129), pinned to the first release by its full\n      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the\n      # released check, not the project's copy in .yokoten/; pr.yml and issue.yml still\n      # run the project's copy for their own events.\n      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0\n        with:\n          pr-check: 'false'\n          issue-check: 'false'\n",
-      "      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0\n        with:\n          node-version: '^22.23.4'\n      - run: node .yokoten/bin/yokoten.ts check\n",
+      "      # yokoten as a released Action (#129), pinned to the first release by its full\n      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the\n      # release's own copy, so a pull request that changes .yokoten/ still meets a check\n      # it cannot edit. pr.yml and issue.yml still run the project's copy.\n      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0\n        with:\n          pr-check: 'false'\n          issue-check: 'false'\n          node-version: '^22.23.4'\n",
+      '',
     )
     .replace(
       '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. Every other event gets a group of its own, so a run on main is never\n# cancelled, waiting or running: every commit stays in history (#660, #798).\n',
