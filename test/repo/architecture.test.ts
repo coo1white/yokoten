@@ -1638,3 +1638,46 @@ test('the release workflow publishes the tarball as a file, not a GitHub repo na
   assert.ok(publish.length > 0, 'the release workflow runs npm publish');
   for (const line of publish) assert.match(line, /npm publish \.\//, line.trim());
 });
+
+test('the release workflow makes the GitHub release page from the changelog (#533)', () => {
+  const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  const jobs = [...workflow.matchAll(/\n {2}([a-z][\w-]*):\n/g)];
+  const at = jobs.findIndex(([, name]) => name === 'release-page');
+  assert.ok(at >= 0, 'the release workflow has a release-page job');
+  const [start, end] = [jobs[at].index ?? 0, jobs[at + 1]?.index ?? workflow.length];
+  const job = workflow.slice(start, end);
+  assert.match(job, /needs: publish/, 'the page waits for npm');
+  assert.match(job, /permissions:\n {6}contents: write/, 'only this job writes');
+  assert.match(job, /node bin\/yokoten\.ts changelog --notes "\$GITHUB_REF_NAME"/, 'the notes come from CHANGELOG.md');
+  assert.match(job, /gh release create "\$GITHUB_REF_NAME" --verify-tag --latest="\$is_latest" --title "\$title" --notes-file notes\.md/);
+  assert.match(job, /gh release edit "\$GITHUB_REF_NAME" --title "\$title" --notes-file notes\.md/, 'a rerun edits the page');
+  const publishJob = workflow.slice(jobs.find(([, name]) => name === 'publish')?.index ?? 0, start);
+  assert.doesNotMatch(publishJob, /contents: write/, 'the publish job does not write to the repo');
+});
+
+// A tag with a `-` is a pre-release, a beta or dev build. npm sends it to `next` and keeps
+// `latest` on the stable version (#632); the release page must agree, or the page that says
+// "latest" and the package users install tell two different stories.
+function assertSameTagRule(workflow: string): void {
+  const [publishAt, pageAt] = [workflow.indexOf('\n  publish:'), workflow.indexOf('\n  release-page:')];
+  assert.ok(publishAt >= 0 && pageAt > publishAt, 'the workflow has a publish job and a release-page job');
+  assert.match(workflow.slice(publishAt, pageAt), /\*-\*\) dist_tag=next ;;/u, 'npm sends a pre-release to next');
+  assert.match(workflow.slice(pageAt), /\*-\*\) is_latest=false ;;/u, 'a pre-release is not the latest release');
+  const create = workflow.split('\n').filter((line) => /\bgh release create\b/u.test(line) && !line.trim().startsWith('#'));
+  assert.ok(create.length > 0, 'the release-page job creates a release');
+  for (const line of create) assert.match(line, /--latest="\$is_latest"/u, `the latest flag comes from the tag: ${line.trim()}`);
+}
+
+test('the release page and npm agree on what a pre-release is (#632)', () => {
+  assertSameTagRule(readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8'));
+});
+
+test('the pre-release check catches a page marked latest every time', () => {
+  const bad = [
+    '  publish:',
+    '    *-*) dist_tag=next ;;',
+    '  release-page:',
+    '    gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "$title"',
+  ].join('\n');
+  assert.throws(() => assertSameTagRule(bad));
+});

@@ -146,6 +146,27 @@ export function mergeChanges(changelog: string, changes: Change[]): string | Fin
 }
 
 /**
+ * One released version's entry in CHANGELOG.md, without its heading, for a host release
+ * page (#533). `version` may be written `0.1.0` or `v0.1.0`. Null when there is no such
+ * heading; an entry with no text is the empty string.
+ */
+export function releaseNotes(changelog: string, version: string): string | null {
+  const wanted = version.replace(/^v/, '');
+  const lines = changelog.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^##\s+\[v?([^\]]+)\](?:\s|$)/.exec(line)?.[1] === wanted);
+  if (start < 0) return null;
+  let end = lines.findIndex((line, index) => index > start && VERSION_HEADING.test(line));
+  if (end < 0) end = lines.length;
+  // A link definition after the last release belongs to the file, not to that release.
+  const link = lines.findIndex((line, index) => index > start && /^\[[^\]]+\]:\s/.test(line));
+  if (link >= 0 && link < end) end = link;
+  const body = lines.slice(start + 1, end);
+  while (body.length && !body[0].trim()) body.shift();
+  while (body.length && !body[body.length - 1].trim()) body.pop();
+  return body.join('\n');
+}
+
+/**
  * `yokoten changelog --write`: the change files merged into CHANGELOG.md, and then
  * deleted. When any file is wrong, or CHANGELOG.md has no Unreleased heading, nothing is
  * written and nothing is deleted.

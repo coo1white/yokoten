@@ -1,7 +1,7 @@
 // `yokoten learn` and `yokoten changelog`: what the project learned, and what it changed.
 
 import { ghIn, readIncident, readLocalLogins } from '../host/github/index.ts';
-import { formatChanges, readChanges, writeChanges } from '../run/changelog.ts';
+import { formatChanges, readChanges, releaseNotes, writeChanges } from '../run/changelog.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { loadConfig } from '../rules/config.ts';
@@ -26,6 +26,19 @@ export function runChangelog(invocation: Invocation): number {
   if (typeof options === 'string') return usage(invocation, options);
   const root = rootOf(cwd, invocation.env) ?? cwd;
   const isWrite = options.flags.has('--write');
+  const notesVersion = options.values['--notes'];
+  if (notesVersion !== undefined) {
+    if (isWrite) return usage(invocation, '--notes only reads; run it without --write');
+    const path = join(root, 'CHANGELOG.md');
+    if (!existsSync(path)) return usage(invocation, 'CHANGELOG.md is not here');
+    const notes = releaseNotes(readFileSync(path, 'utf8'), notesVersion);
+    if (notes === null) {
+      print(invocation, [`yokoten changelog: CHANGELOG.md has no entry for ${notesVersion}`], invocation.stderr);
+      return 1;
+    }
+    if (notes) print(invocation, notes.split('\n'));
+    return 0;
+  }
   const { changes, problems } = isWrite ? writeChanges(root) : readChanges(root);
   if (problems.length) {
     print(invocation, [`yokoten changelog: ${problems.length} problem(s); nothing was written:`, ...bullets(problems)], invocation.stderr);

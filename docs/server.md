@@ -179,7 +179,10 @@ The tag starts the `release` workflow. Its `verify` job checks that the tag matc
 `package.json`. It runs the tests, `typecheck`, `check` and `npm run check-package`, then
 packs the tarball. Its `publish` job then waits for your approval in the `release`
 environment. It publishes that tarball with provenance through npm trusted publishing,
-so it needs no npm token. The workflow makes no GitHub release; you make it below.
+so it needs no npm token. After it publishes, a `release-page` job creates the GitHub
+release page from the entry for this version in `CHANGELOG.md` (#533). It runs only after
+the publish, and a rerun edits the page instead of failing. If `CHANGELOG.md` has no
+entry for the tag's version, the job stops and names the version it could not find.
 
 **v0.1.0 only.** npm can't trust a workflow for a package that is not on npm yet. So
 wait for `verify` to pass, then reject the waiting `publish` job. Publish by hand, logged
@@ -196,10 +199,11 @@ Then set npm's package settings, as in record 0009, step 5: open the package's
 Do step 6 (the trusted publisher)
 just before the next release, not now: it expires after 2 days without a publish.
 
-The GitHub release, with the notes from `CHANGELOG.md`:
+The GitHub release page is made for you from the notes in `CHANGELOG.md`. To see the
+notes first, or to make the page by hand if that job failed:
 
 ```sh
-awk '/^## \[/ { p = /^## \[X\.Y\.Z\]/; next } /^\[[^]]*\]: / { p = 0 } p' CHANGELOG.md > notes.md
+node bin/yokoten.ts changelog --notes vX.Y.Z > notes.md
 gh release create vX.Y.Z --verify-tag --title "yokoten X.Y.Z" --notes-file notes.md
 ```
 
@@ -212,5 +216,16 @@ After it:
 - The release page shows the notes, and the `[X.Y.Z]` link at the end of `CHANGELOG.md`
   opens it.
 
-The same day as v0.1.0: issue #129 (the kit uses the Action, pinned by the tag's commit
-SHA), and issue #328 (the Action on the Marketplace).
+### Put the Action on the Marketplace (#328)
+
+The Marketplace listing is one owner action, and the release page is its home. On the
+release page, press **Edit**, tick **Publish this Action to the GitHub Marketplace**, and
+choose the **CI** category. GitHub reads `action.yml` for the name, description and icon.
+A Marketplace release needs a tag and a release page: you make the tag, and the
+`release-page` job makes the page.
+
+Only public repositories can be listed. After the first listing, each new release page
+appears on the listing too. Do this once, after `v0.1.0`.
+
+After v0.1.0: issue #129 (the kit uses the Action, pinned by the tag's commit SHA), and
+the Marketplace listing above (#328).
