@@ -115,7 +115,7 @@ export function pluginHookCommand(isSessionStart: boolean): string {
   const launch = '"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs"';
   const fallback = '"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs"';
   const mode = isSessionStart ? 'session' : 'tool';
-  const yokotenArgs = isSessionStart ? 'doctor --session' : 'hook --commands-only';
+  const yokotenArgs = isSessionStart ? 'doctor --session' : 'hook --commands-only --agent claude-code';
   const say = isSessionStart ? `echo '${PLUGIN_COPY_GONE}'; exit 0` : `echo '${PLUGIN_COPY_GONE}' >&2; exit 2`;
   return `[ -f ${launch} ] 2>/dev/null || { ${say}; }; node ${launch} ${mode} ${fallback} ${yokotenArgs}`;
 }
@@ -233,17 +233,43 @@ export const COMMANDS: Command[] = [
   {
     name: 'check',
     summary: 'layout, privacy and lead-only files; the pull request or issue in CI',
-    usage: '[--staged | --history | --pr [number] | --issue] [--json]',
-    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.'],
+    usage: '[--staged | --history | --pr [number] | --issue | --anchor] [--json]',
+    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.', '--anchor checks the event log against its daily entries in Sigstore Rekor.'],
     options: [
       { name: '--staged', text: 'the next commit, as the git hook runs it' },
       { name: '--history', text: 'the privacy check over every commit; run it before going public' },
       { name: '--pr', text: 'the title, tier, sections, issue and change file of the pull request: in CI, or by its number' },
       { name: '--issue', text: 'in CI: the issue title, `area: summary` in 60 characters at most' },
+      { name: '--anchor', text: 'the event log against the daily hashes in Sigstore Rekor' },
+      { name: '--repo', value: 'owner/name', text: 'the repo whose anchor workflow signed the entries; GITHUB_REPOSITORY or origin by default' },
       { name: '--json', text: 'the findings as JSON on stdout' },
     ],
     argument: 'number',
     example: 'yokoten check --staged',
+  },
+  {
+    name: 'ci-health',
+    summary: 'the last 200 Actions runs, in one issue that is updated in place',
+    usage: '[--repo owner/name] [--dry-run]',
+    text: [
+      'Reads the Actions runs and the checks of open pull requests through gh. Writes one',
+      'Markdown report to the pinned issue "CI health", creating it on the first run.',
+      '--dry-run prints the report and changes nothing.',
+    ],
+    options: [
+      { name: '--repo', value: 'owner/name', text: 'the repo to read; the default is GITHUB_REPOSITORY, or the origin remote' },
+      { name: '--dry-run', text: 'print the report; do not create or edit the issue' },
+    ],
+    example: 'yokoten ci-health --dry-run',
+  },
+  {
+    name: 'provenance',
+    summary: 'the writer, reviewers, approver, tier and issue of a commit or a range',
+    usage: '<ref> [--json]',
+    text: ['Reads the message a squash merge leaves on the branch, and the Approve on the pull request it names.', 'The approver is the latest Approve; when gh cannot read it, it shows unknown.', 'A range shows each commit, oldest first.'],
+    options: [{ name: '--json', text: 'the records as JSON on stdout' }],
+    argument: 'ref',
+    example: 'yokoten provenance main~1..main',
   },
   {
     name: 'mcp',
@@ -350,13 +376,19 @@ export const COMMANDS: Command[] = [
   {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
-    usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
-    text: ['Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.', 'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.'],
+    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>]',
+    text: [
+      'Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.',
+      "With --agent claude-code, it answers as Claude Code's PreToolUse hook: a deny in JSON on stdout, exit 0. YOKOTEN_HOOK_DENIAL=exit2 keeps exit 2.",
+      'With --denial exit2, it keeps the reason on stderr and exit 2, for a host that reads the exit code alone.',
+      'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.',
+    ],
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness, grok or opencode' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
+      { name: '--denial', value: 'mode', text: 'the answer a refusal gets: exit2 puts the reason on stderr and exits 2, for a host that ignores a JSON deny' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },
