@@ -431,6 +431,34 @@ gh 读不到时，批准的人写成 unknown，命令仍然以 0 退出。
 - [src/run/hook.ts](../../../src/run/hook.ts) 和 [test/run/check.test.ts](../../../test/run/check.test.ts)。
 - [src/commands/check.ts](../../../src/commands/check.ts) 和 [test/commands/check.test.ts](../../../test/commands/check.test.ts)。
 
+## 教训文件
+
+一条教训是从真实事故里做出来的一条检查。
+它包含四个部分：事故、检查、阳性对照，以及它适用的地方。
+
+- 事故是 `lesson.ts` 顶部附近 `//` 行里的事故 issue URL。
+- 检查是 `lesson.ts` 里的 `findProblems(root)`。它只读文件，对每个出现的地方返回一条发现。
+- 阳性对照是 `lesson.test.ts`。检查什么都抓不到时，它会失败。
+- 它适用的地方是 kit。`yokoten doctor` 在每个带这个 kit 的项目里运行它，除非 "notNow" 点名了它。
+
+一条教训以一个小的 JSON 文件传输。
+`yokoten learn --export <id>` 打印它，`--out <file>` 把它写进文件。
+
+| 字段 | 内容 |
+| --- | --- |
+| `version` | `1`。读的一方拒绝其他数字。 |
+| `id` | 小写单词，或 `incident-<n>`。不能只有数字。 |
+| `incident` | 这条教训来自的事故 URL。 |
+| `files` | `lesson.ts` 和 `lesson.test.ts`，每个带 `path` 和 `text`。其他路径不传输。 |
+
+谁来写。一个人，在一次事故之后。事故 issue 是起点。
+谁来读。另一个项目里的 `yokoten learn --import <file>`。
+怎么检查。导出拒绝 TODO、缺少事故、密钥或私人细节。导入检查形状、两个路径、大小，以及同样的隐私规则。
+只有加 `--write`，导入才写进 `lessons/<id>/`；加 `--ship` 之前，什么都不运行。
+版本 1。`LessonPack` 有 `version`。
+
+- [src/run/learn.ts](../../../src/run/learn.ts) 和 [test/run/learn.test.ts](../../../test/run/learn.test.ts)。
+
 ## 风险等级
 
 PR 正文第一个非空行是等级行。
