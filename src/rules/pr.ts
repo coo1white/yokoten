@@ -256,7 +256,10 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
       ),
     );
   }
-  if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body)) {
+  // The body names the kit, or says what the change does: every project gets it on its
+  // next init. The fix text asks for that sentence, so a body that says it passes too (#875).
+  const everyProjectInit = /\b(?:every|each|all)\s+(?:project|repo)s?\b[^.!?]{0,120}\binit\b/i;
+  if (pr.files.some((f) => f.startsWith('kit/')) && !/\bkit\b/i.test(body) && !everyProjectInit.test(body)) {
     problems.push(finding('pr-kit', 'body: this changes `kit/` and does not say so', 'say in the body that every project gets this change on its next init'));
   }
   return problems;
