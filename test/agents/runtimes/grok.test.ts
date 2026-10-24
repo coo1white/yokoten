@@ -127,8 +127,8 @@ test('hook --agent grok: the recorded tag push is refused, with the whole reason
   const reply = JSON.parse(result.stdout);
   assert.equal(reply.hookSpecificOutput.hookEventName, 'PreToolUse');
   assert.equal(reply.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(reply.hookSpecificOutput.permissionDecisionReason, /^yokoten: git push --tags pushes tags\. Only the owner decides when to release[\s\S]*YOKOTEN_RELEASE_APPROVAL=1 grok/);
-  assert.match(result.stderr, /^yokoten: git push --tags pushes tags/);
+  assert.match(reply.hookSpecificOutput.permissionDecisionReason, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: Only the owner decides when to release[\s\S]*YOKOTEN_RELEASE_APPROVAL=1 grok/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags/);
   result = await call(recorded('ls', sandbox.repo));
   assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
   // YOKOTEN_ROLE reaches Grok's hooks (seen in the real run): a worker's edit of a lead-only file is refused.
@@ -157,7 +157,7 @@ test('hook: under Grok, the Claude Code hook still guards, even next to an empty
   for (const args of [['hook'], ['hook', '--commands-only']]) {
     const result = await sandbox.call(args, { input: push, extra: grok });
     assert.equal(result.status, 2, args.join(' '));
-    assert.match(result.stderr, /^yokoten: git push --tags pushes tags/);
+    assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags/);
   }
 });
 
@@ -262,7 +262,7 @@ test('grok project hooks: init writes the guard and the stop check, keeps other 
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +grok-hook: \.grok\/hooks\/yokoten\.json is in place; trust not checked, no ~\/\.grok\n/);
   mkdirSync(join(sandbox.home, '.grok'));
   const trusted = await sandbox.call(['init']);
-  assert.match(trusted.stdout, /same the Grok CLI tool-call hook/);
+  assert.match(trusted.stdout, /kept the Grok CLI tool-call hook/);
   assert.match(trusted.stdout, /^Grok CLI runs the hooks in \.grok\/hooks\/yokoten\.json only after you trust this folder: run `grok` in this folder and type `\/hooks-trust`$/m);
   written.hooks.Stop[0].hooks[0].timeout = 5;
   sandbox.write('.grok/hooks/yokoten.json', JSON.stringify(written));
@@ -333,7 +333,7 @@ test('grok user hook: install writes the command guard in ~/.grok/hooks only whe
   assert.match(written.hooks.PreToolUse[0].hooks[0].command, /hook --agent grok --commands-only/);
   assert.equal(written.hooks.SessionStart, undefined, 'Grok shows a session-start hook only to the user');
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +grok-user-hook/);
-  assert.match((await sandbox.call(['install'])).stdout, /^same the Grok CLI command guard/m);
+  assert.match((await sandbox.call(['install'])).stdout, /^kept the Grok CLI command guard/m);
   const env = { HOME: sandbox.home };
   assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' }, 'another runtime path is out of date');
   assert.deepEqual(addUserHooks(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' });

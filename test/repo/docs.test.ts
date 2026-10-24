@@ -357,7 +357,7 @@ function collectWords(): string[] {
   const wanted = /const wanted = \[([\s\S]*?)\];/.exec(desk);
   if (!wanted) throw new Error('desk readable list changed');
   words.push(...quotedStrings(wanted[1]));
-  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,120}?TZ: '([^']+)'/.exec(desk);
+  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,300}?TZ: '([^']+)'/.exec(desk);
   if (!roleSet) throw new Error('desk role env changed');
   words.push('YOKOTEN_ROLE', roleSet[1], 'TZ', roleSet[2]);
   for (const match of desk.matchAll(/\b(YOKOTEN_[A-Z0-9_]+)\b/g)) words.push(match[1]);
@@ -418,8 +418,8 @@ function holderPaths(): string[] {
     'test/commands/advice/board/view.test.ts',
     'src/rules/pr.ts',
     'test/rules/pr.test.ts',
-    'src/commands/bot.ts',
-    'test/commands/bot.test.ts',
+    'src/commands/merge/bot.ts',
+    'test/commands/merge/bot.test.ts',
     'src/agents/desk/desk.ts',
     'test/agents/desk/desk.test.ts',
     'src/agents/desk/agent-env.ts',
@@ -611,6 +611,13 @@ test('standard: a link to a missing file is caught', () => {
 test('standard: links in the spec and the manifesto resolve', () => {
   const missing = LINK_PAGES.flatMap((page) => missingLinkTargets(read(page), join(ROOT, page)).map((link) => `${page} -> ${link}`));
   assert.deepEqual(missing, []);
+});
+
+test('standard: the README points at the page, so a reader can find it', () => {
+  assert.match(read('README.md'), /\[The standard\]\([^)]*docs\/standard\.md\)/);
+  assert.match(read('docs/i18n/zh-CN/README.md'), /docs\/i18n\/zh-CN\/standard\.md/);
+  assert.ok(existsSync(join(ROOT, ENGLISH)));
+  assert.ok(existsSync(join(ROOT, CHINESE)));
 });
 
 test('standard: a wide desk symlink sentence is caught', () => {

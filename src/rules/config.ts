@@ -14,6 +14,7 @@ export interface Config {
   areas: string[];
   translations: { fail: boolean };
   commands: { block: Record<string, string> };
+  worker: { timeLimitMinutes: number };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -49,6 +50,9 @@ export const DEFAULTS: Config = {
   // Programs no agent may run here, each with the reason (#192):
   // { "block": { "python3": "this project is TypeScript only" } }.
   commands: { block: {} },
+  // A worker that a runner or the board starts stops after this many minutes (#711):
+  // three hours unless the project says otherwise.
+  worker: { timeLimitMinutes: 180 },
 };
 
 /**
@@ -123,6 +127,10 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
   areas: shape('a list of names, like ["cli", "docs"]', (value) => isTextList(value) && (value as string[]).every((item) => item.trim() !== '')),
   translations: { example: '{ "fail": true }', fields: { fail: trueOrFalse } },
   commands: blockList,
+  worker: {
+    example: '{ "timeLimitMinutes": 180 }',
+    fields: { timeLimitMinutes: shape('a whole number of minutes above 0, such as 180', (value) => Number.isInteger(value) && (value as number) > 0) },
+  },
 };
 
 /**
@@ -246,8 +254,25 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp(glob.includes('/') ? `^${re}$` : `(?:^|/)${re}$`);
 }
 
-/** A function that says whether a path matches any of the globs; with `foldsCase`, in any case. */
+/**
+ * A function that says whether a path matches any of the globs; with `foldsCase`, in any case.
+ *
+ * One list is asked about several paths: a worker's shell write asks "leadOnly" once per
+ * path, and each ask compiled every glob again. The list is compiled once per list and read
+ * in one pass, as one alternation (#710: 17.4 µs per ask against 0.23 µs).
+ */
 export function matcher(globs: string[], { foldsCase = false }: { foldsCase?: boolean } = {}): (path: string) => boolean {
+  const key = `${foldsCase ? 'i' : 's'}\u0000${globs.join('\u0000')}`;
+  const cached = matchers.get(key);
+  if (cached !== undefined) return cached;
   const patterns = globs.map((glob) => (foldsCase ? new RegExp(globToRegExp(glob).source, 'i') : globToRegExp(glob)));
-  return (path) => patterns.some((re) => re.test(path));
+  const pass = patterns.length === 0 ? null : new RegExp(patterns.map((re) => `(?:${re.source})`).join('|'), foldsCase ? 'i' : '');
+  const matches = (path: string) => pass !== null && pass.test(path);
+  if (matchers.size >= MATCHER_LIMIT) matchers.clear();
+  matchers.set(key, matches);
+  return matches;
 }
+
+/** How many compiled glob lists are kept before the whole cache clears (#710). */
+const MATCHER_LIMIT = 64;
+const matchers = new Map<string, (path: string) => boolean>();

@@ -5,9 +5,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
+import type { AgentAdapter } from './runtime.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -30,12 +32,35 @@ export function readToolCall(input: unknown): Action {
 }
 
 /**
- * How a refusal reaches the agent: the reason on stderr and exit 2, as Claude Code reads it.
- * GitHub Copilot CLI reads this file's hooks too (checked with 1.0.98 on 2026-10-19). It
- * refuses on exit 2 but tells the agent only "hook exited with code 2", unless stdout
- * names the reason. Claude Code ignores stdout on exit 2.
+ * How a refusal reaches Claude Code (#707). Its hook docs
+ * (https://code.claude.com/docs/en/hooks) say "Exit 0 means success, and is the intended
+ * exit code when you print JSON for structured control", and that
+ * `permissionDecision: "deny"` "prevents the tool call". So a hook that was installed with
+ * `--agent claude-code` answers in `hookSpecificOutput` on exit 0: no "PreToolUse:Bash
+ * hook: error" line and no shell wrapper around the reason.
+ *
+ * The `--agent` the hook was installed with decides, never an environment variable: another
+ * host that inherits `CLAUDECODE` must not get an answer that treats exit 0 as a block.
+ * `YOKOTEN_HOOK_DENIAL=exit2` is the way back to the older answer.
  */
-export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
+export const formatDenial = (reason: string, env: Env = {}): { stdout: string; exitCode: number } =>
+  env.YOKOTEN_HOOK_DENIAL === 'exit2'
+    ? fallbackDenial(reason)
+    : { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }), exitCode: 0 };
+
+/**
+ * The answer for a hook not installed as Claude Code's: the reason as JSON on stdout, and
+ * exit 2. GitHub Copilot CLI reads the same `.claude/settings.json` and refuses on the exit
+ * code alone, so its hook keeps this answer.
+ */
+export const fallbackDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
+
+/**
+ * How a question reaches the person before the call runs (#401): PreToolUse's `ask`
+ * decision, on exit 0. Claude Code shows the reason and runs the call only after a yes.
+ * A runtime that has no such question gets the ask from commands/hook.ts as a note.
+ */
+export const formatAsk = (reason: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } });
 
 /**
  * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`
@@ -179,7 +204,10 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
   checkHooksFile(path, USER_EVENTS);
   return {
     doctor: addHook(path, 'SessionStart', undefined, guardCommand(cli, 'doctor --session', missing, { isSessionStart: true })),
-    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only', missing, { isToolCall: true })),
+    // `--agent claude-code` names the host at install time (#707): only this file is read by
+    // Claude Code alone, so only this hook answers with a JSON deny on exit 0. The project
+    // hook is shared with Copilot CLI and Grok CLI, so it keeps exit 2.
+    guard: addHook(path, 'PreToolUse', 'Bash', guardCommand(cli, 'hook --commands-only --agent claude-code', missing, { isToolCall: true })),
   };
 }
 // With no home folder there are no user settings to read: nothing is on (#356).
@@ -198,21 +226,55 @@ export function removeUserHooks(env: Env): { doctor: 'removed' | 'not there'; gu
   }
 }
 
+/** The three release channels, and the plugin name Claude Code installs for each (#632). */
+export type PluginChannel = 'stable' | 'beta' | 'dev';
+
+const PLUGIN_NAMES: Record<PluginChannel, string> = { stable: 'yokoten', beta: 'yokoten-beta', dev: 'yokoten-dev' };
+
 /**
- * Whether the yokoten plugin is on in the user's settings (`enabledPlugins`, the key
- * `yokoten@<marketplace>`). The plugin brings the skills, the agents and both user-level
+ * The channel a plugin id such as `yokoten-beta@yokoten` names. Null for another plugin.
+ * One repo serves all three, so the name before `@` says which ref Claude Code installed.
+ */
+export function readPluginChannel(id: string): PluginChannel | null {
+  const at = id.indexOf('@');
+  if (at < 0) return null;
+  const name = id.slice(0, at);
+  return (Object.keys(PLUGIN_NAMES) as PluginChannel[]).find((channel) => PLUGIN_NAMES[channel] === name) ?? null;
+}
+
+/**
+ * The channel of the yokoten plugin on in the user's settings; null when none is on.
+ * `enabledPlugins` keys are `<plugin>@<marketplace>`, so the marketplace name may differ.
+ */
+export function enabledPluginChannel(env: Env): PluginChannel | null {
+  // A settings file yokoten can't read, or none with no home folder, enables nothing.
+  if (!homeOf(env)) return null;
+  const table = readTable(userSettings(env), []);
+  if ('problem' in table) return null;
+  const enabled = table.settings.enabledPlugins;
+  if (typeof enabled !== 'object' || enabled === null) return null;
+  for (const [id, on] of Object.entries(enabled)) {
+    const channel = readPluginChannel(id);
+    if (channel !== null && on === true) return channel;
+  }
+  return null;
+}
+
+/**
+ * Whether a yokoten plugin is on in the user's settings (`enabledPlugins`). Any of the
+ * three channels counts. The plugin brings the skills, the agents and both user-level
  * hooks, so it stands in for `install` in Claude Code.
  */
 export function hasPlugin(env: Env): boolean {
-  // A settings file yokoten can't read, or none with no home folder, enables nothing.
-  if (!homeOf(env)) return false;
-  const table = readTable(userSettings(env), []);
-  const enabled = 'problem' in table ? undefined : table.settings.enabledPlugins;
-  return typeof enabled === 'object' && enabled !== null && Object.entries(enabled).some(([id, on]) => id.startsWith('yokoten@') && on === true);
+  return enabledPluginChannel(env) !== null;
 }
 
-/** What Claude Code recorded about the installed yokoten plugin: its commit and its package version. */
+/** What Claude Code recorded about the installed yokoten plugin: its id, commit and package version. */
 export interface InstalledPlugin {
+  /** The plugin id, such as `yokoten-beta@yokoten`. */
+  id: string;
+  /** The release channel the id names. */
+  channel: PluginChannel;
   commit: string | null;
   version: string | null;
 }
@@ -234,18 +296,22 @@ export function readInstalledPlugin(env: Env, root: string | null): InstalledPlu
   }
   if (typeof installs !== 'object' || installs === null) return null;
   for (const [id, entries] of Object.entries(installs)) {
-    if (!id.startsWith('yokoten@') || !Array.isArray(entries)) continue;
+    const channel = readPluginChannel(id);
+    if (channel === null || !Array.isArray(entries)) continue;
     const entry = entries.find((e) => e?.scope === 'user' || (root !== null && e?.projectPath === root));
     if (!entry) continue;
     const text = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
-    const folder = text(entry.installPath) ?? (text(entry.version) && join(plugins, 'cache', id.slice('yokoten@'.length), 'yokoten', entry.version));
+    const at = id.indexOf('@');
+    const name = id.slice(0, at);
+    const marketplace = id.slice(at + 1);
+    const folder = text(entry.installPath) ?? (text(entry.version) && join(plugins, 'cache', marketplace, name, entry.version));
     let version: string | null = null;
     try {
       if (folder) version = text(JSON.parse(readFileSync(join(folder, 'package.json'), 'utf8')).version);
     } catch {
       // no package.json in the install: the commit may still tell
     }
-    return { commit: text(entry.gitCommitSha), version };
+    return { id, channel, commit: text(entry.gitCommitSha), version };
   }
   return null;
 }
@@ -358,4 +424,26 @@ export const DESK: RuntimeDesk = {
   starter: { '.claude.json': '{"hasCompletedOnboarding": true}\n' },
   stateEnv: (state) => ({ CLAUDE_CONFIG_DIR: state }),
   hosts: ['api.anthropic.com', 'platform.claude.com'],
+};
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'claude-code',
+  label: 'Claude Code',
+  projectHook: '`.claude/settings.json`: PreToolUse, Stop and SubagentStop',
+  userHook: '~/.claude/settings.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: true, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: true },
+  readToolCall,
+  readStop,
+  formatDenial,
+  formatAsk,
+  formatContext,
+  formatRewrite,
+  releaseFix: releaseFix(`${approve('claude')} (or your agent's command)`),
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
 };

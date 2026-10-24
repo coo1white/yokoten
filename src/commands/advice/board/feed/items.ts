@@ -2,6 +2,7 @@
 // its own log. Each reader maps one line onto the standard in shape.ts. Nothing here masks:
 // tail.ts masks every item before it leaves the server. Nothing here is HTML.
 
+import { parseRefusal } from '../../../../rules/message.ts';
 import { commonTool, type StreamItem, type StreamSource } from './shape.ts';
 
 export { commonTool, type StreamItem, type StreamSource };
@@ -65,7 +66,12 @@ function toolItem(name: string, args: Record<string, unknown>, call: string, tre
 /** A tool's output as an item: a guard's refusal stands out, any other output rides under its call. */
 function resultItem(text: string, call: string, isError: boolean, time: string): StreamItem {
   const isGuard = /\byokoten\b/i.test(text) && (isError || /blocked by hook/i.test(text)) && /block|refus|stop|not allowed/i.test(text);
-  if (isGuard) return { kind: 'stop', text: cut(text.trim(), RESULT_LIMIT), call, time };
+  if (isGuard) {
+    const item: StreamItem = { kind: 'stop', text: cut(text.trim(), RESULT_LIMIT), call, time };
+    const refusal = parseRefusal(text);
+    if (refusal) item.refusal = refusal;
+    return item;
+  }
   const item: StreamItem = { kind: 'result', text: cut(text, RESULT_LIMIT), call, time };
   if (isError) item.isFailed = true;
   return item;

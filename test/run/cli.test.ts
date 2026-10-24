@@ -18,6 +18,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { errorLabel } from '../../bin/main.ts';
 import {
   at,
   CLI,
@@ -182,8 +183,9 @@ test('help: every command has --help, -h and `help <command>`; each exits 0 and 
     }
   }
   assert.deepEqual(before(), start, '--help writes nothing');
-  // The command list names every command, and -h and -v work alone.
-  for (const args of [[], ['--help'], ['-h'], ['help']]) {
+  // The command list names every command, and -h and -v work alone. Bare `yokoten` is the
+  // start now, not the list (#548): test/commands/setup.test.ts holds it.
+  for (const args of [['--help'], ['-h'], ['help']]) {
     const r = await run(args);
     assert.equal(r.code, 0, args.join(' '));
     for (const command of COMMANDS) assert.match(r.stdout, new RegExp(`^ {2}${command.name} `, 'm'), `${args.join(' ')}: lists ${command.name}`);
@@ -256,10 +258,10 @@ test('help: the help table and the parser list the same commands and options (#2
   const commandsDir = join(dirname(CLI), '..', 'src', 'commands');
   const source = [join(dirname(CLI), 'main.ts'), ...readdirSync(commandsDir, { recursive: true }).map(String).filter((file) => file.endsWith('.ts')).map((file) => join(commandsDir, file))].map((file) => readFileSync(file, 'utf8')).join('\n');
   // Every parse call names a command in the table; no option list is written outside it.
-  const parsed = [...source.matchAll(/\bparse\('([a-z]+)'/g)].map((m) => m[1]);
+  const parsed = [...source.matchAll(/\bparse\('([a-z]+(?:-[a-z]+)*)'/g)].map((m) => m[1]);
   assert.deepEqual([...parsed].sort(), COMMANDS.map((command) => command.name).sort(), 'each command parses its words by its help entry');
   assert.doesNotMatch(source, /flags: \[/, 'no option list outside the help table');
-  const cases = [...source.matchAll(/^ {4}case '([a-z]+)':/gm)].map((m) => m[1]);
+  const cases = [...source.matchAll(/^ {4}case '([a-z]+(?:-[a-z]+)*)':/gm)].map((m) => m[1]);
   assert.deepEqual([...cases].sort(), COMMANDS.map((command) => command.name).sort(), 'each command in the switch has a help entry, and the reverse');
   // Each option the help lists is accepted: with it, the parser gives no "unknown option".
   const sandbox = makeSandbox();
@@ -726,4 +728,9 @@ test('sandbox: call runs a command in this process with the same result as run (
     const same = await sandbox.call(words);
     assert.deepEqual({ status: same.status, stdout: same.stdout, stderr: same.stderr }, { status: child.status, stdout: child.stdout, stderr: child.stderr }, `yokoten ${words.join(' ')}`);
   }
+});
+
+test('main: an error names its command, and bare yokoten when there is none (#548)', () => {
+  assert.equal(errorLabel(undefined), 'yokoten', 'the one-command start has no name: never "undefined"');
+  assert.equal(errorLabel('doctor'), 'yokoten doctor');
 });

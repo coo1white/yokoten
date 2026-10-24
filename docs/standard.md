@@ -143,7 +143,7 @@ A mismatch means the history changed.
 A missing required field fails the check.
 An unknown `eventName` fails the check.
 The code does not append this log yet.
-No code runs this check yet.
+`yokoten check --anchor` reads an existing log and its daily anchors in Rekor (#768).
 Version 1. The log has no version field.
 
 The hook that will append is [src/run/hook.ts](../src/run/hook.ts), and its test is [test/run/hook.test.ts](../test/run/hook.test.ts).
@@ -220,6 +220,7 @@ Version 1. `Action` has no version field.
 - [src/agents/runtimes/muse.ts](../src/agents/runtimes/muse.ts) and [test/agents/runtimes/muse.test.ts](../test/agents/runtimes/muse.test.ts).
 - [src/agents/runtimes/small/deepseek-harness.ts](../src/agents/runtimes/small/deepseek-harness.ts) and [test/agents/runtimes/small/deepseek-harness.test.ts](../test/agents/runtimes/small/deepseek-harness.test.ts).
 - [src/agents/runtimes/grok.ts](../src/agents/runtimes/grok.ts) and [test/agents/runtimes/grok.test.ts](../test/agents/runtimes/grok.test.ts).
+- [src/agents/runtimes/runtime.ts](../src/agents/runtimes/runtime.ts) and [test/agents/runtimes/runtime.test.ts](../test/agents/runtimes/runtime.test.ts).
 - [src/agents/runtimes/small/opencode.ts](../src/agents/runtimes/small/opencode.ts) and [test/agents/runtimes/small/opencode.test.ts](../test/agents/runtimes/small/opencode.test.ts).
 
 ## The status file
@@ -383,13 +384,13 @@ How yokoten checks it. `parseMadeWith` reads the last line. `madeWithFindings` r
 Version 1. The line has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
-- [src/commands/bot.ts](../src/commands/bot.ts) and [test/commands/bot.test.ts](../test/commands/bot.test.ts).
+- [src/commands/merge/bot.ts](../src/commands/merge/bot.ts) and [test/commands/merge/bot.test.ts](../test/commands/merge/bot.test.ts).
 
 ## Provenance
 
 The Made-with line is the first form of provenance.
 It names who wrote and who reviewed.
-Provenance also reads the event log.
+Provenance also reads the desk status files and the event log.
 The code does not read the log yet.
 It is not a full bill of materials.
 The approver is not a field on the line.
@@ -398,16 +399,36 @@ The approver is not a field on the line.
 | --- | --- |
 | Writer | `writers`, from `worker` plus a `vendor` and a `model` |
 | Reviewer | `reviewers`, at most two, from `reviewed by` |
-| Approver | the owner's Approve on the host. Not on the line. Tier A only. |
+| Approver | the owner's latest Approve on the host. Not on the line. |
 | Lead | `leads`, from `lead` plus a vendor and a model. A lead is not the approver. |
 | Other | `others`, a pair with no role word |
 
+With no `worker` and no other pair, a `lead` is the writer.
+`check --pr` reads the line against the desk status file of each agent on the branch.
+A branch means a worktree on the pull request's branch, or a clone `yokoten desk` started.
+The status file is at that worktree's root.
+A worktree on another branch is left out.
+The line must name each desk with its vendor and model.
+The same vendor may be spelt two ways, such as `Claude Code` and `claude-code`.
+A desk the line does not name at all is skipped, so an older line is not a finding.
+A run with no status files has nothing to compare, and makes no desk finding.
+A reviewer from the writer's own vendor is a finding (record 0021).
+The finding id is `pr-provenance`.
+
+`yokoten provenance <ref>` prints one record for a commit, or one for each commit of a range.
+A record names the writers, the reviewers, the approver, the tier and the issues.
+The approver is the latest Approve on the pull request named at the end of the subject.
+When gh cannot read it, the approver is unknown, and the command still exits 0.
+`--json` prints the same records as data.
+
 Who writes. The pull request author writes the line. The owner writes the Approve on the host.
-Who reads. The pull request check, and a person reading the body.
-How yokoten checks it. The Made-with check names writers and reviewers. For tier A, `checkApprovalFreshness` requires an owner Approve on the head, or only base merges after it with the same own diff. The finding id is `pr-approve`. Tier B and tier C are not gated there.
+Who reads. The pull request check, `yokoten provenance`, and a person reading the body.
+How yokoten checks it. The Made-with check names writers and reviewers. `provenanceFindings` compares them with the branch's desk status files. For tier A, `checkApprovalFreshness` requires an owner Approve on the head, or only base merges after it with the same own diff. The finding id is `pr-approve`. Tier B and tier C are not gated there.
 Version 1. This is the first form. It has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
+- [src/run/hook.ts](../src/run/hook.ts) and [test/run/check.test.ts](../test/run/check.test.ts).
+- [src/commands/check.ts](../src/commands/check.ts) and [test/commands/check.test.ts](../test/commands/check.test.ts).
 
 ## The risk tier
 
@@ -463,7 +484,7 @@ On a team, the team folder is read-only, and only that agent's outbox is writabl
 | `hidden` | When they exist: `/home`, `/root`, `/mnt`, `/media`, `/run`, plus home and the desk's parent. On `darwin`: `/Users`, `/Volumes`, plus home and the parent. |
 | `locked` | `.git/config`, `.git/hooks` and `.git/yokoten-worker` stay read-only. On a team, `.git/yokoten-desk.json` is locked too. |
 | `hosts` | API hosts only, through a proxy that runs outside. CONNECT only. Port `443`, unless the host entry names a port. At most `64` tunnels. A quiet tunnel closes after `10 minutes`. The proxy does not read the tunnel. |
-| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. |
+| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. When the model is known, `YOKOTEN_MODEL` names it. `YOKOTEN_VENDOR` is set only when its vendor is not the runtime's own, so the agent knows what it really is. |
 | `command` | The command the lead passed. |
 
 `/run` is hidden because sockets there can start programs outside the fence.

@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
+import { hookEnvironment, makeGitFolder, makeSandbox, makeTempDir, runChild } from '../repo/helpers.ts';
 import {
   DEFAULTS,
   type Env,
@@ -31,7 +31,9 @@ import {
   checkEdit,
   checkWorkerMarkEdit,
   commandWords,
+  findHeavyJob,
   hardenRead,
+  gitLinkAbove,
   hookFile,
   isGranted,
   isLeadOnly,
@@ -179,6 +181,47 @@ test('release: tag pushes, release commands and publishing are the owner\'s', ()
 test('release: the refusal names the whole push, remote included (#557)', () => {
   assert.equal(checkCommand('git push origin v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push origin v1.2.0 pushes a release tag');
   assert.equal(checkCommand('git push v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push v1.2.0 pushes a release tag');
+});
+
+test('release: creating a local tag is the owner\'s too, not only pushing it (#812)', () => {
+  for (const command of [
+    'git tag v1.2.3',
+    'git tag -a v1.2.3 -m "release 1.2.3"',
+    'git tag -s v1.2.3 -m "release 1.2.3"',
+    'git tag -f v1.2.3',
+    'git tag v1.2.3 HEAD~1',
+    'git -C ../other tag v1.2.3',
+    // A listing option does not turn a named tag into a listing (#873).
+    'git tag -a v1.2.3 --sort=creatordate -m msg',
+    'git tag -a v1.2.3 --sort creatordate -m msg',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag -a v1.2.3 --format=%(refname) -m msg',
+    'git tag -a v1.2.3 --column -m msg',
+    'git tag --column=always v1.2.3',
+    'git tag --sort creatordate -- v1.2.3',
+    // The word reader keeps a git format atom whole without hiding what follows it (#873).
+    'echo %(git push --tags)',
+    'git tag --format=%(refname; git push --tags)',
+    'git tag --format=%(refname\ngit push --tags',
+    // A short-flag group with a writing letter still writes.
+    'git tag -an v1.2.3 -m msg',
+  ]) blocked(command);
+  // Listing, and changing a tag that already exists, publish nothing.
+  allowed('git tag');
+  allowed('git tag -l');
+  allowed('git tag --contains HEAD');
+  allowed('git tag -n v1');
+  allowed('git tag -ln v1');
+  allowed('git tag -nl v1');
+  allowed('git tag -d old-tag');
+  allowed('git tag --sort=creatordate');
+  allowed('git tag --sort creatordate');
+  allowed('git tag --format=%(refname)');
+  allowed('git tag --format %(refname)');
+  allowed('git tag --column');
+  allowed('git tag -l --format=%(refname)');
+  allowed('git tag v1.2.3', { YOKOTEN_RELEASE_APPROVAL: '1' });
 });
 
 test('release: the owner\'s approval lets it through', () => {
@@ -1631,7 +1674,7 @@ test('bash: a command the reader cannot read is refused with exit 2, not let thr
   const tooBig = `bash -c "${':;'.repeat(300000)}"`;
   assert.equal(checkCommand(tooBig, { cwd: process.cwd(), env: {} })?.id, 'unreadable-command');
   const done = await invoke(['hook'], {
-    env: { ...process.env },
+    env: hookEnvironment(),
     cwd: tmpdir(),
     stdin: JSON.stringify({ cwd: tmpdir(), hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: tooBig } }),
   });
@@ -2774,7 +2817,7 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
   assert.equal(workerMarkAt(join(tree, 'src')), null);
   assert.deepEqual(withWorkerMark({}, [join(tree, 'src')]), {});
   const main = join(base, 'main');
-  mkdirSync(join(main, '.git'), { recursive: true });
+  makeGitFolder(main);
   assert.equal(workerMarkAt(main), null);
   assert.equal(workerRole({}, [main, base]), null);
   // Positive control: the mark.
@@ -2817,11 +2860,106 @@ test('worker mark: found from .git, fails closed on a link it cannot read (#555)
   }
 });
 
+// #746: a `.git` folder git would not use is not a checkout, and the walk goes on past it: an
+// empty `/tmp/.git` must not make every folder in /tmp a checkout.
+test('git link: a .git folder needs a HEAD line, objects and refs (#746)', () => {
+  const base = makeTempDir('yokoten-empty-git-');
+  makeGitFolder(base);
+  const parent = { kind: 'folder', top: base, gitDir: join(base, '.git') };
+  const empty = join(base, 'empty');
+  mkdirSync(join(empty, '.git'), { recursive: true });
+  mkdirSync(join(empty, 'work'));
+  assert.deepEqual(gitLinkAbove(join(empty, 'work')), parent, 'an empty .git is passed over');
+  assert.equal(workerMarkAt(join(empty, 'work')), null, 'and it makes no worker');
+  const headOnly = join(base, 'head-only');
+  mkdirSync(join(headOnly, '.git'), { recursive: true });
+  mkdirSync(join(headOnly, 'work'));
+  writeFileSync(join(headOnly, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.deepEqual(gitLinkAbove(join(headOnly, 'work')), parent, 'HEAD without objects is not a checkout');
+  const objectsOnly = join(base, 'objects-only');
+  mkdirSync(join(objectsOnly, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(objectsOnly, 'work'));
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), parent, 'objects without HEAD is not a checkout');
+  writeFileSync(join(objectsOnly, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), parent, 'HEAD and objects without refs is not a checkout');
+  mkdirSync(join(objectsOnly, '.git', 'refs'));
+  assert.deepEqual(gitLinkAbove(join(objectsOnly, 'work')), { kind: 'folder', top: objectsOnly, gitDir: join(objectsOnly, '.git') }, 'HEAD, objects and refs is a checkout');
+  // A HEAD git cannot read is no HEAD: a symlink, or text that names no ref and no commit.
+  const symlinkHead = join(base, 'symlink-head');
+  mkdirSync(join(symlinkHead, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(symlinkHead, '.git', 'refs'), { recursive: true });
+  mkdirSync(join(symlinkHead, 'work'));
+  writeFileSync(join(symlinkHead, 'head-text'), 'ref: refs/heads/main\n');
+  symlinkSync(join(symlinkHead, 'head-text'), join(symlinkHead, '.git', 'HEAD'));
+  assert.deepEqual(gitLinkAbove(join(symlinkHead, 'work')), parent, 'a HEAD symlink is not a checkout');
+  const strayHead = join(base, 'stray-head');
+  mkdirSync(join(strayHead, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(strayHead, '.git', 'refs'), { recursive: true });
+  mkdirSync(join(strayHead, 'work'));
+  writeFileSync(join(strayHead, '.git', 'HEAD'), 'not a ref\n');
+  assert.deepEqual(gitLinkAbove(join(strayHead, 'work')), parent, 'HEAD text that is no ref and no sha is not a checkout');
+  writeFileSync(join(strayHead, '.git', 'HEAD'), '0123456789abcdef0123456789abcdef01234567\n');
+  assert.deepEqual(gitLinkAbove(join(strayHead, 'work')), { kind: 'folder', top: strayHead, gitDir: join(strayHead, '.git') }, 'a detached HEAD sha is a checkout');
+});
+
+// #746: a desk that keeps its worker mark and done-when but lost HEAD or objects must not
+// become its parent's checkout. It fails closed, as a `.git` the guard cannot read does.
+test('git link: a desk that lost HEAD or objects is broken, not its parent checkout (#746)', () => {
+  const base = makeTempDir('yokoten-desk-partial-');
+  const home = join(base, 'home');
+  const env = { HOME: home };
+  const worker = { HOME: home, YOKOTEN_ROLE: 'worker' };
+  const removals: Record<string, (desk: string) => void> = {
+    head: (desk) => rmSync(join(desk, '.git', 'HEAD')),
+    objects: (desk) => rmSync(join(desk, '.git', 'objects'), { recursive: true }),
+    both: (desk) => {
+      rmSync(join(desk, '.git', 'HEAD'));
+      rmSync(join(desk, '.git', 'objects'), { recursive: true });
+    },
+  };
+  const makeDesk = (top: string, name: string) => {
+    const desk = join(top, name);
+    mkdirSync(desk);
+    makeGitFolder(desk);
+    writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+    writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'node --test-desk\n');
+    mkdirSync(join(desk, 'src'));
+    return desk;
+  };
+  const contexts: Record<string, (name: string) => string> = {
+    sibling: (name) => {
+      const top = join(base, 'sibling');
+      mkdirSync(top, { recursive: true });
+      return makeDesk(top, name);
+    },
+    nested: (name) => {
+      const parent = join(base, 'nested');
+      makeGitFolder(parent);
+      writeFileSync(join(parent, '.git', 'yokoten-done-when'), 'node --test-parent\n');
+      return makeDesk(parent, name);
+    },
+  };
+  for (const [context, make] of Object.entries(contexts)) {
+    for (const [removal, remove] of Object.entries(removals)) {
+      const desk = make(`${context}-${removal}`);
+      remove(desk);
+      const src = join(desk, 'src');
+      const label = `${context}/${removal}`;
+      assert.deepEqual(gitLinkAbove(src), { kind: 'broken', top: desk }, `${label}: the desk stays the checkout`);
+      assert.equal(workerMarkAt(src, env), 'broken', `${label}: fail closed`);
+      assert.equal(workerRole(env, [src]), 'mark', `${label}: the mark still makes a worker`);
+      assert.match(markNote([src], env), /can't be read/, `${label}: the note names the broken link`);
+      assert.equal(checkCommand('cd ../..', { cwd: src, env: worker })?.id, 'worker-mark', `${label}: cd ../.. is refused`);
+      assert.equal(checkCommand('cd ..', { cwd: src, env: worker }), null, `${label}: the desk itself is the box`);
+    }
+  }
+});
+
 // #555: an edit inside a git folder is a worker's way to change the mark, through a symlink too.
 // #672: a desk is a plain clone, so its mark sits in its own `.git` folder.
 test('worker mark: a plain clone with the mark in its .git is a worker; without it, the lead (#672)', () => {
   const clone = makeTempDir('yokoten-clone-');
-  mkdirSync(join(clone, '.git'));
+  makeGitFolder(clone);
   mkdirSync(join(clone, 'src'));
   // Negative control: an unmarked clone is the lead's.
   assert.equal(workerMarkAt(join(clone, 'src')), null);
@@ -2848,7 +2986,7 @@ test('worker mark: a plain clone with the mark in its .git is a worker; without 
 test('worker mark: a worker may not remove or replace the folder that holds the git folder (#672)', () => {
   const base = makeTempDir('yokoten-desk-');
   const desk = join(base, 'desk');
-  mkdirSync(join(desk, '.git'), { recursive: true });
+  makeGitFolder(desk);
   mkdirSync(join(desk, 'src'));
   writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
   const worker = { YOKOTEN_ROLE: 'worker', HOME: join(base, 'home') };
@@ -2883,7 +3021,7 @@ test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
   const base = makeTempDir('yokoten-edit-');
   const store = join(base, 'store'); // a worktree's git folder, not named .git
   const tree = join(base, 'wt');
-  mkdirSync(join(base, 'repo', '.git'), { recursive: true });
+  makeGitFolder(join(base, 'repo'));
   mkdirSync(store);
   mkdirSync(join(tree, 'src'), { recursive: true });
   writeFileSync(join(tree, '.git'), `gitdir: ${store}\n`);
@@ -4147,4 +4285,13 @@ test('token: an alias for the token and turning a workflow off are refused for e
   refusedAllAs(["gh alias set tk 'auth token'", "gh alias set --shell e 'env'", 'gh alias import aliases.yml', "yokoten bot -- gh alias set e 'env'"], 'alias');
   refusedAllAs(['gh workflow disable ci.yml', 'gh workflow disable 123 -R o/r', 'yokoten bot -- gh workflow disable ci.yml'], 'workflow-disable');
   allowedAll(['gh alias list', 'gh workflow list', 'gh workflow view ci.yml', 'gh workflow enable ci.yml', 'gh workflow run ci.yml']);
+});
+
+test('guard: a build, a test suite, a package install or a container build is a heavy job (#401)', () => {
+  for (const command of ['npm test', 'npm ci', 'npm install', 'npm run build', 'nice npm run -s typecheck', 'pnpm test', 'yarn run test', 'bun install', 'node --test test/a.test.ts', 'make', 'cargo build', 'go test ./...', 'docker build .', 'docker compose build', 'tsc -p .', 'pytest -q']) {
+    assert.ok(findHeavyJob(command), `should be heavy: ${command}`);
+  }
+  for (const command of ['git status', 'echo npm test', 'cat build.log', 'npm --version', 'docker ps', 'go version', 'cargo --version', 'npm run dev', 'npm run format', 'node app.js']) {
+    assert.equal(findHeavyJob(command), null, `should be light: ${command}`);
+  }
 });

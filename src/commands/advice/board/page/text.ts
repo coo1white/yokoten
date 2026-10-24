@@ -2,6 +2,7 @@
 
 import { terminalText } from '../../../../run/learn.ts';
 import type { BoardRun, BoardWaiting } from '../controls.ts';
+import { type BoardUsage, costWords, tokenText, totalOf } from '../feed/read/usage.ts';
 import type { AgentView, BoardData, PullView } from '../view.ts';
 
 /** One agent as plain words: its nickname, vendor, role, task, worktree, what it does now, and how long ago. */
@@ -39,7 +40,39 @@ function formatBoardWaiting(row: BoardWaiting): string {
 
 /** One started run as plain words, the same data the page shows. */
 function formatBoardRun(run: BoardRun): string {
-  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${run.status}${run.worktree ? ` in ${run.worktree}` : ''}`;
+  const status = run.stoppedBy === 'time limit' ? 'stopped by the time limit' : run.status;
+  return `${run.name} ${run.vendor} ${run.model} issue ${run.issue} ${status}${run.worktree ? ` in ${run.worktree}` : ''}`;
+}
+
+/** A token count and a price, in plain words. */
+function formatUsageAmount(input: number, cached: number, output: number, cost: string): string {
+  return `${tokenText(input)} in, ${tokenText(cached)} cached, ${tokenText(output)} out: ${cost}`;
+}
+
+/**
+ * The usage view as plain words: each agent, model and day, then the total, what is
+ * partial, and when the prices were checked. Only numbers, a model name and a day leave
+ * here: a session log's text never does.
+ */
+function formatUsage(usage: BoardUsage): string[] {
+  if (!usage.cells.length) {
+    return [`Usage${usage.filter ? ` (${usage.filter})` : ''}:`, usage.filter ? '- no rows for that filter.' : '- no token counts in a local log yet.'];
+  }
+  const rows = usage.cells.map((cell) => {
+    const who = [cell.vendor, cell.agent, cell.role ? `[${cell.role}]` : ''].filter(Boolean).join(' ');
+    const day = cell.day || 'day unknown';
+    const total = totalOf([cell]);
+    return `- ${who} · ${cell.model} · ${day}: ${formatUsageAmount(cell.input, cell.cached, cell.output, costWords(total, cell.isLocal))}`;
+  });
+  const total = totalOf(usage.cells);
+  const all = formatUsageAmount(total.input, total.cached, total.output, costWords(total, usage.cells.every((cell) => cell.isLocal)));
+  return [
+    `Usage${usage.filter ? ` (${usage.filter})` : ''} (estimates from the last 7 days of local session logs; nothing leaves this machine):`,
+    ...rows,
+    `- Total: ${all}`,
+    ...(usage.partial.length ? ['Partial:', ...usage.partial.map((note) => `- ${note}.`)] : []),
+    `Prices checked ${usage.checked}; each row is the vendor's list price, as if this use was paid by API.`,
+  ];
 }
 
 /**
@@ -76,5 +109,6 @@ export function renderBoardText(board: BoardData, extra?: BoardTextExtra): strin
     '',
     'Worktrees:',
     ...(typeof board.worktrees === 'string' ? [`- ${board.worktrees}`] : worktrees.length ? worktrees.map((tree) => `- ${tree.path}${tree.branch ? ` (${tree.branch})` : ''}`) : ['- none.']),
+    ...(board.usage && (board.usage.cells.length || board.usage.partial.length || board.usage.filter) ? ['', ...formatUsage(board.usage)] : []),
   ].map(terminalText);
 }

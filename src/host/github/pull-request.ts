@@ -90,7 +90,7 @@ function commitsProblem(root: string, base: string, head: string, env: Env, fix:
   return null;
 }
 
-export type PullRequestRead = PullRequest & { base: string; head: string; numstat: string };
+export type PullRequestRead = PullRequest & { base: string; head: string; numstat: string; /** The head branch, '' when the host does not say. */ branch: string };
 
 /** The pull request of this run, null when the run is not for one, or why it can't be read. */
 export function readPullRequest(root: string, env: Env): PullRequestRead | Unreadable | null {
@@ -100,15 +100,16 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   if (!isObject(pr)) return null;
   const base = isObject(pr.base) ? asText(pr.base.sha) : '';
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
+  const branch = isObject(pr.head) ? asText(pr.head.ref) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env, branch);
 }
 
 export const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
 
 /** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
-function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string, env: Env): PullRequestRead {
+function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string, env: Env, branch = ''): PullRequestRead {
   // A diff git can't give throws a GitReadError, and the check stops on it (#403).
   const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`], { env }).toString('utf8');
   return {
@@ -118,6 +119,7 @@ function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, 
     base,
     head,
     numstat: diff('--numstat', '-z'),
+    branch,
   };
 }
 
@@ -130,7 +132,7 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   if (!/^[1-9]\d*$/.test(number)) return { problem: finding('pr-read', `"${number}" is not a pull request number`, 'give the number alone, such as `yokoten check --pr 12`') };
   let pr: unknown;
   try {
-    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid,headRefName']));
   } catch (err) {
     // gh says this when the repo has no such pull request: a wrong number, not a network problem.
     if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
@@ -146,7 +148,57 @@ export function readNumberedPullRequest(root: string, gh: Gh, number: string, en
   const fetch = `run \`git fetch origin\` and \`git fetch origin pull/${number}/head\`, then run it again`;
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fetch);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env, asText(pr.headRefName));
+}
+
+/** One open pull request the sync may update: its number, its branch, and the base branch. */
+export interface OpenPull {
+  number: number;
+  branch: string;
+  base: string;
+  isFork: boolean;
+}
+
+/** The most open pull requests `pr sync` reads: enough for one team's open work. */
+export const OPEN_PULL_LIMIT = 100;
+
+/** The open pull requests, and whether gh stopped at the limit so the list may be cut. */
+export interface OpenPullList {
+  pulls: OpenPull[];
+  isCut: boolean;
+}
+
+/** Why gh could not list the open pull requests, in words a beginner can act on. */
+function openPullsFailed(err: unknown): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+  const reason = unread(err).unread;
+  return `gh can't list the open pull requests (${reason}): check the network and \`gh auth login\``;
+}
+
+/**
+ * The open pull requests of `repo`, read through gh (#432): the ones whose branches the
+ * sync can update. A pull request from a fork is kept and marked, since its branch is not
+ * on origin. A row without a number or branch is skipped. The list says when it stopped at
+ * the limit, so a caller can report that some pull requests were not read. Or why the list
+ * can't be read.
+ */
+export function readOpenPulls(gh: Gh, repo: string): OpenPullList | string {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PULL_LIMIT), '--json', 'number,headRefName,baseRefName,isCrossRepository']));
+  } catch (err) {
+    return openPullsFailed(err);
+  }
+  if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+  const pulls: OpenPull[] = [];
+  for (const row of rows) {
+    if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number < 1) continue;
+    const branch = asText(row.headRefName);
+    const base = asText(row.baseRefName);
+    if (!branch || !base) continue;
+    pulls.push({ number: row.number, branch, base, isFork: row.isCrossRepository === true });
+  }
+  return { pulls, isCut: rows.length >= OPEN_PULL_LIMIT };
 }
 
 /**
@@ -229,7 +281,8 @@ export function readIssue(env: Env): { title: string; labels: string[] } | Unrea
 }
 
 // The findings of a check on the pull request page (#91), so a beginner need not open the
-// log. Two parts, and neither needs a token:
+// log. The scope stops at yokoten's own check results: this repeats no other review bot
+// and reviews no code a second time. Two parts, and neither needs a token:
 // - an annotation per finding: a line on stdout, `::error file=…,line=…,title=…::message`,
 //   shown on that line of the diff (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands);
 // - Markdown appended to the file named by GITHUB_STEP_SUMMARY, shown on the run's page.

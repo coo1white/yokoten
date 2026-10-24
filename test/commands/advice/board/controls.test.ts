@@ -5,18 +5,23 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
 import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import {
+  boardAnchor,
   boardBrief,
   boardGuardReady,
+  boardReportPath,
   boardStartParts,
   collectBoardWaiting,
   createBoardControls,
   readBoardLimitChange,
   readBoardStartAsk,
+  readBoardStartNext,
   setBoardLimits,
   startBoardAgent,
+  startBoardNext,
   stopBoardAgent,
   type BoardEvents,
   type BoardSpawner,
@@ -40,12 +45,17 @@ function fakeAgents(): { spawner: BoardSpawner; started: { command: string; args
 }
 
 // #603: the brief names the issue, the worktree and the model; each vendor starts with
-// its own headless command, and an unknown vendor has none.
+// its own headless command, and an unknown vendor has none. #711: the brief also names
+// the safe exit, the anchor and where a resumed run starts.
 test('board controls: the brief and the start commands', () => {
   const brief = boardBrief('603', '/repo/.worktrees/603', 'model-a');
   assert.ok(brief.includes('Issue: #603'), 'the issue');
   assert.ok(brief.includes('/repo/.worktrees/603'), 'the worktree');
   assert.ok(brief.includes('model-a'), 'the model');
+  assert.match(brief, /^Stop: after the same step fails 3 times/m, 'the safe exit');
+  assert.match(brief, /^Anchor: after the tests you touched pass, commit/m, 'the anchor');
+  assert.match(brief, /^Resume: Read `git log --oneline -5` and `git status` first/m, 'a fresh start reads the worktree');
+  assert.match(boardBrief('603', '/repo/.worktrees/603', 'model-a', 'abc1234'), /the last commit is abc1234/, 'a resumed run names its anchor');
   assert.ok(brief.includes('YOKOTEN_ROLE') === false, 'no env text in the brief');
   assert.deepEqual(boardStartParts('claude-code', 'hi')?.slice(0, 2), ['claude', '-p']);
   assert.deepEqual(boardStartParts('codex', 'hi')?.slice(0, 2), ['codex', 'exec']);
@@ -60,20 +70,64 @@ test('board controls: the brief and the start commands', () => {
   assert.match(readBoardStartAsk({ issue: 'x', vendor: 'codex', model: 'm' }) as string, /number/, 'the issue is a number');
   assert.match(readBoardStartAsk({ issue: '603', vendor: 'gemini', model: 'm' }) as string, /by hand/, 'an unknown vendor is refused');
   assert.match(readBoardStartAsk({ issue: '603', vendor: 'codex', model: '' }) as string, /model/, 'the model is named');
+  assert.deepEqual(readBoardStartNext({ vendor: 'codex', model: 'model-a' }), { vendor: 'codex', model: 'model-a' }, 'the next ready issue needs no number');
+  assert.match(readBoardStartNext({ vendor: 'gemini', model: 'm' }) as string, /by hand/, 'an unknown vendor is refused');
+  assert.match(readBoardStartNext({ vendor: 'codex', model: '' }) as string, /model/, 'the model is named');
 });
 
 // #603: the limits change one side and keep the other; anything odd is refused plainly.
 test('board controls: the limits change', () => {
   const controls = createBoardControls(join(makeTempDir(), 'board.log'));
-  assert.deepEqual(controls.limits, { maxAgents: 3, byModel: {} });
-  assert.deepEqual(setBoardLimits(controls, { maxAgents: '2' }), { maxAgents: 2, byModel: {} });
-  assert.deepEqual(setBoardLimits(controls, { models: 'model-a:1, model-b:2' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 } });
+  assert.deepEqual(controls.limits, { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 });
+  assert.deepEqual(setBoardLimits(controls, { maxAgents: '2' }), { maxAgents: 2, byModel: {}, memoryFloorMb: 1024 });
+  assert.deepEqual(setBoardLimits(controls, { models: 'model-a:1, model-b:2' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 }, memoryFloorMb: 1024 });
+  assert.deepEqual(setBoardLimits(controls, { memory: '0' }), { maxAgents: 2, byModel: { 'model-a': 1, 'model-b': 2 }, memoryFloorMb: 0 }, 'the floor can be turned off');
   assert.match(setBoardLimits(controls, { maxAgents: '0' }) as string, /1 to 32/);
   assert.match(setBoardLimits(controls, { maxAgents: 'many' }) as string, /1 to 32/);
   assert.match(setBoardLimits(controls, { models: 'model-a:x' }) as string, /name:count/);
   assert.match(setBoardLimits(controls, { models: 'model-a' }) as string, /name:count/);
-  assert.match(setBoardLimits(controls, {}) as string, /maxAgents, models/);
+  assert.match(setBoardLimits(controls, { memory: '-1' }) as string, /0 to 65536/);
+  assert.match(setBoardLimits(controls, {}) as string, /maxAgents, models, memory/);
   assert.deepEqual(readBoardLimitChange({ maxAgents: '33' }) as string, 'set maxAgents to a whole number from 1 to 32');
+});
+
+// #709: the board's start path starts ready work in the heap's order and stops at the
+// memory floor and the agent cap.
+test('board controls: start next uses the heap order and the memory floor', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const issues = [
+    { number: 13, title: 'second', url: '', createdAt: '', updatedAt: '', dependsOn: [] },
+    { number: 12, title: 'first', url: '', createdAt: '', updatedAt: '', dependsOn: [] },
+    { number: 14, title: 'waits on the first', url: '', createdAt: '', updatedAt: '', dependsOn: [12] },
+  ];
+  const ask = { vendor: 'claude-code', model: 'model-a' };
+  // A machine under the floor starts nothing, whatever the cap says.
+  const low = startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 0, freeMemoryMb: 100 } });
+  assert.match(typeof low === 'string' ? low : 'started', /under the 1024 MB floor/);
+  assert.equal(agents.started.length, 0, 'a low floor starts nothing');
+  assert.equal(startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 3, freeMemoryMb: 4096 } }), 'the board already runs 3 agents of 3: stop one before starting another');
+  assert.equal(agents.started.length, 0, 'a full cap starts nothing');
+  // With room for two, the two smallest ready numbers start, smallest first.
+  controls.limits.maxAgents = 2;
+  const two = startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 0, freeMemoryMb: 4096 } });
+  assert.ok(typeof two !== 'string', `the start passes: ${two}`);
+  assert.deepEqual(two.runs.map((run) => run.issue), ['12', '13'], 'the heap order starts 12 then 13');
+  assert.deepEqual(agents.started.map((start) => start.cwd), [join(sandbox.repo, '.worktrees', '12'), join(sandbox.repo, '.worktrees', '13')]);
+  assert.deepEqual(two.waiting, [], '14 waits on 12, so it is not ready');
+  assert.equal(two.heldBy, 'none', 'both ready issues fit the cap');
+  // The issues already started are not started twice; 14 still waits for 12 to close.
+  controls.limits.maxAgents = 3;
+  assert.match(String(startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 2, freeMemoryMb: 4096 } })), /no open issue is ready/);
+  assert.equal(agents.started.length, 2, 'no issue starts twice');
+  // The floor is a setting: a lower floor lets the next start through.
+  assert.ok(typeof setBoardLimits(controls, { memory: '64' }) !== 'string');
+  agents.started[0].events.exit(0);
+  agents.started[1].events.exit(0);
+  const third = startBoardNext(sandbox.repo, sandbox.env, controls, ask, issues, { machine: { running: 0, freeMemoryMb: 100 } });
+  assert.ok(typeof third !== 'string', `the lower floor starts: ${third}`);
+  assert.deepEqual(third.runs.map((run) => run.issue), ['12', '13'], 'the ready issues start again once their first runs stop');
 });
 
 // #603 findings: the board marks the worktree it makes or reuses, so a runtime that
@@ -86,6 +140,43 @@ test('board controls: a started agent works in a marked worktree', () => {
   assert.ok(typeof run !== 'string', `the start passes: ${run}`);
   assert.equal(workerMarkAt(run.worktree, sandbox.env), 'mark', 'the board-made worktree carries the worker mark');
   assert.equal(workerRole({}, [run.worktree]), 'mark', 'a worker even with no YOKOTEN_ROLE in the env');
+});
+
+// #711: the board reuses the worktree, so a stopped or interrupted run resumes there.
+// The second brief names the last commit, the anchor the first run left behind.
+test('board controls: a second start resumes from the last commit', () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  const first = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof first !== 'string', `the first start passes: ${first}`);
+  writeFileSync(join(first.worktree, 'anchor.txt'), 'work\n');
+  sandbox.git('-C', first.worktree, 'add', 'anchor.txt');
+  sandbox.git('-C', first.worktree, 'commit', '-q', '-m', 'anchor');
+  const anchor = boardAnchor(first.worktree, sandbox.env);
+  assert.match(anchor, /^[0-9a-f]{7,}$/, 'the anchor is the short commit hash');
+  const second = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof second !== 'string', `the second start passes: ${second}`);
+  assert.equal(second.worktree, first.worktree, 'the same worktree is reused');
+  assert.ok(agents.started[1].args.join('\n').includes(`the last commit is ${anchor}`), 'the resumed brief names the anchor');
+});
+
+// #711: the time limit ends a worker, keeps its work, and leaves a report for the lead.
+test('board controls: the time limit stops a run and writes a report when there is none', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  controls.timeLimitMs = 20;
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  assert.equal(run.status, 'running');
+  await delay(60);
+  assert.equal(run.status, 'stopped');
+  assert.equal(run.stoppedBy, 'time limit');
+  assert.deepEqual(agents.killed, [run.pid], 'the time limit stops its own process');
+  const report = readFileSync(boardReportPath(run.worktree, '12'), 'utf8');
+  assert.match(report, /Stopped by the time limit/);
+  assert.match(report, /wrote no report/);
 });
 
 // #603 findings: on a fresh untrusted worktree the guard hooks are skipped without a

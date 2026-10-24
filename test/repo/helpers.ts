@@ -40,12 +40,14 @@ import {
   readServer,
   type ServerSettings,
 } from '../../src/host/github/index.ts';
+import type { Env } from '../../src/rules/config.ts';
 import type { Fact } from '../../src/setup/advice/adopt.ts';
 import {
   road,
   ROAD,
 } from '../../src/setup/road.ts';
 import type { MachineProbe } from '../../src/setup/doctor/machine.ts';
+import { lineHash } from '../../src/host/sigstore/record.ts';
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'yokoten.ts');
 
@@ -83,6 +85,47 @@ after(removeParent);
 process.on('exit', removeParent);
 
 /** A new empty folder in the system temp folder, removed when the test that made it ends. */
+/**
+ * A small event log for the anchor tests (#768): one start line per time, chained from 64
+ * zeros, with the issue set to the line's number. `lines` lets a test change one line
+ * after the chain was made, which is the tamper the check must see.
+ */
+export function makeEventLog(times: string[]): { text: string; lines: string[]; hashes: string[] } {
+  let previous = '0'.repeat(64);
+  const hashes: string[] = [];
+  const lines = times.map((time, index) => {
+    const nanos = String(BigInt(Date.parse(time)) * 1000000n);
+    const line = JSON.stringify({
+      resourceLogs: [
+        {
+          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'yokoten' } }] },
+          scopeLogs: [
+            {
+              scope: { name: 'yokoten' },
+              logRecords: [
+                {
+                  timeUnixNano: nanos,
+                  observedTimeUnixNano: nanos,
+                  eventName: 'yokoten.agent.start',
+                  attributes: [
+                    { key: 'gen_ai.agent.name', value: { stringValue: 'desk' } },
+                    { key: 'yokoten.issue', value: { stringValue: String(index + 1) } },
+                    { key: 'yokoten.event.previous_hash', value: { stringValue: previous } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    hashes.push(lineHash(line));
+    previous = hashes[hashes.length - 1];
+    return line;
+  });
+  return { text: lines.join('\n') + '\n', lines, hashes };
+}
+
 export function makeTempDir(prefix = 'yokoten-'): string {
   if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
   const path = mkdtempSync(join(tempParent, prefix));
@@ -96,6 +139,13 @@ export function makeTempDir(prefix = 'yokoten-'): string {
  */
 export function stopCheckoutWalk(folder: string): void {
   writeFileSync(join(folder, '.git'), 'not a checkout\n');
+}
+
+/** A `.git` folder git would use: `HEAD`, an `objects` folder and a `refs` folder, with no git process (#746). */
+export function makeGitFolder(top: string): void {
+  mkdirSync(join(top, '.git', 'objects'), { recursive: true });
+  mkdirSync(join(top, '.git', 'refs'), { recursive: true });
+  writeFileSync(join(top, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 }
 
 /** A new empty folder that outlives the test that made it, removed when the file ends: for a template (#475). */
@@ -125,11 +175,14 @@ export function killedLine(testName: string | undefined, command: string, timeou
 
 /**
  * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
+ * No shell, ever (#813): an argument is a value the test chose, never shell code.
  * A killed child is printed on stderr with the test that ran it.
  */
-export function runChild(command: string, args: string[], options: Omit<SpawnSyncOptionsWithStringEncoding, 'encoding'> = {}): SpawnSyncReturns<string> {
+export function runChild(command: string, args: string[], options: Pick<SpawnSyncOptionsWithStringEncoding, 'cwd' | 'env' | 'input' | 'timeout' | 'maxBuffer' | 'stdio'> = {}): SpawnSyncReturns<string> {
   const timeout = options.timeout ?? CHILD_TIMEOUT_MS;
-  const result = spawnSync(command, args, { maxBuffer: CHILD_MAX_BUFFER, ...options, timeout, encoding: 'utf8' });
+  // Never a shell, and no option that could ask for one: each field is named, so no test value is read as shell code.
+  const { cwd, env, input, stdio } = options;
+  const result = spawnSync(command, args, { cwd, env, input, stdio, timeout, maxBuffer: options.maxBuffer ?? CHILD_MAX_BUFFER, encoding: 'utf8' });
   const line = killedLine(testNames.at(-1), command, timeout, result);
   if (line) process.stderr.write(line);
   return result;
@@ -147,6 +200,19 @@ export function runChild(command: string, args: string[], options: Omit<SpawnSyn
 // NODE_OPTIONS carries the real-home preload that home.ts builds. A sandbox child gets a fresh env,
 // so without this it would read the real private-marks file when its own file is missing (#739).
 const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
+
+// A host sets markers in the environment it runs its hooks in. A test that starts
+// `yokoten hook` must not inherit them from whoever runs the tests (#800): the hook answers
+// for that host, so the same test can pass outside an agent and fail inside one.
+// `hookEnvironment` is this process's environment with those markers cleared; `host` sets
+// the ones a test wants back, after the clear.
+const HOST_MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'YOKOTEN_HOOK_DENIAL'] as const;
+
+export function hookEnvironment(host: Env = {}): Env {
+  const env: Env = { ...process.env };
+  for (const name of HOST_MARKERS) delete env[name];
+  return { ...env, ...host };
+}
 
 /** A repo built once per test process by `build`, copied into each folder given (#475): see git-template.ts. */
 export const makeRepoTemplate = (build: (dir: string) => void) => templateRepo(makeFileTempDir, build);
@@ -220,7 +286,17 @@ export const GOOD: Record<string, unknown> = {
     { type: 'deletion' },
   ],
   [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }],
-  [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }] },
+  [`repos/${REPO}/rulesets/7`]: {
+    conditions: { ref_name: { include: ['refs/tags/v*'] } },
+    rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }],
+    bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }],
+  },
+  [`repos/${REPO}/environments/release`]: {
+    protection_rules: [{ type: 'required_reviewers', reviewers: [{ type: 'User', reviewer: { login: 'octo' } }] }],
+  },
+  [`repos/${REPO}/environments/release/deployment-branch-policies`]: {
+    branch_policies: [{ id: 1, name: 'v*', type: 'tag' }],
+  },
   [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: true },
   [`repos/${REPO}/vulnerability-alerts`]: '',
   [`repos/${REPO}/pulls?state=open&per_page=100`]: 'octo:feat/a\nsomeone:main\n',
@@ -424,14 +500,62 @@ export function fakeMachine(free: number, more: Partial<MachineProbe> & { progra
   };
 }
 // The team of #674 (test/agents/desk/team/, test/commands/advice/messages.test.ts).
-/** A lead's checkout and a desk next to it, both with a bare `.git` folder: no git process is needed. */
+/**
+ * A small MCP server for the mcp tests (#370). `clean` answers with portable tools and
+ * both result forms; `traps` writes a log line, a non-UTF-8 byte and CRLF endings, and
+ * lists tools with each schema, name, hint, count and output trap.
+ */
+export const MCP_SAMPLE_SERVER = `
+import { createInterface } from 'node:readline';
+
+const mode = process.argv[2] ?? 'clean';
+const end = mode === 'traps' ? '\\r\\n' : '\\n';
+const send = (message) => process.stdout.write(JSON.stringify(message) + end);
+const hints = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const output = { type: 'object', properties: { reply: { type: 'string' } }, required: ['reply'] };
+const plain = { type: 'object', properties: {} };
+
+const clean = [
+  { name: 'echo', description: 'Echo text back', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }, outputSchema: output, annotations: hints },
+  { name: 'status', description: 'Report status', inputSchema: plain, outputSchema: output, annotations: hints },
+];
+
+const traps = [
+  { name: 'bad_schema', description: 'One tool, every schema trap', inputSchema: { anyOf: [{ type: 'string' }, { type: 'number' }], properties: { 'session id': { type: ['string', 'null'] }, list: { type: 'array' }, ref: { $ref: '#/$defs/missing' } }, required: [] }, annotations: hints },
+  { name: 'no_hints', description: 'No annotations', inputSchema: plain },
+  { name: 'result_only', description: 'Only structuredContent', inputSchema: plain, outputSchema: output, annotations: hints },
+  { name: 'n'.repeat(65), description: 'A name over 64', inputSchema: plain, annotations: hints },
+];
+while (traps.length < 40) traps.push({ name: 'filler_' + traps.length, description: 'Filler', inputSchema: plain, annotations: hints });
+
+const tools = mode === 'traps' ? traps : clean;
+if (mode === 'traps') {
+  process.stdout.write('starting sample server\\n');
+  process.stdout.write(Buffer.from([0xff, 0x0a]));
+}
+
+const lines = createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  let request;
+  try { request = JSON.parse(line); } catch { return; }
+  if (request.method === 'initialize') send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'sample', version: '1' } } });
+  else if (request.method === 'tools/list') send({ jsonrpc: '2.0', id: request.id, result: { tools } });
+  else if (request.method === 'tools/call') {
+    const result = request.params.name === 'result_only' ? { structuredContent: { reply: 'ok' } } : { structuredContent: { reply: 'ok' }, content: [{ type: 'text', text: 'ok' }] };
+    send({ jsonrpc: '2.0', id: request.id, result });
+  }
+});
+`;
+
+/** A lead's checkout and a desk next to it, both with a `.git` folder git would use: no git process is needed. */
 export function makeTeamFixture() {
   // The real path: on macOS the temp folder is a link (/var to /private/var), and whoAmI answers with real paths.
   const projects = realpathSync(makeTempDir('team-'));
   const main = join(projects, 'repo');
   const desk = join(projects, 'desks', 'g1');
   const state = `${desk}.state/grok`;
-  for (const folder of [join(main, '.git'), join(desk, '.git'), state]) mkdirSync(folder, { recursive: true });
+  for (const folder of [main, desk]) makeGitFolder(folder);
+  mkdirSync(state, { recursive: true });
   const team = `${main}.team`;
   return { projects, main, desk, state, team };
 }

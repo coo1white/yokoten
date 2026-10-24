@@ -115,7 +115,7 @@ export function pluginHookCommand(isSessionStart: boolean): string {
   const launch = '"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs"';
   const fallback = '"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs"';
   const mode = isSessionStart ? 'session' : 'tool';
-  const yokotenArgs = isSessionStart ? 'doctor --session' : 'hook --commands-only';
+  const yokotenArgs = isSessionStart ? 'doctor --session' : 'hook --commands-only --agent claude-code';
   const say = isSessionStart ? `echo '${PLUGIN_COPY_GONE}'; exit 0` : `echo '${PLUGIN_COPY_GONE}' >&2; exit 2`;
   return `[ -f ${launch} ] 2>/dev/null || { ${say}; }; node ${launch} ${mode} ${fallback} ${yokotenArgs}`;
 }
@@ -156,6 +156,8 @@ export interface Command {
   argument?: string;
   /** The positional arguments it takes, in order, when it takes more than one: an action, then its word (#447). */
   arguments?: string[];
+  /** It takes any number of positional arguments, in the order given: a merge train's queue (#320). */
+  many?: boolean;
   example: string;
 }
 
@@ -231,17 +233,76 @@ export const COMMANDS: Command[] = [
   {
     name: 'check',
     summary: 'layout, privacy and lead-only files; the pull request or issue in CI',
-    usage: '[--staged | --history | --pr [number] | --issue] [--json]',
-    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.'],
+    usage: '[--staged | --history | --pr [number] | --issue | --anchor] [--json]',
+    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.', '--anchor checks the event log against its daily entries in Sigstore Rekor.'],
     options: [
       { name: '--staged', text: 'the next commit, as the git hook runs it' },
       { name: '--history', text: 'the privacy check over every commit; run it before going public' },
       { name: '--pr', text: 'the title, tier, sections, issue and change file of the pull request: in CI, or by its number' },
       { name: '--issue', text: 'in CI: the issue title, `area: summary` in 60 characters at most' },
+      { name: '--anchor', text: 'the event log against the daily hashes in Sigstore Rekor' },
+      { name: '--repo', value: 'owner/name', text: 'the repo whose anchor workflow signed the entries; GITHUB_REPOSITORY or origin by default' },
       { name: '--json', text: 'the findings as JSON on stdout' },
     ],
     argument: 'number',
     example: 'yokoten check --staged',
+  },
+  {
+    name: 'ci-health',
+    summary: 'the last 200 Actions runs, in one issue that is updated in place',
+    usage: '[--repo owner/name] [--dry-run]',
+    text: [
+      'Reads the Actions runs and the checks of open pull requests through gh. Writes one',
+      'Markdown report to the pinned issue "CI health", creating it on the first run.',
+      '--dry-run prints the report and changes nothing.',
+    ],
+    options: [
+      { name: '--repo', value: 'owner/name', text: 'the repo to read; the default is GITHUB_REPOSITORY, or the origin remote' },
+      { name: '--dry-run', text: 'print the report; do not create or edit the issue' },
+    ],
+    example: 'yokoten ci-health --dry-run',
+  },
+  {
+    name: 'provenance',
+    summary: 'the writer, reviewers, approver, tier and issue of a commit or a range',
+    usage: '<ref> [--json]',
+    text: ['Reads the message a squash merge leaves on the branch, and the Approve on the pull request it names.', 'The approver is the latest Approve; when gh cannot read it, it shows unknown.', 'A range shows each commit, oldest first.'],
+    options: [{ name: '--json', text: 'the records as JSON on stdout' }],
+    argument: 'ref',
+    example: 'yokoten provenance main~1..main',
+  },
+  {
+    name: 'mcp',
+    summary: 'start the project MCP server and check its tools for every agent client',
+    usage: '[dir] [--command "<command>"] [--json]',
+    text: [
+      'Starts each stdio server in .mcp.json, .vscode/mcp.json or mcp.json and calls tools/list.',
+      'It checks each tool schema for Claude, Gemini and OpenAI strict mode, the tool and',
+      'property names, all four annotations, the count under 40, and an outputSchema result',
+      'that carries both structuredContent and text. It also reports any non-JSON-RPC line on',
+      'stdout, and warns when a Windows config needs cmd /c for npx or a .cmd file.',
+      'Use --command to check a server that has no config entry.',
+    ],
+    options: [
+      { name: '--command', value: 'command', text: 'start this command instead of a config entry, such as "node server.ts"' },
+      { name: '--json', text: 'the findings as JSON on stdout' },
+    ],
+    argument: 'dir',
+    example: 'yokoten mcp',
+  },
+  {
+    name: 'borrowed',
+    summary: 'compare borrowed code with its upstream, and open issues when it moved',
+    usage: '[--dry-run] [--json]',
+    text: [
+      "Compares each file in src/borrowed/ with upstream's default branch, through gh.",
+      'It opens one issue per source that changed, and calls out a security fix.',
+    ],
+    options: [
+      { name: '--dry-run', text: 'show the report and the issues it would open, and write nothing' },
+      { name: '--json', text: 'the report as JSON on stdout' },
+    ],
+    example: 'yokoten borrowed --dry-run',
   },
   {
     name: 'redact',
@@ -315,15 +376,45 @@ export const COMMANDS: Command[] = [
   {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
-    usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
-    text: ['Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.', 'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.'],
+    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>]',
+    text: [
+      'Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.',
+      "With --agent claude-code, it answers as Claude Code's PreToolUse hook: a deny in JSON on stdout, exit 0. YOKOTEN_HOOK_DENIAL=exit2 keeps exit 2.",
+      'With --denial exit2, it keeps the reason on stderr and exit 2, for a host that reads the exit code alone.',
+      'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.',
+    ],
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness, grok or opencode' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
+      { name: '--denial', value: 'mode', text: 'the answer a refusal gets: exit2 puts the reason on stderr and exits 2, for a host that ignores a JSON deny' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
+  },
+  {
+    name: 'anchor',
+    summary: "list a worker's checkpoints: commits whose checks passed",
+    usage: '[--json]',
+    text: [
+      'Lists the anchors recorded in this checkout, newest first. A worker records one when',
+      'its checks pass and its tree is clean. An anchor is a commit, so going back is a new',
+      'branch from it: `git switch -c try-2 <commit>`. Nothing is reset or deleted.',
+    ],
+    options: [{ name: '--json', text: 'the anchors as JSON on stdout' }],
+    example: 'yokoten anchor',
+  },
+  {
+    name: 'stops',
+    summary: 'the log of the guard stops on this computer, or turn it off and on',
+    usage: '[off | on]',
+    text: [
+      'Shows where the stop log is, and whether yokoten writes it. `off` stops the writing',
+      'and deletes the log; `on` starts it again. The log stays on this computer.',
+    ],
+    options: [],
+    arguments: ['action'],
+    example: 'yokoten stops off',
   },
   {
     name: 'worker',
@@ -396,6 +487,21 @@ export const COMMANDS: Command[] = [
     example: 'yokoten explain release',
   },
   {
+    name: 'pr',
+    summary: 'keep open pull requests up to date and resolve mechanical conflicts',
+    usage: 'sync',
+    text: [
+      'For each open pull request whose branch is behind its base branch, merges the base',
+      'in, resolves only the mechanical conflicts (two added blocks, or two changed import',
+      'lists), runs typecheck and the tests of the touched files, and pushes as the bot.',
+      'Anything else stops with the files, the hunks and a dispatch brief. It never',
+      'force-pushes, rebases or resolves on GitHub. Run it after every merge.',
+    ],
+    options: [],
+    argument: 'action',
+    example: 'yokoten pr sync',
+  },
+  {
     name: 'bot',
     summary: 'run one command as the bot (gh, git push); the token is never printed',
     usage: '-- <command>',
@@ -408,9 +514,28 @@ export const COMMANDS: Command[] = [
     example: 'yokoten bot -- gh pr create --fill',
   },
   {
+    name: 'train',
+    summary: 'merge an approved queue one pull request at a time, with a gate between each',
+    usage: '<pr>... [--wait <seconds>]',
+    text: [
+      'Merges each pull request in the order given, as the bot, and stops at the first one',
+      'that needs a person. Only the lead runs it.',
+      'Before the first merge it records every base branch, because GitHub forgets a base',
+      'when it deletes the branch. A pull request stacked on a squash-merged branch then',
+      'merges from the base it really shares with its old branch, not an older one.',
+      'A conflict that is only import lines is resolved by taking the union. Any other',
+      'conflict, a failing test or a missing approval stops the train.',
+      'Each merged tree runs the project\'s tests and `check` before it is pushed, and CI',
+      'must pass on the pushed merge before the squash.',
+    ],
+    options: [{ name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' }],
+    many: true,
+    example: 'yokoten train 1207 1209 1211',
+  },
+  {
     name: 'board',
     summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
-    usage: '[--text] [--no-open]',
+    usage: '[--text] [--no-open] [--role name] [--vendor name]',
     text: [
       'Serves a live page on this machine only, at http://<repo>.localhost:<port>/.',
       'The folder name is the host. The port stays with this repo. The first visit',
@@ -424,6 +549,8 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' },
       { name: '--no-open', text: 'only print the link; do not open the browser' },
+      { name: '--role', value: 'name', text: 'with --text: only this role in the usage view: engineer, reviewer or checker' },
+      { name: '--vendor', value: 'name', text: 'with --text: only this vendor in the usage view, such as claude or muse' },
     ],
     example: 'yokoten board --text',
   },

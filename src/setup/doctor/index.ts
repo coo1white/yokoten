@@ -27,6 +27,7 @@ export {
   PLUGIN_UPDATE,
   pluginAgeCheck,
   privacyNotes,
+  releaseChannel,
   UNFILTERED,
   userAgentHooks,
 } from './checks.ts';
