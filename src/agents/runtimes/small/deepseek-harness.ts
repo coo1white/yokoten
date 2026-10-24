@@ -133,11 +133,11 @@ export function profilesWithBridge(env: Env): { found: string[]; all: string[] }
 export const pluginAddCommands = (profile: string): string[] => PACKAGES.map((pkg) => `dsh plugin --profile ${profile} add @deepseek-ai/${pkg}@${VERSION}`);
 
 /**
- * What `init` prints after writing the files. On Windows it says the calls are not checked
- * yet, instead of how to turn on a guard that would let every call through.
+ * What `init` prints after writing the files, after the lines it wrote for them. On Windows
+ * it says the calls are not checked yet, instead of how to turn on a guard that would let
+ * every call through.
  */
-export function initLines(added: { guard: Added; patch: Added }, platform: string = process.platform): string[] {
-  const files = [`${added.guard} the DeepSeek Harness tool-call hook in ${HOOKS_FILE}`, `${added.patch} the DeepSeek Harness launch patch in ${PATCH_FILE}`];
+export function initLines(files: string[], platform: string = process.platform): string[] {
   if (platform === 'win32') return [...files, WINDOWS_GAP];
   return [
     ...files,
