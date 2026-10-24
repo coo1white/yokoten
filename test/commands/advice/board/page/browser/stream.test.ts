@@ -59,7 +59,7 @@ Object.assign(globalThis, {
 });
 
 const agent: AgentView = { key: '~/w', name: 'w', nickname: '', isMain: false, vendor: vendorOf('claude'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: 'the task', ref: null, doing: 'reading the issue', checks: '', age: '', updated: 'u1', started: '', branch: '' };
-const data: PageData = { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} } };
+const data: PageData = { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 } };
 
 function makeState(): PageState {
   const ui = loadUi(false);
