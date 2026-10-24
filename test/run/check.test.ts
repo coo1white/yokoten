@@ -346,10 +346,11 @@ test('check --staged: in a merge, the role checks see only what the merge itself
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
 });
 
-test('check --staged: a clean merge is exempt before git writes MERGE_HEAD (#549)', async () => {
-  // git runs the commit check as pre-merge-commit and writes MERGE_HEAD after that hook, so
-  // the file is absent while the index already holds the merge. The env names the other
-  // parent as GITHEAD_<oid>. Main's lead-only edit is main's, not the worker's.
+test('check --staged: a GITHEAD_ env value exempts nothing without MERGE_HEAD (#549)', async () => {
+  // git sets GITHEAD_<oid> for a merge hook, but an agent can set it for an ordinary
+  // commit, and `git commit-tree` builds a parent the commit never records. So the env
+  // must not exempt: main's lead-only edit stays the worker's own until the owner accepts
+  // the change (record 0037).
   const sandbox = mergeSandbox();
   sandbox.write('AGENTS.md', 'new rules\n');
   sandbox.git('commit', '-qam', 'lead');
@@ -358,19 +359,14 @@ test('check --staged: a clean merge is exempt before git writes MERGE_HEAD (#549
   const head = sandbox.git('rev-parse', 'main').stdout.trim();
   const mergeHead = join(sandbox.repo, sandbox.git('rev-parse', '--git-path', 'MERGE_HEAD').stdout.trim());
   rmSync(mergeHead);
-  // The negative control: with no file and no env, the merge looks like the worker's own edit.
-  let result = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  // A commit that is not a merge, with the env a merge hook would have.
+  const result = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker', [`GITHEAD_${head}`]: 'main' } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
-  // The hook's env, as git sets it for that merge.
-  result = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker', [`GITHEAD_${head}`]: 'main' } });
-  assert.deepEqual([result.status, result.stderr], [0, ''], 'main changed AGENTS.md');
-  // An edit made during the merge is still the worker's own.
-  sandbox.write('AGENTS.md', 'my rules\n');
-  sandbox.git('add', 'AGENTS.md');
-  result = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker', [`GITHEAD_${head}`]: 'main' } });
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /AGENTS\.md is lead-only/);
+  // The documented way round: MERGE_HEAD is in place when pre-commit runs.
+  writeFileSync(mergeHead, `${head}\n`);
+  const merged = await sandbox.call(['check', '--staged'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.deepEqual([merged.status, merged.stderr], [0, ''], 'main changed AGENTS.md');
 });
 
 test('check --staged: in a merge, a merged-in file is still checked for privacy (#246)', async () => {
