@@ -34,7 +34,7 @@ import { type Finding, finding } from '../rules/message.ts';
 import { homeOf, systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
 import { readOriginUrl } from './plan.ts';
-import { writeTestsJob } from './advice/tests-job.ts';
+import { testsPinNote, writeTestsJob } from './advice/tests-job.ts';
 import { type Ask, isYes } from './install.ts';
 import { copyRuntime, describeWrite, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
@@ -823,7 +823,8 @@ function readKitWorkflows(root: string): Map<string, string> {
 
 /**
  * For full doctor: one note for each kit workflow that is an old copy, or has the project's
- * changes. A changed copy's note has a `seen` key, the file and the kit's version, so doctor
+ * changes, and one when the tests job pins an action the kit has moved on from (#584).
+ * A changed copy's note has a `seen` key, the file and the kit's version, so doctor
  * can say it once per kit version (#456); an old copy is noted each time, until init updates it.
  */
 export function workflowNotes(root: string): { note: Finding; seen?: string }[] {
@@ -839,6 +840,9 @@ export function workflowNotes(root: string): { note: Finding; seen?: string }[] 
       notes.push({ note, seen: `${rel} ${textHash(kitText)}` });
     }
   }
+  // The tests job's pins age the same way (#584): a note each run until the pin is refreshed.
+  const pins = testsPinNote(root);
+  if (pins) notes.push({ note: pins });
   return notes;
 }
 

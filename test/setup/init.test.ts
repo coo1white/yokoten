@@ -2069,6 +2069,17 @@ test('doctor: a kit-workflows note when the kit\'s own jobs fall behind (#552)',
   assert.match((await sandbox.call(['doctor'])).stdout, /note +kit-workflows: \.github\/workflows\/yokoten\.yml has your changes, and the kit's newest copy differs/);
 });
 
+test('doctor: a kit-workflows note for a tests job pin the kit has moved on from (#584)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('package.json', '{"scripts": {"test": "node --test"}}\n');
+  const old = `      - uses: actions/setup-node@${'a'.repeat(40)} # v6.1.0\n`;
+  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')).replace('      - run: npm test\n  ci:', `${old}      - run: npm test\n  ci:`));
+  assert.match(
+    (await sandbox.call(['doctor'])).stdout,
+    /note +kit-workflows: the tests job in \.github\/workflows\/yokoten\.yml pins actions\/setup-node v6\.1\.0; the kit pins actions\/setup-node v7\.1\.0/,
+  );
+});
+
 const YML = '.github/workflows/yokoten.yml';
 
 test('init: keeps an old kit workflow that git cannot give back: untracked, or edited since the last commit (#456)', async () => {

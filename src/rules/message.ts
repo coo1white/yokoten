@@ -555,7 +555,7 @@ export const RULES = {
   'kit-workflows': {
     rule: "the project's CI workflows from the kit are the kit's newest, or the project's own on purpose",
     why: 'a fix to the kit\'s CI reaches a project only when its workflow file gets the new text',
-    check: "`init` and full `doctor` compare each kit workflow in .github/workflows/ with the kit's list of the versions it wrote; `init` replaces an old copy the project never changed, and a copy with the project's changes is a note with the command that shows the difference",
+    check: "`init` and full `doctor` compare each kit workflow in .github/workflows/ with the kit's list of the versions it wrote; `init` replaces an old copy the project never changed, and a copy with the project's changes is a note with the command that shows the difference. A tests job pin the kit has moved on from is a note too, and `init` offers the kit's pin (#584)",
     docs: guide('commands'),
   },
   'session-doctor': {

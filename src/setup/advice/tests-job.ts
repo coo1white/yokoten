@@ -3,9 +3,13 @@
 // package manager only when no other language is detected and package.json has a real test script.
 // No lockfile means `npm install`. It asks first, as install's writes do (record 0014), and
 // says how to undo it. doctor stays read-only: it reads a project and advises, never writes.
+//
+// The pins the kit ships age (#584). doctor notes a tests job pin the kit has moved on from,
+// and a later `init` offers the kit's pin, so a stale pin cannot sit there unmentioned.
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { type Finding, finding } from '../../rules/message.ts';
 import type { Ask } from '../install.ts';
 import { runsTests, scriptedRuns, testLanguages } from './test-commands.ts';
 
@@ -26,7 +30,7 @@ export interface TestsJob {
 }
 
 /** The Node line `action.yml` sets up when a project names no version of its own. */
-const KIT_NODE = '^22.23.4';
+export const KIT_NODE = '^22.23.4';
 /** `engines.node` may name a range. Anything else is not a version we can copy. */
 const ENGINES_NODE = /^[0-9A-Za-z.^~<>=* |]+$/;
 /** A version (`20`, `v20.14.0`) or an lts alias (`lts/*`, `lts/Hydrogen`). A leading `v` is dropped. */
@@ -88,6 +92,121 @@ export const unpinnedUses = (text: string): string[] => {
     found.push(uses);
   }
   return found;
+};
+
+/** A `uses:` line in the tests job whose action the kit pins, at a commit the kit has moved on from (#584). */
+export interface OldPin {
+  /** The action, as owner/name. */
+  action: string;
+  /** The commit the project's tests job pins. */
+  commit: string;
+  /** The version the project's comment names, or '' when it has no comment. */
+  version: string;
+  /** The commit the kit pins today. */
+  kitCommit: string;
+  /** The version the kit pins today. */
+  kitVersion: string;
+}
+
+/** Where the body of the `tests` job sits in a workflow, or null when it has no tests job. */
+const testsJobRange = (contents: string): { first: number; end: number } | null => {
+  const lines = contents.split(/\r?\n/);
+  const header = lines.findIndex((line) => /^  tests:[ \t]*(?:#.*)?$/.test(line));
+  if (header < 0) return null;
+  let end = header + 1;
+  while (end < lines.length && !/^(?:  [^ \t#]|[^ \t\n])/.test(lines[end])) end++;
+  return { first: header + 1, end };
+};
+
+/** A `uses:` line pinned to a commit: its indent, the action, the commit, and the version its comment names. */
+const pinnedUse = (line: string): { indent: string; action: string; commit: string; version: string } | null => {
+  const uses = /^([ \t]*)-[ \t]+uses:[ \t]*"?([^"' \t]+)"?(?:[ \t]+#(.*))?[ \t]*$/.exec(line);
+  const pin = uses ? /^([^@\s]+)@([0-9a-f]{40})$/.exec(uses[2]) : null;
+  return uses && pin ? { indent: uses[1], action: pin[1], commit: pin[2], version: (uses[3] ?? '').trim() } : null;
+};
+
+/** The kit job that pins this action, or null when the action is the project's own choice. */
+const kitPin = (action: string): TestsJob | null => TESTS_JOBS.find((named) => named.action === action) ?? null;
+
+/** A version such as `v7.1.0` as numbers, or null when the text names something else (`main`, `lts/*`). */
+const versionParts = (version: string): number[] | null => {
+  const plain = /^v?(\d+(?:\.\d+)*)$/.exec(version.trim());
+  return plain ? plain[1].split('.').map(Number) : null;
+};
+
+/** Whether `version` names an older release than `other`. Two versions we cannot read are not older. */
+const isOlderVersion = (version: string, other: string): boolean => {
+  const left = versionParts(version);
+  const right = versionParts(other);
+  if (!left || !right) return false;
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const a = left[i] ?? 0;
+    const b = right[i] ?? 0;
+    if (a !== b) return a < b;
+  }
+  return false;
+};
+
+/**
+ * Whether the kit has truly moved on from this pin (#584). A different commit is not enough:
+ * the project may be ahead of the kit, or may have written no version at all. Only a comment
+ * that names an older version says the kit has the newer pin, so only that is refreshed.
+ */
+const isOldPin = (pin: OldPin, kit: TestsJob): boolean => kit.commit !== pin.commit && isOlderVersion(pin.version, kit.version);
+
+/**
+ * The tests job's pins that the kit has moved on from (#584). An action the kit does not
+ * pin, the kit's own commit, and a pin whose comment names the kit's version or a newer
+ * one are left alone: the project may have chosen them, or may be ahead of the kit. So is a
+ * pin with no version comment, because its commit alone cannot say which one is newer.
+ * Empty when the workflow has no tests job.
+ */
+export const findOldTestsPins = (contents: string): OldPin[] => {
+  const range = testsJobRange(contents);
+  if (!range) return [];
+  const found: OldPin[] = [];
+  for (const line of contents.split(/\r?\n/).slice(range.first, range.end)) {
+    const pin = pinnedUse(line);
+    const kit = pin ? kitPin(pin.action) : null;
+    if (!pin || !kit) continue;
+    const old = { action: pin.action, commit: pin.commit, version: pin.version, kitCommit: kit.commit, kitVersion: kit.version };
+    if (!isOldPin(old, kit)) continue;
+    found.push(old);
+  }
+  return found;
+};
+
+/** The workflow with each old pin in its tests job at the kit's commit; null when no pin is old. */
+export const refreshTestsPins = (contents: string): string | null => {
+  const range = testsJobRange(contents);
+  if (!range) return null;
+  const newline = contents.includes('\r\n') ? '\r\n' : '\n';
+  const lines = contents.split(/\r?\n/);
+  let isChanged = false;
+  for (let i = range.first; i < range.end; i++) {
+    const pin = pinnedUse(lines[i]);
+    const kit = pin ? kitPin(pin.action) : null;
+    if (!pin || !kit) continue;
+    const old = { action: pin.action, commit: pin.commit, version: pin.version, kitCommit: kit.commit, kitVersion: kit.version };
+    if (!isOldPin(old, kit)) continue;
+    lines[i] = `${pin.indent}- uses: ${pin.action}@${kit.commit}${kit.version ? ` # ${kit.version}` : ''}`;
+    isChanged = true;
+  }
+  return isChanged ? lines.join(newline) : null;
+};
+
+/** One old pin in a sentence: `actions/setup-node v6.1.0 to v7.1.0`. */
+const pinChange = (pin: OldPin): string => `${pin.action} ${pin.version || pin.commit.slice(0, 7)} to ${pin.kitVersion}`;
+
+/**
+ * doctor's note about a tests job pinned where the kit no longer pins, or null when none is
+ * (#584). doctor only reads: the fix names `yokoten init`, which asks before it writes.
+ */
+export const testsPinNote = (root: string): Finding | null => {
+  const old = findOldTestsPins(readText(join(root, WORKFLOW)));
+  if (!old.length) return null;
+  const what = `the tests job in ${WORKFLOW} pins ${old.map((pin) => `${pin.action} ${pin.version || pin.commit.slice(0, 7)}`).join(', ')}; the kit pins ${old.map((pin) => `${pin.action} ${pin.kitVersion}`).join(', ')}`;
+  return finding('kit-workflows', what, 'run `yokoten init` to refresh the pin; it asks first, and keeping your own is fine');
 };
 
 /**
@@ -338,6 +457,8 @@ export const nodeTestsFix = (root: string): string | null => {
  * without, it only says what it would do.
  * It never overwrites: a workflow that already runs the tests, or has a `tests` job of
  * its own, is kept. It copies the checkout step of the other jobs, and only when pinned.
+ * A tests job whose pin the kit has moved on from is refreshed first, after the same
+ * question (#584); saying no leaves it as it is.
  */
 export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string[] {
   const picked = pickedJob(root);
@@ -348,6 +469,19 @@ export function writeTestsJob(root: string, { ask }: { ask?: Ask } = {}): string
     contents = readFileSync(join(root, WORKFLOW), 'utf8');
   } catch {
     return [`no ${WORKFLOW}; run \`yokoten init\` to add it, then run \`yokoten init\` again for the tests job`];
+  }
+  const old = findOldTestsPins(contents);
+  if (old.length) {
+    const named = old.map(pinChange).join(', ');
+    const next = refreshTestsPins(contents);
+    if (ask && next !== null) {
+      if (isYes(ask(`Refresh the tests job pins in ${WORKFLOW} (${named})? [Y/n]`))) {
+        writeFileSync(join(root, WORKFLOW), next);
+        return [`refreshed the tests job pins in ${WORKFLOW} (${named}); to undo, put the old pins back`];
+      }
+      return [`left the tests job pins in ${WORKFLOW} unchanged`];
+    }
+    return [`would refresh the tests job pins in ${WORKFLOW} (${named}); run \`yokoten init\` on a terminal to be asked`];
   }
   if (runsTests(ciText(root), testScript(root), isWorkspaces(root), scriptedRuns(root))) return [`kept ${WORKFLOW} (it already runs the tests)`];
   if (/^  tests:[ \t]*(?:#.*)?$/m.test(contents)) return [`kept ${WORKFLOW} (it has a tests job of its own)`];
