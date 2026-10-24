@@ -46,16 +46,20 @@ function gitText(dir: string, env: Env, args: string[]): string | null {
   return result.stdout;
 }
 
-/** A commit the push sends: `base..local` when the remote branch is already here, else every commit on `local`. */
+/**
+ * The commits a push sends: the revisions to read, and what the remote already has. The
+ * base is the branch's tracking ref when this desk has it, else every ref of that remote,
+ * so a new branch is not refused for an ancestor the remote already has.
+ */
 interface PushSpec {
-  local: string;
-  base: string | null;
+  local: string[];
+  base: string[];
 }
 
-/** The refspecs a push sends, as local revisions. A delete sends no commit. An error string when git can't answer. */
+/** The revisions a push sends, as local revisions. A delete sends no commit. An error string when git can't answer. */
 function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | string {
   const words: string[] = [];
-  let pushesAll = false;
+  const flags = new Set<string>();
   for (let index = 0; index < args.length; index++) {
     const word = args[index];
     if (word === '--') {
@@ -66,10 +70,12 @@ function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | strin
       words.push(word);
       continue;
     }
-    if (word === '--all' || word === '--mirror') pushesAll = true;
     const name = word.split('=')[0];
+    flags.add(name);
     if (!word.includes('=') && PUSH_VALUE_OPTIONS.has(name)) index += 1;
   }
+  // A delete sends no commit, so there is no time to check.
+  if (flags.has('--delete') || flags.has('-d')) return [];
   const remoteText = gitText(dir, env, ['remote']);
   if (remoteText === null) return 'git remote gave no answer';
   const remoteNames = remoteText.split('\n').filter(Boolean);
@@ -81,39 +87,47 @@ function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | strin
     refspecs = words.slice(1);
     namedRemote = true;
   }
-  const pairs: { source: string; dest: string }[] = [];
-  if (refspecs.length) {
-    for (const spec of refspecs) {
-      const text = spec.startsWith('+') ? spec.slice(1) : spec;
-      const colon = text.indexOf(':');
-      const source = colon === -1 ? text : text.slice(0, colon);
-      const dest = colon === -1 ? text : text.slice(colon + 1);
-      if (source) pairs.push({ source, dest: dest || source });
+  const branchOf = (dest: string): string | null => {
+    const name = dest.startsWith('refs/heads/') ? dest.slice('refs/heads/'.length) : dest;
+    return name && !name.startsWith('refs/') ? name : null;
+  };
+  const baseFor = (branch: string | null): string[] => {
+    if (branch) {
+      const tracking = `refs/remotes/${remote}/${branch}`;
+      if (spawnSync('git', ['rev-parse', '--verify', '--quiet', tracking], { cwd: dir, env, encoding: 'utf8' }).status === 0) return [tracking];
     }
-  } else if (pushesAll) {
-    const heads = gitText(dir, env, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']);
-    if (heads === null) return 'git gave no branch list';
-    for (const head of heads.split('\n').filter(Boolean)) pairs.push({ source: head, dest: head });
-  } else {
-    const current = gitText(dir, env, ['symbolic-ref', '--quiet', '--short', 'HEAD'])?.trim();
-    if (!current) return [];
-    if (!namedRemote) {
-      const upstream = gitText(dir, env, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])?.trim();
-      const slash = upstream ? upstream.indexOf('/') : -1;
-      if (upstream && slash > 0) pairs.push({ source: current, dest: upstream.slice(slash + 1) });
-      else pairs.push({ source: current, dest: current });
-      if (upstream && slash > 0) remote = upstream.slice(0, slash);
-    } else pairs.push({ source: current, dest: current });
-  }
+    // With no history of that branch here, every ref of the remote is history this push
+    // does not send. An unknown remote leaves no ref out, so every commit is read.
+    return [`--remotes=${remote}`];
+  };
   const specs: PushSpec[] = [];
-  for (const pair of pairs) {
-    const name = pair.dest.startsWith('refs/heads/') ? pair.dest.slice('refs/heads/'.length) : pair.dest;
-    const branch = name && !name.startsWith('refs/') ? name : null;
-    const tracking = branch ? `refs/remotes/${remote}/${branch}` : null;
-    const base = tracking && spawnSync('git', ['rev-parse', '--verify', '--quiet', tracking], { cwd: dir, env, encoding: 'utf8' }).status === 0 ? tracking : null;
-    specs.push({ local: pair.source, base });
+  if (flags.has('--mirror')) return [{ local: ['--all'], base: baseFor(null) }];
+  if (flags.has('--all')) specs.push({ local: ['--branches'], base: baseFor(null) });
+  if (flags.has('--tags')) specs.push({ local: ['--tags'], base: baseFor(null) });
+  // `--follow-tags` sends only tags that point into the refs already read, so it adds no commit.
+  for (const spec of refspecs) {
+    const text = spec.startsWith('+') ? spec.slice(1) : spec;
+    const colon = text.indexOf(':');
+    const source = colon === -1 ? text : text.slice(0, colon);
+    const dest = colon === -1 ? text : text.slice(colon + 1);
+    if (!source) continue;
+    // A refspec may name a pattern (`refs/heads/*:refs/heads/*`), which git expands and
+    // `git log` does not, so the pattern goes in as `--glob`.
+    specs.push({ local: [/[*?[]/.test(source) ? `--glob=${source}` : source], base: baseFor(branchOf(dest || source)) });
   }
-  return specs;
+  if (specs.length) return specs;
+  const current = gitText(dir, env, ['symbolic-ref', '--quiet', '--short', 'HEAD'])?.trim();
+  if (!current) return [];
+  let dest = current;
+  if (!namedRemote) {
+    const upstream = gitText(dir, env, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])?.trim();
+    const slash = upstream ? upstream.indexOf('/') : -1;
+    if (upstream && slash > 0) {
+      remote = upstream.slice(0, slash);
+      dest = upstream.slice(slash + 1);
+    }
+  }
+  return [{ local: [current], base: baseFor(branchOf(dest)) }];
 }
 
 const ZONE_FIX = 're-date in UTC, then push again: `TZ=UTC git commit --amend --date=<date>` for the latest commit, or a rebase that re-dates each older commit in UTC';
@@ -134,8 +148,8 @@ function zonedPushFinding(cwd: string, env: Env, command: string[]): Finding | n
   }
   let count = 0;
   for (const spec of specs) {
-    const range = spec.base ? `${spec.base}..${spec.local}` : spec.local;
-    const result = spawnSync('git', ['--no-replace-objects', 'log', '--format=%ad %cd', '--date=format:%z', range], { cwd: target.dir, env, encoding: 'utf8', maxBuffer: 1 << 24 });
+    const exclude = spec.base.length ? ['--not', ...spec.base] : [];
+    const result = spawnSync('git', ['--no-replace-objects', 'log', '--format=%ad %cd', '--date=format:%z', ...spec.local, ...exclude], { cwd: target.dir, env, encoding: 'utf8', maxBuffer: 1 << 24 });
     if (result.error || result.status !== 0) {
       return finding('git-read', "git can't list the commits this push sends, so nothing was pushed", 'check the branch name and that git runs, then push again');
     }
