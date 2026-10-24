@@ -20,7 +20,7 @@ import {
   relative,
 } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import {
   findTempDirs,
   findTmpfs,
@@ -100,7 +100,7 @@ test('unsaved: uncommitted changes, with the file count and the oldest change (#
   assert.deepEqual(rest, []);
   assert.equal(note.id, 'uncommitted-changes');
   assert.equal(note.what, '. has 2 uncommitted files, the oldest changed 3 days ago');
-  assert.equal(note.fix, 'commit them: `git -C . add -A && git -C . commit`, then push');
+  assert.equal(note.fix, 'commit them: `git add -A && git commit -m "chore: save work"`, then push');
   assert.deepEqual(clone.facts().worktrees[0].changedFiles?.sort(), ['a.txt', 'new.txt']);
   // A session hears only changes older than an hour: work going on now is not forgotten.
   assert.deepEqual(ids(clone.notes({ session: true })), ['uncommitted-changes']);
@@ -108,6 +108,19 @@ test('unsaved: uncommitted changes, with the file count and the oldest change (#
   utimesSync(join(clone.repo, 'new.txt'), now, now);
   assert.deepEqual(clone.notes({ session: true }), []);
   assert.deepEqual(ids(clone.notes()), ['uncommitted-changes'], 'full doctor still lists it');
+});
+
+test('unsaved: a commit that carries .yokoten/ says what the copy is, and the commit check takes the message (#655)', () => {
+  const clone = cleanClone();
+  mkdirSync(join(clone.repo, '.yokoten'), { recursive: true });
+  writeFileSync(join(clone.repo, '.yokoten', 'VERSION'), '0.1.0\n');
+  const [note] = clone.notes();
+  assert.equal(note.fix, 'commit them: `git add -A && git commit -m "chore: add yokoten"`; .yokoten/ is a copy of yokoten (about 90 files), and committing it is the point, then push');
+  // Positive control: a change with no .yokoten/ gets the generic message, and no copy note.
+  writeFileSync(join(clone.repo, '.yokoten', 'VERSION'), '0.2.0\n');
+  rmSync(join(clone.repo, '.yokoten'), { recursive: true });
+  writeFileSync(join(clone.repo, 'a.txt'), 'b\n');
+  assert.equal(clone.notes()[0].fix, 'commit them: `git add -A && git commit -m "chore: save work"`, then push');
 });
 
 test('unsaved: commits not pushed, per branch, and a branch with no upstream (#365)', () => {
@@ -266,7 +279,7 @@ test('unsaved: a repo on a tmpfs is gone after a restart (#365)', () => {
   const found = clone.notes({}, { readMounts: () => tmpfs });
   assert.deepEqual(found.map((f) => `${f.what}; ${f.fix}`), [
     `this repo is on a tmpfs (${clone.base}), so everything here is gone after a restart; push every branch now: \`git push --all origin\`; then clone it again in a folder that lasts`,
-    `1 worktree is on a tmpfs (${clone.base}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees in a folder that lasts`,
+    `1 worktree is on a tmpfs (${clone.base}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees under .worktrees/, never on a tmpfs`,
   ]);
   assert.deepEqual(ids(clone.notes({ session: true }, { readMounts: () => tmpfs })), ['repo-on-tmpfs'], 'the repo itself always; a clean worktree never in a session');
   assert.deepEqual(clone.notes({}, { readMounts: () => disk }), [], 'negative control: a disk');
@@ -288,7 +301,7 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
   const clean = add('clean', '-b', 'clean');
   const notes = (session = false) => clone.notes({ session }, { tempDirs: [join(clone.home, 'none'), temp] });
   // Only clean ones: one line in full doctor, nothing in a session.
-  assert.deepEqual(notes().map((f) => `${f.what}; ${f.fix}`), [`1 worktree is under the temp folder (${temp}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees in a folder that lasts`]);
+  assert.deepEqual(notes().map((f) => `${f.what}; ${f.fix}`), [`1 worktree is under the temp folder (${temp}); it holds no unsaved work, but new work there may be lost on restart; make new worktrees under .worktrees/, never under a temp folder`]);
   assert.deepEqual(notes(true), [], 'a session: nothing about worktrees with nothing to lose');
   add('clean-too', '-b', 'clean-too');
   assert.equal(notes()[0].what, `2 worktrees are under the temp folder (${temp}); none holds unsaved work, but new work there may be lost on restart`);
@@ -306,7 +319,7 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
     `worktree ../temp/loose has commits on a detached HEAD that no branch holds, so they are still only on this machine; it is ${place}`,
     `2 worktrees are under the temp folder (${temp}); none holds unsaved work, but new work there may be lost on restart`,
   ]);
-  assert.equal(notes()[0].fix, 'commit them: `git -C ../temp/dirty add -A && git -C ../temp/dirty commit`, then push', 'the one command that saves it');
+  assert.equal(notes()[0].fix, 'commit them: `git -C ../temp/dirty add -A && git -C ../temp/dirty commit -m "chore: save work"`, then push', 'the one command that saves it');
   // A session: one line with the count of those at risk, then their notes; never the clean ones.
   const session = notes(true);
   assert.equal(session[0].what, `3 worktrees under the temp folder (${temp}) hold unsaved work, and a restart may empty that folder`);
@@ -322,6 +335,30 @@ test('unsaved: a worktree under the temp folder is named only when it holds work
   const both = clone.notes({}, { tempDirs: [temp], readMounts: () => `tmpfs ${temp} tmpfs rw 0 0\n` });
   assert.ok(!both.some((f) => f.id === 'repo-in-temp-folder'));
   assert.ok(both.some((f) => f.what.endsWith(`is on a tmpfs (${temp}), which is gone after a restart`)));
+});
+
+test('unsaved: a worktree in a temp folder is made again under .worktrees/ (#571)', () => {
+  // No remote: the branch notes fold into one, so the at-risk worktree says its place on its own.
+  // Real dirs under one base, so the shown path is the same where /tmp is a link (macOS).
+  const base = makeTempDir();
+  const root = join(base, 'repo');
+  const temp = join(base, 'temp');
+  const tree = join(temp, 'w');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(tree, { recursive: true });
+  const facts = {
+    ...UNSAVED_CONTROL,
+    root,
+    remotes: [],
+    branches: [{ ...UNSAVED_CONTROL.branches[0], name: 'w', upstream: null, ahead: null, isGone: false, aheadOfDefault: 2 }],
+    stashes: 0,
+    isGitRunning: null,
+    worktrees: [{ ...UNSAVED_CONTROL.worktrees[1], path: tree, branch: 'w', volatile: { kind: 'temp' as const, folder: temp } }],
+  };
+  const found = unsavedNotes(facts, { home: undefined, now: 1 });
+  assert.deepEqual(ids(found), ['unpushed-commits', 'repo-in-temp-folder']);
+  assert.equal(found[1].what, `../temp/w holds work only on this machine, and is under the temp folder (${temp}), which the system may empty on restart`);
+  assert.equal(found[1].fix, 'save it: commit; once the repo has a remote, push it; then make it again under .worktrees/');
 });
 
 test('unsaved: the temp folders come from YOKOTEN_TEMP_DIRS, else the system and /tmp (#365)', () => {
@@ -460,4 +497,17 @@ test('unsaved: every note is plain, with sentences of at most 25 words, and no f
     assert.ok(!text.includes(clone.home), text);
     for (const sentence of text.split(/[.;] /)) assert.ok(sentence.split(/\s+/).length <= 25, sentence);
   }
+});
+
+test('unsaved: with no remote no advice says push on its own (#524)', () => {
+  const sandbox = makeSandbox();
+  writeFileSync(join(sandbox.repo, 'a.txt'), 'a\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'first');
+  writeFileSync(join(sandbox.repo, 'a.txt'), 'changed\n');
+  const found = unsavedNotes(readUnsaved(sandbox.repo, { env: sandbox.env, readMounts: () => null, tempDirs: [] })!, { home: sandbox.home });
+  assert.deepEqual(ids(found), ['uncommitted-changes', 'unpushed-commits']);
+  assert.equal(found[0].fix, 'commit them: `git add -A && git commit -m "chore: save work"`; once the repo has a remote, push it');
+  assert.equal(found[1].fix, 'make the repo on your code host, add it as origin: `git remote add origin <url>`; then push: `git push -u origin --all`');
+  for (const note of found) assert.doesNotMatch(note.fix, /, then push|and push/, 'push comes after a remote is added');
 });

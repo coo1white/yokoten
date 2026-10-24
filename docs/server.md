@@ -190,7 +190,10 @@ git clone --branch v0.1.0 https://github.com/yokoten-labs/yokoten yokoten-v0.1.0
 cd yokoten-v0.1.0 && npm ci && npm publish --access public
 ```
 
-Then do record 0009, step 5 (no token publishing). Do step 6 (the trusted publisher)
+Then set npm's package settings, as in record 0009, step 5: open the package's
+**Settings**, under **Publishing access** choose
+"Require two-factor authentication and disallow bypass 2fa tokens".
+Do step 6 (the trusted publisher)
 just before the next release, not now: it expires after 2 days without a publish.
 
 The GitHub release, with the notes from `CHANGELOG.md`:

@@ -6,13 +6,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { dirname, join, posix, relative } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox, makeTempDir } from './helpers.ts';
+import { killedLine, makeSandbox, makeTempDir, runChild } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
 import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
-import { assertLinear, assertLinearEach } from '../../scripts/linear.ts';
-import { TEST_HOME } from './home.ts';
+import { noteWork } from '../../src/rules/message.ts';
+import { assertLinear, assertLinearEach, assertWallSmoke } from '../../scripts/linear.ts';
+import { judgeSuite, readReport, SUITE_BUDGET } from '../../scripts/time/suite.ts';
+import { clearYokotenEnv, TEST_HOME } from './home.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = join(ROOT, 'src');
@@ -48,12 +50,19 @@ test('layers: no module imports from a layer above its own', () => {
 // test/run/check.test.ts (#152). A branch that changes a module adds its tests, and their
 // imports, to that module's file, so parallel branches do not meet in one import block.
 // Next to the layer folders, test/ holds repo/: this file and the shared helpers, which
-// check the repo as a whole, not one src module.
-const TEST_TOP = ['repo/architecture.test.ts', 'repo/helpers.ts', 'repo/home.ts'];
+// check the repo as a whole, not one src module, git-template.ts, which copies a test repo,
+// invoke.ts, which runs a command in-process (#475), and merge-utc.test.ts, which reads
+// the merge skill and record. docs.test.ts checks that prose agrees with the code: the
+// manifesto count against the guide (#487), and the open standard against the shapes (#755).
+// The real-home preload is a temp script home.ts writes, not a file here, so this folder stays at 7 (#739).
+const TEST_TOP = ['repo/architecture.test.ts', 'repo/docs.test.ts', 'repo/git-template.ts', 'repo/helpers.ts', 'repo/home.ts', 'repo/invoke.ts', 'repo/merge-utc.test.ts'];
+// Kit prose has no src module. This test reads the skill files (#531).
+const PROSE_TESTS = ['setup/kit-habits.test.ts'];
 // Modules with no test file of their own. Keep it short: a new module gets its test file.
 const NO_TEST_FILE = [
   'agents/agent-skills.ts', // no tests yet (#152)
   'agents/hooks-file.ts', // no tests yet (#152); the install and init tests use it
+  'host/github/index.ts', // re-exports the GitHub adapter's public names
   'setup/files.ts', // no tests yet (#152); the install tests and this file use it
 ];
 
@@ -67,7 +76,7 @@ const filesUnder = (folder: string) =>
 function testFileProblems(modules: string[], tests: string[]): string[] {
   const problems: string[] = [];
   for (const path of tests) {
-    if (TEST_TOP.includes(path)) continue;
+    if (TEST_TOP.includes(path) || PROSE_TESTS.includes(path)) continue;
     const module = path.replace(/\.test\.ts$/, '.ts');
     if (module === path || !modules.includes(module)) problems.push(`test/${path} is not the test file of a src module (src/${module})`);
   }
@@ -82,7 +91,7 @@ function testFileProblems(modules: string[], tests: string[]): string[] {
 
 test('test files: each one is the test file of a src module, at the same path (#152)', () => {
   const modules = ['run/check.ts', 'setup/advice/adopt.ts', ...NO_TEST_FILE];
-  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts']), []);
+  assert.deepEqual(testFileProblems(modules, ['repo/architecture.test.ts', 'repo/helpers.ts', 'run/check.test.ts', 'setup/advice/adopt.test.ts', 'setup/kit-habits.test.ts']), []);
   assert.deepEqual(testFileProblems(modules, ['run/check.test.ts', 'setup/advice/adopt.test.ts', 'run/gone.test.ts', 'run/check/pr.test.ts', 'run/util.ts', 'top.test.ts']), [
     'test/run/gone.test.ts is not the test file of a src module (src/run/gone.ts)',
     'test/run/check/pr.test.ts is not the test file of a src module (src/run/check/pr.ts)',
@@ -117,7 +126,7 @@ const HOST_API = /api\.github\.com|\bgh api\b|GITHUB_EVENT_PATH/;
 const namesHostApi = (files: Record<string, string>) => Object.keys(files).filter((p) => !p.startsWith('src/host/') && HOST_API.test(files[p]));
 
 test('host: nothing outside src/host/ names a GitHub API (#33)', () => {
-  assert.deepEqual(namesHostApi({ 'src/setup/a.ts': 'run gh api repos/x', 'src/rules/b.ts': 'env.GITHUB_EVENT_PATH', 'bin/c.ts': 'https://api.github.com', 'src/host/github.ts': 'https://api.github.com', 'src/run/d.ts': 'gh pr view' }), ['src/setup/a.ts', 'src/rules/b.ts', 'bin/c.ts']);
+  assert.deepEqual(namesHostApi({ 'src/setup/a.ts': 'run gh api repos/x', 'src/rules/b.ts': 'env.GITHUB_EVENT_PATH', 'bin/c.ts': 'https://api.github.com', 'src/host/github/index.ts': 'https://api.github.com', 'src/run/d.ts': 'gh pr view' }), ['src/setup/a.ts', 'src/rules/b.ts', 'bin/c.ts']);
   const files: Record<string, string> = {};
   for (const path of execFileSync('git', ['ls-files', 'bin', 'src'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean)) files[path] = readFileSync(join(ROOT, path), 'utf8');
   assert.ok(Object.keys(files).some((p) => p.startsWith('src/host/') && HOST_API.test(files[p])), 'src/host/ names no API; the scan is broken');
@@ -198,13 +207,17 @@ test('action.yml: check --issue on issues; a notice, not check --pr, on pull_req
 
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
 // reached for a build-era habit (AGENTS.md, "This project").
-// One exception: bin/yokoten.mjs, the entry the agent hooks run. A .ts entry makes Node load
-// its type stripper before the compile cache is on, on every hook call (record 0013).
+// Two exceptions, both plain JavaScript the hooks start directly. bin/yokoten.mjs is the
+// entry the agent hooks run: a .ts entry makes Node load its type stripper before the
+// compile cache is on, on every hook call (record 0013). bin/launch.mjs is the Claude
+// Code plugin hook (#706): the hook command stays one short line, and the resolver
+// lives in that file, so a refusal does not print a long program.
 const ENTRY = 'bin/yokoten.mjs';
-const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
+const LAUNCH = 'bin/launch.mjs';
+const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && p !== LAUNCH && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
 
 test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)', () => {
-  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
+  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY, LAUNCH]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
@@ -234,6 +247,67 @@ test('temp folders: tests make them with makeTempDir, not with mkdtempSync alone
   assert.ok(paths.includes(TEMP_HELPER), 'the helper is not found; the scan is broken');
   const files = Object.fromEntries(paths.map((p) => [p, readFileSync(join(ROOT, p), 'utf8')]));
   assert.deepEqual(findBareTempDirs(files), [], `make the folder with makeTempDir from ${TEMP_HELPER}: it is removed when the test ends`);
+});
+
+// #475: each sandbox repo is a copy of one template. A copy that shared objects or a path
+// with the template would let one test's commit show up in the next test's repo.
+test('sandbox repos: each is its own copy, on main with the test user, and holds no path to the template (#475)', () => {
+  const first = makeSandbox();
+  const second = makeSandbox();
+  assert.equal(first.git('symbolic-ref', 'HEAD').stdout, 'refs/heads/main\n');
+  assert.equal(first.git('config', 'user.name').stdout, 'Test\n');
+  first.write('a.md', 'a\n');
+  first.git('add', '.');
+  assert.equal(first.git('commit', '-qm', 'a').status, 0);
+  assert.equal(second.git('rev-parse', '-q', '--verify', 'HEAD').status, 1, 'the commit stays in its own copy');
+  assert.equal(makeSandbox().git('rev-parse', '-q', '--verify', 'HEAD').status, 1, 'and is not in the template');
+  for (const sandbox of [first, second]) {
+    const files = readdirSync(join(sandbox.repo, '.git'), { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
+    const named = files.filter((entry) => readFileSync(join(entry.parentPath, entry.name), 'utf8').includes(tmpdir()));
+    assert.deepEqual(named, [], 'no file in .git names a temp folder');
+  }
+});
+
+// #436: a child killed by its timeout showed only `actual: null`, and a file that died later
+// named no test. runChild prints the kill with the running test's name.
+test('child processes: a killed child names the test that ran it (#436)', () => {
+  const written: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((text: string | Uint8Array) => written.push(String(text)) > 0) as typeof process.stderr.write;
+  let result;
+  try {
+    result = runChild('node', ['-e', 'setTimeout(() => {}, 60_000)'], { timeout: 100 });
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.equal(result.signal, 'SIGTERM');
+  assert.deepEqual(written, ['test "child processes: a killed child names the test that ran it (#436)": its child `node` was killed after 100 ms\n']);
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGKILL' }), 'test "a": its child `git` was killed by SIGKILL\n');
+  assert.equal(killedLine('a', 'git', 5, { signal: null }), null, 'a child that ended by itself');
+  const tooMuch = Object.assign(new Error('spawnSync git ENOBUFS'), { code: 'ENOBUFS' });
+  assert.equal(killedLine('a', 'git', 5, { signal: 'SIGTERM', error: tooMuch }), 'test "a": its child `git` was killed for printing more than maxBuffer\n');
+  assert.equal(runChild('node', ['-e', "process.stdout.write('x'.repeat(2 ** 21))"]).stdout.length, 2 ** 21, 'more than Node\'s 1 MB default');
+  assert.equal(runChild('node', ['-e', '']).status, 0);
+});
+
+// #813: runChild spread the caller's options into spawnSync, so `shell: true` let a test value
+// (a temp path, a file name) become shell code. A caller that asks for a shell gets none.
+test('child processes: runChild never starts a shell (#813)', () => {
+  // The type names every field, so TypeScript callers cannot ask. Plain JavaScript, or this cast,
+  // still can: the helper must ignore it at runtime, not only refuse it at compile time.
+  const asksForShell = { shell: true } as unknown as Parameters<typeof runChild>[2];
+  const result = runChild('/bin/echo', ['a; echo shell ran'], asksForShell);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'a; echo shell ran\n', 'an argument stays a value, even when a caller asks for a shell');
+});
+
+// #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
+// the sandbox's home after the test removed it, so removing the sandbox failed. Git's
+// background maintenance can race a test the same way (#442).
+test('child processes: no gh telemetry or git maintenance runs on after a test (#436)', () => {
+  assert.equal((makeSandbox().env as Record<string, string>).GH_TELEMETRY, '0');
+  assert.equal(process.env.GH_TELEMETRY, '0');
+  assert.equal(execFileSync('git', ['config', 'maintenance.auto'], { encoding: 'utf8' }).trim(), 'false', 'no background git maintenance either');
 });
 
 // ---- The npm package (#31) ----
@@ -361,19 +435,19 @@ test('workflows: every workflow, in the kit and here, meets the standard; a bad 
 //
 // The `changes` job's script runs here as CI runs it, in a real git repo. The `if:` and
 // matrix expressions are read from the file and evaluated in JS: `&&`, `||`, `==`, `!=`
-// and quoted strings mean the same in both. An unknown function throws, so the read can't
-// pass by accident.
+// and quoted strings mean the same in both, and `github` carries the event name. An
+// unknown name throws, so the read can't pass by accident.
 const WORKFLOWS = ['.github/workflows/yokoten.yml', 'kit/project/.github/workflows/yokoten.yml'];
 const jobBlock = (text: string, name: string) => jobs(text).find((job) => job.name === name)?.block ?? '';
 const changesScript = (text: string) => (jobBlock(text, 'changes').match(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/m)?.[1] ?? '').replace(/^ {10}/gm, '');
 type Needs = Record<string, { result: string; outputs?: Record<string, string> }>;
-const evaluate = (expression: string, needs: Needs): unknown => {
+const evaluate = (expression: string, needs: Needs, github: { event_name: string; event?: object; workflow?: string; ref?: string; run_id?: number } = { event_name: '' }): unknown => {
   const code = expression
     .replace(/contains\(needs\.\*\.result, '(\w+)'\)/g, "contains('$1')")
     .replace(/needs\.([\w-]+)\.outputs\.([\w-]+)/g, "(needs['$1'].outputs?.['$2'] ?? '')")
     .replace(/needs\.([\w-]+)\.result/g, "needs['$1'].result");
   const contains = (value: string) => Object.values(needs).some((job) => job.result === value);
-  return new Function('needs', 'contains', 'fromJSON', 'cancelled', `return (${code});`)(needs, contains, JSON.parse, () => false);
+  return new Function('needs', 'contains', 'fromJSON', 'cancelled', 'github', `return (${code});`)(needs, contains, JSON.parse, () => false, github);
 };
 const inBraces = (block: string, pattern: RegExp) => {
   const found = block.match(pattern)?.[1];
@@ -430,6 +504,8 @@ test('ci: `changes` finds a docs-only pull request; other files, a push, or an u
   assert.equal(onPullRequest(['package.json']), 'docs_only=false\n');
   // A push to main: the full run.
   assert.equal(runChanges({ EVENT: 'push', BASE_SHA: '', HEAD_SHA: '' }).output, 'docs_only=false\n');
+  // A merge queue group: the full run. The event names no pull request (#590).
+  assert.equal(runChanges({ EVENT: 'merge_group', BASE_SHA: '', HEAD_SHA: '' }).output, 'docs_only=false\n');
   // The file list can't be read: the full run, and a warning says why.
   const head = pullRequest(['docs/guide.md']);
   for (const [baseSha, headSha] of [['0'.repeat(40), head], ['', head], [base, ''], [head, head]]) {
@@ -442,16 +518,42 @@ test('ci: `changes` finds a docs-only pull request; other files, a push, or an u
 test('ci: a docs-only pull request runs one test job, skips typecheck and action, and `ci` is green (#438)', () => {
   const text = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8');
   const testJob = jobBlock(text, 'test');
-  const matrix = (docsOnly: string) => {
+  const matrix = (docsOnly: string, event: string) => {
+    const github = { event_name: event };
     const needs = results(docsOnly, {});
-    const nodes = evaluate(inBraces(testJob, /^ {8}node: \$\{\{ (.+) \}\}$/m), needs) as string[];
-    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs) as { os: string; node: string }[];
-    return [...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)];
+    const nodes = evaluate(inBraces(testJob, /^ {8}node: \$\{\{ (.+) \}\}$/m), needs, github) as string[];
+    const extra = evaluate(inBraces(testJob, /^ {8}include: \$\{\{ (.+) \}\}$/m), needs, github) as { os: string; node: string; shard: number; of: number }[];
+    // Every setup runs each of its shards: three, or the whole suite in one macOS job
+    // on a pull request, so the shared runners stay free (#568).
+    const shards = JSON.parse(inBraces(testJob, /^ {8}shard: (\[.+\])$/m)) as number[];
+    assert.deepEqual(shards, [1, 2, 3]);
+    const ofAxis = JSON.parse(inBraces(testJob, /^ {8}of: (\[.+\])$/m)) as number[];
+    assert.deepEqual(ofAxis, [3]);
+    for (const setup of new Set(extra.map((entry) => `${entry.os} ${entry.node}`))) {
+      const runs = extra.filter((entry) => `${entry.os} ${entry.node}` === setup);
+      assert.ok(runs.every((entry) => entry.of === runs[0].of), `${setup}: mixed shard counts`);
+      assert.deepEqual(runs.map((entry) => entry.shard), shards.slice(0, runs[0].of), `${setup} runs every shard`);
+    }
+    return {
+      setups: [...new Set([...nodes.map((node) => `ubuntu-latest ${node}`), ...extra.map((entry) => `${entry.os} ${entry.node}`)])],
+      whole: extra.filter((entry) => entry.of === 1).map((entry) => `${entry.os} ${entry.node} ${entry.shard}/${entry.of}`),
+    };
   };
-  assert.deepEqual(matrix('true'), ['ubuntu-latest 24']);
-  const full = ['ubuntu-latest 22.18.0', 'ubuntu-latest 24', 'macos-latest 24'];
-  assert.deepEqual(matrix('false'), full);
-  assert.deepEqual(matrix(''), full, '`changes` failed: the full run');
+  assert.match(testJob, /--test-shard=\$\{\{ matrix\.shard \}\}\/\$\{\{ matrix\.of \}\}/, 'the run step uses the shard');
+  assert.match(text, /^  schedule:\n    - cron: '[^']+'$/m, 'the full matrix runs on a schedule (#568)');
+  assert.match(jobBlock(text, 'ci'), /never started/, '`ci` names jobs that never got a runner (#568)');
+  assert.deepEqual(matrix('true', 'pull_request').setups, ['ubuntu-latest ^24.22.1']);
+  const full = ['ubuntu-latest 22.23.4', 'ubuntu-latest ^24.22.1', 'macos-latest ^24.22.1'];
+  const pr = matrix('false', 'pull_request');
+  assert.deepEqual(pr.setups, full);
+  assert.deepEqual(pr.whole, ['macos-latest ^24.22.1 1/1'], 'a pull request runs the whole suite in one macOS job (#568)');
+  // A merge queue group runs the full matrix too: it becomes main (#590).
+  for (const event of ['push', 'schedule', 'merge_group']) {
+    const run = matrix('false', event);
+    assert.deepEqual(run.setups, full);
+    assert.deepEqual(run.whole, [], `${event}: the full macOS matrix (#568)`);
+  }
+  assert.deepEqual(matrix('', 'pull_request').setups, full, '`changes` failed: the full run');
   assert.equal(evaluate(jobCondition(testJob), results('true', {})), true, 'test runs on every pull request');
   for (const name of ['typecheck', 'action']) {
     const condition = jobCondition(jobBlock(text, name));
@@ -490,6 +592,98 @@ test('ci: the kit lets a project skip its own jobs on a docs-only pull request; 
   assert.equal(isRed('true', { ...green, check: 'skipped' }), true, 'check always runs');
   assert.equal(isRed('true', { ...green, lint: 'skipped' }), true, 'lint always runs');
   assert.equal(isRed('true', { ...green, build: 'failure' }), true);
+});
+
+// ---- The same required checks on a merge queue group (#590) ----
+//
+// `yokoten.yml` reports `ci` and `pr.yml` reports `pr`: both checks are required, so
+// both workflows run on `merge_group`, and a queued merge runs the same checks as a
+// pull request. `issue.yml` is not a check on a merge, so it stays off. There is no
+// pull request on a merge group run: `yokoten.yml` runs every job in full, and the `pr`
+// job skips, which the queue counts as green. Read in both dirs: the kit files and
+// this repo's own workflows carry the same trigger lines.
+// The events in the top-level `on:` block: each key two spaces in.
+const readTriggers = (text: string) => {
+  const head = text.split(/^jobs:\n/m)[0];
+  const on = head.split(/^on:\n/m)[1]?.split(/^(?:permissions|concurrency|env):/m)[0] ?? '';
+  return on.split('\n').filter((line) => /^  [\w-]+:/.test(line)).map((line) => line.trim().replace(/:.*$/, ''));
+};
+
+test('workflows: the required checks run on merge_group, with the same jobs as a pull request (#590)', () => {
+  assert.deepEqual(readTriggers('on:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n'), ['pull_request', 'push'], 'the read finds the events');
+  const kitYokoten = readFileSync(join(ROOT, 'kit/project/.github/workflows/yokoten.yml'), 'utf8');
+  for (const dir of ['.github/workflows', 'kit/project/.github/workflows']) {
+    const yokoten = readFileSync(join(ROOT, dir, 'yokoten.yml'), 'utf8');
+    const pr = readFileSync(join(ROOT, dir, 'pr.yml'), 'utf8');
+    for (const [name, text] of [['yokoten.yml', yokoten], ['pr.yml', pr]] as const) {
+      assert.ok(readTriggers(text).includes('pull_request'), `${dir}/${name}: the read is broken`);
+      assert.ok(readTriggers(text).includes('merge_group'), `${dir}/${name}: no merge_group trigger, so a queued merge would run no checks`);
+    }
+    assert.ok(!readTriggers(readFileSync(join(ROOT, dir, 'issue.yml'), 'utf8')).includes('merge_group'), `${dir}/issue.yml is not a check on a merge`);
+    // The `pr` job skips on a merge group run, because there is no pull request to
+    // check. It never skips a pull request, a draft included: a skip counts as a pass, and
+    // a skipped run that GitHub ends last would hide a failure (#645).
+    const prJob = jobBlock(pr, 'pr');
+    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'merge_group' }), false);
+    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: true } } }), true);
+    assert.equal(evaluate(jobCondition(prJob), {}, { event_name: 'pull_request', event: { pull_request: { draft: false } } }), true);
+    // No run is cancelled: a cancelled run shows as a failure on the pull request page (#645).
+    assert.doesNotMatch(pr, /cancel-in-progress/, `${dir}/pr.yml cancels runs`);
+    assert.match(prJob, /check --pr/);
+    assert.doesNotMatch(jobCondition(prJob), /draft/, `${dir}/pr.yml: the pr job skips on the draft state`);
+    // The step reads the pull request as it is now, so runs may start in any order (#645):
+    // it asks for that, it gets the job's token, and the job may read pull requests.
+    assert.match(prJob, /check --pr\n {8}env:\n {10}YOKOTEN_PR_LIVE: '1'\n {10}GITHUB_TOKEN: \$\{\{ github\.token \}\}\n/, `${dir}/pr.yml: check --pr does not read the pull request as it is now`);
+    assert.match(pr, /^permissions:\n(?: {2}.*\n)*? {2}pull-requests: read\n/m, `${dir}/pr.yml can't read pull requests`);
+  }
+  assert.ok(!readTriggers(kitYokoten.replace(/^  merge_group:\n/m, '')).includes('merge_group'), 'a missing trigger is caught');
+  // Every job in the kit yokoten.yml runs on a merge group run, as on a pull request.
+  // Only `ci` carries a condition, and it always runs. This repo's own file carries
+  // docs-only conditions instead; the matrix test runs them for each event, merge_group too.
+  for (const job of jobs(kitYokoten)) {
+    const condition = job.block.match(/^ {4}if: (.+)$/m)?.[1] ?? '';
+    assert.ok(condition === '' || (job.name === 'ci' && condition === 'always()'), `${job.name} runs only when "${condition}"`);
+  }
+});
+
+// ---- A run on main is kept while it waits, and never cancelled (#660, #798) ----
+//
+// Cancelling an older run is right for a pull request: only its newest commit can
+// merge. Every other event gets a group of its own. GitHub keeps one running and one
+// waiting run per group and cancels the waiting one when a newer run arrives, so a
+// shared group on main would cancel a run that never started. Each commit then stays in
+// history, is tested on its own, and never leaves a ✗ on it.
+const readCancel = (text: string) => inBraces(text, /^ {2}cancel-in-progress: (?:\$\{\{ )?(.+?)(?: \}\})?$/m);
+// The group line as a template literal: each `${{ ... }}` is one `${...}`, so the literal
+// text between two of them (the `-`) keeps its meaning in JavaScript.
+const readGroup = (text: string) =>
+  `\`${inBraces(text, /^ {2}group: (.+)$/m).replace(/\$\{\{ /g, '${').replace(/ \}\}/g, '}')}\``;
+
+test('workflows: a run on main is never cancelled, waiting or running (#660, #798)', () => {
+  const cancels = (text: string, event_name: string) => evaluate(readCancel(text), {}, { event_name }) === true;
+  const groupFor = (text: string, github: { event_name: string; ref: string; run_id: number }) => String(evaluate(readGroup(text), {}, { workflow: 'yokoten', ...github }));
+  for (const dir of ['.github/workflows', 'kit/project/.github/workflows']) {
+    const text = readFileSync(join(ROOT, dir, 'yokoten.yml'), 'utf8');
+    assert.equal(cancels(text, 'pull_request'), true, `${dir}/yokoten.yml: a new push to a pull request runs beside the old one`);
+    assert.equal(cancels(text, 'push'), false, `${dir}/yokoten.yml: a push to main cancels the run before it`);
+    assert.equal(cancels(text, 'merge_group'), false, `${dir}/yokoten.yml cancels a merge queue run`);
+    // Two runs on one pull request share a group, so a new push cancels the older run;
+    // two pull requests never share one.
+    const pullRequest = { event_name: 'pull_request', ref: 'refs/pull/798/merge' };
+    assert.equal(groupFor(text, { ...pullRequest, run_id: 1 }), groupFor(text, { ...pullRequest, run_id: 2 }), `${dir}/yokoten.yml: two runs on one pull request never share a group, so neither cancels the other`);
+    assert.notEqual(groupFor(text, { ...pullRequest, run_id: 1 }), groupFor(text, { event_name: 'pull_request', ref: 'refs/pull/799/merge', run_id: 1 }), `${dir}/yokoten.yml: two pull requests share a group, so they cancel each other`);
+    // Every other event gets a group per run: a newer run leaves both the running and the
+    // waiting run alone, so every commit on main is tested (#798).
+    for (const event_name of ['push', 'schedule', 'merge_group']) {
+      const run = { event_name, ref: 'refs/heads/main' };
+      assert.notEqual(groupFor(text, { ...run, run_id: 1 }), groupFor(text, { ...run, run_id: 2 }), `${dir}/yokoten.yml: two ${event_name} runs share a group, so the waiting one is cancelled`);
+    }
+  }
+  // The positive control: the old group of the workflow and the ref shares one group for
+  // two pushes, and this read says so.
+  const old = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8').replace(/^ {2}group: .+$/m, '  group: ${{ github.workflow }}-${{ github.ref }}');
+  const run = { event_name: 'push', ref: 'refs/heads/main' };
+  assert.equal(groupFor(old, { ...run, run_id: 1 }), groupFor(old, { ...run, run_id: 2 }), 'the read misses the old group');
 });
 
 // ---- Names (#109, record 0006) ----
@@ -601,6 +795,142 @@ test('docs: every install command in docs/facts.json is in the guides and README
   for (const [file, lists] of shown) {
     assert.deepEqual(missingCommands(facts, lists, readFileSync(join(ROOT, file), 'utf8')), [], `${file} lacks these commands from docs/facts.json; change both`);
   }
+});
+
+// npm shows the README from the package. A relative image or link breaks there (#713).
+// http(s) URLs and #anchors still open. The scan names the file and the line.
+type ReadmeTarget = { line: number; target: string };
+
+/** The URL in a Markdown destination, without a title or angle brackets. */
+function readLinkTarget(raw: string): string {
+  const target = raw.trim();
+  if (target.startsWith('<')) {
+    const end = target.indexOf('>');
+    return (end >= 0 ? target.slice(1, end) : target.slice(1)).trim();
+  }
+  const title = target.search(/\s+["']/);
+  return (title >= 0 ? target.slice(0, title) : target).trim();
+}
+
+/** One inline link at `open` (`[`), plus links nested in its text, such as a badge. */
+function parseMarkdownLink(line: string, open: number): { target: string; end: number; inner: string[] } | null {
+  const inner: string[] = [];
+  let index = open + 1;
+  while (index < line.length) {
+    const character = line[index];
+    if (character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character === '[') {
+      const nested = parseMarkdownLink(line, index);
+      if (!nested) {
+        index += 1;
+        continue;
+      }
+      inner.push(nested.target, ...nested.inner);
+      index = nested.end + 1;
+      continue;
+    }
+    if (character === ']' && line[index + 1] === '(') {
+      const start = index + 2;
+      let depth = 1;
+      let cursor = start;
+      while (cursor < line.length && depth > 0) {
+        const next = line[cursor];
+        if (next === '\\') {
+          cursor += 2;
+          continue;
+        }
+        if (next === '(') depth += 1;
+        else if (next === ')') depth -= 1;
+        if (depth > 0) cursor += 1;
+      }
+      if (depth !== 0) return null;
+      return { target: readLinkTarget(line.slice(start, cursor)), end: cursor, inner };
+    }
+    index += 1;
+  }
+  return null;
+}
+
+/** Targets of `src`, `srcset`, `href`, Markdown images, links and reference definitions on one line. */
+function collectReadmeTargets(line: string, lineNumber: number, found: ReadmeTarget[]): void {
+  const definition = /^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?/.exec(line);
+  if (definition) found.push({ line: lineNumber, target: definition[1] });
+  for (const match of line.matchAll(/\b(srcset|src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    const parts = match[1].toLowerCase() === 'srcset' ? value.split(',') : [value];
+    for (const part of parts) {
+      const target = part.trim().split(/\s+/)[0];
+      if (target) found.push({ line: lineNumber, target });
+    }
+  }
+  let index = 0;
+  while (index < line.length) {
+    const open = line.indexOf('[', index);
+    if (open < 0) return;
+    if (open > 0 && line[open - 1] === '\\') {
+      index = open + 1;
+      continue;
+    }
+    const parsed = parseMarkdownLink(line, open);
+    if (!parsed) {
+      index = open + 1;
+      continue;
+    }
+    for (const target of [...parsed.inner, parsed.target]) found.push({ line: lineNumber, target });
+    index = parsed.end + 1;
+  }
+}
+
+/** Every image and link target in a README, in source order. */
+function findReadmeTargets(text: string): ReadmeTarget[] {
+  const found: ReadmeTarget[] = [];
+  const lines = text.split('\n');
+  for (let index = 0; index < lines.length; index++) collectReadmeTargets(lines[index].replace(/\r$/, ''), index + 1, found);
+  return found;
+}
+
+/** True when npm can still open `target`: an http(s) URL, or a #anchor. */
+const isAllowedReadmeTarget = (target: string): boolean => target.startsWith('#') || /^https?:\/\//i.test(target);
+
+test('docs: README images and links use full URLs, so the npm page can show them (#713)', () => {
+  const sample = [
+    '<img src="docs/a.svg" alt="x">',
+    "<source srcset='docs/b.svg 1x, https://example.com/c.svg'>",
+    '![pic](docs/d.svg "a title")',
+    '[site](https://example.com/page)',
+    '[here](#local)',
+    '[rel](docs/guide.md)',
+    '[![badge](https://example.com/b.svg)](LICENSE)',
+    '[angled](<https://example.com/a>)',
+    '<a href="docs/e.md">e</a>',
+    '[ref]: docs/f.md',
+  ].join('\n');
+  assert.deepEqual(findReadmeTargets(sample).map((item) => `${item.line} ${item.target}`), [
+    '1 docs/a.svg',
+    '2 docs/b.svg',
+    '2 https://example.com/c.svg',
+    '3 docs/d.svg',
+    '4 https://example.com/page',
+    '5 #local',
+    '6 docs/guide.md',
+    '7 https://example.com/b.svg',
+    '7 LICENSE',
+    '8 https://example.com/a',
+    '9 docs/e.md',
+    '10 docs/f.md',
+  ]);
+
+  const files = ['README.md', 'docs/i18n/zh-CN/README.md', 'docs/i18n/zh-TW/README.md', 'docs/i18n/ja/README.md'];
+  const found: string[] = [];
+  for (const file of files) {
+    for (const item of findReadmeTargets(readFileSync(join(ROOT, file), 'utf8'))) {
+      if (!isAllowedReadmeTarget(item.target)) found.push(`${file}:${item.line}: ${item.target}`);
+    }
+  }
+  assert.deepEqual(found, [], found.join('\n'));
 });
 
 // The guide's Commands table is typed by hand; COMMANDS in src/run/cli.ts is what the
@@ -744,43 +1074,71 @@ test('split tests: an import it cannot place stops it with a list, and nothing i
   assert.ok(!existsSync(join(root, 'split')), 'a stopped split writes nothing');
 });
 
-// Time a read by its input's length, with no real work: a busy wait as long as asked.
-const busyWait = (ms: number) => {
-  const end = performance.now() + ms;
-  while (performance.now() < end);
+// A simulated clock for the smoke control: a wait adds to the time instead of spinning.
+const simulated = () => {
+  let now = 0;
+  return { clock: { now: () => now }, wait: (ms: number) => void (now += ms) };
 };
 
-test('assertLinear: a quadratic read fails; a slow spell in one round does not (#343)', () => {
-  // 1,000 chars take 0.6 ms; 8,000 take 64 times that when the cost is quadratic.
-  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
-  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 1000), /linear is about 8x/);
-  // Linear, but every big read of the first round is 200 ms slower, as on a busy runner. A round
-  // has as many reads as fit in 20 ms, from one timed read, so a busy runner cuts the count
-  // (#359). A 7 ms read is past 20 / 3 ms: every round has 3 reads, however busy the runner.
-  let bigReads = 0;
-  const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 3) busyWait(200);
-    busyWait(7 * (input.length / 1000));
+test('assertLinear: a quadratic scan fails every time; a linear scan passes (#754)', () => {
+  // n * n counted steps. The old control counted pairs and hoped the clock noticed.
+  const quadratic = (input: string) => {
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) noteWork(1);
   };
-  assertLinear('linear with a slow spell', (n) => 'x'.repeat(n), noisy, 1000);
+  assert.throws(() => assertLinear('quadratic', (n) => 'x'.repeat(n), quadratic, 200), /linear is about 8x/);
+  const linear = (input: string) => {
+    for (let i = 0; i < input.length; i++) noteWork(1);
+  };
+  assertLinear('linear', (n) => 'x'.repeat(n), linear, 200);
 });
 
-test('assertLinearEach: one quadratic shape among linear ones fails; a slow spell does not (#442)', () => {
-  const linear = (input: string) => busyWait(0.6 * (input.length / 1000));
-  const quadratic = (input: string) => busyWait(0.6 * (input.length / 1000) ** 2);
+test('assertLinearEach: one quadratic shape among linear ones fails (#442)', () => {
+  const linear = (input: string) => {
+    for (let i = 0; i < input.length; i++) noteWork(1);
+  };
+  const quadratic = (input: string) => {
+    for (let i = 0; i < input.length; i++) for (let j = 0; j < input.length; j++) noteWork(1);
+  };
   const shapes = (read: (input: string) => void) => [
     { name: 'linear a', make: (n: number) => 'a'.repeat(n), read: linear },
     { name: 'the odd one', make: (n: number) => 'b'.repeat(n), read },
     { name: 'linear c', make: (n: number) => 'c'.repeat(n), read: linear },
   ];
-  assert.throws(() => assertLinearEach(shapes(quadratic), 1000), (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'));
-  // The odd shape's first big read is 200 ms slower, as on a busy runner: it is measured again, and passes.
-  let bigReads = 0;
-  const noisy = (input: string) => {
-    if (input.length > 1000 && ++bigReads <= 1) busyWait(200);
-    linear(input);
+  assert.throws(
+    () => assertLinearEach(shapes(quadratic), 200),
+    (error: Error) => /^the odd one: .* \d+x; linear is about 8x$/.test(error.message) && !error.message.includes('linear a'),
+  );
+});
+
+test('assertLinear: a scan that counts nothing fails (#754)', () => {
+  assert.throws(() => assertLinear('empty', (n) => 'x'.repeat(n), () => {}, 8), /counted no work/);
+});
+
+test('assertLinear: a scan that counts only its outer loop still passes (#754)', () => {
+  // The inner loop is quadratic and never calls noteWork. Record 0032: the count cannot see it.
+  const hidden = (input: string) => {
+    for (let i = 0; i < input.length; i++) {
+      noteWork(1);
+      for (let j = 0; j < input.length; j++) input.charCodeAt(j);
+    }
   };
-  assertLinearEach(shapes(noisy), 1000);
+  assertLinear('hidden quadratic', (n) => 'x'.repeat(n), hidden, 50);
+});
+
+test('wall-clock smoke: a 100x blow-up fails, one slow read is retried, and a hang fails at once (#754)', () => {
+  const blow = simulated();
+  const quadraticTime = (input: string) => blow.wait(input.length > 100 ? 100 : 1);
+  assert.throws(() => assertWallSmoke('blow', (n) => 'x'.repeat(n), quadraticTime, 100, blow.clock), /100x blow-up/);
+  // The first big read is slow. The retry is linear, so the smoke passes.
+  const noisy = simulated();
+  let slowReads = 0;
+  const oneSlowRead = (input: string) => {
+    if (input.length > 100 && slowReads++ === 0) noisy.wait(5_000);
+    noisy.wait(input.length / 100);
+  };
+  assertWallSmoke('noisy', (n) => 'x'.repeat(n), oneSlowRead, 100, noisy.clock);
+  const hung = simulated();
+  assert.throws(() => assertWallSmoke('hung', (n) => 'x'.repeat(n), () => hung.wait(30_000), 100, hung.clock), /a hang/);
 });
 
 // No test reads or writes the real home folder (#356). test/repo/home.ts points HOME at an
@@ -848,9 +1206,9 @@ test('home: every test file loads the temp home first, and no child gets an env 
   assert.deepEqual(homeProblems(files), [], 'import test/repo/home.ts first; give a child process HOME, or spread an env that has it');
 });
 
-test('home: in src, only privacy.ts asks the system for the home folder (#356)', () => {
+test('home: in src, only privacy/home.ts asks the system for the home folder (#356)', () => {
   const found = filesUnder(SRC).filter((path) => /\bhomedir\(|userInfo\(\)\.homedir/.test(readFileSync(join(SRC, path), 'utf8')));
-  assert.deepEqual(found, ['rules/privacy.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
+  assert.deepEqual(found, ['rules/privacy/home.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
 });
 
 test('home: a test that reads the home folder gets the empty temp one, not the real one (#356)', () => {
@@ -869,6 +1227,78 @@ test('home: a test that reads the home folder gets the empty temp one, not the r
   // A child process with no env of its own inherits it.
   const child = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').homedir())"], { encoding: 'utf8' });
   assert.equal(child.stdout, TEST_HOME);
+});
+
+test('session: the suite clears yokoten variables before a test can read them (#712)', () => {
+  const sample: NodeJS.ProcessEnv = { PATH: '/usr/bin', HOME: '/tmp/home', YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: '/desk', YOKOTEN_TEAM: '/team', YOKOTEN_FIX_TASK: '1' };
+  clearYokotenEnv(sample);
+  assert.deepEqual(sample, { PATH: '/usr/bin', HOME: '/tmp/home' });
+  assert.deepEqual(Object.keys(process.env).filter((name) => name.startsWith('YOKOTEN_')), []);
+  // A child starts with the session's variables set, then loads the same module every test loads first.
+  const childEnv = { ...process.env, YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: '/desk', YOKOTEN_TEAM: '/team' };
+  delete childEnv.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', "import './test/repo/home.ts'; process.stdout.write(Object.keys(process.env).some((name) => name.startsWith('YOKOTEN_')) ? 'seen' : 'clear')"], {
+    cwd: ROOT,
+    env: childEnv,
+    encoding: 'utf8',
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'clear');
+});
+
+// ---- The process, read once (#475) ----
+//
+// bin/main.ts's runFromProcess makes the one Invocation from the process. Below it, a module
+// reads the command line, env, folder and streams from there, so every command can run in
+// this process in a test. Comments may name them; code may not.
+const PROCESS_READS = new Set(['argv', 'env', 'cwd', 'stdin', 'stdout', 'stderr']);
+
+/**
+ * Each `process.<argv|env|cwd|stdin|stdout|stderr>`, `readFileSync(0` / `readSync(0` and `/dev/stdin` in the code, as
+ * "line: what". So no read slips past by another road, `process` used as a value (`= process`,
+ * `process[...]`) and an import of `node:process` count too.
+ */
+function processReads(text: string): string[] {
+  const tokens = tokenize(text);
+  const found: string[] = [];
+  tokens.forEach((token, index) => {
+    const next = tokens[index + 1];
+    const after = tokens[index + 2];
+    if (token.text === 'process' && (next?.text === '.' || next?.text === '?.') && after && PROCESS_READS.has(after.text)) found.push(`${token.line}: process.${after.text}`);
+    if ((token.text === 'readFileSync' || token.text === 'readSync') && next?.text === '(' && after?.text === '0') found.push(`${token.line}: ${token.text}(0`);
+    const before = tokens[index - 1];
+    const member = before?.text === '.' || before?.text === '?.';
+    if (token.kind === 'name' && token.text === 'process' && !member && next?.text !== '.' && next?.text !== '?.') found.push(`${token.line}: process as a value`);
+    if (token.kind === 'string' && /^['"`](?:node:)?process['"`]$/.test(token.text)) found.push(`${token.line}: node:process`);
+    if (token.kind === 'string' && token.text.slice(1, -1) === '/dev/stdin') found.push(`${token.line}: /dev/stdin`);
+  });
+  return found;
+}
+
+test('process: the scan finds each read of the process, and not one in a comment or a string (#475)', () => {
+  const text = [
+    "// process.env in a comment, and readSync(0 too",
+    "const said = 'process.cwd()';",
+    'const home = process.env.HOME;',
+    'const here = process.cwd();',
+    'process.stdin.on("data", () => {});',
+    'const all = readFileSync(0, "utf8");',
+    'readSync(0, buffer);',
+    'const exit = process.exitCode;',
+    'const { env } = process;',
+    "import { cwd } from 'node:process';",
+    "const home = process['env'];",
+    "const all = readFileSync('/dev/stdin', 'utf8');",
+    'const kind = options.process;',
+  ].join('\n');
+  assert.deepEqual(processReads(text), ['3: process.env', '4: process.cwd', '5: process.stdin', '6: readFileSync(0', '7: readSync(0', '9: process as a value', '10: node:process', '11: process as a value', '12: /dev/stdin']);
+});
+
+test('process: below bin/main.ts, src/ reads no env, folder or stream of the process (#475)', () => {
+  const found = filesUnder(SRC)
+    .filter((path) => path.endsWith('.ts'))
+    .flatMap((path) => processReads(readFileSync(join(SRC, path), 'utf8')).map((read) => `src/${path}:${read}`));
+  assert.deepEqual(found, [], 'read it from the Invocation (bin/main.ts makes it), or pass it in as an argument');
 });
 
 // ---- Code given to node -e (#329) ----
@@ -971,4 +1401,240 @@ test('node -e: bin, src, scripts and test give node fixed code; values go on std
   }
   assert.ok(checked >= 2, `only ${checked} node -e calls found; the reader is broken`);
   assert.deepEqual(found, [], 'make the code fixed text; pass each value on stdin or as an argument, and import a path with import(pathToFileURL(path).href)');
+});
+
+// ---- Child processes per test file (#475) ----
+//
+// A child node costs a start and a strip of every file's types; sandbox.call runs the same
+// command in this process for neither. With a child per command test the suite took about
+// 365 s summed on CI; with most of them in-process, about 58 s. So a test file starts few:
+// one or two entry tests per command, each with a comment saying why it needs the child.
+// A child is a sandbox's .run(, a spawn of node or process.execPath, a spawn that names the
+// CLI or a yokoten.ts, or a call of a function that wraps one: a local runCopy, or one that
+// helpers.ts exports.
+const CHILD_STARTERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'runChild', 'fork']);
+
+/** Whether the call whose `(` is at `open` starts a node: node or process.execPath first, or the CLI or a yokoten.ts in its arguments. */
+function startsNode(tokens: Token[], open: number): boolean {
+  const first = argumentAt(tokens, open + 1).map((token) => token.text).join('');
+  if (first === "'node'" || first === '"node"' || first === 'process.execPath') return true;
+  let depth = 0;
+  for (let index = open; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (OPENERS.has(token.text)) depth++;
+    else if (CLOSERS.has(token.text) && --depth === 0) return false;
+    if ((token.kind === 'name' && token.text === 'CLI') || (token.kind === 'string' && /yokoten\.(?:ts|mjs)/.test(token.text))) return true;
+  }
+  return false;
+}
+
+/** The name of the `const NAME = (...) =>` that the token at `at` is in, if any: then each call of NAME starts the child. */
+function wrapperAt(tokens: Token[], at: number): { name: string; exported: boolean; from: number; to: number } | undefined {
+  let depth = 0;
+  let start = at;
+  for (; start > 0; start--) {
+    const text = tokens[start - 1].text;
+    if (CLOSERS.has(text)) depth++;
+    else if (OPENERS.has(text) && depth > 0) depth--;
+    else if (OPENERS.has(text) && (text === '{' || text === '${') && tokens[start - 2]?.text !== '=>') break;
+    else if (depth === 0 && (text === ';' || text === 'const' || text === 'let')) {
+      if (text !== ';') start--;
+      break;
+    }
+  }
+  const [keyword, name, equals] = tokens.slice(start, start + 3);
+  if (!['const', 'let'].includes(keyword?.text) || name?.kind !== 'name' || equals?.text !== '=') return undefined;
+  if (!tokens.slice(start + 3, at).some((token) => token.text === '=>')) return undefined;
+  // Its calls are the ones in its own block: another test may give its own wrapper the name.
+  let to = start;
+  for (let depth = 0; to < tokens.length; to++) {
+    if (OPENERS.has(tokens[to].text)) depth++;
+    else if (CLOSERS.has(tokens[to].text) && --depth < 0) break;
+  }
+  return { name: name.text, exported: tokens[start - 1]?.text === 'export', from: start + 2, to };
+}
+
+/** The lines of `text` that start a child node, a wrapper's calls in place of its body; and the wrappers it exports. */
+function childStarts(text: string, imported: string[] = []): { lines: number[]; wrappers: string[] } {
+  const tokens = tokenize(text);
+  const sites: number[] = [];
+  tokens.forEach((token, index) => {
+    const open = tokens[index + 1]?.text === '(';
+    if (token.text === 'run' && tokens[index - 1]?.text === '.' && open) sites.push(index);
+    else if (CHILD_STARTERS.has(token.text) && open && tokens[index - 1]?.text !== 'function' && startsNode(tokens, index + 1)) sites.push(index);
+  });
+  const lines: number[] = [];
+  const scopes = new Map(imported.map((name) => [name, { name, from: 0, to: tokens.length }]));
+  const wrappers: string[] = [];
+  for (const site of sites) {
+    const wrapper = wrapperAt(tokens, site);
+    if (!wrapper) lines.push(tokens[site].line);
+    else scopes.set(`${wrapper.name}@${wrapper.from}`, wrapper);
+    if (wrapper?.exported) wrappers.push(wrapper.name);
+  }
+  for (const { name, from, to } of scopes.values()) {
+    for (let index = from; index < to; index++) {
+      const before = tokens[index - 1]?.text;
+      if (tokens[index].text === name && tokens[index + 1]?.text === '(' && !['.', '?.', 'function'].includes(before)) lines.push(tokens[index].line);
+    }
+  }
+  return { lines: lines.sort((a, b) => a - b), wrappers };
+}
+
+/** The most child processes a test file starts, but the few on CHILD_ALLOWANCE: a command's one or two entry tests. */
+const CHILD_CAP = 4;
+// Files that need more, each at its count: the count may only go down. Keep it short; a
+// file leaves the table once it is at CHILD_CAP or under.
+const CHILD_ALLOWANCE: Record<string, { cap: number; reason: string }> = {
+  'test/commands/check.test.ts': { cap: 8, reason: 'the entries of two commands, check --pr and redact; redact also runs in a shell pipe and on an 8 MB stream, as its hook runs it' },
+  'test/commands/learn.test.ts': { cap: 15, reason: 'the full lesson loop runs two other copies of yokoten (the clone and .yokoten/), and the system-home fallback is in the CLI entry' },
+  'test/repo/architecture.test.ts': { cap: 8, reason: 'it checks child processes themselves: a killed child, the split tool, the test home, the session variables and the report node --test writes' },
+  'test/run/cli.test.ts': { cap: 8, reason: 'it tests bin/yokoten.ts itself: the entry, its compile cache and the demo loop' },
+  'test/setup/init.test.ts': { cap: 12, reason: 'the entries of init, doctor, update and install, and the copies of yokoten that init writes (.yokoten/) or a clone holds' },
+  'test/setup/install.test.ts': { cap: 7, reason: 'it runs the copy that install writes, from its own path, which is other code than this checkout' },
+};
+const CHILD_FIX = 'use sandbox.call in place of sandbox.run, or call the function; keep a child only for the entry, with a comment saying why';
+
+/** What is wrong with the child processes of `files` (test path to source), given the wrappers helpers.ts exports. */
+function childProblems(files: Record<string, string>, helpers: string[], allowance = CHILD_ALLOWANCE): string[] {
+  const problems: string[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    const { lines } = childStarts(text, helpers);
+    const allowed = allowance[path];
+    const cap = allowed?.cap ?? CHILD_CAP;
+    if (lines.length > cap) problems.push(`${path} starts ${lines.length} child processes (lines ${lines.join(', ')}), over its cap of ${cap}: ${CHILD_FIX}`);
+    else if (allowed && lines.length < cap) problems.push(`${path} starts ${lines.length} child processes, under its allowance of ${cap}: lower it in CHILD_ALLOWANCE to ${lines.length}${lines.length <= CHILD_CAP ? ', or take the file off it' : ''}`);
+  }
+  for (const path of Object.keys(allowance)) if (!(path in files)) problems.push(`CHILD_ALLOWANCE names ${path}, which is not a test file`);
+  return problems;
+}
+
+test('child processes: the count finds each child node, through a wrapper too, and not git, a comment or another test\'s wrapper (#475)', () => {
+  const text = [
+    "// sandbox.run(['init']) in a comment, and spawnSync('node') too",
+    "const said = \"sandbox.run(['doctor'])\";",
+    "const result = sandbox.run(['init']);",
+    "spawnSync('git', ['init', '-q']);",
+    "const child = spawnSync('node', ['-e', '']);",
+    "runChild(process.execPath, [script]);",
+    "execFileSync(launcher, [CLI, 'doctor']);",
+    "spawnSync('node', ['.yokoten/bin/yokoten.ts', 'init']);",
+    "test('a', () => {",
+    "  const hook = (command: string) => sandbox.run(['hook'], { input: command });",
+    "  hook('git status');",
+    "  hook('git push');",
+    "});",
+    "test('b', async () => {",
+    "  const hook = (command: string) => sandbox.call(['hook'], { input: command });",
+    "  await hook('git status');",
+    "  assert.equal(readMark(sandbox, 'rules'), 'done');",
+    "});",
+    "function runChild(command: string, args: string[]) {",
+    "  return spawnSync(command, args);",
+    "}",
+  ].join('\n');
+  assert.deepEqual(childStarts(text, ['readMark']), { lines: [3, 5, 6, 7, 8, 11, 12, 17], wrappers: [] });
+  assert.deepEqual(childStarts("export const mark = (sandbox: Sandbox) =>\n  JSON.parse(sandbox.run(['doctor', '--json']).stdout);\nconst run = () => runChild('node', [CLI]);\n").wrappers, ['mark'], 'an exported wrapper counts where it is called; a local one only where it is');
+});
+
+test('child processes: a test file over its cap fails with the fix, one at it passes, and an allowance only goes down (#475)', () => {
+  const runs = (count: number) => Array.from({ length: count }, (_, index) => `sandbox.run(['doctor', '${index}']);`).join('\n');
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(CHILD_CAP), 'test/b.test.ts': '' }, [], {}), []);
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(CHILD_CAP + 1) }, [], {}), [
+    `test/a.test.ts starts ${CHILD_CAP + 1} child processes (lines ${Array.from({ length: CHILD_CAP + 1 }, (_, index) => index + 1).join(', ')}), over its cap of ${CHILD_CAP}: ${CHILD_FIX}`,
+  ]);
+  const allowance = { 'test/a.test.ts': { cap: 10, reason: 'r' }, 'test/gone.test.ts': { cap: 9, reason: 'r' } };
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(10) }, [], { 'test/a.test.ts': allowance['test/a.test.ts'] }), []);
+  assert.deepEqual(childProblems({ 'test/a.test.ts': runs(9) }, [], allowance), [
+    'test/a.test.ts starts 9 child processes, under its allowance of 10: lower it in CHILD_ALLOWANCE to 9',
+    'CHILD_ALLOWANCE names test/gone.test.ts, which is not a test file',
+  ]);
+  assert.match(childProblems({ 'test/a.test.ts': runs(2) }, [], allowance)[0], /to 2, or take the file off it$/);
+});
+
+test('child processes: each test file starts at most CHILD_CAP, or its allowance (#475)', () => {
+  const helpers = childStarts(readFileSync(join(ROOT, 'test/repo/helpers.ts'), 'utf8')).wrappers;
+  assert.deepEqual(helpers, [], 'no helper starts a child now; a new one counts in each file where it is called');
+  const paths = execFileSync('git', ['ls-files', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter((path) => path.endsWith('.test.ts'));
+  const files = Object.fromEntries(paths.map((path) => [path, readFileSync(join(ROOT, path), 'utf8')]));
+  assert.ok(childStarts(files['test/setup/install.test.ts'] ?? '', helpers).lines.length > 0, 'no child found in install.test.ts; the count is broken');
+  assert.deepEqual(childProblems(files, helpers), []);
+});
+
+// ---- The suite's time budget (#475) ----
+//
+// CI checks each shard's run time against a budget with scripts/time/suite.ts, from a TAP
+// copy of the report. The budget is far above a slow runner; the child cap above is the
+// stable check.
+const tapReport = (ms: number) => [
+  'TAP version 13',
+  '# Subtest: install: the copy runs',
+  '    # Subtest: inner step',
+  '    ok 1 - inner step',
+  '      ---',
+  '      duration_ms: 99999',
+  '      ...',
+  'ok 1 - install: the copy runs',
+  '  ---',
+  '  duration_ms: 4200.5',
+  "  type: 'test'",
+  '  ...',
+  'ok 2 - names: a \\# in a name # SKIP not on this platform',
+  '  ---',
+  '  duration_ms: 0.4',
+  '  ...',
+  'not ok 3 - check: a slow one',
+  '  ---',
+  '  duration_ms: 12000',
+  '  ...',
+  '1..3',
+  '# tests 3',
+  `# duration_ms ${ms}`,
+  '',
+].join('\n');
+
+test('suite time: a run over the budget fails and says why; one under passes; the slowest tests are named (#475)', () => {
+  assert.deepEqual(readReport(tapReport(30_000)), { ms: 30_000, tests: [{ name: 'install: the copy runs', ms: 4200.5 }, { name: 'names: a # in a name', ms: 0.4 }, { name: 'check: a slow one', ms: 12_000 }] });
+  const under = judgeSuite(tapReport(30_000));
+  assert.equal(under.isOver, false);
+  assert.equal(under.text, `The tests took 30.0 s, under the budget of ${SUITE_BUDGET} s.\n\nThe slowest tests:\n- 12.0 s: check: a slow one\n- 4.2 s: install: the copy runs\n- 0.0 s: names: a # in a name\n`);
+  const over = judgeSuite(tapReport(SUITE_BUDGET * 1000 * 1.5 + 1));
+  assert.equal(over.isOver, true);
+  assert.match(over.text, new RegExp(`^The tests took ${SUITE_BUDGET * 1.5}\\.0 s, over the budget of ${SUITE_BUDGET} s by ${SUITE_BUDGET * 0.5}\\.0 s, past the room a busy runner needs \\(50%\\)\\. Find what made them slow: .*use sandbox\\.call`));
+  assert.equal(judgeSuite(tapReport(140_000), 90).text.split('\n')[0], 'The tests took 140.0 s, over the budget of 90 s by 50.0 s, past the room a busy runner needs (50%). Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.', 'a budget of its own');
+  assert.throws(() => readReport('TAP version 13\nok 1 - cut off\n'), /no \'# duration_ms\' line/);
+});
+
+test('suite time: a busy runner gets 50% more time for the same work, and a child per test still fails the cap (#783)', () => {
+  // The same report, 20% slower: the runner was busy, not the tests.
+  const slowRunner = judgeSuite(tapReport(SUITE_BUDGET * 1000 * 1.2));
+  assert.equal(slowRunner.isOver, false);
+  assert.match(slowRunner.text, /inside the room a busy runner needs \(50%\)/);
+
+  // One child process per test is work, not load: the cap still catches it.
+  const childPerTest = Array.from({ length: 5 }, (_, index) => `test('case ${index}', () => {\n  sandbox.run(['doctor']);\n});`).join('\n');
+  assert.match(childProblems({ 'test/a.test.ts': childPerTest }, [], {})[0], /starts 5 child processes.*over its cap of 4/);
+});
+
+test('suite time: it reads the report node --test writes on this Node (#475)', () => {
+  const dir = makeTempDir('yokoten-suite-');
+  writeFileSync(join(dir, 'one.test.ts'), "import { test } from 'node:test';\ntest('one: it runs', () => {});\n");
+  const report = join(dir, 'report.tap');
+  // A child: the report is node --test's own output. Without NODE_TEST_CONTEXT, or it reports to this run.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const run = runChild(process.execPath, ['--test', '--test-reporter=tap', `--test-reporter-destination=${report}`, join(dir, 'one.test.ts')], { env });
+  assert.equal(run.status, 0, run.stderr);
+  const { ms, tests } = readReport(readFileSync(report, 'utf8'));
+  assert.ok(ms > 0);
+  assert.deepEqual(tests.map((test) => test.name), ['one: it runs']);
+});
+
+test('the release workflow publishes the tarball as a file, not a GitHub repo name', () => {
+  // `npm publish package/x.tgz` reads `package/x.tgz` as a GitHub `user/repo` and clones it:
+  // the v0.1.0 publish failed so. A path starting with `./` is a file.
+  const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+  const publish = workflow.split('\n').filter((line) => /\bnpm publish\b/.test(line) && !line.trim().startsWith('#'));
+  assert.ok(publish.length > 0, 'the release workflow runs npm publish');
+  for (const line of publish) assert.match(line, /npm publish \.\//, line.trim());
 });

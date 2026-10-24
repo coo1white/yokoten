@@ -5,21 +5,29 @@
 name: yokoten
 on:
   pull_request:
+  # A merge queue runs the same checks as a pull request: every job below also runs
+  # on a merge group. Turn the queue on in the repo settings.
+  merge_group:
   push:
     branches: [main]
+  # The full matrix, macOS shards included, runs on main every day: a pull request
+  # runs one macOS job, so the shared runners stay free (#568).
+  schedule:
+    - cron: '17 5 * * *'
 # No job gets a permission it does not name.
 permissions: {}
-# A newer run cancels the one still going for the same pull request or branch. On main,
-# the newest run tests everything the older ones would have, so a merge never waits
-# behind runs that no longer matter (macOS runners are few and shared).
+# A newer run cancels the one still going for the same pull request: only its newest
+# commit can merge. Every other event gets a group of its own, so a run on main is never
+# cancelled, waiting or running: every commit stays in history (#660, #798).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under
   # docs/ or changes/, or is a README.md or CHANGELOG.md outside kit/. Then the jobs that
-  # Markdown can't break are skipped. A push to main is a full run. So is a file list
-  # that can't be read: docs_only is true only when the list was read and every file fits.
+  # Markdown can't break are skipped. A push to main is a full run, and so is a merge
+  # queue group. So is a file list that can't be read: docs_only is true only when the
+  # list was read and every file fits.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -58,18 +66,29 @@ jobs:
           fi
           echo "docs_only=$docs_only"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
-  # On a docs-only pull request, one run (ubuntu, Node 24): the architecture and
+  # On a docs-only pull request, ubuntu and Node 24 only: the architecture and
   # translation tests read the docs. `!cancelled()`: if `changes` failed, run in full.
+  # Each setup runs in three shards, a third of the test files each, so a pull request
+  # waits for the slowest third, not the whole suite (#472). `fail-fast: false`: one red
+  # shard does not cancel the others, so a run shows every failure at once.
+  # macOS is the exception: its runners are few and shared, and three shards on every
+  # pull request queued until they timed out (#568). So a pull request runs the whole
+  # suite in one macOS job (`of: 1`), and the full three-shard macOS matrix runs on
+  # push to main and on the daily schedule.
   test:
     needs: changes
     if: ${{ !cancelled() }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        # The oldest Node that runs .ts as it is (package.json "engines"), and the current LTS.
-        node: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '["24"]' || '["22.18.0","24"]') }}
+        shard: [1, 2, 3]
+        of: [3]
+        # The oldest Node yokoten supports (package.json "engines": the first 22 with the
+        # security fixes of 2026-10-21, #572), and the current LTS from its first fixed release.
+        node: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '["^24.22.1"]' || '["22.23.4","^24.22.1"]') }}
         # One macOS run: paths there go through symlinks (/var), which hid a real bug (#1).
-        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || '[{"os":"macos-latest","node":"24"}]') }}
+        include: ${{ fromJSON(needs.changes.outputs.docs_only == 'true' && '[]' || github.event_name == 'pull_request' && '[{"os":"macos-latest","node":"^24.22.1","shard":1,"of":1}]' || '[{"os":"macos-latest","node":"^24.22.1","shard":1,"of":3},{"os":"macos-latest","node":"^24.22.1","shard":2,"of":3},{"os":"macos-latest","node":"^24.22.1","shard":3,"of":3}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     permissions:
@@ -83,9 +102,15 @@ jobs:
           node-version: ${{ matrix.node }}
       # Four files at a time (Node's default is the CPU count minus one), and one compile
       # cache for every child node, so each test file strips its TypeScript once (#442).
-      - run: node --test --test-concurrency=4
+      # The spec reporter on every Node, so the logs read alike (Node 22 defaults to TAP).
+      # A TAP copy of the report goes to a file, for the time check below.
+      - run: node --test --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${{ runner.temp }}/tests.tap --test-shard=${{ matrix.shard }}/${{ matrix.of }}
         env:
           NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
+      # The time and the slowest tests go in the job summary. It fails far above the slowest run
+      # seen: 180 s a shard, or 90 s on Node 24 on Linux, the fastest setup (#475). The one
+      # whole-suite macOS job gets 300 s: its slowest run seen took 191 s (record 0016).
+      - run: node scripts/time/suite.ts ${{ runner.temp }}/tests.tap ${{ matrix.of == 1 && '--budget 300' || matrix.os == 'ubuntu-latest' && matrix.node == '24' && '--budget 90' || '' }}
   # Types are checked here and nowhere else: Node runs the .ts files without them.
   # Skipped on a docs-only pull request.
   typecheck:
@@ -101,7 +126,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: '^22.23.4'
       - run: npm ci
       - run: npm run typecheck
       # The npm package (record 0008): pack it, install it offline, run install, init and doctor.
@@ -120,7 +145,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: '^22.23.4'
       - run: node bin/yokoten.ts check
   # The workflows themselves: actionlint for mistakes, zizmor for security. These are
   # CI tools only, never a dependency of yokoten.
@@ -177,13 +202,30 @@ jobs:
   # The one required check. It runs even when a job it needs failed, and goes red if
   # any of them did not succeed (failed, cancelled or skipped). The one exception: on a
   # docs-only pull request, `typecheck` and `action` are skipped on purpose (#438).
+  # A job that never started is named in the summary, so a queued timeout reads as
+  # "no runner was free", not as a test failure (#568).
   ci:
     if: always()
     needs: [changes, test, typecheck, check, lint, action]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions: {}
+    permissions:
+      actions: read
     steps:
+      # A job that timed out or was cancelled before any step started never got a
+      # runner: the shared macOS runners were busy. Diagnosis only: it never fails
+      # this job, so a broken query cannot turn a green run red.
+      - if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          starved=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            --jq '[.jobs[] | select((.conclusion == "timed_out" or .conclusion == "cancelled") and ([.steps[]? | select(.started_at != null)] | length == 0)) | .name] | unique | join(", ")')
+          if [ -n "$starved" ]; then
+            echo "::warning::These jobs never started: no runner was free, or they were cancelled while queued. Not test failures: $starved"
+            echo "These jobs never started, so this is not a test failure (no runner was free, or they were cancelled while queued): $starved" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - if: >-
           contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') ||
           (contains(needs.*.result, 'skipped') && needs.changes.outputs.docs_only != 'true') ||

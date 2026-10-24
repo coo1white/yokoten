@@ -2,7 +2,8 @@
 // there is kept, and the report says so. Some files get lines added, never removed: a
 // CLAUDE.md, and a project's own pre-commit and pre-merge-commit (#206, #239). An
 // AGENTS.md without `## This project` gets the core rules on top, and its own text moves
-// under that heading (#378). A hook the
+// under that heading (#378). A kit workflow the project never changed is replaced by the
+// kit's newest (#456). A hook the
 // clone has in .git/hooks keeps running from .githooks (#256). Deciding
 // what to do with a project's own rules (keep, merge, or say not now) is the yokoten
 // skill's job, not this command's.
@@ -11,23 +12,31 @@
 // AGENTS.md, and only with --write. It is at the end of this file.
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import * as antigravity from '../agents/runtimes/antigravity.ts';
-import { addProjectHook, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
+import * as antigravity from '../agents/runtimes/small/antigravity.ts';
+import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
-import * as dsh from '../agents/runtimes/deepseek-harness.ts';
+import * as dsh from '../agents/runtimes/small/deepseek-harness.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
-import { skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
+import * as opencode from '../agents/runtimes/small/opencode.ts';
+import { isFolder } from '../agents/folder-trust.ts';
+import { type Problem, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
 import { commitCheckLine, runs } from '../run/cli.ts';
-import { DEFAULTS, loadConfig } from '../rules/config.ts';
-import { systemHome } from '../rules/privacy.ts';
-import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github.ts';
+import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
+import { AGENT_STATUS_FILE } from '../run/hook.ts';
+import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
+import { WORKTREES_DIR } from '../rules/layout.ts';
+import { type Finding, finding } from '../rules/message.ts';
+import { homeOf, systemHome } from '../rules/privacy.ts';
+import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
 import { readOriginUrl } from './plan.ts';
-import { copyRuntime, HOME_DIR, KIT, render, VERSION, writeNew } from './files.ts';
+import { writeTestsJob } from './advice/tests-job.ts';
+import type { Ask } from './install.ts';
+import { copyRuntime, describeWrite, fileHash, HOME_DIR, KIT, lfText, normalizeText, readWorkflowHashes, render, textHash, VERSION, writeNew } from './files.ts';
 
 /** yokoten's own repo runs its own bin; every other project runs a vendored copy. */
 export const isSelf = (root: string): boolean => {
@@ -68,24 +77,98 @@ function agentHooks(name: string, file: string, add: () => string[]): { ok: bool
   }
 }
 
+/** What init did with one agent's project sandbox: added, same, kept (yours differs), or why it skipped. */
+type SandboxWrite = 'added' | 'same' | 'kept' | 'hand' | 'unreadable' | Problem;
+
+/** One init line for one agent's sandbox (#589). */
+function sandboxLine(agent: string, file: string, why: string, write: SandboxWrite): string {
+  if (write === 'added') return `added the ${agent} sandbox in ${file} (${why})`;
+  if (write === 'same') return describeWrite('same', `the ${agent} sandbox in ${file}`);
+  if (write === 'kept') return `kept your ${agent} sandbox in ${file} (doctor names what differs)`;
+  if (write === 'hand') return `skipped the ${agent} sandbox: ${file} has comments, so add ${gemini.SANDBOX_HAND_ADD} by hand, then run \`yokoten init\` again`;
+  if (write === 'unreadable') return `skipped the ${agent} sandbox: can't read ${file} (make it readable, then run \`yokoten init\` again)`;
+  return `skipped the ${agent} sandbox: ${skippedBecause(file, write, 'init')}`;
+}
+
+/**
+ * The project sandboxes init writes (#589): Claude's, Codex's, Gemini's YOLO block and
+ * Grok's profile. Written whether or not the agent is installed here, like the hooks.
+ * `ok` is false when a sandbox file was skipped; a sandbox the user set stays (`kept`).
+ */
+function sandboxLines(root: string): { ok: boolean; lines: string[] } {
+  const writes: [string, string, string, SandboxWrite][] = [
+    ['Claude Code', '.claude/settings.json', 'shell commands stay in the project; new network hosts ask first', addClaudeSandbox(root)],
+    ['Codex', '.codex/config.toml', 'writes stay in the project; network is off; Codex asks before going beyond', codex.addProjectSandbox(root)],
+    ['Gemini', '.gemini/settings.json', 'YOLO mode, which approves everything, stays off', gemini.addProjectSandbox(root)],
+    ['Grok', '.grok/sandbox.toml', 'the yokoten profile keeps writes in the project', grok.addProjectSandbox(root)],
+  ];
+  return {
+    ok: writes.every(([, , , write]) => write === 'added' || write === 'same' || write === 'kept'),
+    lines: writes.map(([agent, file, why, write]) => sandboxLine(agent, file, why, write)),
+  };
+}
+
 /** How long init waits for GitHub to say whether the remote owner is an organization. */
 const ORG_LOOKUP_MS = 5000;
+
+/**
+ * Whether Copilot CLI looks used on this machine. Its home is `$COPILOT_HOME` when that
+ * is set, and `~/.copilot` otherwise: the same folder its trust store lives in (#654).
+ */
+function hasCopilotHome(env: Env): boolean {
+  const user = homeOf(env);
+  const home = env.COPILOT_HOME || (user ? join(user, '.copilot') : '');
+  return isFolder(home);
+}
+
+/** A trust step, or a DeepSeek bridge command. Printed only when that agent is installed (#654). */
+function isTrustStep(line: string): boolean {
+  return line.startsWith('GitHub Copilot CLI runs the hooks')
+    || line.startsWith('to trust this folder in Copilot CLI')
+    || line.startsWith('Codex runs the hooks')
+    || line.startsWith('to trust them in Codex')
+    || line.startsWith('Muse Code runs the hooks')
+    || line.startsWith('Grok CLI runs the hooks')
+    || line.includes('dsh plugin --profile')
+    || line.includes('dsh <profile> --patch');
+}
+
+/**
+ * Drop trust steps when `show` is false: the agent is not installed here. `omitted` is
+ * true when a step was dropped, so the report can name the guide once. Hook lines stay.
+ */
+function keepInstalledSteps(lines: string[], show: boolean): { lines: string[]; omitted: boolean } {
+  if (show) return { lines, omitted: false };
+  let omitted = false;
+  const kept = lines.filter((line) => {
+    if (!isTrustStep(line)) return true;
+    omitted = true;
+    return false;
+  });
+  return { lines: kept, omitted };
+}
 
 /**
  * One line per thing done, kept or skipped; `ok` is false when a hooks or settings file was
  * skipped (#248, #254). `gh` asks GitHub two things: whether the remote owner is an
  * organization, and whether the repo is private (#377). `noCi` keeps CI off: see `keepCiOff`.
+ * `ask` is the terminal question for the tests job (#550); without one, init only says
+ * what it would add. Each git answer is kept for the run, until init sets core.hooksPath (#453).
  */
-export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = false }: { noCi?: boolean } = {}): { ok: boolean; lines: string[] } {
+export function init(root: string, env: Env, gh: Gh = ghIn(root, env, ORG_LOOKUP_MS), { noCi = false, ask }: { noCi?: boolean; ask?: Ask } = {}): { ok: boolean; lines: string[] } {
+  return withGitReads(() => initRun(root, env, gh, noCi, ask));
+}
+
+function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok: boolean; lines: string[] } {
   const report: string[] = [];
   const isOff = noCi || isCiOffIn(root);
   const cli = cliPath(root);
   const hookCli = hookCliPath(root);
   if (!isSelf(root) && root !== HOME_DIR) {
     const copied = copyRuntime(join(root, '.yokoten'));
-    report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (the runtime the hooks run; commit it)');
+    report.push(copied === 'kept' ? 'kept .yokoten/ (the copy running now)' : 'wrote .yokoten/ (a copy of yokoten, about 90 files; committing it is the point)');
   }
-  const hooks = readHookSetup(root);
+  const hooks = readHookSetup(root, env);
   const kit = join(KIT, 'project');
   for (const file of walk(kit)) {
     const rel = relative(kit, file).split('\\').join('/');
@@ -101,21 +184,29 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = 
     const text = render(readFileSync(file, 'utf8'), { cli, version: VERSION });
     // An AGENTS.md without "## This project" gets the core rules on top of its own text (#378).
     if (rel === 'AGENTS.md' && existsSync(join(root, rel))) {
-      report.push(...addCoreRules(root, text));
+      report.push(...addCoreRules(root, text, env));
       continue;
     }
     if (rel === '.github/dependabot.yml') {
       report.push(writeDependabot(root, text));
       continue;
     }
+    if (rel.startsWith(WORKFLOWS_DIR)) {
+      report.push(writeWorkflow(root, rel, text, env));
+      continue;
+    }
     report.push(`${writeNew(join(root, rel), text)} ${rel}`);
   }
+  // The tests job for the project's language (#550): asked first, never overwritten. With
+  // CI off there are no workflows, so nothing to add it to.
+  if (!isOff) report.push(...writeTestsJob(root, { ask }));
   // Read before .githooks/ is written: whether it can run the hooks this clone has in .git/hooks (#256).
-  const blocks = hooks.kind === 'plain' ? handOffBlocks(root) : [];
-  if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0));
+  const blocks = hooks.kind === 'plain' ? handOffBlocks(root, env) : [];
+  if (hooks.kind !== 'own') report.push(...writeGithooks(root, cli, kit, blocks.length === 0, env));
   if (noCi) report.push(...keepCiOff(root, cli, kit));
-  else if (!isOff) report.push(...privateRepoNote(root, gh));
-  report.push(writeCodeOwners(root, gh));
+  else if (!isOff) report.push(...privateRepoNote(root, gh, env));
+  report.push(writeCodeOwners(root, gh, env));
+  report.push(writeGitignore(root));
   const imported = importRules(root);
   if (imported) report.push(imported);
   // Claude Code's settings, the file people edit by hand most: skipped as one, never
@@ -123,24 +214,23 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = 
   const claudeHooks = agentHooks('the Claude Code settings', '.claude/settings.json', () => {
     checkProjectSettings(root);
     return [
-      `${addProjectHook(root, hookCli)} the tool-call hook in .claude/settings.json`,
-      `${addProjectStopHook(root, hookCli)} the stop check in .claude/settings.json (changed files, before the agent ends its turn)`,
-      `${setProjectEnv(root, 'TZ', 'UTC')} TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)`,
+      describeWrite(addProjectHook(root, hookCli), 'the tool-call hook in .claude/settings.json'),
+      describeWrite(addProjectStopHook(root, hookCli), "the stop check in .claude/settings.json (changed files, and a worker's done-when check, on Stop and SubagentStop)"),
+      describeWrite(setProjectEnv(root, 'TZ', 'UTC'), 'TZ=UTC for agent sessions in .claude/settings.json (commit times carry no time zone)'),
       // Checked with a real run (#30): Copilot CLI reads these hooks, in a folder it trusts.
       // It skips them without a word otherwise (#341), so the line says how to trust it.
       'GitHub Copilot CLI runs the hooks in .claude/settings.json only after you trust this folder',
       `to trust this folder in Copilot CLI: ${copilot.TRUST_STEP}`,
     ];
   });
-  report.push(...claudeHooks.lines);
-  // Codex, Gemini CLI, Antigravity CLI, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
+  // Codex, Gemini CLI, Antigravity CLI, OpenCode, Muse Code, DeepSeek Harness and Grok CLI get the same guard, whether or not they are
   // installed here: small files are easier to predict than a guess about which agents someone uses.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
   const codexHooks = agentHooks('the Codex hooks', '.codex/hooks.json', () => {
     codex.checkProjectHooks(root);
     return [
-      `${codex.addProjectHook(root, hookCli)} the Codex tool-call hook in .codex/hooks.json`,
-      `${codex.addProjectStopHook(root, hookCli)} the Codex stop check in .codex/hooks.json`,
+      describeWrite(codex.addProjectHook(root, hookCli), 'the Codex tool-call hook in .codex/hooks.json'),
+      describeWrite(codex.addProjectStopHook(root, hookCli), 'the Codex stop check in .codex/hooks.json'),
       'Codex runs the hooks in .codex/hooks.json only after you trust this folder and the hooks',
       `to trust them in Codex: ${codex.TRUST_STEP}`,
     ];
@@ -148,18 +238,23 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = 
   const geminiHooks = agentHooks('the Gemini CLI hooks', '.gemini/settings.json', () => {
     gemini.checkProjectHooks(root, hookCli);
     return [
-      `${gemini.addProjectHook(root, hookCli)} the Gemini CLI tool-call hook in .gemini/settings.json`,
-      `${gemini.addProjectStopHook(root, hookCli)} the Gemini CLI stop check in .gemini/settings.json (AfterAgent)`,
+      describeWrite(gemini.addProjectHook(root, hookCli), 'the Gemini CLI tool-call hook in .gemini/settings.json'),
+      describeWrite(gemini.addProjectStopHook(root, hookCli), 'the Gemini CLI stop check in .gemini/settings.json (AfterAgent)'),
     ];
   });
   const antigravityHooks = agentHooks('the Antigravity CLI hook', '.agents/hooks.json', () => [
-    `${antigravity.addProjectHook(root, hookCli)} the Antigravity CLI tool-call hook in .agents/hooks.json`,
+    describeWrite(antigravity.addProjectHook(root, hookCli), 'the Antigravity CLI tool-call hook in .agents/hooks.json'),
+  ]);
+  // OpenCode has no trust step in the docs we have. The plugin loads when OpenCode starts.
+  const openCodePlugin = agentHooks('the OpenCode plugin', opencode.PLUGIN_FILE, () => [
+    describeWrite(opencode.addProjectPlugin(root, hookCli), `the OpenCode tool-call plugin in ${opencode.PLUGIN_FILE}`),
   ]);
   const museHooks = agentHooks('the Muse Code hooks', '.muse/hooks.json', () => {
     const added = muse.addProjectHooks(root, hookCli);
     return [
-      `${added.guard} the Muse Code tool-call hook in .muse/hooks.json`,
-      `${added.stop} the Muse Code stop check in .muse/hooks.json`,
+      describeWrite(added.guard, 'the Muse Code tool-call hook in .muse/hooks.json'),
+      describeWrite(added.stop, 'the Muse Code stop check in .muse/hooks.json'),
+      describeWrite(added.doctor, 'the Muse Code session doctor in .muse/hooks.json'),
       `Muse Code runs the hooks in .muse/hooks.json only after you trust this folder: ${muse.TRUST_STEP}`,
     ];
   });
@@ -168,18 +263,50 @@ export function init(root: string, gh: Gh = ghIn(root, ORG_LOOKUP_MS), { noCi = 
   const grokHooks = agentHooks('the Grok CLI hooks', grok.HOOKS_FILE, () => {
     const added = grok.addProjectHooks(root, hookCli);
     return [
-      `${added.guard} the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`,
-      `${added.stop} the Grok CLI stop check in ${grok.HOOKS_FILE}`,
+      describeWrite(added.guard, `the Grok CLI tool-call hook in ${grok.HOOKS_FILE}`),
+      describeWrite(added.stop, `the Grok CLI stop check in ${grok.HOOKS_FILE}`),
       `Grok CLI runs the hooks in ${grok.HOOKS_FILE} only after you trust this folder: ${grok.TRUST_STEP}`,
     ];
   });
   // DeepSeek Harness runs the hooks through a bridge each profile needs. init only prints
   // how to add it: it installs nothing and leaves ~/.dsh alone (#334).
   // On Windows the files are still written, ready for #332, but the lines say dsh is not checked.
-  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => dsh.initLines(dsh.addProjectHooks(root, hookCli)));
-  report.push(...codexHooks.lines, ...geminiHooks.lines, ...antigravityHooks.lines, ...museHooks.lines, ...dshHooks.lines, ...grokHooks.lines);
-  report.push(...setCommitCheck(root, cli, hooks, blocks));
-  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && museHooks.ok && dshHooks.ok && grokHooks.ok, lines: report };
+  const dshHooks = agentHooks('the DeepSeek Harness hook', dsh.HOOKS_FILE, () => {
+    const added = dsh.addProjectHooks(root, hookCli);
+    return dsh.initLines([
+      describeWrite(added.guard, `the DeepSeek Harness tool-call hook in ${dsh.HOOKS_FILE}`),
+      describeWrite(added.patch, `the DeepSeek Harness launch patch in ${dsh.PATCH_FILE}`),
+    ]);
+  });
+  // Trust steps print only for an agent installed on this machine (#654). The hook files
+  // above are still written. Gemini CLI and Antigravity CLI have no trust step. One line
+  // names the guide when any step was left out.
+  let omittedTrustStep = false;
+  const showSteps = (lines: string[], show: boolean): string[] => {
+    const kept = keepInstalledSteps(lines, show);
+    if (kept.omitted) omittedTrustStep = true;
+    return kept.lines;
+  };
+  report.push(...showSteps(claudeHooks.lines, hasCopilotHome(env)));
+  report.push(
+    ...showSteps(codexHooks.lines, codex.hasUserDir(env)),
+    ...geminiHooks.lines,
+    ...antigravityHooks.lines,
+    ...openCodePlugin.lines,
+    ...showSteps(museHooks.lines, muse.hasUserDir(env)),
+    // On Windows, initLines has no bridge command. The Windows line stays either way.
+    ...showSteps(dshHooks.lines, dsh.profilesWithBridge(env) !== null),
+    ...showSteps(grokHooks.lines, grok.hasUserDir(env)),
+  );
+  if (omittedTrustStep) report.push('other agents: see the guide');
+  const sandboxes = sandboxLines(root);
+  report.push(...sandboxes.lines);
+  // Point git at the hooks last, so the files exist first. That call's first line leads
+  // the report. Its other lines stay at the end (#654).
+  const [hookLine, ...hookNotes] = setCommitCheck(root, cli, hooks, blocks, env);
+  report.unshift(hookLine);
+  report.push(...hookNotes);
+  return { ok: claudeHooks.ok && codexHooks.ok && geminiHooks.ok && antigravityHooks.ok && openCodePlugin.ok && museHooks.ok && dshHooks.ok && grokHooks.ok && sandboxes.ok, lines: report };
 }
 
 // ---- A project that keeps CI off (#377) ----
@@ -214,9 +341,6 @@ function lexists(path: string): boolean {
   }
 }
 
-/** The text with LF line ends and one newline at the end, so a Windows checkout compares equal. */
-const normalizeText = (text: string): string => `${text.replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
-
 /** The first of the path's folders below the root, or the file itself, that is a symlink; null when none is. */
 function symlinkOnPath(root: string, rel: string): string | null {
   const parts = rel.split('/');
@@ -232,11 +356,22 @@ function symlinkOnPath(root: string, rel: string): string | null {
 }
 
 /**
- * The texts init writes for a kit file, line ends aside: the kit's copy, and for
- * dependabot.yml also the copy with the blocks for this repo's ecosystems (#379).
+ * The texts init writes for a kit file: the kit's copy, and for dependabot.yml also the
+ * copy with the blocks for this repo's ecosystems (#379).
  */
 const kitCopies = (root: string, rel: string, kitText: string): string[] =>
-  [kitText, ...(rel === '.github/dependabot.yml' ? [dependabotText(root, kitText).text] : [])].map(normalizeText);
+  [kitText, ...(rel === '.github/dependabot.yml' ? [dependabotText(root, kitText).text] : [])];
+
+/** True when the file at `path` is a copy init wrote: the kit's newest, or (a workflow) an older one in the hash list. A folder or another odd file is not. */
+function isKitCopy(root: string, rel: string, path: string, kitText: string): boolean {
+  try {
+    if (!lstatSync(path).isFile()) return false;
+    const text = lfText(readFileSync(path, 'utf8'));
+    return kitCopies(root, rel, kitText).includes(text) || (readWorkflowHashes()[rel] ?? []).includes(fileHash(text));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * `init --no-ci`: write "notNow" `ci` into yokoten.json, and remove each CI file that is
@@ -252,7 +387,7 @@ function keepCiOff(root: string, cli: string, kit: string): string[] {
     if (!isCiFile(rel) || !lexists(path)) continue;
     const link = symlinkOnPath(root, rel);
     if (link) lines.push(`kept ${rel}: ${link} is a symlink, and init never deletes through one; delete it yourself if CI stays off`);
-    else if (kitCopies(root, rel, render(readFileSync(file, 'utf8'), { cli, version: VERSION })).includes(normalizeText(readFileSync(path, 'utf8')))) {
+    else if (isKitCopy(root, rel, path, render(readFileSync(file, 'utf8'), { cli, version: VERSION }))) {
       rmSync(path);
       lines.push(`removed ${rel} (the kit's copy; CI is off)`);
     } else lines.push(`kept ${rel}: it is not the kit's copy, so delete it yourself if CI stays off`);
@@ -312,8 +447,8 @@ const sortKeys = (value: unknown): unknown =>
  * On a private repo, a note that the workflows use Actions minutes, and how to keep them
  * out. Nothing when gh can't tell, or the repo is public. One gh call, only with a GitHub remote.
  */
-function privateRepoNote(root: string, gh: Gh): string[] {
-  const repo = repoOf(readOriginUrl(root));
+function privateRepoNote(root: string, gh: Gh, env: Env): string[] {
+  const repo = repoOf(readOriginUrl(root, env));
   if (!repo || isPrivateRepo(gh, repo) !== true) return [];
   return [
     'note: this repo is private, so the workflows in .github/workflows use Actions minutes from your plan',
@@ -354,7 +489,7 @@ export function codeOwnersText(owner: string | null, org?: string): string {
 }
 
 /** The GitHub account in the origin remote's URL, or null without a GitHub remote. */
-const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(root))?.split('/')[0] ?? null;
+const readRemoteOwner = (root: string, env: Env): string | null => repoOf(readOriginUrl(root, env))?.split('/')[0] ?? null;
 
 /**
  * Write .github/CODEOWNERS unless the project has one in any place GitHub reads. Returns
@@ -362,17 +497,17 @@ const readRemoteOwner = (root: string): string | null => repoOf(readOriginUrl(ro
  * remote owner is one, the file gets the placeholder (#313). When gh can't tell, the
  * remote owner stays: most repos belong to a person.
  */
-function writeCodeOwners(root: string, gh: Gh): string {
+function writeCodeOwners(root: string, gh: Gh, env: Env): string {
   const found = CODEOWNERS_PLACES.find((place) => existsSync(join(root, place)));
   if (found) return `kept ${found}`;
-  const remote = readRemoteOwner(root);
+  const remote = readRemoteOwner(root, env);
   const org = remote !== null && isOrganization(gh, remote) === true;
   const owner = org ? null : remote;
   writeNew(join(root, '.github', 'CODEOWNERS'), codeOwnersText(owner, org ? remote : undefined));
   if (org) return `wrote .github/CODEOWNERS (the lead-only paths; @${remote} is an organization, so put a person or @${remote}/<team> in place of ${OWNER_PLACEHOLDER})`;
   return owner
     ? `wrote .github/CODEOWNERS (the lead-only paths, owned by @${owner})`
-    : `wrote .github/CODEOWNERS (the lead-only paths; put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
+    : `wrote .github/CODEOWNERS (the lead-only paths; make the repo, add the remote and push, then put your GitHub handle in place of ${OWNER_PLACEHOLDER})`;
 }
 
 // ---- Dependabot for the project's own packages (#379) ----
@@ -439,6 +574,50 @@ export function findEcosystems(root: string): Map<string, string[]> {
   return found;
 }
 
+// ---- A .gitignore for the status file, the worker worktrees and the dependency folders (#521, #571, #614) ----
+//
+// Without one, `git add -A` stages node_modules. init always ignores the folder worker
+// worktrees live in, reads the same package managers as Dependabot to write the folders
+// each one fills, and the board's agent status file (#601, #614). It only adds lines that are missing.
+
+/** The folders each package manager fills with fetched or built files. */
+const IGNORED_FOLDERS: Record<string, string[]> = {
+  bun: ['node_modules/'],
+  npm: ['node_modules/'],
+  cargo: ['target/'],
+  uv: ['.venv/', '__pycache__/'],
+  pip: ['.venv/', '__pycache__/'],
+  bundler: ['vendor/bundle/'],
+  composer: ['vendor/'],
+  maven: ['target/'],
+  gradle: ['.gradle/', 'build/'],
+  nuget: ['bin/', 'obj/'],
+  mix: ['_build/', 'deps/'],
+  pub: ['.dart_tool/'],
+  swift: ['.build/'],
+};
+
+/** A .gitignore line as a bare folder name, so `/node_modules` and `node_modules/` count as the same. */
+const folderOf = (line: string): string => line.trim().replace(/^\//, '').replace(/\/$/, '');
+
+/** Add the worker worktrees folder, the board's agent file, and the dependency folders of the project's package managers to .gitignore. */
+function writeGitignore(root: string): string {
+  const folders = [...new Set([...findEcosystems(root).keys()].flatMap((name) => IGNORED_FOLDERS[name] ?? []))];
+  const wanted = [`${WORKTREES_DIR}/`, ...folders, AGENT_STATUS_FILE];
+  const path = join(root, '.gitignore');
+  const old = existsSync(path) ? readFileSync(path, 'utf8') : null;
+  const have = new Set((old ?? '').split(/\r?\n/).map(folderOf));
+  const missing = wanted.filter((line) => !have.has(folderOf(line)));
+  if (old === null) {
+    writeNew(path, `${missing.join('\n')}\n`);
+    return `wrote .gitignore (${missing.join(', ')})`;
+  }
+  if (missing.length === 0) return 'kept .gitignore';
+  const lead = old === '' || old.endsWith('\n') ? '' : '\n';
+  appendFileSync(path, `${lead}${missing.join('\n')}\n`);
+  return `added to .gitignore: ${missing.join(', ')}`;
+}
+
 /** One update block in the kit's shape: monthly, a week old, one grouped pull request, prefix chore. */
 export function formatDependabotBlock(ecosystem: string, dirs: string[]): string {
   const where = dirs.length === 1 ? [`    directory: ${dirs[0]}`] : ['    directories:', ...dirs.map((dir) => `      - ${dir}`)];
@@ -486,6 +665,200 @@ function writeDependabot(root: string, kitText: string): string {
   return found.size === 0
     ? 'wrote .github/dependabot.yml (the actions CI runs)'
     : `wrote .github/dependabot.yml (the actions CI runs, and ${[...found.keys()].join(', ')})`;
+}
+
+// ---- The kit's workflows: update a copy the project never changed (#456) ----
+//
+// A project set up by an older yokoten has that kit's workflows. When its copy is byte for
+// byte one the kit wrote (kit/workflow-hashes.json lists each version), init replaces it
+// with the newest: there is nothing of the project's to keep, and git has the old file,
+// because init never commits (record 0014). A copy with the project's changes is kept, and
+// init and full doctor say how to see the difference. A symlink is never written through.
+
+const WORKFLOWS_DIR = '.github/workflows/';
+
+/** How a project's copy of a kit workflow compares with the kit's newest one. */
+export type WorkflowState = 'missing' | 'same' | 'older' | 'changed' | 'link';
+
+/** The first part of `rel`, a folder or the file itself, that is a symlink in `root`; null when none is. */
+function findLinkOnPath(root: string, rel: string): string | null {
+  const parts = rel.split('/');
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const part = parts.slice(0, depth).join('/');
+    try {
+      if (lstatSync(join(root, part)).isSymbolicLink()) return part;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** A blank line or a comment: no job, and never a difference between two copies of one. */
+const isFillerLine = (line: string): boolean => line.trim() === '' || line.trim().startsWith('#');
+
+/** The indent of `line`: the spaces and tabs before its first other character. */
+const indentOf = (line: string): number => /^\s*/.exec(line)![0].length;
+
+/**
+ * A workflow's `jobs:` block: the lines before it (its opening line last), each job's lines
+ * (its header line first) by name, and the lines after the next top-level key, if any.
+ * Null when no top-level `jobs:` key opens one.
+ */
+function readJobs(text: string): { before: string; jobs: Map<string, string[]>; after: string } | null {
+  const lines = lfText(text).split('\n');
+  const open = lines.findIndex((line) => /^jobs\s*:(?:\s+#.*)?$/.test(line));
+  if (open === -1) return null;
+  const jobs = new Map<string, string[]>();
+  let at: string | null = null;
+  let indent = 0;
+  const after = lines.slice(open + 1);
+  for (let index = 0; index < after.length; index++) {
+    const line = after[index];
+    if (isFillerLine(line)) {
+      if (at !== null) jobs.get(at)!.push(line);
+      continue;
+    }
+    if (/^\S/.test(line)) return { before: lines.slice(0, open + 1).join('\n'), jobs, after: after.slice(index).join('\n') };
+    if (at === null) {
+      const head = /^(\s*)([A-Za-z0-9_.-]+):/.exec(line);
+      if (!head) return null;
+      indent = head[1].length;
+      at = head[2];
+      jobs.set(at, [line]);
+      continue;
+    }
+    const head = /^(\s*)([A-Za-z0-9_.-]+):/.exec(line);
+    if (head !== null && head[1].length === indent) {
+      at = head[2];
+      jobs.set(at, [line]);
+    } else jobs.get(at)!.push(line);
+  }
+  return { before: lines.slice(0, open + 1).join('\n'), jobs, after: '' };
+}
+
+/** The job names a `needs:` value and its list lines hold: a flow list, a block list, or one name. */
+function needNames(value: string, extra: string[]): string[] {
+  const clean = (word: string): string => word.replace(/#.*$/, '').trim().replace(/^(['"`])(.*)\1$/, '$2').trim();
+  const flow = /\[([^\]]*)\]/.exec(`${value} ${extra.join(' ')}`);
+  if (flow !== null) return flow[1].split(',').map(clean).filter((word) => word !== '');
+  const items = extra.map((line) => /^-\s+(.*)$/.exec(line.trim())).filter((found): found is RegExpExecArray => found !== null);
+  if (items.length > 0) return items.map((found) => clean(found[1])).filter((word) => word !== '');
+  const single = clean(value);
+  return single === '' ? [] : [single];
+}
+
+/**
+ * A job's `needs` names, and its other lines without filler. The `needs` key sits with the
+ * job's other keys; its list lines sit further in.
+ */
+function splitNeeds(body: string[]): { needs: string[]; rest: string[] } {
+  const skip = new Set<number>();
+  let needs: string[] = [];
+  const keyIndent = indentOf(body[0]) + 2;
+  const at = body.findIndex((line, index) => index > 0 && !isFillerLine(line) && indentOf(line) === keyIndent && /^\s*needs\s*:(.*)$/.test(line));
+  if (at !== -1) {
+    const value = /^\s*needs\s*:(.*)$/.exec(body[at])![1];
+    skip.add(at);
+    const extra: string[] = [];
+    for (let i = at + 1; i < body.length && !isFillerLine(body[i]) && indentOf(body[i]) > indentOf(body[at]); i++) {
+      skip.add(i);
+      extra.push(body[i]);
+    }
+    needs = needNames(value, extra);
+  }
+  return { needs, rest: body.filter((line, index) => !skip.has(index) && !isFillerLine(line)) };
+}
+
+/**
+ * Whether the project's copy keeps every job the kit's copy has (#552): the same block, but
+ * a `needs` list may name more jobs, and the project may add its own. Only the kit's jobs
+ * are read: a job the user added under `jobs:`, the way doctor's tests step says, never
+ * makes the copy look out of date on its own. False when either copy has no `jobs:` block.
+ */
+export function hasIntactKitJobs(projectText: string, kitText: string): boolean {
+  const project = readJobs(projectText);
+  const kit = readJobs(kitText);
+  if (project === null || kit === null) return false;
+  if (project.before !== kit.before || project.after !== kit.after) return false;
+  for (const [name, lines] of kit.jobs) {
+    const mine = project.jobs.get(name);
+    if (!mine) return false;
+    const kept = splitNeeds(mine);
+    const wanted = splitNeeds(lines);
+    if (!wanted.needs.every((need) => kept.needs.includes(need))) return false;
+    if (kept.rest.join('\n') !== wanted.rest.join('\n')) return false;
+  }
+  return true;
+}
+
+/** The state of the project's `rel` against `kitText`, the kit's file rendered for this project. */
+export function compareWorkflow(root: string, rel: string, kitText: string, hashes: Record<string, string[]> = readWorkflowHashes()): WorkflowState {
+  if (findLinkOnPath(root, rel)) return 'link';
+  const path = join(root, rel);
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return 'missing';
+  }
+  // A folder or another odd thing at the path is not a copy of the kit's: keep it.
+  if (!stat.isFile()) return 'changed';
+  const text = lfText(readFileSync(path, 'utf8'));
+  if (text === kitText) return 'same';
+  if ((hashes[rel] ?? []).includes(fileHash(text))) return 'older';
+  // The project's own jobs stay: only the kit's own jobs falling behind says so (#552).
+  if (hasIntactKitJobs(text, kitText)) return 'same';
+  return 'changed';
+}
+
+/** The command that shows how the project's `rel` differs from the kit's copy in its .yokoten/ (or in yokoten itself). */
+export const workflowDiffCommand = (root: string, rel: string): string => `git diff --no-index ${rel} ${isSelf(root) ? '' : '.yokoten/'}kit/project/${rel}`;
+
+/** Write one kit workflow: new, or in place of an old kit copy; a changed copy or a symlink is kept. */
+function writeWorkflow(root: string, rel: string, kitText: string, env: Env): string {
+  const state = compareWorkflow(root, rel, kitText);
+  if (state === 'missing') return `${writeNew(join(root, rel), kitText)} ${rel}`;
+  if (state === 'same') return `kept ${rel}`;
+  if (state === 'link') return `kept ${rel}: it is a symlink, so yokoten did not write through it`;
+  if (state === 'changed') return `kept ${rel}: it has your changes. To see how the kit's newest copy differs: \`${workflowDiffCommand(root, rel)}\``;
+  const path = join(root, rel);
+  // Replace the file only when git can give the old one back: tracked, and the same as HEAD
+  // (record 0014: unsure means keep).
+  const bytes = readFileSync(path);
+  if (!isInHead(root, rel, bytes, env)) return `kept ${rel}: it is an older kit copy that is not committed, so commit it and run init again`;
+  // A file with Windows line ends keeps them, so git shows only the lines that changed.
+  const isCrlf = bytes.includes('\r\n');
+  writeFileSync(path, isCrlf ? normalizeText(kitText).replace(/\n/g, '\r\n') : kitText);
+  return `updated ${rel} to the kit's newest copy (you had not changed it; \`git restore --source=HEAD -- ${rel}\` brings the old one back)`;
+}
+
+/** The kit's workflows, by path in a project, rendered for `root`; empty when this copy of yokoten has none. */
+function readKitWorkflows(root: string): Map<string, string> {
+  const dir = join(KIT, 'project', WORKFLOWS_DIR);
+  if (!existsSync(dir)) return new Map();
+  return new Map(readdirSync(dir).sort().map((name) => [`${WORKFLOWS_DIR}${name}`, render(readFileSync(join(dir, name), 'utf8'), { cli: cliPath(root), version: VERSION })]));
+}
+
+/**
+ * For full doctor: one note for each kit workflow that is an old copy, or has the project's
+ * changes. A changed copy's note has a `seen` key, the file and the kit's version, so doctor
+ * can say it once per kit version (#456); an old copy is noted each time, until init updates it.
+ */
+export function workflowNotes(root: string): { note: Finding; seen?: string }[] {
+  const notes: { note: Finding; seen?: string }[] = [];
+  // With CI off init keeps the workflows, so there is nothing to tell the user to run init for.
+  if (isCiOffIn(root)) return notes;
+  const hashes = readWorkflowHashes();
+  for (const [rel, kitText] of readKitWorkflows(root)) {
+    const state = compareWorkflow(root, rel, kitText, hashes);
+    if (state === 'older') notes.push({ note: finding('kit-workflows', `${rel} is an older copy of the kit's, and you never changed it`, 'run `yokoten init` to update it') });
+    if (state === 'changed') {
+      const note = finding('kit-workflows', `${rel} has your changes, and the kit's newest copy differs`, `to see how: \`${workflowDiffCommand(root, rel)}\`; copy what you want by hand`);
+      notes.push({ note, seen: `${rel} ${textHash(kitText)}` });
+    }
+  }
+  return notes;
 }
 
 // ---- A project's own CLAUDE.md and commit hooks (#206) ----
@@ -592,42 +965,28 @@ function importRules(root: string): string | null {
 /** How git runs commit hooks here: yokoten's .githooks, the project's own folder, or no git repo. */
 type HookSetup = { kind: 'plain' } | { kind: 'own'; hooksPath: string } | { kind: 'no repo' };
 
-// Within one doctor run, several checks ask git the same question: the repo's own
-// core.hooksPath, say. Each answer is kept for the run, so git starts once per
-// question (#408). Only inside `withGitReads`: init writes core.hooksPath, and tests
-// change it between runs, so nothing is kept from one run to the next.
-let gitReads: Map<string, unknown> | null = null;
+// Each git answer is kept for the run (`withGitReads`, src/run/check.ts): a doctor or an init.
+export { withGitReads };
 
-/** Run `read` with each git answer below kept until it returns. */
-export function withGitReads<T>(read: () => T): T {
-  const outer = gitReads;
-  gitReads ??= new Map();
-  try {
-    return read();
-  } finally {
-    gitReads = outer;
-  }
-}
-
-/** The answer `read` gives, kept under `key` while `withGitReads` runs. */
-export function remembered<T>(key: string, read: () => T): T {
-  if (!gitReads) return read();
-  if (!gitReads.has(key)) gitReads.set(key, read());
-  return gitReads.get(key) as T;
-}
-
-/** The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside a git repo. */
-const readLocalHooksPath = (root: string): string | null =>
-  remembered(`local-hooks-path\0${root}`, () => {
+/**
+ * The repo's own core.hooksPath (not the user's global one), '' when unset, or null outside
+ * a git repo. Files included from .git/config count, as git itself reads them. In a run, from
+ * the config list and the git folder, which other checks read too.
+ */
+const readLocalHooksPath = (root: string, env: Env): string | null => {
+  const entries = configEntries(root, 'core.hooksPath', env);
+  if (entries) return gitLine(root, ['rev-parse', '--git-common-dir'], env) === null ? null : (entries.filter((entry) => entry.scope === 'local').at(-1)?.value ?? '').trim();
+  return remembered(`local-hooks-path\0${root}`, () => {
     try {
-      return execFileSync('git', ['config', '--local', '--get', 'core.hooksPath'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return execFileSync('git', ['config', '--local', '--includes', '--get', 'core.hooksPath'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     } catch (error) {
       return (error as { status?: number }).status === 1 ? '' : null;
     }
   });
+};
 
-export function readHookSetup(root: string): HookSetup {
-  const hooksPath = readLocalHooksPath(root);
+export function readHookSetup(root: string, env: Env): HookSetup {
+  const hooksPath = readLocalHooksPath(root, env);
   if (hooksPath === null) return { kind: 'no repo' };
   const isHusky = existsSync(join(root, '.husky'));
   if (!isHusky && (hooksPath === '' || hookFile(root, hooksPath) === '.githooks/pre-commit')) return { kind: 'plain' };
@@ -657,6 +1016,11 @@ export function hookFile(root: string, hooksPath: string, hook: CommitHook = 'pr
 
 /** The lines init adds to a project's own pre-commit and pre-merge-commit. `exit 1` because a hook may go on after them. */
 export const checkLines = (cli: string): string[] => ['# yokoten: the commit check (lead-only files, test files in a fix task, layout and privacy)', commitCheckLine(cli)];
+
+/** What `addCheckLines` did, in the report's words: a hook that already ran the check is "kept". */
+function checkWords(result: ReturnType<typeof addCheckLines>): string {
+  return result === 'same' ? 'kept' : result;
+}
 
 /**
  * Add the yokoten check to a commit hook, after its `#!` line, so a later `exec` can't skip it.
@@ -730,13 +1094,15 @@ export interface OldHook {
   handOff: 'yes' | 'not executable' | 'global';
 }
 
-const gitLine = (root: string, args: string[]): string | null => {
-  try {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return null;
-  }
-};
+/** What git prints for `args` in `root`, trimmed, or null when it fails; kept for the run. */
+const gitLine = (root: string, args: string[], env: Env): string | null =>
+  remembered(`line\0${root}\0${args.join('\0')}`, () => {
+    try {
+      return execFileSync('git', args, { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return null;
+    }
+  });
 
 /** A path for a message: relative to the root, or from ~, so no home folder is printed. */
 const showPath = (root: string, path: string): string => {
@@ -756,8 +1122,11 @@ const sameFile = (a: string, b: string): boolean => {
 };
 
 /** Whether a core.hooksPath comes from the global or system config. */
-const hasOtherHooksPath = (root: string): boolean =>
-  (gitLine(root, ['config', '--show-scope', '--get-all', 'core.hooksPath']) ?? '').split('\n').some((line) => /^(?:global|system|command)\t/.test(line));
+const hasOtherHooksPath = (root: string, env: Env): boolean => {
+  const entries = configEntries(root, 'core.hooksPath', env);
+  if (entries) return entries.some((entry) => ['global', 'system', 'command'].includes(entry.scope));
+  return (gitLine(root, ['config', '--show-scope', '--get-all', 'core.hooksPath'], env) ?? '').split('\n').some((line) => /^(?:global|system|command)\t/.test(line));
+};
 
 /**
  * The hooks this clone has outside .githooks that git runs (or, with core.hooksPath set,
@@ -765,15 +1134,15 @@ const hasOtherHooksPath = (root: string): boolean =>
  * global core.hooksPath decides which hooks run, the files in .git/hooks are dead, so they
  * are not counted; that folder's own commit hooks are, as hooks .githooks can't run.
  */
-export function readOldHooks(root: string): OldHook[] {
-  const hooksPath = readLocalHooksPath(root);
-  const common = hooksPath === null ? null : gitLine(root, ['rev-parse', '--git-common-dir']);
+export function readOldHooks(root: string, env: Env): OldHook[] {
+  const hooksPath = readLocalHooksPath(root, env);
+  const common = hooksPath === null ? null : gitLine(root, ['rev-parse', '--git-common-dir'], env);
   if (common === null) return [];
   const ownDir = resolve(root, common, 'hooks');
-  if (hasOtherHooksPath(root)) {
+  if (hasOtherHooksPath(root, env)) {
     // With core.hooksPath set here too, the global one decided before it was set.
     if (hooksPath !== '') return [];
-    const dir = gitLine(root, ['rev-parse', '--git-path', 'hooks']);
+    const dir = gitLine(root, ['rev-parse', '--git-path', 'hooks'], env);
     if (dir !== null && !sameFile(resolve(root, dir), ownDir)) {
       return COMMIT_HOOKS.flatMap((hook): OldHook[] => {
         const path = resolve(root, dir, hook);
@@ -846,8 +1215,8 @@ export function placeHandOff(text: string, hook: string): string | null {
  * Why .githooks can't take over from the old hooks here, one line each, with what to do;
  * empty when it can. Read before init writes .githooks, and by doctor.
  */
-export function handOffBlocks(root: string, olds: OldHook[] = readOldHooks(root)): string[] {
-  const thenSet = readLocalHooksPath(root) === '' ? '; then run `git config core.hooksPath .githooks`' : '';
+export function handOffBlocks(root: string, env: Env, olds: OldHook[] = readOldHooks(root, env)): string[] {
+  const thenSet = readLocalHooksPath(root, env) === '' ? '; then run `git config core.hooksPath .githooks`' : '';
   return olds.flatMap((old): string[] => {
     const own = `.githooks/${old.hook}`;
     if (old.handOff === 'not executable') return [];
@@ -880,8 +1249,8 @@ const HOOK_MANAGERS = ['lefthook.yml', 'lefthook.yaml', '.lefthook.yml', '.lefth
  * the check and then the hand-off; a new other hook only hands off. One that is there is
  * kept, and gets the check when it is a commit hook that lacks it (#239, #256), and the hand-off.
  */
-function writeGithooks(root: string, cli: string, kit: string, handOff: boolean): string[] {
-  const olds = handOff ? readOldHooks(root).filter((old) => old.handOff === 'yes') : [];
+function writeGithooks(root: string, cli: string, kit: string, handOff: boolean, env: Env): string[] {
+  const olds = handOff ? readOldHooks(root, env).filter((old) => old.handOff === 'yes') : [];
   const lines: string[] = [];
   const others = olds.map((old) => old.hook).filter((hook) => !isCommitHook(hook));
   for (const hook of [...COMMIT_HOOKS, ...others]) {
@@ -905,7 +1274,7 @@ function writeGithooks(root: string, cli: string, kit: string, handOff: boolean)
         writeFileSync(path, placed);
         chmodSync(path, statSync(path).mode | 0o111);
       }
-      lines.push(`${placed !== null ? 'updated' : result === 'same' ? 'kept' : result} ${rel}`);
+      lines.push(`${placed !== null ? 'updated' : checkWords(result)} ${rel}`);
     }
     if (old) lines.push(`kept your ${old.file}: ${rel} runs it${isCommitHook(hook) ? ' after the check' : ''}`);
   }
@@ -913,11 +1282,11 @@ function writeGithooks(root: string, cli: string, kit: string, handOff: boolean)
 }
 
 /** Point git at the commit check: set .githooks, or add the check to the project's own pre-commit. */
-function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: string[]): string[] {
+function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: string[], env: Env): string[] {
   if (hooks.kind === 'no repo') return ['not a git repo: run `git init`, then `git config core.hooksPath .githooks`'];
   if (hooks.kind === 'plain') {
-    const unset = readLocalHooksPath(root) === '';
-    const olds = readOldHooks(root);
+    const unset = readLocalHooksPath(root, env) === '';
+    const olds = readOldHooks(root, env);
     const dead = deadHookNotes(olds).map((line) => `note: ${line}`);
     const managers = HOOK_MANAGERS.filter((name) => existsSync(join(root, name))).join(' and ');
     if (blocks.length) {
@@ -928,8 +1297,11 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: str
     const handed = olds.filter((old) => old.handOff === 'yes' && hasHandOff(readFileSync(join(root, '.githooks', old.hook), 'utf8'), old.hook));
     const list = handed.map((old) => `${old.file}${isCommitHook(old.hook) ? ' (after the check)' : ''}`).join(', ');
     const note = handed.length && managers ? [`note: ${managers} is here; .githooks runs these hooks in .git/hooks: ${list}. A hook it installs later does not run until \`yokoten init\` hands off to it, and \`yokoten doctor\` names it`] : [];
-    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, stdio: 'pipe' });
-    return ['set git core.hooksPath to .githooks (the commit check)', ...note, ...dead];
+    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: root, env, stdio: 'pipe' });
+    // The answers kept so far name the old value.
+    forgetGitReads();
+    // init moves this line to the start of the report (#654).
+    return ['git hook: on (the commit check runs from .githooks)', ...note, ...dead];
   }
   const { hooksPath } = hooks;
   const fileOf = (hook: CommitHook) => (hooksPath ? hookFile(root, hooksPath, hook) : `.husky/${hook}`);
@@ -939,7 +1311,7 @@ function setCommitCheck(root: string, cli: string, hooks: HookSetup, blocks: str
   }
   const lines = COMMIT_HOOKS.map((hook) => {
     const file = fileOf(hook) as string;
-    return `${addCheckLines(join(root, file), cli)} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
+    return `${checkWords(addCheckLines(join(root, file), cli))} ${file}: the commit check (kept ${owner}, so the project's own hooks still run)`;
   });
   if (!hooksPath) lines.push('husky is not set up in this clone yet: run `npm install` (husky sets core.hooksPath), and the check runs from .husky/pre-commit and .husky/pre-merge-commit');
   return lines;
@@ -1105,9 +1477,9 @@ export function moveUnderProjectHeading(project: string, kit: string): MovedRule
 export const AGENTS_BACKUP = 'AGENTS.md.before-yokoten';
 
 /** Whether HEAD has this file with these exact bytes, so git can give it back. */
-function isInHead(root: string, rel: string, bytes: Buffer): boolean {
+function isInHead(root: string, rel: string, bytes: Buffer, env: Env): boolean {
   try {
-    const committed = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+    const committed = execFileSync('git', ['show', `HEAD:${rel}`], { cwd: root, env, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
     return committed.equals(bytes);
   } catch {
     return false;
@@ -1119,7 +1491,7 @@ function isInHead(root: string, rel: string, bytes: Buffer): boolean {
  * heading. Returns the report lines. The old file can always come back: from git when
  * HEAD has it as it is, or else from a copy next to it.
  */
-function addCoreRules(root: string, kit: string): string[] {
+function addCoreRules(root: string, kit: string, env: Env): string[] {
   const path = join(root, 'AGENTS.md');
   if (lstatSync(path).isSymbolicLink()) {
     return [`kept AGENTS.md: it is a link to ${readlinkSync(path)}, so yokoten did not write the core rules into it. Put them in by hand, above a \`${PROJECT_HEADING}\` heading`];
@@ -1129,7 +1501,7 @@ function addCoreRules(root: string, kit: string): string[] {
   if (findProjectStart(project) !== -1) return ['kept AGENTS.md (`yokoten update` brings its core rules up to date)'];
   if (findProjectStart(kit) === -1) return [`kept AGENTS.md: the kit's AGENTS.md has no \`${PROJECT_HEADING}\` heading; report it in an issue at yokoten`];
   let restore = 'to get the old file back: `git checkout HEAD -- AGENTS.md`';
-  if (!isInHead(root, 'AGENTS.md', bytes)) {
+  if (!isInHead(root, 'AGENTS.md', bytes, env)) {
     const backup = join(root, AGENTS_BACKUP);
     if (existsSync(backup) && !readFileSync(backup).equals(bytes)) {
       return [`kept AGENTS.md: it has no \`${PROJECT_HEADING}\` heading, and ${AGENTS_BACKUP} is there already, so yokoten kept both as they are. Move ${AGENTS_BACKUP} away, then run \`yokoten init\` again`];

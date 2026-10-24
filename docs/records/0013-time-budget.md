@@ -36,7 +36,7 @@ On a WSL 2 laptop, a guard call took about 88 ms and a session start about 145 m
 - **The guard starts its worker first,** before the command loads. The worker then starts
   while the hook loads and reads the call.
 - **Doctor asks git each question once per run.**
-- **A budget, checked in CI.** `scripts/bench.ts` makes a new repo with `init` and runs
+- **A budget, checked in CI.** `scripts/time/bench.ts` makes a new repo with `init` and runs
   each hook entry from its `.yokoten/` copy, as the hooks do: the guard on a Bash call and
   on an Edit call, the session start, and the commit check. It runs at low priority and
   takes the median (p50) and p95 of 10 runs. It fails over this budget, on a CI Linux

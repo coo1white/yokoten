@@ -29,7 +29,7 @@ import {
   walk,
   yokotenActions,
 } from '../../src/setup/road.ts';
-import { assertLinear } from '../../scripts/linear.ts';
+import { assertLinearEach } from '../../scripts/linear.ts';
 
 const step = (stage: number, key: string): Step => ({ stage, key, check: () => false, what: () => key, fix: () => key, why: key, how: key });
 
@@ -247,11 +247,14 @@ test('road: the tests step reads a big workflow in linear time (#257)', () => {
     ['make -C flags', (n) => `- run: make ${'-Cx '.repeat(n / 4)}`],
     ['npm workspaces flags', (n) => `- run: npm -w ${'-a b '.repeat(n / 5)}`],
   ];
-  for (const [name, make] of inputs) {
-    for (const workspaces of [false, true]) {
-      assertLinear(`${name}, workspaces ${workspaces}`, make, (ci) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name));
-    }
-  }
+  // From 4096 characters to 8 times that. A reader that goes over the text again
+  // for each character is thousands of times over at that size.
+  assertLinearEach(
+    inputs.flatMap(([name, make]) =>
+      [false, true].map((workspaces) => ({ name: `${name}, workspaces ${workspaces}`, make, read: (ci: string) => assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name) })),
+    ),
+    4096,
+  );
 });
 
 // Each pattern that repeats over a line, as one `run:` line of about n characters (#322).
@@ -278,28 +281,30 @@ for (const [name, start, repeat] of [
 ]) {
   LONG_LINES.push([name, (n) => `${start}${repeat.repeat(n / repeat.length)}`]);
 }
-// The big input of assertLinear is 8x this: 500,000 characters.
-const LONG_LINE_SIZE = 500_000 / 8;
+// The linear proof reads 8192 characters and 8x that (#474); each line is then read once at 500,000
+// characters, for the RangeError a long input can raise (#322).
+const LONG_LINE_SIZE = 8192;
+const LONG_LINE_BIG = 500_000;
 
 test('road: a run line of 500,000 characters reads in linear time, with no RangeError (#322)', () => {
-  for (const [name, make] of LONG_LINES) {
-    assertLinear(
-      name,
-      (n) => `- run: ${make(n)}`,
-      (ci) => {
-        for (const workspaces of [false, true]) assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
-        assert.equal(ciSteps(ci).ci, false, name);
-      },
-      LONG_LINE_SIZE,
-    );
-  }
+  const readLine = (name: string) => (ci: string) => {
+    for (const workspaces of [false, true]) assert.equal(runsTests(ci, 'vitest run x', workspaces), false, name);
+    assert.equal(ciSteps(ci).ci, false, name);
+  };
+  const lines = LONG_LINES.map(([name, make]) => ({ name, make: (n: number) => `- run: ${make(n)}`, read: readLine(name) }));
+  assertLinearEach(lines, LONG_LINE_SIZE);
+  for (const { make, read } of lines) read(make(LONG_LINE_BIG));
   // The same line still counts when the runner comes at its end.
   assert.equal(runsTests(`- run: node${' -a'.repeat(150_000)} --test`, '', false), true);
   assert.equal(runsTests(`- run: pnpm${' -a b'.repeat(100_000)} -r test`, '', true), true);
   assert.equal(runsTests(`- run: ${'A=b '.repeat(125_000)}go test`, '', false), true);
   // A uses line whose ref has up to 250,000 words.
-  assertLinear('a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`, (ci) => assert.deepEqual(yokotenActions(ci), []), LONG_LINE_SIZE);
-  assertLinear('a uses ref of words and a comment', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}# v1`, (ci) => assert.deepEqual(yokotenActions(ci), [{ prCheck: true }]), LONG_LINE_SIZE);
+  const refs = [
+    { name: 'a uses ref of words', make: (n: number) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`, read: (ci: string) => assert.deepEqual(yokotenActions(ci), []) },
+    { name: 'a uses ref of words and a comment', make: (n: number) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}# v1`, read: (ci: string) => assert.deepEqual(yokotenActions(ci), [{ prCheck: true }]) },
+  ];
+  assertLinearEach(refs, LONG_LINE_SIZE);
+  for (const { make, read } of refs) read(make(LONG_LINE_BIG));
 });
 
 test('road: a workflow check that throws a RangeError is "can\'t check", and other errors still throw (#322)', () => {
@@ -313,8 +318,8 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   const lint = testsStep({ 'package.json': JSON.stringify({ scripts: { lint: 'eslint .' } }), ...workflow('npm run lint') });
   assert.deepEqual(lint, { done: false, what: 'no test command: no "test" script in package.json, and no workflow runs a test runner' });
   const go = testsStep({ 'go.mod': 'module example.com/x\n' });
-  assert.deepEqual(go, { done: false, what: 'no workflow runs a test command such as `go test`' });
-  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'no workflow runs a test command such as `pytest`');
+  assert.deepEqual(go, { done: false, what: 'this looks like a Go project, and no workflow runs its tests with `go test`' });
+  assert.equal(testsStep({ 'pyproject.toml': '[project]\nname = "x"\n' }).what, 'this looks like a Python project, and no workflow runs its tests with `pytest`');
   assert.equal(testsStep({}).what, 'no workflow runs a test command such as `go test`, `pytest` or `cargo test`');
   for (const files of [{ 'go.mod': '' }, { 'pyproject.toml': '' }, {}] as Record<string, string>[]) assert.doesNotMatch(testsStep(files).what, /package\.json/);
   // A workspaces root with no script: each package's tests, not a root script.
@@ -324,7 +329,7 @@ test('road: the tests step stays next with only a lint step, and says what is mi
   const dir = makeTempDir('yokoten-tests-fix-');
   try {
     writeFileSync(join(dir, 'package.json'), NPM_WS['package.json']);
-    assert.equal(tests?.fix(dir, {}, undefined), 'add a step that runs `npm test --workspaces` to a workflow in .github/workflows');
+    assert.match(tests?.fix(dir, {}, undefined) ?? '', /\{run: npm test --workspaces\}\]\}`\. Then add `tests` to the `needs` list of the `ci` job/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -345,13 +350,18 @@ test('road: the Action and its trigger read a big workflow in linear time (#298)
     ['npx flags', (n) => `- run: npx ${'-y '.repeat(n / 3)}`],
     ['a uses ref of words', (n) => `- uses: yokoten-labs/yokoten@${'a '.repeat(n / 2)}"`],
   ];
-  for (const [name, make] of inputs) {
-    assertLinear(name, make, (ci) => {
-      assert.deepEqual(yokotenActions(ci), [], name);
-      assert.equal(onPullRequest(ci), false, name);
-      assert.equal(ciSteps(ci).ci, false, name);
-    });
-  }
+  assertLinearEach(
+    inputs.map(([name, make]) => ({
+      name,
+      make,
+      read: (ci: string) => {
+        assert.deepEqual(yokotenActions(ci), [], name);
+        assert.equal(onPullRequest(ci), false, name);
+        assert.equal(ciSteps(ci).ci, false, name);
+      },
+    })),
+    4096,
+  );
 });
 
 test("road: init's CODEOWNERS with the placeholder owner is to do; with a real owner, or a project's own file, it is done (#304)", () => {
@@ -371,6 +381,28 @@ test("road: init's CODEOWNERS with the placeholder owner is to do; with a real o
   assert.equal(codeowners.what(none, {}, undefined), 'no CODEOWNERS file');
 });
 
+test('road: make the repo, add the remote and push come before the CODEOWNERS handle and the labels (#655)', () => {
+  const sandbox = makeSandbox();
+  const remote = ROAD.find((s) => s.key === 'remote')!;
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false);
+  assert.equal(remote.what(sandbox.repo, sandbox.env, undefined), 'there is no origin remote, so the work is only on this machine');
+  assert.equal(remote.fix(sandbox.repo, sandbox.env, undefined), 'make the repo on your code host, add it as origin (`git remote add origin <url>`), and push (`git push -u origin --all`)');
+  sandbox.git('remote', 'add', 'origin', 'https://example.com/octo/app.git');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false);
+  assert.equal(remote.what(sandbox.repo, sandbox.env, undefined), 'the origin remote has no branch from this repo, so the work is only on this machine');
+  assert.equal(remote.fix(sandbox.repo, sandbox.env, undefined), 'push it: `git push -u origin --all`');
+  sandbox.git('commit', '--allow-empty', '-qm', 'first');
+  // A branch on another remote is not origin's, so the step stays not done (#655).
+  sandbox.git('remote', 'add', 'upstream', 'https://example.com/octo/fork.git');
+  sandbox.git('update-ref', 'refs/remotes/upstream/main', 'HEAD');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), false, "another remote's branch is not origin's");
+  sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  assert.equal(remote.check(sandbox.repo, sandbox.env, undefined), true);
+  const keys = ROAD.map((s) => s.key);
+  assert.ok(keys.indexOf('remote') < keys.indexOf('labels'), 'labels come after the remote');
+  assert.ok(keys.indexOf('remote') < keys.indexOf('codeowners'), 'the handle comes after the remote');
+});
+
 // #408: a session start asked git for core.hooksPath four times. In one doctor run the
 // answer is kept; the next run asks again, so a change in between is seen.
 test('road: inside one doctor run each git answer is kept; the next run asks git again (#408)', () => {
@@ -378,13 +410,13 @@ test('road: inside one doctor run each git answer is kept; the next run asks git
   const set = (value: string) => execFileSync('git', ['config', 'core.hooksPath', value], { cwd: sandbox.repo, env: sandbox.env });
   set('one');
   const seen = withGitReads(() => {
-    const first = gitConfig(sandbox.repo, 'core.hooksPath');
+    const first = gitConfig(sandbox.repo, 'core.hooksPath', process.env);
     set('two');
-    return [first, gitConfig(sandbox.repo, 'core.hooksPath')];
+    return [first, gitConfig(sandbox.repo, 'core.hooksPath', process.env)];
   });
   assert.deepEqual(seen, ['one', 'one'], 'kept within the run');
-  assert.equal(gitConfig(sandbox.repo, 'core.hooksPath'), 'two', 'asked again outside it');
-  assert.deepEqual(withGitReads(() => gitConfig(sandbox.repo, 'core.hooksPath')), 'two', 'a new run asks again');
+  assert.equal(gitConfig(sandbox.repo, 'core.hooksPath', process.env), 'two', 'asked again outside it');
+  assert.deepEqual(withGitReads(() => gitConfig(sandbox.repo, 'core.hooksPath', process.env)), 'two', 'a new run asks again');
 });
 
 // ---- The license file (#376): LICENSE, LICENCE and COPYING in any case, with any suffix. ----
@@ -407,5 +439,239 @@ test('road: a license file counts in each form, the Rust dual layout too', () =>
     assert.ok(!license(), 'LICENSE-MIT and LICENSE-APACHE are a license');
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- The sandbox step (#589): missing, good, and too wide, each with its one fix. ----
+
+/** A scratch project with these sandbox files: the path and the text to write. */
+function sandboxProject(files: Record<string, string>): string {
+  const dir = makeTempDir('yokoten-sandbox-step-');
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+  return dir;
+}
+
+/** The four sandbox files as init writes them. */
+function goodSandboxFiles(): Record<string, string> {
+  return {
+    '.claude/settings.json': JSON.stringify({ sandbox: { enabled: true } }),
+    '.codex/config.toml': 'sandbox_mode = "workspace-write"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n',
+    '.gemini/settings.json': JSON.stringify({ security: { disableYoloMode: true } }),
+    '.grok/sandbox.toml': '[profiles.yokoten]\nextends = "workspace"\n',
+  };
+}
+
+test('road: the sandbox step is missing, then done, then names each too-wide value (#589)', () => {
+  const found = ROAD.find((entry) => entry.key === 'sandbox');
+  assert.ok(found);
+  assert.equal(found.stage, 4);
+  const env = { HOME: makeTempDir('yokoten-sandbox-home-') };
+  try {
+    const empty = sandboxProject({});
+    try {
+      assert.equal(found.check(empty, env, undefined), false);
+      assert.equal(found.what(empty, env, undefined), 'no sandbox in .claude/settings.json');
+      assert.equal(found.fix(empty, env, undefined), '`yokoten init` adds it');
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+    const good = sandboxProject(goodSandboxFiles());
+    try {
+      assert.equal(found.check(good, env, undefined), true);
+    } finally {
+      rmSync(good, { recursive: true, force: true });
+    }
+    const cases: [string, Record<string, string>, RegExp, RegExp][] = [
+      ['claude allows every host', { ...goodSandboxFiles(), '.claude/settings.json': JSON.stringify({ sandbox: { enabled: true, network: { allowedDomains: ['*'] } } }) }, /allows every network host/, /allowedDomains/],
+      ['codex runs without a sandbox', { ...goodSandboxFiles(), '.codex/config.toml': 'sandbox_mode = "danger-full-access"\napproval_policy = "on-request"\n\n[sandbox_workspace_write]\nnetwork_access = false\n' }, /danger-full-access/, /workspace-write/],
+      ['gemini allows YOLO mode', { ...goodSandboxFiles(), '.gemini/settings.json': JSON.stringify({ security: { disableYoloMode: false } }) }, /YOLO mode is allowed/, /disableYoloMode/],
+      ['grok writes almost everywhere', { ...goodSandboxFiles(), '.grok/sandbox.toml': '[profiles.yokoten]\nextends = "devbox"\n' }, /devbox/, /workspace/],
+    ];
+    for (const [name, files, what, fix] of cases) {
+      const dir = sandboxProject(files);
+      try {
+        assert.equal(found.check(dir, env, undefined), false, name);
+        assert.match(found.what(dir, env, undefined), what, name);
+        assert.match(found.fix(dir, env, undefined), fix, name);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    rmSync(env.HOME, { recursive: true, force: true });
+  }
+});
+
+// A reader for the one-line flow job doctor prints (#653). It accepts the subset that line uses.
+const parseFlow = (text: string): unknown => {
+  let index = 0;
+  const skip = () => {
+    while (text[index] === ' ') index++;
+  };
+  const fail = (what: string): never => {
+    throw new Error(`${what} at ${index}: ${text.slice(index, index + 20)}`);
+  };
+  const parseString = (): string => {
+    index++;
+    let out = '';
+    while (index < text.length && text[index] !== '"') {
+      if (text[index] === '\\') {
+        index++;
+        const escaped = text[index];
+        out += escaped === 'n' ? '\n' : escaped === 't' ? '\t' : escaped;
+      } else out += text[index];
+      index++;
+    }
+    if (text[index] !== '"') fail('open string');
+    index++;
+    return out;
+  };
+  const parse = (): unknown => {
+    skip();
+    if (text[index] === '{') return parseMap();
+    if (text[index] === '[') return parseList();
+    if (text[index] === '"') return parseString();
+    const start = index;
+    while (index < text.length && text[index] !== ',' && text[index] !== '}' && text[index] !== ']') index++;
+    const raw = text.slice(start, index).trim();
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    if (raw === 'null') return null;
+    if (/^-?\d+$/.test(raw)) return Number(raw);
+    return raw;
+  };
+  const parseKey = (): string => {
+    skip();
+    if (text[index] === '"') return parseString();
+    const start = index;
+    while (index < text.length && text[index] !== ':' && text[index] !== ' ') index++;
+    if (start === index) fail('key');
+    return text.slice(start, index);
+  };
+  const parseMap = (): Record<string, unknown> => {
+    const map: Record<string, unknown> = {};
+    index++;
+    skip();
+    if (text[index] === '}') {
+      index++;
+      return map;
+    }
+    for (;;) {
+      const key = parseKey();
+      skip();
+      if (text[index] !== ':') fail('colon');
+      index++;
+      map[key] = parse();
+      skip();
+      if (text[index] === ',') {
+        index++;
+        continue;
+      }
+      if (text[index] === '}') {
+        index++;
+        return map;
+      }
+      fail('comma or brace');
+    }
+  };
+  const parseList = (): unknown[] => {
+    const list: unknown[] = [];
+    index++;
+    skip();
+    if (text[index] === ']') {
+      index++;
+      return list;
+    }
+    for (;;) {
+      list.push(parse());
+      skip();
+      if (text[index] === ',') {
+        index++;
+        continue;
+      }
+      if (text[index] === ']') {
+        index++;
+        return list;
+      }
+      fail('comma or bracket');
+    }
+  };
+  skip();
+  let value: unknown;
+  if (text[index] === '{' || text[index] === '[') value = parse();
+  else {
+    const key = parseKey();
+    skip();
+    if (text[index] !== ':') fail('colon');
+    index++;
+    value = { [key]: parse() };
+  }
+  skip();
+  if (index !== text.length) fail('end');
+  return value;
+};
+
+const isBalanced = (text: string) => {
+  const open: Record<string, string> = { '{': '}', '[': ']' };
+  const close = new Set(Object.values(open));
+  const stack: string[] = [];
+  for (const mark of text) {
+    const expected = open[mark];
+    if (expected) stack.push(expected);
+    else if (close.has(mark) && stack.pop() !== mark) return false;
+  }
+  return stack.length === 0;
+};
+
+// #501, #653: the tests step says where the CI job goes. For Node it is real YAML on one line.
+test('road: the tests step names the workflow file, the job to add and the needs list of ci (#501)', () => {
+  const tests = ROAD.find((s) => s.key === 'tests');
+  const dir = makeTempDir('yokoten-tests-where-');
+  try {
+    const fix = () => tests?.fix(dir, {}, undefined) ?? '';
+    // No workflow file yet: init adds it first. No package.json: a placeholder command.
+    assert.equal(fix(), 'run `yokoten init` to add .github/workflows/yokoten.yml, then in it, add this job under `jobs:`. Copy the `uses:` lines from the other jobs, because they are pinned: `tests: {runs-on: ubuntu-latest, steps: [<the checkout step of the other jobs>, {run: <your test command>}]}`. Then add `tests` to the `needs` list of the `ci` job, so a failing test blocks the merge');
+    // A test script and a pinned checkout: one line of real YAML a beginner can paste.
+    const pin = '3d3c42e5aac5ba805825da76410c181273ba90b1';
+    const setup = 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1';
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run' } }));
+    writeFileSync(join(dir, 'package-lock.json'), '{}');
+    mkdirSync(join(dir, '.github', 'workflows'), { recursive: true });
+    const workflow = ['jobs:', '  ci:', '    steps:', `      - uses: actions/checkout@${pin} # v7.0.1`, '        with:', '          persist-credentials: false', ''].join('\n');
+    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflow);
+    const text = fix();
+    assert.equal(text.includes('\n'), false, 'the fix is one line');
+    assert.equal(text.includes('<'), false);
+    assert.match(text, /paste this under `jobs:`/);
+    assert.match(text, /add `tests` to the `needs` list of `ci`/);
+    const body = /`(tests: \{.*\})`/.exec(text)?.[1];
+    assert.ok(body);
+    assert.equal(isBalanced(body), true);
+    assert.ok(body.includes(pin) && body.includes(setup) && body.includes('npm ci') && body.includes('npm test'));
+    assert.deepEqual(parseFlow(body), {
+      tests: {
+        'runs-on': 'ubuntu-latest',
+        'timeout-minutes': 10,
+        steps: [
+          { uses: `actions/checkout@${pin}`, with: { 'persist-credentials': false } },
+          { uses: setup, with: { 'node-version': '^22.23.4' } },
+          { run: 'npm ci' },
+          { run: 'npm test' },
+        ],
+      },
+    });
+    // A tag is not a commit pin, so the advice invents no SHA.
+    writeFileSync(join(dir, '.github', 'workflows', 'yokoten.yml'), workflow.replace(`actions/checkout@${pin}`, 'actions/checkout@v7.0.1'));
+    const loose = fix();
+    assert.equal(loose.includes('\n'), false);
+    assert.equal(loose.includes('<'), false);
+    assert.equal(/[0-9a-f]{40}/.test(loose), false);
+    assert.match(loose, /checkout step is not pinned/);
+    assert.match(loose, /Pin it, then run `yokoten init`/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -5,21 +5,25 @@
 name: yokoten
 on:
   pull_request:
+  # A merge queue runs the same checks as a pull request: every job below also runs
+  # on a merge group. Turn the queue on in the repo settings.
+  merge_group:
   push:
     branches: [main]
 # No job gets a permission it does not name.
 permissions: {}
-# A newer run cancels the one still going for the same pull request or branch. On main,
-# the newest run tests everything the older ones would have, so a merge never waits
-# behind runs that no longer matter.
+# A newer run cancels the one still going for the same pull request: only its newest
+# commit can merge. Every other event gets a group of its own, so a run on main is never
+# cancelled, waiting or running: every commit stays in history (#660, #798).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Which files the pull request changes (#438). It is docs-only when each file is under
   # docs/ or changes/, or is a README.md or CHANGELOG.md outside kit/. Then the jobs that
-  # Markdown can't break are skipped. A push to main is a full run. So is a file list
-  # that can't be read: docs_only is true only when the list was read and every file fits.
+  # Markdown can't break are skipped. A push to main is a full run, and so is a merge
+  # queue group. So is a file list that can't be read: docs_only is true only when the
+  # list was read and every file fits.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -74,8 +78,17 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version: '^22.23.4'
       - run: node {{cli}} check
+      # yokoten as a released Action (#129), pinned to the first release by its full
+      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the
+      # release's own copy, so a pull request that changes .yokoten/ still meets a check
+      # it cannot edit. pr.yml and issue.yml still run the project's copy.
+      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0
+        with:
+          pr-check: 'false'
+          issue-check: 'false'
+          node-version: '^22.23.4'
   # The workflows themselves: actionlint finds mistakes, zizmor finds security problems.
   lint:
     runs-on: ubuntu-latest

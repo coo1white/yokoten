@@ -4,10 +4,23 @@
 // real home folder or ~/.config/yokoten, even when the suite runs without
 // HOME=$(mktemp -d), and a test that still reaches for the home folder fails the same way on
 // every machine. Child processes inherit it. The architecture test checks the import.
+//
+// Yokoten's own variables are removed too (#712). A test must not see the session that
+// started the suite: YOKOTEN_ROLE, YOKOTEN_DESK and the rest. The architecture test checks it.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/**
+ * Drop yokoten's own variables from `env` (#712). A test must not see the session
+ * that started the suite.
+ */
+export function clearYokotenEnv(env: NodeJS.ProcessEnv): void {
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('YOKOTEN_')) delete env[name];
+  }
+}
 
 /** Variables that point into the real home folder, or at a file kept there. */
 export const HOME_VARIABLES = [
@@ -28,7 +41,19 @@ export const HOME_VARIABLES = [
 /** The empty home folder this test file runs with. Removed when the process exits. */
 export const TEST_HOME = mkdtempSync(join(tmpdir(), 'yokoten-home-'));
 
+clearYokotenEnv(process.env);
 for (const name of HOME_VARIABLES) delete process.env[name];
+// Nothing a child leaves running may write into a test's folder after the test removed it
+// (#436). gh sends telemetry from a process it leaves behind, which writes into the home
+// folder. Git runs automatic maintenance after a commit, in the background on newer
+// versions, and its worktree prune can race a `git worktree add` (#442). makeSandbox sets
+// the same for its own environment.
+process.env.GH_TELEMETRY = '0';
+process.env.GIT_CONFIG_COUNT = '2';
+process.env.GIT_CONFIG_KEY_0 = 'maintenance.auto';
+process.env.GIT_CONFIG_VALUE_0 = 'false';
+process.env.GIT_CONFIG_KEY_1 = 'gc.auto';
+process.env.GIT_CONFIG_VALUE_1 = '0';
 process.env.HOME = TEST_HOME;
 process.env.USERPROFILE = TEST_HOME;
 process.env.XDG_CONFIG_HOME = join(TEST_HOME, '.config');
@@ -41,3 +66,30 @@ process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
  */
 export const COMPILE_CACHE = join(tmpdir(), 'node-compile-cache');
 process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;
+
+// The commit check reads the password-database home when $HOME has no marks file (#739).
+// Point that read at nothing, after HOME is set, so no test opens the real marks file.
+const { useRealHome } = await import('../../src/rules/privacy.ts');
+useRealHome(() => '');
+
+// A child does not import this file: that would point its HOME at a new empty folder.
+// --import would load the child program as an ES module. Node then refuses a name it
+// does not know, such as the fake gh.exe (#750). --require runs CommonJS, sets the same
+// slot as useRealHome, and leaves the program's own format alone. The script is in the
+// temp folder, so test/repo stays at 7 files (#739, #356).
+// test files run side by side, and every one of them writes this same file. writeFileSync
+// empties it first, so a child that started in that moment read an empty script, found no
+// slot and failed the privacy test. Write a private copy and rename it into place:
+// rename is atomic, so a reader always sees the whole file.
+const preloadFile = join(tmpdir(), 'yokoten-real-home.cjs');
+const preloadDraft = join(tmpdir(), `yokoten-real-home-${process.pid}.cjs`);
+writeFileSync(preloadDraft, "globalThis[Symbol.for('yokoten.readRealHome')] = () => '';\n");
+renameSync(preloadDraft, preloadFile);
+const flag = `--require ${JSON.stringify(preloadFile)}`;
+if (!process.env.NODE_OPTIONS?.includes(flag)) {
+  process.env.NODE_OPTIONS = process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${flag}` : flag;
+}
+
+// Tests call the guard without the hook. The host command list registers when its module
+// loads. Load it here, after HOME is set, so nothing it imports reads the real home folder.
+await import('../../src/host/gh-commands.ts');

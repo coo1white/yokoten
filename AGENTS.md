@@ -13,8 +13,8 @@ skill: find the cause, add or fix the check, then carry the fix to the other pro
 
 ## Roles
 
-- **The owner** decides what is built and when it ships. Only the owner approves pull
-  requests, creates release tags, and changes repo settings.
+- **The owner** decides what is built and when it ships. Only the owner approves tier A
+  pull requests, creates release tags, and changes repo settings.
 - **The lead** is the session the owner talks to. It plans, splits the work, reviews,
   commits and opens pull requests (as the bot, never as the owner).
 - **A worker** is a session the lead starts for one task, in its own worktree, with
@@ -83,7 +83,7 @@ agent, understands without scrolling back. The yokoten guide says why:
 yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
 `yokoten init`, and the hooks here run `bin/yokoten.ts` directly.
 
-- **Test**: `node --test` (Node 22.18 or later). **Types**: `npm run typecheck`.
+- **Test**: `node --test` (Node 22.23.4 or later, or 24.22.1 / 26.12.1, for the October 2026 security fixes). **Types**: `npm run typecheck`.
   **Check**: `node bin/yokoten.ts check`.
 - **No runtime dependencies.** Node's standard library only. A hook that needs
   `npm install` first is a hook that does not run on a fresh machine. TypeScript and
@@ -92,8 +92,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   Only the npm package is built: `npm pack` emits `dist/` (git-ignored), because Node
   does not strip types under `node_modules` (record 0008). So only syntax it can erase
   (`erasableSyntaxOnly`): no `enum`, no `namespace`, no parameter properties. Imports
-  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`, except
-  `bin/yokoten.mjs`, the hook entry that turns on the compile cache first (record 0013)
+  name the `.ts` file. Code is `.ts` only: no `.js`, `.mjs`, `.cjs` or `.tsx`, except two
+  plain JavaScript entries the hooks start directly: `bin/yokoten.mjs`, which turns on the
+  compile cache first (record 0013), and `bin/launch.mjs`, the Claude Code plugin hook that
+  picks a safe plugin copy (#706)
   (`test/repo/architecture.test.ts` holds this). No Python, no shell beyond the one-line git
   hook.
 - **Layers.** `src/` has six, lowest first; a module imports only from its own
@@ -111,8 +113,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   - `setup/`: `install`, `init` and `doctor`, writing yokoten into a machine or a
     project. `road.ts` is the road `doctor` walks: one table of stages and steps.
   - `commands/`: one module per command or small group, which `bin/main.ts` calls;
-    `shared.ts` holds what several commands use (#330). `bin/main.ts` keeps help and
-    dispatch only.
+    `shared.ts` holds what several commands use (#330). `bin/main.ts` keeps help,
+    dispatch, and `runFromProcess`, the one place that reads the process (#475). A
+    command gets an `Invocation`: plain data (args, env, cwd, streams), never a bag of
+    services.
 - **Names** (record 0006): the core "Names" rules, in TypeScript. Short forms: `id`,
   `url`, `pr`, `ci`, `env`, `config`, `repo`, `dir`, `json`, `html`. `camelCase` for
   values and functions, `PascalCase` for types, `CONSTANT_CASE` only for fixed values at
@@ -124,9 +128,10 @@ yokoten is its own first user: this file came from `kit/project/AGENTS.md` by
   it. Decisions go in `docs/records/`; what went wrong and what check now holds it goes
   in an issue labelled `incident`, and the rule's "why" in `AGENTS.md` points to it.
 - **`kit/` is what other projects get.** `install` replaces the skills and agents it
-  manages on each machine. `init` adds only missing files; the one
-  exception is an `AGENTS.md` without `## This project`, which gets the core rules on top
-  and its own text moved under that heading, once. After that the core rules in it change when the project runs
+  manages on each machine. `init` adds only missing files, with two exceptions. A kit
+  workflow still byte for byte an older kit copy (`kit/workflow-hashes.json`) is replaced
+  with the newest; a changed one is kept. An `AGENTS.md` without `## This project` gets
+  the core rules on top and its own text moved under that heading, once. After that the core rules in it change when the project runs
   `yokoten update --write`; `doctor` says when they are behind. Say so in the pull request.
 - **Safe by default, with a way back** (record 0014): every user gets the safe action
   with no question. Each new action names its tier (do by default, ask first, never,

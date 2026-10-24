@@ -15,7 +15,7 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 
-test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', () => {
+test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', async () => {
   const sandbox = makeSandbox();
   // Inside the sandbox home, so the folder shows as ~.
   const away = join(sandbox.home, 'away');
@@ -36,7 +36,7 @@ test('outside a git repo: every command that needs one says so plainly, exits 1 
     [['bot', '--', 'gh', 'issue', 'list'], 'bot', { YOKOTEN_BOT_APP_ID: '1' }],
   ];
   for (const [args, command, extra] of runs) {
-    const result = sandbox.run(args, { cwd: away, extra });
+    const result = await sandbox.call(args, { cwd: away, extra });
     assert.equal(result.status, 1, args.join(' '));
     assert.equal(result.stdout, '', `${args.join(' ')}: nothing on stdout`);
     assert.match(result.stderr, said(command), args.join(' '));
@@ -44,7 +44,7 @@ test('outside a git repo: every command that needs one says so plainly, exits 1 
   }
   // --json: the same finding, as data.
   for (const args of [['check', '--json'], ['doctor', '--json']]) {
-    const result = sandbox.run(args, { cwd: away });
+    const result = await sandbox.call(args, { cwd: away });
     assert.equal(result.status, 1, args.join(' '));
     const out = JSON.parse(result.stdout);
     assert.equal(out.ok, false);
@@ -52,31 +52,31 @@ test('outside a git repo: every command that needs one says so plainly, exits 1 
     assert.equal(found?.what, '~/away is not inside a git repo', args.join(' '));
   }
   // init in a folder that does not exist creates nothing: a typo never becomes a project.
-  const result = sandbox.run(['init', 'typo'], { cwd: away });
+  const result = await sandbox.call(['init', 'typo'], { cwd: away });
   assert.equal(result.status, 1);
   assert.equal(result.stderr, 'yokoten init: typo does not exist; nothing was written. Create it and run `git init` there first.\n');
   assert.deepEqual(readdirSync(away), [], 'no folder made');
   // A session in a non-repo folder gets no noise, and starts.
-  const session = sandbox.run(['doctor', '--session'], { cwd: away });
+  const session = await sandbox.call(['doctor', '--session'], { cwd: away });
   assert.deepEqual([session.status, session.stdout, session.stderr], [0, '', '']);
   // changelog reads changes/ only, and needs no git.
-  assert.equal(sandbox.run(['changelog'], { cwd: away }).status, 0);
+  assert.equal((await sandbox.call(['changelog'], { cwd: away })).status, 0);
 });
 
-test('git not installed: a command that needs a repo says git is missing, not "not a repo" (#205)', () => {
+test('git not installed: a command that needs a repo says git is missing, not "not a repo" (#205)', async () => {
   const sandbox = makeSandbox();
   // Only node on the PATH.
   const noGit = join(sandbox.home, 'no-git');
   mkdirSync(noGit);
   symlinkSync(process.execPath, join(noGit, 'node'));
   for (const command of ['check', 'doctor']) {
-    const result = sandbox.run([command], { extra: { PATH: noGit } });
+    const result = await sandbox.call([command], { extra: { PATH: noGit } });
     assert.equal(result.status, 1, command);
     assert.match(result.stderr, new RegExp(`^yokoten ${command}: git is not installed \\(or not on PATH\\); yokoten needs git\\. `), command);
   }
 });
 
-test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', () => {
+test('--json: check, doctor, hook and explain print pure JSON with what, why and fix; never a private value (#42)', async () => {
   const sandbox = makeSandbox();
   const marks = join(sandbox.home, 'marks');
   writeFileSync(marks, 'mycity\n');
@@ -95,13 +95,14 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   };
 
   // check: the text form says what, why and fix on each line.
-  let result = sandbox.run(['check', '--staged'], { extra: { ...extra, GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' } });
+  // The entry, through the real binary; the rest runs in this process.
+  let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['check', '--staged'], { extra: { ...extra, GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' } });
   assert.equal(result.status, 1);
   const lines = result.stderr.split('\n').filter((l) => l.startsWith('- '));
   assert.ok(lines.length >= 7, result.stderr);
   for (const line of lines) assert.match(line, /^- .+\. [A-Z].+\. .+\.$/, line);
   clean(result.stderr);
-  result = sandbox.run(['check', '--staged', '--json'], { extra: { ...extra, GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' } });
+  result = await sandbox.call(['check', '--staged', '--json'], { extra: { ...extra, GIT_AUTHOR_DATE: '2026-10-18T09:00:00+0700' } });
   assert.equal(result.status, 1);
   assert.equal(result.stderr, '');
   const report = JSON.parse(result.stdout);
@@ -120,28 +121,29 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
     docs: 'https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#privacy',
     file: 'notes/a.md',
     line: 1,
+    grade: 'sure',
   });
   clean(result.stdout);
-  result = sandbox.run(['check', '--json'], { extra });
+  result = await sandbox.call(['check', '--json'], { extra });
   assert.deepEqual(Object.keys(JSON.parse(result.stdout)), ['check', 'ok', 'findings', 'notes']);
 
   // hook: the runtimes still read stderr and the exit code; --json adds the finding on stdout.
   const call = { cwd: sandbox.repo, tool_input: { command: 'git push --force' } };
-  result = sandbox.run(['hook', '--json'], { input: JSON.stringify(call) });
+  result = await sandbox.call(['hook', '--json'], { input: JSON.stringify(call) });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /^yokoten: git push --force forces the push\. .+\. Use --force-with-lease/);
   const blocked = JSON.parse(result.stdout);
   assert.equal(blocked.blocked, true);
   shaped(blocked.finding);
   assert.equal(blocked.finding.id, 'force-push');
-  result = sandbox.run(['hook', '--json'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: 'git status' } }) });
+  result = await sandbox.call(['hook', '--json'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: 'git status' } }) });
   assert.deepEqual([result.status, JSON.parse(result.stdout)], [0, { blocked: false, toolCall: true }]);
-  result = sandbox.run(['hook'], { input: JSON.stringify(call) });
+  result = await sandbox.call(['hook'], { input: JSON.stringify(call) });
   // Without --json, stdout holds only the deny decision Copilot CLI reads (#30); Claude Code ignores it on exit 2.
   assert.deepEqual(Object.keys(JSON.parse(result.stdout)), ['permissionDecision', 'permissionDecisionReason']);
 
   // doctor: the road and the machine as data.
-  result = sandbox.run(['doctor', '--json'], { extra });
+  result = await sandbox.call(['doctor', '--json'], { extra });
   assert.equal(result.status, 1);
   const doc = JSON.parse(result.stdout);
   assert.equal(doc.stage, 1);
@@ -151,20 +153,20 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   doc.findings.forEach(shaped);
   doc.notes.forEach(shaped);
   clean(result.stdout);
-  result = sandbox.run(['doctor', '--session', '--json'], { extra });
+  result = await sandbox.call(['doctor', '--session', '--json'], { extra });
   assert.equal(result.status, 0);
   assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['tool-hook']);
 
   // explain: a known id, and an unknown one with the list.
-  result = sandbox.run(['explain', 'secret', '--json']);
+  result = await sandbox.call(['explain', 'secret', '--json']);
   assert.deepEqual(Object.keys(JSON.parse(result.stdout)), ['found', 'id', 'kind', 'what', 'why', 'check', 'docs']);
-  result = sandbox.run(['explain', 'nope', '--json']);
+  result = await sandbox.call(['explain', 'nope', '--json']);
   assert.equal(result.status, 1);
   const unknown = JSON.parse(result.stdout);
   assert.equal(unknown.found, false);
   assert.ok(unknown.ids.includes('secret') && unknown.ids.includes('tool-hook'));
-  result = sandbox.run(['explain', 'secret']);
+  result = await sandbox.call(['explain', 'secret']);
   assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
-  result = sandbox.run(['explain', 'commit-check']);
+  result = await sandbox.call(['explain', 'commit-check']);
   assert.match(result.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
 });

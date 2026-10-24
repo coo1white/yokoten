@@ -8,12 +8,13 @@ export interface Config {
   layout: { maxEntries: number; exempt: string[] };
   tests: string[];
   leadOnly: string[];
-  privacy: { allow: string[]; skip: string[]; utc: boolean; output: 'run' | 'stop' };
+  privacy: { allow: string[]; skip: string[]; utc: boolean; output: 'run' | 'stop'; skipOwnName: boolean };
   notNow: Record<string, string>;
   allowBuild: string[];
   areas: string[];
   translations: { fail: boolean };
   commands: { block: Record<string, string> };
+  worker: { timeLimitMinutes: number };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -28,13 +29,14 @@ export const DEFAULTS: Config = {
   tests: ['*.test.*', '*.spec.*', '*_test.go', 'test/**', 'tests/**'],
   // What only the lead (the session that reviews and pushes) may change: the rules the
   // agents work under, and the CI that checks them.
-  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.agents/hooks.json', '.muse/**', '.dsh/**', '.grok/**', '.githooks/**', '.github/**', '.yokoten/**'],
+  leadOnly: ['AGENTS.md', 'CLAUDE.md', 'yokoten.json', '.claude/**', '.claude-plugin/**', '.codex/**', '.gemini/**', '.agents/hooks.json', '.muse/**', '.dsh/**', '.grok/**', '.githooks/**', '.github/**', '.yokoten/**', '.yokotenignore'],
   // `allow`: literal strings the privacy check lets through (a public support address).
   // `skip`: files it does not read (lockfiles, vendored code).
   // `utc`: commits must record their time in UTC, not the machine's time zone.
   // `output`: in an agent whose hook can't rewrite a command (all but Claude Code), a command
   // that prints account details runs as it is ("run"), or is stopped with the filtered form ("stop") (#390).
-  privacy: { allow: [], skip: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.sum'], utc: true, output: 'run' },
+  // `skipOwnName`: a private mark that is this repo's name is not looked for here (#447); false looks for it too.
+  privacy: { allow: [], skip: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'go.sum'], utc: true, output: 'run', skipOwnName: true },
   // Practices this project has decided not to take up yet, by doctor's name for them, each
   // with the reason and when to look again: { "ci": "no remote yet; revisit on first push" }.
   notNow: {},
@@ -48,6 +50,9 @@ export const DEFAULTS: Config = {
   // Programs no agent may run here, each with the reason (#192):
   // { "block": { "python3": "this project is TypeScript only" } }.
   commands: { block: {} },
+  // A worker that a runner or the board starts stops after this many minutes (#711):
+  // three hours unless the project says otherwise.
+  worker: { timeLimitMinutes: 180 },
 };
 
 /**
@@ -114,14 +119,18 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
   tests: textList('["*.test.*", "test/**"]'),
   leadOnly: textList('["AGENTS.md", ".github/**"]'),
   privacy: {
-    example: '{ "allow": [], "skip": ["package-lock.json"], "utc": true, "output": "run" }',
-    fields: { allow: textList('["support@example.com"]'), skip: textList('["package-lock.json"]'), utc: trueOrFalse, output: shape('"run" or "stop"', (value) => value === 'run' || value === 'stop') },
+    example: '{ "allow": [], "skip": ["package-lock.json"], "utc": true, "output": "run", "skipOwnName": true }',
+    fields: { allow: textList('["support@example.com"]'), skip: textList('["package-lock.json"]'), utc: trueOrFalse, output: shape('"run" or "stop"', (value) => value === 'run' || value === 'stop'), skipOwnName: trueOrFalse },
   },
   notNow: shape('an object of reasons by step name, such as { "ci": "no remote yet" }', (value) => isPlainObject(value) && Object.values(value).every((reason) => typeof reason === 'string')),
   allowBuild: textList('["dist/**"]'),
   areas: shape('a list of names, like ["cli", "docs"]', (value) => isTextList(value) && (value as string[]).every((item) => item.trim() !== '')),
   translations: { example: '{ "fail": true }', fields: { fail: trueOrFalse } },
   commands: blockList,
+  worker: {
+    example: '{ "timeLimitMinutes": 180 }',
+    fields: { timeLimitMinutes: shape('a whole number of minutes above 0, such as 180', (value) => Number.isInteger(value) && (value as number) > 0) },
+  },
 };
 
 /**

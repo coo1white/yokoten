@@ -47,7 +47,7 @@ export function visibleLength(text: string): number {
  * `documentation`. A label that is the type name itself always counts.
  */
 const TYPE_LABEL_ALIASES: Record<string, string[]> = {
-  fix: ['bug', 'hotfix', 'incident'],
+  fix: ['bug', 'hotfix', 'incident', 'security'],
   feat: ['feature', 'enhancement'],
   docs: ['documentation'],
 };
@@ -57,8 +57,8 @@ const SHOWN_TYPE_LABELS = ['feat', 'bug', 'docs', 'refactor', 'ci', 'test', 'cho
 /** The tier on the body's first line, or null when the first line is not a tier. */
 const bodyTier = (body: string): string | null => /^tier: ([ABC])\s*$/.exec(body.split(/\r?\n/).find((l) => l.trim())?.trim() ?? '')?.[1] ?? null;
 
-/** The tier a label names: `tier B` or `tier: B`, in any case. Null for any other label. */
-const labelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(label.trim())?.[1].toUpperCase() ?? null;
+/** The tier a label names: `tier B` or `tier: B`, in any case. Null for any other label. The board reads it too (#601), so both agree. */
+export const readLabelTier = (label: string): string | null => /^tier:? ?([abc])$/i.exec(label.trim())?.[1].toUpperCase() ?? null;
 
 /**
  * Problems with a pull request's labels: one type label, and one tier label that matches
@@ -78,7 +78,7 @@ const isTypeLabel = (label: string): boolean => TYPE_LABELS.has(label.trim().toL
 /** Problems with a pull request's tier labels: exactly one, the same as the body's `tier:` line. */
 function checkTierLabel(labels: string[], tier: string | null): Finding[] {
   const problems: Finding[] = [];
-  const tiers = [...new Set(labels.map(labelTier).filter((t) => t !== null))];
+  const tiers = [...new Set(labels.map(readLabelTier).filter((t) => t !== null))];
   const wanted = tier ? `\`tier ${tier}\`` : '`tier A`, `tier B` or `tier C`, the same as the first line of the body';
   if (!tiers.length) problems.push(finding('pr-labels', 'labels: no tier label', `add the label ${wanted}`));
   else if (tiers.length > 1) problems.push(finding('pr-labels', `labels: ${tiers.length} tier labels`, `keep one tier label: ${wanted}`));
@@ -220,7 +220,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   const body = pr.body ?? '';
   const tier = bodyTier(body);
   if (!tier) {
-    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: files CODEOWNERS owns, or a change that makes a rule looser; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);
@@ -228,9 +228,12 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
     else if (!text || /^<[^>]*>$/.test(text)) problems.push(finding('pr-section', `body: the \`## ${name}\` section is empty`, 'fill it in'));
   }
   // Only Closes, Fixes and Resolves close the issue; Part of and Refs link it and leave it open.
-  if (!/\b(closes|fixes|resolves|refs|part of) #\d+/i.test(body)) {
+  if (!readLinkedIssues(body).length) {
     problems.push(finding('pr-issue', 'body: no linked issue', 'link the issue with `Closes #N`, or `Part of #N` when it does not finish it'));
   }
+  // Every pull request names each AI and model that made it (#570), on its last
+  // line, so the credit reads the same each time.
+  problems.push(...madeWithFindings(body));
 
   // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
   // so a new file deeper down would pass here and stop the release.
@@ -268,7 +271,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
 
 /** The login GitHub gives Dependabot's pull requests. */
 export const DEPENDABOT = 'dependabot[bot]';
-const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
+const DEPENDABOT_NOTES = new Set(['pr-tier', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-owned']);
 
 /**
  * The pull request findings, split into problems and notes. For a pull request Dependabot
@@ -432,6 +435,24 @@ export function checkIssueTitle(title: string, config: Partial<Pick<Config, 'are
   return problems;
 }
 
+/**
+ * Problems with an issue's labels: one type label and one tier label, but only the
+ * kinds the repo has. A repo without type or tier labels of its own gets no line, and
+ * neither does an issue when the repo's labels can't be read (null).
+ */
+export function checkIssueLabels(issueLabels: string[], repoLabels: string[] | null): Finding[] {
+  if (repoLabels === null) return [];
+  const problems: Finding[] = [];
+  if (repoLabels.some(isTypeLabel) && !issueLabels.some(isTypeLabel)) {
+    problems.push(finding('issue-labels', 'labels: no type label', 'add one type label, such as feat, bug, docs'));
+  }
+  const isTierLabel = (label: string): boolean => readLabelTier(label) !== null;
+  if (repoLabels.some(isTierLabel) && !issueLabels.some(isTierLabel)) {
+    problems.push(finding('issue-labels', 'labels: no tier label', 'add one tier label: `tier A`, `tier B` or `tier C`'));
+  }
+  return problems;
+}
+
 // The owner rule. CODEOWNERS names the paths where a mistake is hard to undo, and the
 // people who must review them. Record 0004's tiers say the same thing from the other
 // side: tier A needs the owner. So a pull request that changes an owned file is tier A.
@@ -514,6 +535,169 @@ export function checkOwnedTier(pr: Pick<PullRequest, 'body' | 'files'>, codeOwne
   if (!owned.length) return null;
   const shown = owned.slice(0, 5).join(', ') + (owned.length > 5 ? `, and ${owned.length - 5} more` : '');
   return finding('pr-owned', `body: \`tier: ${tier}\`, and this changes ${owned.length} file(s) that CODEOWNERS owns (read from ${codeOwners.from}): ${shown}`, 'make the first line `tier: A`');
+}
+
+// ---- The commit the owner approved (#612) ----
+//
+// An approval is for one commit (core rule 9). A tier A pull request merges only on the
+// commit the owner's latest Approve was given on. When newer commits only merge the base
+// branch in, and the pull request's own diff is the same as at the Approve, the merge
+// goes on. Anything else needs a new review.
+
+/**
+ * The tier of a pull request: A when the body's line or any tier label says A, since
+ * either can change after creation (#612); otherwise the body's line, then the first
+ * tier label. Fail closed both ways, so a mismatch never skips the tier A gate.
+ */
+export function prTier(body: string, labels: string[]): string | null {
+  const fromBody = bodyTier(body);
+  const fromLabels = labels.map(readLabelTier).filter((tier) => tier !== null);
+  if (fromBody === 'A' || fromLabels.includes('A')) return 'A';
+  return fromBody ?? fromLabels[0] ?? null;
+}
+
+/** What the Approve check knows: the tier, the head, and what came after the Approve. */
+export interface ApprovalRead {
+  /** The pull request's tier, or null when neither the body nor a label says it. */
+  tier: string | null;
+  /** The pull request's head commit. */
+  head: string;
+  /** The commit the owner's latest Approve was given on, or null with no owner Approve. */
+  approved: string | null;
+  /** Commits with changes after the Approve (never merges of the base branch). */
+  after: number;
+  /** Whether the pull request's own diff is the same as at the Approve. */
+  sameDiff: boolean;
+}
+
+/** An area lead's approval, written on the last line of its review body (#699). */
+export interface LeadApproval {
+  /** The lead's name, as it writes it. */
+  lead: string;
+  /** The lead's vendor, for example `xAI`. */
+  vendor: string;
+  /** The lead's model, for example `Grok 4.7`. */
+  model: string;
+}
+
+/** One approval and what came after its commit. */
+export interface ApprovalCommit {
+  commit: string;
+  after: number;
+  sameDiff: boolean;
+}
+
+/** What the merge check reads about a tier A pull request (#699). */
+export interface MergeApprovalRead extends ApprovalRead {
+  /** The lead whose approval may count, or null. */
+  lead?: (LeadApproval & ApprovalCommit) | null;
+  /** The vendor families that wrote the change, from the Made-with line. */
+  writers?: string[];
+  /** True when a hard-line file or a looser change keeps the owner's approval. */
+  ownerOnly?: boolean;
+  /** Why the owner must approve, when `ownerOnly`. */
+  ownerWhy?: string | null;
+}
+
+// `Approved by area lead Grok (xAI, Grok 4.7)`. The last line of a review body says
+// which lead, its vendor and its model. The review itself records the commit.
+const LEAD_APPROVAL = /^(?:🤖 )?approved by area lead ([^()]+?) \(([^(),]+), ([^()]+)\)$/i;
+
+/** The area lead approval on the last line of a review body, or null. */
+export function parseLeadApproval(body: string): LeadApproval | null {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const match = LEAD_APPROVAL.exec(lines.at(-1) ?? '');
+  if (!match) return null;
+  const lead = match[1].trim();
+  const vendor = match[2].trim();
+  const model = match[3].trim();
+  return lead && vendor && model ? { lead, vendor, model } : null;
+}
+
+// A vendor family, so `Claude Code (Opus 5.5)` and `Anthropic (Sonnet 5.5)` are one
+// line. The model is checked first, because a worker's first word is often its tool.
+const VENDOR_FAMILIES: [RegExp, string][] = [
+  [/deepseek/i, 'deepseek'],
+  [/anthropic|claude|opus|sonnet|haiku/i, 'anthropic'],
+  [/xai|x\.ai|grok/i, 'xai'],
+  [/meta|muse|llama/i, 'meta'],
+  [/openai|codex|gpt|(^|[^a-z])o\d/i, 'openai'],
+  [/google|gemini/i, 'google'],
+];
+
+/** The vendor family of an agent, or its vendor name in lowercase when none is known. */
+export function vendorFamily(agent: MadeWithAgent): string {
+  const text = `${agent.vendor} ${agent.model}`;
+  for (const [pattern, family] of VENDOR_FAMILIES) if (pattern.test(text)) return family;
+  return agent.vendor.trim().toLowerCase();
+}
+
+/**
+ * The vendors that wrote a pull request, from the Made-with line: its workers, or its
+ * lead and unnamed others when no worker is named. Empty when the line names nobody.
+ */
+export function writerVendors(body: string): string[] {
+  const roles = parseMadeWith(body)?.roles;
+  if (!roles) return [];
+  const writers = roles.writers.length ? roles.writers : [...roles.leads, ...roles.others];
+  return [...new Set(writers.map(vendorFamily))];
+}
+
+/** Whether an approval is on `head`, or only base merges came after it with the same own diff. */
+const isFreshApproval = (head: string, approval: ApprovalCommit): boolean =>
+  approval.commit.toLowerCase() === head.toLowerCase() || (approval.after === 0 && approval.sameDiff);
+
+/** The finding for a stale area lead approval. */
+function staleLeadApproval(lead: ApprovalCommit): Finding {
+  const short = lead.commit.slice(0, 7);
+  const fix = "ask another vendor's area lead to approve the head commit, then merge";
+  if (lead.after > 0) {
+    return finding('pr-approve', `the area lead's approval is on ${short}; ${lead.after} commit${lead.after === 1 ? '' : 's'} with changes came after it; ask the area lead to approve again`, fix);
+  }
+  return finding('pr-approve', `the area lead's approval is on ${short}; the pull request's own diff is not the same as at the approval; ask the area lead to approve again`, fix);
+}
+
+/**
+ * The finding that stops a tier A pull request from merging (#699), or null when it may
+ * merge. Without a lead approval this is the owner's gate (#612), unchanged. With one,
+ * the owner's fresh Approve still wins, a hard-line file or a looser change still needs
+ * the owner, and a lead of the writer's own vendor never counts.
+ */
+export function checkMergeApproval(read: MergeApprovalRead): Finding | null {
+  if (read.tier !== 'A') return null;
+  // No lead approval, or a change only the owner may approve: keep the owner's gate.
+  if (!read.lead || read.ownerOnly) return checkApprovalFreshness(read);
+  const owner: ApprovalCommit | null = read.approved === null ? null : { commit: read.approved, after: read.after, sameDiff: read.sameDiff };
+  if (owner && isFreshApproval(read.head, owner)) return null;
+  const family = vendorFamily({ vendor: read.lead.vendor, model: read.lead.model });
+  if (!read.writers?.length) {
+    return finding('pr-approve', "the Made-with line names no writer, so the area lead's vendor can't be checked", "name the writers on the Made-with line, then ask another vendor's area lead to approve");
+  }
+  if (read.writers.includes(family)) {
+    return finding('pr-approve', `the area lead is from ${read.lead.vendor}, the same vendor as the writer; another vendor's lead must approve`, "ask an area lead of another vendor to approve the head commit");
+  }
+  if (isFreshApproval(read.head, read.lead)) return null;
+  return staleLeadApproval(read.lead);
+}
+
+/**
+ * The finding that stops a tier A pull request from merging, or null when it may
+ * merge: not tier A, or the Approve is on the head, or only base merges came after it
+ * with the same own diff. Anything unsure never reaches here: the caller refuses it.
+ */
+export function checkApprovalFreshness(read: ApprovalRead): Finding | null {
+  if (read.tier !== 'A') return null;
+  if (read.approved === null) return finding('pr-approve', 'no owner Approve on this pull request', 'ask the owner to approve it, then merge');
+  if (read.approved.toLowerCase() === read.head.toLowerCase()) return null;
+  const short = read.approved.slice(0, 7);
+  const fix = 'ask the owner to approve the head commit, then merge';
+  if (read.after > 0) {
+    return finding('pr-approve', `the Approve is on ${short}; ${read.after} commit${read.after === 1 ? '' : 's'} with changes came after it; ask the owner to approve again`, fix);
+  }
+  if (!read.sameDiff) {
+    return finding('pr-approve', `the Approve is on ${short}; the pull request's own diff is not the same as at the Approve; ask the owner to approve again`, fix);
+  }
+  return null;
 }
 
 // ---- The title a gh command sets (#117, #391) ----
@@ -683,15 +867,17 @@ export function readCommandTitle(command: string[]): CommandTitle | UnreadableTi
   return title === null ? null : { kind, title, labels };
 }
 
-/** The title (the last one, as in gh) and every label that one gh command's options set. */
-function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[] } {
+/** The title (the last one, as in gh), every label one gh command's options add, and those it removes. */
+function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[]; removes: string[] } {
   let title: string | null = null;
   const labels: string[] = [];
+  const removes: string[] = [];
   for (const [name, value] of options) {
     if (TITLE_OPTIONS.has(name)) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
+    else if (name === '--remove-label') removes.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
-  return { title, labels };
+  return { title, labels, removes };
 }
 
 /**
@@ -762,9 +948,10 @@ export function readCommandBody(command: string[]): CommandBody | null {
 // ---- The labels a gh command sets (#422) ----
 //
 // `yokoten bot` adds the type and tier labels `check --pr` asks for when `gh pr create`
-// leaves them out, from the title's type and the body's `tier:` line.
+// leaves them out, from the title's type and the body's `tier:` line. An edit keeps them
+// right too: a new title adds its type, a new body moves the tier label.
 
-/** The labels `gh pr create` leaves out that `check --pr` asks for, and the problems with those it gives. */
+/** The labels a `gh pr create` or `gh pr edit` leaves out that `check --pr` asks for, and the problems with those it gives. */
 export interface CommandLabels {
   /** Each missing label, as the label names that would do, best first. */
   missing: string[][];
@@ -772,10 +959,19 @@ export interface CommandLabels {
   problems: Finding[];
   /** The `--repo` value, or null when the command names none. */
   repo: string | null;
+  /** The labels the command already removes with `--remove-label`. */
+  removes: string[];
+  /** Whether the command gives a tier label itself, with `--label` or `--add-label`. */
+  hasTierLabel: boolean;
+  /**
+   * For `gh pr edit`, the pull request it names and the tier its new body sets; null for
+   * a create. A null selector means the pull request of the current branch.
+   */
+  edit: { selector: string | null; tier: string | null } | null;
 }
 
 // Aliases that say more than the type, so the bot never picks them for a person.
-const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident']);
+const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident', 'security']);
 
 /** The label names that say a title's type, best first: the shown one (`bug` for fix), the type, then its aliases. */
 function typeLabelNames(type: string): string[] {
@@ -787,21 +983,207 @@ function typeLabelNames(type: string): string[] {
 /**
  * The type and tier labels that `gh pr create` (or `new`) leaves out, from the title's
  * type and the body's tier line, and the problems with the tier labels it gives. A label
- * it gives is kept. Null for any other command, or a run-together word it can't read.
+ * it gives is kept. An edit adds only what its new title or body asks for, and reports the
+ * tier it sets so the caller can remove the old label. Null for any other command, an edit
+ * that sets neither a title nor a body, or a run-together word it can't read.
  */
 export function readCommandLabels(command: string[], body: string | null): CommandLabels | null {
   const [file, ...rest] = command;
   if (!file || botProgram(file) !== 'gh') return null;
   const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
-  const [kind, verb] = words.map((index) => rest[index]);
-  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
-  const { title, labels } = readTitleAndLabels(options);
+  const [kind, verb, selector] = words.map((index) => rest[index]);
+  const isEdit = verb === 'edit';
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new' && !isEdit) || unreadable !== null) return null;
+  if (isEdit && body === null && !options.some(([name]) => TITLE_OPTIONS.has(name))) return null;
+  const { title, labels, removes } = readTitleAndLabels(options);
   const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
   const missing: string[][] = [];
   const type = title === null ? undefined : TITLE.exec(title.trim())?.[1];
   if (type && !labels.some(isTypeLabel)) missing.push(typeLabelNames(type));
   const tier = bodyTier(body ?? '');
-  const hasTier = labels.some((label) => labelTier(label) !== null);
+  const hasTier = labels.some((label) => readLabelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
-  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
+  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo, removes, hasTierLabel: hasTier, edit: isEdit ? { selector: selector ?? null, tier } : null };
+}
+
+/** The labels a `gh issue create` command gives, and its `--repo` value. */
+export interface CommandIssueLabels {
+  labels: string[];
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+}
+
+/**
+ * The labels that `gh issue create` (or `new`) gives with `--label`, `-l` or
+ * `--add-label`. Null for any other command, or a run-together word it can't read.
+ */
+export function readCommandIssueLabels(command: string[]): CommandIssueLabels | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh') return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind !== 'issue' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
+  const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
+  return { labels: readTitleAndLabels(options).labels, repo };
+}
+
+// ---- The milestone a gh command sets (#512) ----
+//
+// `yokoten bot` gives `gh pr create` its linked issue's milestone when the command names
+// none, so `check --pr` never fails on "milestone: none set" after the post.
+
+/** The issues a `gh pr create` body links, when the command gives no milestone. */
+export interface CommandMilestone {
+  /** The linked issue numbers, in the order the body names them, each once. */
+  issues: number[];
+  /** The `--repo` value, or null when the command names none. */
+  repo: string | null;
+}
+
+// The words that link an issue. The body check and the milestone step both read them here.
+const LINKED_ISSUE = /\b(?:closes|fixes|resolves|refs|part of) #(\d+)/gi;
+
+/** The issue numbers a body links with `Closes #N`, `Part of #N` and the like, in order, each once. */
+export function readLinkedIssues(body: string): number[] {
+  return [...new Set([...body.matchAll(LINKED_ISSUE)].map((match) => Number(match[1])))];
+}
+
+/** One agent and the model it ran on, from `<agent> (<model>)`. */
+export interface MadeWithAgent {
+  /** The vendor or tool, for example `Claude Code`. */
+  vendor: string;
+  model: string;
+}
+
+/** The roles a `Made with` line names (#673). Two workers on different models are both kept. */
+export interface MadeWithRoles {
+  /** The agents after `worker`, in order. */
+  writers: MadeWithAgent[];
+  /** The agents after `reviewed by`, at most two in all. */
+  reviewers: MadeWithAgent[];
+  /** The agents after `lead`, in order. */
+  leads: MadeWithAgent[];
+  /** Every other `<agent> (<model>)` pair, in order (the old form without roles). */
+  others: MadeWithAgent[];
+}
+
+const AGENT = /^([^()]+?) \(([^()]+)\)$/;
+const REVIEWED_BY = /^reviewed by ([^(),]+? \([^()]+\))(?: and ([^(),]+? \([^()]+\)))?$/i;
+
+function readAgent(text: string): MadeWithAgent | null {
+  const match = AGENT.exec(text);
+  return match ? { vendor: match[1], model: match[2] } : null;
+}
+
+/**
+ * Reads the last non-blank line of a body as a `Made with` line (#570, #673) and
+ * returns the roles it names. The line is `🤖 Made with <part>, <part>`, with or
+ * without the robot emoji. A part is `<agent> (<model>)`, optionally led by
+ * `worker` or `lead`, or `reviewed by <agent> (<model>)` with a second reviewer
+ * joined by ` and `. Role words ignore case, and extra spaces count as one. At
+ * most two reviewers are allowed in all. Returns null when there is no good
+ * line, and `problem: 'reviewers'` when a `reviewed by` part is malformed, even
+ * if another part is bad too. HTML comments are set aside first, so a commented
+ * line counts neither for nor against, and neither does one inside a code block.
+ */
+export function parseMadeWith(body: string): { roles: MadeWithRoles | null; problem: 'reviewers' | null } | null {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const head = /^(?:🤖 )?Made with (.+)$/.exec(lines.at(-1) ?? '');
+  if (!head) return null;
+  const roles: MadeWithRoles = { writers: [], reviewers: [], leads: [], others: [] };
+  let problem: 'reviewers' | null = null;
+  let bad = false;
+  for (const raw of head[1].split(/(?<=\)),/)) {
+    const part = raw.trim().replace(/\s+/g, ' ');
+    // `reviewed by Y (b), and Z (c)`: the comma splits the pair, so `and` leads a part.
+    if (/^reviewed by\b/i.test(part) || /^and\b/i.test(part)) {
+      const match = REVIEWED_BY.exec(part);
+      const names = match ? [match[1], match[2]].filter((name): name is string => Boolean(name)).map(readAgent) : [];
+      if (!match || names.includes(null) || roles.reviewers.length + names.length > 2) problem = 'reviewers';
+      else roles.reviewers.push(...(names as MadeWithAgent[]));
+      continue;
+    }
+    // `worker (opus)` has no vendor: the whole part is the agent, not a role.
+    const role = /^(worker|lead) (.+)$/i.exec(part);
+    const named = role ? readAgent(role[2]) : null;
+    const agent = named ?? readAgent(part);
+    if (!agent) {
+      bad = true;
+      continue;
+    }
+    if (named && role?.[1].toLowerCase() === 'worker') roles.writers.push(agent);
+    else if (named) roles.leads.push(agent);
+    else roles.others.push(agent);
+  }
+  if (problem) return { roles: null, problem };
+  return bad ? null : { roles, problem: null };
+}
+
+/**
+ * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): one or more
+ * comma-separated pairs name each AI and model that made it, and an optional
+ * `reviewed by <agent> (<model>)` part, with a second reviewer after ` and `,
+ * names who reviewed it (#673).
+ */
+export function hasMadeWith(body: string): boolean {
+  return parseMadeWith(body)?.roles != null;
+}
+
+/**
+ * The findings for a body whose last line is not a good `Made with` line: none when
+ * it is good, a plain one for a missing line and another for a malformed
+ * `reviewed by` part. Pull request bodies and bot notes share it.
+ */
+export function madeWithFindings(body: string): Finding[] {
+  const parsed = parseMadeWith(body);
+  if (parsed?.problem === 'reviewers') {
+    return [finding('pr-made-with', 'body: the `reviewed by` part of the `Made with` line is not `reviewed by <agent> (<model>)`, or two joined by `and` (two in all)', 'write `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)`, once, with at most two reviewers, after the worker and before the lead')];
+  }
+  if (parsed?.roles) return [];
+  return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`; reviewers may follow the worker: `, reviewed by <agent> (<model>) and <agent> (<model>)`')];
+}
+
+/**
+ * A note when the worker part of a `Made with` line names no model that the worker's own
+ * checkout filed (#748): a harness's prompt can lead a worker to sign as the harness's
+ * vendor. Only the worker role counts, in its full form or its short form `worker (<model>)`;
+ * a lead or a reviewer that names the status model does not hide a wrong worker model. `statusModel` is the model in the status file at the
+ * worker's branch, and '' when there is none: then there is nothing to compare, and no note.
+ */
+export function madeWithModelNote(body: string, statusModel: string, branch: string): Finding | null {
+  const model = statusModel.replace(/\s+/g, ' ').trim();
+  const roles = parseMadeWith(body)?.roles;
+  if (!model || !roles) return null;
+  // A short `worker (<model>)` has no vendor role, so the parser files it as `worker` in others.
+  const workers = [...roles.writers, ...roles.others.filter((agent) => agent.vendor.toLowerCase() === 'worker')];
+  if (!workers.length) return null;
+  const named = workers.map((agent) => agent.model.replace(/\s+/g, ' ').trim());
+  if (named.some((one) => one.toLowerCase() === model.toLowerCase())) return null;
+  const models = [...new Set(named)].join(' and ');
+  return finding('pr-made-with', `body: the \`Made with\` line names worker ${models}, but the status file of ${branch} says the worker ran ${model}`, `name the model the worker ran (${model}), as its status file says`);
+}
+
+/**
+ * The issues whose milestone `gh pr create` (or `new`) should take: null for any other
+ * command, one that gives `--milestone` or `-m`, a run-together word it can't read, or a
+ * body that links no issue (the body check says so).
+ */
+export function readCommandMilestone(command: string[], body: string | null): CommandMilestone | null {
+  const [file, ...rest] = command;
+  if (!file || botProgram(file) !== 'gh' || body === null) return null;
+  const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
+  const [kind, verb] = words.map((index) => rest[index]);
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
+  if (options.some(([name]) => name === '--milestone' || name === '-m')) return null;
+  const issues = readLinkedIssues(body);
+  if (!issues.length) return null;
+  const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
+  return { issues, repo };
+}
+
+/** The problem when no linked issue has a milestone to copy (#512). */
+export function noMilestoneFinding(issues: number[]): Finding {
+  const named = issues.map((issue) => `#${issue}`).join(', ');
+  const which = issues.length === 1 ? `the linked issue ${named} has none` : `none of the linked issues ${named} has one`;
+  return finding('pr-milestone', `milestone: none given, and ${which}`, 'add `--milestone <name>`, or set a milestone on the issue');
 }

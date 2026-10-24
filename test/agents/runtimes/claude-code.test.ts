@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -14,30 +15,71 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   makeSandbox,
+  makeTempDir,
   manifest,
   PLUGIN_ROOT,
   ROOT,
 } from '../../repo/helpers.ts';
-import { formatRewrite, hasSessionInput, readSessionStart } from '../../../src/agents/runtimes/claude-code.ts';
-import { refuseOnFailure } from '../../../src/run/cli.ts';
+import { addProjectSandbox, addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, readStop, sandboxProblem } from '../../../src/agents/runtimes/claude-code.ts';
+import { pluginHookCommand } from '../../../src/run/cli.ts';
 
-test('plugin: the marketplace and the plugin have the documented fields', () => {
+test('claude-code readStop: a Stop or SubagentStop event is checked; a worker subagent is a worker (#614)', () => {
+  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, subagent: false, sessionId: undefined });
+  assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: true, session_id: 'abc' }), { cwd: '/w', active: true, worker: false, subagent: false, sessionId: 'abc' });
+  assert.deepEqual(readStop({ cwd: '/w', hook_event_name: 'SubagentStop', agent_type: 'worker', agent_id: 'agent-1' }), {
+    cwd: '/w',
+    active: false,
+    worker: true,
+    subagent: true,
+    sessionId: 'agent-1',
+  });
+  assert.equal(readStop({ agent_type: 'yokoten:worker' })?.worker, true);
+  assert.equal(readStop({ hook_event_name: 'SubagentStop', agent_type: 'reviewer' })?.worker, false);
+  assert.equal(readStop({ hook_event_name: 'SubagentStop', agent_type: 'coworker' })?.worker, false);
+  assert.equal(readStop({ agent_type: 'Worker' })?.worker, true);
+  assert.equal(readStop(null), null);
+  assert.equal(readStop([]), null);
+});
+
+test('claude-code addProjectStopHook: Stop and SubagentStop both run hook --stop (#614)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(addProjectStopHook(sandbox.repo, '.yokoten/bin/yokoten.mjs'), 'added');
+  const settings = JSON.parse(readFileSync(join(sandbox.repo, '.claude', 'settings.json'), 'utf8'));
+  const command = settings.hooks.Stop[0].hooks[0].command as string;
+  assert.match(command, /hook --stop$/);
+  assert.equal(settings.hooks.Stop[0].hooks[0].timeout, 600);
+  assert.equal(settings.hooks.SubagentStop[0].hooks[0].command, command);
+  assert.equal(settings.hooks.SubagentStop[0].hooks[0].timeout, 600);
+  assert.equal(addProjectStopHook(sandbox.repo, '.yokoten/bin/yokoten.mjs'), 'same');
+});
+
+test('plugin: the marketplace lists the three release channels and their refs (#632)', () => {
   const market = manifest('marketplace.json');
   const plugin = manifest('plugin.json');
   const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
   assert.match(market.name, idPattern);
   assert.equal(typeof market.owner?.name, 'string');
   assert.ok(market.owner.name.length > 0);
-  assert.equal(market.plugins.length, 1);
-  const [entry] = market.plugins;
-  assert.match(entry.name, idPattern);
-  // The entry name and the manifest name are the same, or an install by name fails.
-  assert.equal(entry.name, plugin.name);
-  assert.equal(entry.source, './', 'the repo root is the plugin');
+  // One repo serves all three channels; the entry name and the git ref pick the channel.
+  assert.deepEqual(market.plugins.map((entry: { name: string }) => entry.name), ['yokoten', 'yokoten-beta', 'yokoten-dev']);
+  const [stable, beta, dev] = market.plugins;
+  for (const entry of market.plugins) {
+    assert.match(entry.name, idPattern);
+    assert.equal(entry.source.source, 'github', 'Claude Code names a tag on a github source with source and ref');
+    assert.equal(entry.source.repo, 'yokoten-labs/yokoten');
+    assert.equal(typeof entry.description, 'string');
+    // No version in a marketplace entry: the git ref is the version users get.
+    assert.equal(entry.version, undefined);
+  }
+  // Stable follows a release tag, beta a pre-release tag (or the release when it is newer).
+  assert.match(stable.source.ref, /^v\d+\.\d+\.\d+$/, 'stable is a release tag');
+  assert.match(beta.source.ref, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, 'beta is a release or pre-release tag');
+  assert.equal(dev.source.ref, 'main', 'dev is the default branch');
+  // The stable entry and the manifest name are the same, so `yokoten@yokoten` finds it.
+  assert.equal(stable.name, plugin.name);
   assert.match(plugin.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'kebab-case');
-  // No version in either file: users get each commit, and package.json keeps the one version.
+  // No version in the manifest either: package.json keeps the one version.
   assert.equal(plugin.version, undefined);
-  assert.equal(entry.version, undefined);
 });
 
 test('plugin: every path it names exists inside the plugin, and the kit is not copied', () => {
@@ -61,16 +103,20 @@ test('plugin: every path it names exists inside the plugin, and the kit is not c
   for (const s of scripts) assert.ok(existsSync(join(ROOT, s)), s);
 });
 
-test('plugin: its hooks are the ones install adds, and the guard it registers blocks', () => {
+test('plugin: install keeps a direct path, and the guard the plugin registers blocks (#706)', async () => {
   const sandbox = makeSandbox();
   const hooks = manifest('plugin.json').hooks as Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
-  // install's user-level hooks, with the plugin's root in place of the machine copy.
+  // install's entry, through the real binary. Its hooks stay a direct path (#706).
   assert.equal(sandbox.run(['install']).status, 0);
-  const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
-  // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
-  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node |command -v node )/, '');
-  const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${unguard(x.command).replace(cli, 'CLI')}`) }))]));
-  assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.mjs"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.mjs"'));
+  const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks as typeof hooks;
+  // The same events and hook types. The commands differ: the plugin resolves a cache copy on each call.
+  const shape = (table: typeof hooks) => Object.fromEntries(Object.entries(table).map(([event, groups]) => [event, groups.map((group) => ({ matcher: group.matcher, types: group.hooks.map((hook) => hook.type) }))]));
+  assert.deepEqual(shape(hooks), shape(installed));
+  const direct = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
+  for (const event of ['SessionStart', 'PreToolUse'] as const) {
+    assert.ok(installed[event][0].hooks[0].command.includes(direct), event);
+    assert.notEqual(hooks[event][0].hooks[0].command, installed[event][0].hooks[0].command, event);
+  }
   // The command as Claude Code runs it: the root filled in, through the shell.
   const run = (command: string, input?: string, extra: Record<string, string> = {}) =>
     spawnSync(command.replaceAll(PLUGIN_ROOT, ROOT), { shell: true, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: ROOT, ...extra }, input, encoding: 'utf8' });
@@ -85,13 +131,14 @@ test('plugin: its hooks are the ones install adds, and the guard it registers bl
   assert.equal(session.status, 0, session.stderr);
   assert.match(session.stdout, /^yokoten: stage 1 of 5/);
   assert.match(session.stdout, /runs as \/yokoten:init, \/yokoten:doctor and \/yokoten:update/);
-  assert.doesNotMatch(sandbox.run(['doctor', '--session']).stdout, /yokoten:init/, 'only from the plugin');
+  assert.doesNotMatch((await sandbox.call(['doctor', '--session'])).stdout, /yokoten:init/, 'only from the plugin');
 });
 
 // /yokoten:update (#142). The skill runs the plugin's own yokoten, which may be newer
 // than the project's .yokoten/ copy: the preview first, the write only when asked.
 test('plugin: /yokoten:update previews from the plugin, then writes with --write; a .yokoten/ copy without its kit cannot compare', () => {
   const sandbox = makeSandbox();
+  // init's entry, through the real binary: the .yokoten/ copy it makes runs below.
   assert.equal(sandbox.run(['init']).status, 0);
   const path = join(sandbox.repo, 'AGENTS.md');
   const fresh = readFileSync(path, 'utf8');
@@ -123,12 +170,23 @@ test('plugin: /yokoten:update previews from the plugin, then writes with --write
   assert.match(run(commands[0]).stdout, /up to date/);
 });
 
-// The plugin's guard is the text the builder makes, so the two cannot drift (#260).
-test('plugin: its tool-call guard is the command refuseOnFailure builds', () => {
-  assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.mjs"`, 'hook --commands-only'));
+// The plugin's hooks are the text the builder makes, so the two cannot drift (#260, #706).
+test('plugin: its hooks are the commands pluginHookCommand builds (#706)', () => {
+  const hooks = manifest('plugin.json').hooks;
+  assert.equal(hooks.PreToolUse[0].hooks[0].command, pluginHookCommand(false));
+  assert.equal(hooks.SessionStart[0].hooks[0].command, pluginHookCommand(true));
 });
 
-test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', () => {
+// Claude Code prints the hook command in front of a refusal, so the line stays short (#706).
+test('plugin: the longest hook command is under 400 characters (#706)', () => {
+  const hooks = manifest('plugin.json').hooks;
+  const commands = [hooks.PreToolUse[0].hooks[0].command, hooks.SessionStart[0].hooks[0].command] as string[];
+  const longest = Math.max(...commands.map((command) => command.length));
+  assert.ok(longest < 400, `the longest hook command is ${longest} characters`);
+  for (const command of commands) assert.equal(command.includes('\n'), false, 'one line');
+});
+
+test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', async () => {
   const sandbox = makeSandbox();
   // As Copilot CLI 1.0.98 sent it in a real run: PascalCase PreToolUse, snake_case fields.
   const input = JSON.stringify({
@@ -139,13 +197,13 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
     tool_name: 'Bash',
     tool_input: { command: 'git push --tags origin', description: 'Push all tags to origin' },
   });
-  const result = sandbox.run(['hook'], { input });
+  const result = await sandbox.call(['hook'], { input });
   assert.equal(result.status, 2, 'Claude Code reads exit 2 and stderr');
   assert.match(result.stderr, /^yokoten: git push --tags pushes tags\./);
   // Copilot CLI shows the agent only "hook exited with code 2" unless stdout names the reason.
   assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
   const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });
-  assert.equal(sandbox.run(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } }).status, 2, "Copilot's create tool names the file in `path`");
+  assert.equal((await sandbox.call(['hook'], { input: create, extra: { YOKOTEN_ROLE: 'worker' } })).status, 2, "Copilot's create tool names the file in `path`");
 });
 
 test('formatRewrite: allow, with the whole tool input, only the command changed (#390)', () => {
@@ -157,8 +215,60 @@ test('formatRewrite: allow, with the whole tool input, only the command changed 
 test('session start: the id and the source, and stdin only in a hook (#405)', () => {
   assert.deepEqual(readSessionStart({ session_id: 'a1-b2_c3', source: 'compact', hook_event_name: 'SessionStart' }), { sessionId: 'a1-b2_c3', source: 'compact' });
   assert.deepEqual(readSessionStart({ session_id: 'a1' }), { sessionId: 'a1', source: '' });
+  assert.deepEqual(readSessionStart({ session_id: 'a1', transcript_path: '/tmp/lead.jsonl' }), { sessionId: 'a1', source: '', transcriptPath: '/tmp/lead.jsonl' });
+  assert.deepEqual(readSessionStart({ session_id: 'a1', transcript_path: '' }), { sessionId: 'a1', source: '' });
   for (const input of [null, [], 'x', {}, { session_id: '' }, { session_id: '../a' }, { session_id: 7 }]) assert.equal(readSessionStart(input), null, JSON.stringify(input));
   assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, false), true);
   assert.equal(hasSessionInput({ CLAUDE_PROJECT_DIR: '/p' }, true), false, 'a terminal is never read');
   assert.equal(hasSessionInput({}, false), false, 'not a Claude Code hook');
+});
+
+// ---- The project's sandbox (#589) ----
+
+/** A project folder with `.claude/settings.json` holding `settings`, as JSON text or an object. */
+function settingsProject(settings: string | object): string {
+  const root = makeTempDir('yokoten-claude-');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'settings.json'), typeof settings === 'string' ? settings : JSON.stringify(settings));
+  return root;
+}
+
+test('sandbox write: the block is added, kept when yours, and skipped when the file is not JSON', () => {
+  const root = makeTempDir('yokoten-claude-');
+  assert.equal(addProjectSandbox(root), 'added');
+  assert.deepEqual(JSON.parse(readFileSync(join(root, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: true });
+  assert.equal(addProjectSandbox(root), 'same');
+  // A block without `enabled` takes it; the rest of the file stays.
+  const partial = settingsProject({ hooks: {}, sandbox: { network: { allowedDomains: ['example.com'] } } });
+  assert.equal(addProjectSandbox(partial), 'added');
+  const merged = JSON.parse(readFileSync(join(partial, '.claude', 'settings.json'), 'utf8'));
+  assert.equal(merged.sandbox.enabled, true);
+  assert.deepEqual(merged.sandbox.network, { allowedDomains: ['example.com'] });
+  assert.deepEqual(merged.hooks, {});
+  // `false` is the user's explicit choice: init keeps it, and doctor names it.
+  const off = settingsProject({ sandbox: { enabled: false } });
+  assert.equal(addProjectSandbox(off), 'kept');
+  assert.deepEqual(JSON.parse(readFileSync(join(off, '.claude', 'settings.json'), 'utf8')).sandbox, { enabled: false });
+  assert.deepEqual(addProjectSandbox(settingsProject('not json {')), { kind: 'json' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ sandbox: 'yes' })), { kind: 'shape', hint: '`sandbox` should be an object' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ hooks: 'x' })), { kind: 'shape', hint: '`hooks` should be an object' });
+  assert.deepEqual(addProjectSandbox(settingsProject({ env: 'x' })), { kind: 'shape', hint: '`env` should be an object' });
+});
+
+test('sandbox problem: missing, off, and wider, each with its one fix', () => {
+  assert.deepEqual(sandboxProblem(makeTempDir('yokoten-claude-')), { what: 'no sandbox in .claude/settings.json', fix: '`yokoten init` adds it' });
+  assert.equal(sandboxProblem(settingsProject({ sandbox: { enabled: true } })), null);
+  assert.equal(sandboxProblem(settingsProject({ sandbox: { enabled: true, network: { allowedDomains: ['example.com'] } } })), null, 'named hosts are narrower');
+  const problem = (settings: string | object) => sandboxProblem(settingsProject(settings));
+  assert.deepEqual(problem({ hooks: {} }), { what: 'no sandbox in .claude/settings.json', fix: '`yokoten init` adds it' });
+  assert.deepEqual(problem({ sandbox: { enabled: false } }), { what: 'the sandbox in .claude/settings.json is off', fix: 'set sandbox.enabled to true in .claude/settings.json' });
+  assert.deepEqual(problem({ sandbox: { enabled: true, filesystem: { disabled: true } } })?.what, 'the sandbox in .claude/settings.json has filesystem isolation off');
+  assert.deepEqual(problem({ sandbox: { enabled: true, network: { allowedDomains: ['*'] } } }), {
+    what: 'the sandbox in .claude/settings.json allows every network host (*)',
+    fix: 'list only the hosts the project needs in sandbox.network.allowedDomains in .claude/settings.json',
+  });
+  assert.deepEqual(problem('not json {'), { what: "can't read .claude/settings.json", fix: 'make it valid JSON, then run `yokoten init`' });
+  assert.deepEqual(problem({ sandbox: 'yes' })?.what, '.claude/settings.json has an unexpected shape');
+  assert.deepEqual(problem({ hooks: 'x' })?.what, '.claude/settings.json has an unexpected shape');
+  assert.deepEqual(problem({ env: 'x' })?.what, '.claude/settings.json has an unexpected shape');
 });

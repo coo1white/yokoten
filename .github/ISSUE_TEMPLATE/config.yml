@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/yokoten-labs/yokoten/security/advisories/new
+    about: Report it privately. Only the owner sees it.
+  - name: Read the guide
+    url: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md
+    about: What yokoten does, every command, and how to fix common problems.

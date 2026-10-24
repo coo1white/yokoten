@@ -1,16 +1,54 @@
 // What every command uses: the command line, the parser, the repo root, and the output.
 // Everything yokoten prints goes through `print`, `say` or `printJson` (core rule 11).
 
-import { appendFileSync, existsSync } from 'node:fs';
-import { annotations, isGitHubActions, stepSummary } from '../host/github.ts';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { annotations, isGitHubActions, stepSummary } from '../host/github/index.ts';
+import type { Env } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
-import { hideHome, withHome } from '../rules/privacy.ts';
+import { hideHome } from '../rules/privacy.ts';
 import { gitRoot } from '../run/check.ts';
 import { closestWord, findCommand, HELP_OPTIONS } from '../run/cli.ts';
 
-export const [cmd, ...args] = process.argv.slice(2);
-// The one place HOME falls back to the system's home (#356): every module below reads it from env.
-export const env = withHome(process.env);
+/** A stream a command writes to: the process's own, or a test's stand-in. A real stream has its `fd`. */
+export type Output = NodeJS.WritableStream & { isTTY?: boolean; fd?: number };
+
+/**
+ * A command's standard input (#475): `fd` 0 for the process, `text` for a test. `stream` is
+ * the same input as a stream, for a command that reads it as it comes (redact) or asks
+ * whether it is a terminal. The process's stream is made only when a command reads it:
+ * making it puts a pipe in non-blocking mode, and costs a guard call time (#408).
+ */
+export interface Input {
+  fd: number | null;
+  text: string | null;
+  readonly stream: NodeJS.ReadableStream & { isTTY?: boolean };
+}
+
+/** All of stdin as text: the test's, or the process's read to its end. */
+export const readInput = ({ fd, text }: Input): string => text ?? (fd === null ? '' : readFileSync(fd, 'utf8'));
+
+/**
+ * One run of one command, as plain data (#475). bin/main.ts makes it from the process once;
+ * a test makes its own. Below bin/main.ts, nothing reads process.argv, process.env,
+ * process.cwd() or the process's streams: a command reads them from here. It holds values only,
+ * never a method or a cache, so it cannot grow into a bag every module reaches into. The one
+ * exception is `stdin.stream`, a getter, so the process's stdin is made only when read: never
+ * spread or copy `stdin`, or the hook makes it and fd 0 turns non-blocking (see Input).
+ */
+export interface Invocation {
+  /** The first word after `yokoten`, or undefined when there is none. */
+  command: string | undefined;
+  /** The words after the command. */
+  args: string[];
+  /** HOME is set when the system has one (#356): every module below reads it from here. */
+  env: Env;
+  cwd: string;
+  stdout: Output;
+  stderr: Output;
+  stdin: Input;
+  /** The path of the yokoten entry that runs, for a command that runs yokoten again (the redact wrapper). */
+  script: string;
+}
 
 /** The command line, read strictly: an unknown option is refused, never ignored. */
 export interface Parsed {
@@ -19,7 +57,7 @@ export interface Parsed {
   positional: string[];
 }
 /** Reads the words by the options and argument the command's help lists, nothing else. */
-export function parse(name: string, words: string[] = args): Parsed | string {
+export function parse(name: string, words: string[]): Parsed | string {
   const command = findCommand(name);
   if (!command) throw new Error(`no help entry for ${name}`);
   const known = new Map(command.options.map((option) => [option.name, option]));
@@ -37,7 +75,7 @@ export function parse(name: string, words: string[] = args): Parsed | string {
       return `unknown option ${a}${near ? `. Did you mean ${near}?` : ''}`;
     } else parsed.positional.push(a);
   }
-  const allowed = command.argument ? 1 : 0;
+  const allowed = command.many ? Infinity : command.arguments?.length ?? (command.argument ? 1 : 0);
   if (parsed.positional.length > allowed) return `unexpected argument ${parsed.positional[allowed]}`;
   return parsed;
 }
@@ -47,69 +85,79 @@ export function parse(name: string, words: string[] = args): Parsed | string {
  * before the parser, so a usage error and a crash are JSON too. For `bot`, the words after
  * `--` belong to the command it runs.
  */
-const isJsonAsked = ((): boolean => {
-  const command = cmd === undefined ? undefined : findCommand(cmd);
+function isJsonAsked({ command: name, args }: Invocation): boolean {
+  const command = name === undefined ? undefined : findCommand(name);
   if (!command?.options.some((option) => option.name === '--json')) return false;
   const end = args.indexOf('--');
   return (end === -1 ? args : args.slice(0, end)).includes('--json');
-})();
+}
 
 /** With --json, an error as data on stdout too: `{ command, ok: false, error }`, one line. */
-export function printJsonError(error: string): void {
-  if (isJsonAsked) printJson({ command: cmd, ok: false, error });
+export function printJsonError(invocation: Invocation, error: string): void {
+  if (isJsonAsked(invocation)) printJson(invocation, { command: invocation.command, ok: false, error });
 }
 
 /** A usage error: said on stderr, exit 1, as for an unknown command. With --json, also on stdout. */
-export function usage(error: string): number {
-  printJsonError(error);
-  print([`yokoten ${cmd}: ${error}${/[.?]$/.test(error) ? '' : '.'} Run \`yokoten ${cmd} --help\`.`], process.stderr);
+export function usage(invocation: Invocation, error: string): number {
+  const { command } = invocation;
+  printJsonError(invocation, error);
+  print(invocation, [`yokoten ${command}: ${error}${/[.?]$/.test(error) ? '' : '.'} Run \`yokoten ${command} --help\`.`], invocation.stderr);
   return 1;
 }
 
-// Set when a git call failed because git itself was not found, not because of the folder.
-let isGitMissing = false;
+// A git call that fails because git itself was not found, not because of the folder.
+const isGitMissingError = (err: unknown, dir: string): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT' && existsSync(dir);
 
-export const rootOf = (dir: string): string | null => {
+export const rootOf = (dir: string, env: Env): string | null => {
   try {
-    return gitRoot(dir);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && existsSync(dir)) isGitMissing = true;
+    return gitRoot(dir, env);
+  } catch {
     return null;
   }
 };
 
-/** Why there is no repo root: git is missing, or the folder is not in a repo. Call it after rootOf. */
-export const noRootFinding = (dir: string): Finding =>
-  isGitMissing ? finding('not-a-repo', 'git is not installed (or not on PATH); yokoten needs git', 'install git, or add it to PATH') : notRepoFinding(dir);
+/**
+ * Why there is no repo root: git is missing, or the folder is not in a repo. Call it after
+ * rootOf. It asks git once more, so no state is kept from one command to the next.
+ */
+export function noRootFinding(dir: string, env: Env): Finding {
+  let isGitMissing = false;
+  try {
+    gitRoot(dir, env);
+  } catch (err) {
+    isGitMissing = isGitMissingError(err, dir);
+  }
+  return isGitMissing ? finding('not-a-repo', 'git is not installed (or not on PATH); yokoten needs git', 'install git, or add it to PATH') : notRepoFinding(dir);
+}
 
 /**
  * The repo root, or null after one plain finding on stderr (#205): a command that needs a
  * repo calls this before it writes anything. With --json, `json` shapes the output.
  */
-export function requireRoot(dir: string, json?: (missing: Finding) => unknown): string | null {
-  const root = rootOf(dir);
+export function requireRoot(invocation: Invocation, dir: string, json?: (missing: Finding) => unknown): string | null {
+  const root = rootOf(dir, invocation.env);
   if (root) return root;
-  const missing = noRootFinding(dir);
-  if (json) printJson(json(missing));
-  else print([`yokoten ${cmd}: ${formatFinding(missing)}`], process.stderr);
+  const missing = noRootFinding(dir, invocation.env);
+  if (json) printJson(invocation, json(missing));
+  else print(invocation, [`yokoten ${invocation.command}: ${formatFinding(missing)}`], invocation.stderr);
   return null;
 }
 
 // Everything yokoten prints goes through here or `say`, never straight to a stream: the
 // output lands in transcripts and CI logs, so the home folder is shown as ~ (core rule 11).
-export function print(lines: string[], stream: NodeJS.WritableStream = process.stdout): void {
-  if (lines.length) say(`${lines.join('\n')}\n`, stream);
+export function print(invocation: Invocation, lines: string[], stream: Output = invocation.stdout): void {
+  if (lines.length) say(invocation, `${lines.join('\n')}\n`, stream);
 }
-export function say(text: string, stream: NodeJS.WritableStream): void {
-  stream.write(hideHome(text, env));
+export function say(invocation: Invocation, text: string, stream: Output): void {
+  stream.write(hideHome(text, invocation.env));
 }
 
 // --json: stdout holds the JSON and nothing else. The home folder is hidden in every
 // string before it is encoded, as in the text form.
-export function printJson(data: unknown): void {
+export function printJson(invocation: Invocation, data: unknown): void {
   const hide = (v: unknown): unknown =>
-    typeof v === 'string' ? hideHome(v, env) : Array.isArray(v) ? v.map(hide) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, hide(x)])) : v;
-  process.stdout.write(`${JSON.stringify(hide(data), null, 2)}\n`);
+    typeof v === 'string' ? hideHome(v, invocation.env) : Array.isArray(v) ? v.map(hide) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, hide(x)])) : v;
+  invocation.stdout.write(`${JSON.stringify(hide(data), null, 2)}\n`);
 }
 
 export const bullets = (findings: Finding[]) => findings.map((f) => `- ${formatFinding(f)}`);
@@ -120,13 +168,14 @@ export const bullets = (findings: Finding[]) => findings.map((f) => `- ${formatF
  * --json, stdout holds only the JSON, so there are no annotations; the summary is a file.
  * A summary that can't be written is said on stderr; it never changes the result.
  */
-export function showOnPullRequest(name: string, problems: Finding[], notes: Finding[], { json, isPlaceAFile }: { json: boolean; isPlaceAFile: boolean }): void {
+export function showOnPullRequest(invocation: Invocation, name: string, problems: Finding[], notes: Finding[], { json, isPlaceAFile }: { json: boolean; isPlaceAFile: boolean }): void {
+  const { env } = invocation;
   if (!isGitHubActions(env)) return;
-  if (!json) print(annotations(problems, notes, isPlaceAFile));
+  if (!json) print(invocation, annotations(problems, notes, isPlaceAFile));
   if (!env.GITHUB_STEP_SUMMARY) return;
   try {
     appendFileSync(env.GITHUB_STEP_SUMMARY, hideHome(stepSummary(name, problems, notes), env));
   } catch (err) {
-    say(`${name}: the job summary was not written: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, process.stderr);
+    say(invocation, `${name}: the job summary was not written: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
   }
 }

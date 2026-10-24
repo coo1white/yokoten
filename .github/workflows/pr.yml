@@ -6,13 +6,20 @@ name: pr
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, labeled, unlabeled, milestoned, demilestoned, ready_for_review]
+  # A merge queue runs the required `pr` check too. There is no pull request to check
+  # on a merge group run, so the job skips then; a skip counts as green for the queue.
+  merge_group:
 permissions:
   contents: read
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # check --pr reads the pull request as it is now (#645).
+  pull-requests: read
 jobs:
   pr:
+    # Every run checks the pull request as it is now, read from the API, so the runs may
+    # start in any order, and a rerun checks it again. A draft is checked like any pull
+    # request. No pull request run is skipped or cancelled: a skip counts as a pass, and a
+    # cancelled run shows as a failure on the pull request page (#645).
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -23,6 +30,12 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
-      # The title and body are read from the event file, never pasted into this shell line.
+          node-version: '^22.23.4'
+      # The event file names the pull request and its commits. YOKOTEN_PR_LIVE asks for the
+      # title, body, labels and milestone as they are now, read with this token; if that read
+      # fails, the check fails. Nothing is pasted into this shell line, and yokoten never
+      # prints the token.
       - run: node bin/yokoten.ts check --pr
+        env:
+          YOKOTEN_PR_LIVE: '1'
+          GITHUB_TOKEN: ${{ github.token }}

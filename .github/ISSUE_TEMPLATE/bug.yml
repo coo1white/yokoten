@@ -1,0 +1,43 @@
+name: Bug report
+description: "yokoten did something wrong, or stopped a command it should allow. Title: `area: symptom`, for example `hook: blocks git push to a fork`. At most 60 characters, no full stop, no #N."
+title: "area: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you paste anything, remove private details: names, emails, paths with your user name, tokens. A security problem goes to the **Security** tab, not here.
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The command, or what your AI agent tried to do.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: printed
+    attributes:
+      label: What yokoten printed
+      description: Copy the output as it is.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: yokoten version
+      description: "Run `npx yokoten --version`."
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Where it runs
+      description: "Your system and agent, for example: Windows 11, WSL, Claude Code."

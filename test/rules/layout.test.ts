@@ -81,6 +81,13 @@ test('layout: changes/ may grow, since a release empties it (#132)', () => {
   assert.equal(checkLayout(changes.map((file) => `docs/${file}`), DEFAULTS).length, 1, 'only the changes/ folder at the root');
 });
 
+test('layout: .worktrees/ is skipped, whole checkouts and all (#571)', () => {
+  const trees = [...Array.from({ length: 12 }, (_, i) => `.worktrees/${i}-x/AGENTS.md`), ...many('.worktrees/571-x/src')];
+  assert.deepEqual(checkLayout(trees, DEFAULTS), []);
+  // A miss by one letter still counts.
+  assert.equal(checkLayout(many('worktrees'), DEFAULTS).length, 1);
+});
+
 test('build output: build folders and binaries are refused, images, fonts and allowed paths pass (#56)', () => {
   const files = (...paths: string[]) => paths.map((path) => ({ path, binary: !/\.(js|ts|md|svg)$/.test(path) }));
   const problems = checkBuildOutput(files('dist/app.js', 'pkg/build/x.js', 'out/a.md', 'tool.exe', 'lib.wasm', 'data.bin'), DEFAULTS);
@@ -92,4 +99,24 @@ test('build output: build folders and binaries are refused, images, fonts and al
   assert.deepEqual(checkBuildOutput(files('docs/a.png', 'site/logo.svg', 'fonts/x.woff2', 'src/output.ts', 'distance.js'), DEFAULTS), []);
   assert.deepEqual(checkBuildOutput(files('dist/app.js', 'vendor/tool.zip'), { allowBuild: ['dist/**', '*.zip'] }), []);
   assert.ok(isBuildOutput('a/dist/b.js') && !isBuildOutput('a/dist/b.js', () => true) && !isBuildOutput('dist.md'));
+});
+
+test('build output: many files under one folder make one finding for the folder (#521)', () => {
+  const files = (...paths: string[]) => paths.map((path) => ({ path, binary: false }));
+  // A dependency folder: one finding, however many files, and one file alone too.
+  const modules = Array.from({ length: 48 }, (_, i) => `node_modules/pkg/dist/f${i}.js`);
+  const problems = checkBuildOutput(files(...modules, 'src/a.ts'), DEFAULTS);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].file, 'node_modules/');
+  assert.match(formatFinding(problems[0]), /^node_modules\/: a dependency folder, with 48 of its files in the commit\..*git rm -r --cached node_modules.*stays on disk.*add `node_modules\/` to .gitignore/);
+  assert.equal(checkBuildOutput(files('web/node_modules/a/dist/x.js'), DEFAULTS)[0].file, 'web/node_modules/');
+  // A build folder: two files group, one file keeps its own line.
+  const built = checkBuildOutput(files('dist/a.js', 'dist/b.js', 'out/c.js'), DEFAULTS);
+  assert.deepEqual(built.map((problem) => problem.file), ['dist/', 'out/c.js']);
+  assert.match(formatFinding(built[0]), /^dist\/: build output, with 2 files in a dist\/ folder\..*git rm -r --cached dist/);
+  // Every file in node_modules counts, not only built ones; a vendor/ file only when it is built.
+  assert.match(formatFinding(checkBuildOutput(files('node_modules/a/index.js', 'node_modules/a/package.json'), DEFAULTS)[0]), /with 2 of its files/);
+  assert.deepEqual(checkBuildOutput(files('vendor/lib/a.go'), DEFAULTS), []);
+  // allowBuild still lets a path through.
+  assert.deepEqual(checkBuildOutput(files('node_modules/a.js'), { allowBuild: ['node_modules/**'] }), []);
 });

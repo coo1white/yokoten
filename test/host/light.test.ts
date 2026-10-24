@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeSandbox } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { doctor, guardCostCheck, type MachineProbe } from '../../src/setup/doctor.ts';
+import { doctor, guardCostCheck, type MachineProbe } from '../../src/setup/doctor/index.ts';
 import { freeMemory, guardLine, isLight, measureRun, parseChildTimes, testCommand, testJobs } from '../../src/host/light.ts';
 
 const GB = 1024 ** 3;
@@ -37,17 +37,19 @@ test('light: YOKOTEN_LIGHT_TESTS=0 is the off switch; anything else leaves it on
   for (const on of [undefined, '', '1', 'yes']) assert.equal(isLight({ YOKOTEN_LIGHT_TESTS: on }), true, String(on));
 });
 
-test('light: yokoten test --print shows the command and the off switch; --heavy drops the cap (#461)', () => {
+test('light: yokoten test --print shows the command and the off switch; --heavy drops the cap (#461)', async () => {
   const sandbox = makeSandbox();
-  const light = sandbox.run(['test', '--print', '--', 'a.test.ts']);
+  // --print runs nothing, so these go in-process: the child cap (#475) is kept for the
+  // two runs below, which check the real exit code.
+  const light = await sandbox.call(['test', '--print', '--', 'a.test.ts']);
   assert.equal(light.status, 0, light.stderr);
   assert.match(light.stdout, /^(nice -n 10 )?node --test --test-concurrency=\d+ a\.test\.ts\nlight: \d+ at once/);
   assert.match(light.stdout, /YOKOTEN_LIGHT_TESTS=0/);
-  const heavy = sandbox.run(['test', '--print', '--heavy']);
+  const heavy = await sandbox.call(['test', '--print', '--heavy']);
   assert.equal(heavy.stdout, 'node --test\nthe light run is off\n');
-  const off = sandbox.run(['test', '--print'], { extra: { YOKOTEN_LIGHT_TESTS: '0' } });
+  const off = await sandbox.call(['test', '--print'], { extra: { YOKOTEN_LIGHT_TESTS: '0' } });
   assert.equal(off.stdout, 'node --test\nthe light run is off\n');
-  assert.notEqual(sandbox.run(['test', '--nope']).status, 0, 'an unknown option is refused');
+  assert.notEqual((await sandbox.call(['test', '--nope'])).status, 0, 'an unknown option is refused');
 });
 
 test('light: yokoten test runs the tests and returns their exit code (#461)', () => {
@@ -88,6 +90,7 @@ test('guard cost: full doctor reports it in one line, spawning the guard once; a
     writeText: () => {},
     uid: 1000,
     now: () => new Date('2026-10-20T08:30:00Z'),
+    nodeVersion: '22.23.4',
     measureGuard: () => { runs++; return { wallMs: 90.2, cpuMs: 60.4 }; },
   } satisfies MachineProbe;
   const full = doctor(sandbox.repo, { env, config: DEFAULTS, machine });
@@ -95,6 +98,6 @@ test('guard cost: full doctor reports it in one line, spawning the guard once; a
   assert.equal(runs, 1);
   doctor(sandbox.repo, { env, config: DEFAULTS, machine, session: true });
   assert.equal(runs, 1, 'a session must start fast: no guard run');
-  assert.equal(guardCostCheck(sandbox.repo, { ...machine, measureGuard: () => null }), null, 'a guard that cannot run: no line');
-  assert.equal(guardCostCheck(sandbox.repo, { ...machine, measureGuard: undefined }), null, 'a machine that cannot measure: no line');
+  assert.equal(guardCostCheck(sandbox.repo, { ...machine, measureGuard: () => null }, env), null, 'a guard that cannot run: no line');
+  assert.equal(guardCostCheck(sandbox.repo, { ...machine, measureGuard: undefined }, env), null, 'a machine that cannot measure: no line');
 });

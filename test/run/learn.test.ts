@@ -61,7 +61,7 @@ import {
   readState,
   saveState,
   seenAfter,
-} from '../../src/setup/doctor.ts';
+} from '../../src/setup/doctor/index.ts';
 
 // `yokoten learn` (#77): an incident issue becomes a check draft, from the issue's own
 // sections. The issue text is stubbed here; nothing reaches the network.
@@ -102,33 +102,34 @@ function makeModuleDir(prefix: string): string {
 }
 
 // #172: the first full doctor in a clone says a kit lesson is new, once. A session writes nothing.
-test('lessons: full doctor notes a new lesson on the first run only; a session, not now and a broken state', () => {
+test('lessons: full doctor notes a new lesson on the first run only; a session, not now and a broken state', async () => {
   const sandbox = makeSandbox();
   const stateFile = join(sandbox.repo, '.git', 'yokoten', 'state.json');
-  const newNote = /\n {2}note {4}new lesson: incident-138 \(a test calls a server on this machine and does not set NO_PROXY\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
-  let result = sandbox.run(['doctor', '--session']);
+  const newNote = /\n {2}note {4}a new check ran: ok \(incident-138\); doctor now runs it in this project\n {2}ok {6}lesson incident-138\n/;
+  // The entry, through the real binary; the rest runs in this process.
+  let result: Pick<ReturnType<typeof sandbox.run>, 'status' | 'stdout' | 'stderr'> = sandbox.run(['doctor', '--session']);
   assert.equal(result.status, 0, result.stderr);
   // A session keeps only the lessons it ran (#339), never the ones full doctor has seen.
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { sessionLessons: ['incident-138'] });
   rmSync(stateFile);
   // Not now: no new note, and the lesson is not marked seen.
   sandbox.write('yokoten.json', JSON.stringify({ notNow: { 'incident-138': 'no local servers here' } }));
-  result = sandbox.run(['doctor']);
+  result = await sandbox.call(['doctor']);
   assert.ok(!/new lesson/.test(result.stdout), result.stdout);
   assert.ok(!existsSync(stateFile));
   rmSync(join(sandbox.repo, 'yokoten.json'));
   // The first run: the note, even with no problem found (positive control).
-  result = sandbox.run(['doctor']);
+  result = await sandbox.call(['doctor']);
   assert.match(result.stdout, newNote);
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
   assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the state file is never in the tree');
   // The second run: the lesson's own line only.
-  result = sandbox.run(['doctor']);
+  result = await sandbox.call(['doctor']);
   assert.ok(!/new lesson/.test(result.stdout));
   assert.match(result.stdout, /\n {2}ok {6}lesson incident-138\n/);
   // A broken state file is an empty state: the note again, no crash, and the file is mended.
   writeFileSync(stateFile, '{ not json');
-  result = sandbox.run(['doctor', '--json']);
+  result = await sandbox.call(['doctor', '--json']);
   assert.equal(result.stderr, '');
   assert.deepEqual(JSON.parse(result.stdout).lessons.find((lesson: { id: string }) => lesson.id === 'incident-138'), { id: 'incident-138', mark: 'ok', isNew: true });
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { seenLessons: ['incident-138'] });
@@ -136,15 +137,15 @@ test('lessons: full doctor notes a new lesson on the first run only; a session, 
 
 // #339: a session start hears one line the first time a lesson new to this clone finds
 // something here, and nothing after: not at the next start, and not after a compaction.
-test('lessons: a session hears a new lesson that finds something once; a project without the problem never does', () => {
+test('lessons: a session hears a new lesson that finds something once; a project without the problem never does', async () => {
   const line = 'yokoten: a new lesson learned in another project found a problem here: a test calls a server on this machine and does not set NO_PROXY. Run `yokoten doctor` to see where.';
   const sandbox = makeSandbox();
   const stateFile = join(sandbox.repo, '.git', 'yokoten', 'state.json');
   const hook = { CLAUDE_PROJECT_DIR: sandbox.repo };
-  const start = (event: Record<string, string>) => sandbox.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: hook });
+  const start = (event: Record<string, string>) => sandbox.call(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: hook });
   // Without the problem: no line, at the first start or any later one.
   for (let i = 0; i < 2; i++) {
-    const result = start({ session_id: `clean-${i}`, source: 'startup' });
+    const result = await start({ session_id: `clean-${i}`, source: 'startup' });
     assert.equal(result.status, 0, result.stderr);
     assert.ok(!result.stdout.includes('new lesson'), result.stdout);
   }
@@ -155,28 +156,28 @@ test('lessons: a session hears a new lesson that finds something once; a project
   const found = makeSandbox();
   const foundState = join(found.repo, '.git', 'yokoten', 'state.json');
   found.write('test/api.test.ts', "await fetch('http://127.0.0.1:8080/');\n");
-  const startFound = (event: Record<string, string>) => found.run(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: { CLAUDE_PROJECT_DIR: found.repo } });
-  let result = startFound({ session_id: 's-1', source: 'startup' });
+  const startFound = (event: Record<string, string>) => found.call(['doctor', '--session'], { input: JSON.stringify({ hook_event_name: 'SessionStart', ...event }), extra: { CLAUDE_PROJECT_DIR: found.repo } });
+  let result = await startFound({ session_id: 's-1', source: 'startup' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.split('\n').filter((text) => text.includes('new lesson')).length, 1, result.stdout);
   assert.ok(result.stdout.includes(`${line}\n`), result.stdout);
   // A compaction start does not repeat it, from the state or from what the session heard.
-  assert.ok(!startFound({ session_id: 's-1', source: 'compact' }).stdout.includes('new lesson'));
+  assert.ok(!(await startFound({ session_id: 's-1', source: 'compact' })).stdout.includes('new lesson'));
   rmSync(foundState);
-  assert.ok(!startFound({ session_id: 's-1', source: 'compact' }).stdout.includes('new lesson'), 'the session heard it already');
+  assert.ok(!(await startFound({ session_id: 's-1', source: 'compact' })).stdout.includes('new lesson'), 'the session heard it already');
   // A later session: nothing; full doctor still notes the lesson as new, and its problem.
-  result = startFound({ session_id: 's-2', source: 'startup' });
+  result = await startFound({ session_id: 's-2', source: 'startup' });
   assert.ok(!result.stdout.includes('new lesson'), result.stdout);
-  assert.match(found.run(['doctor']).stdout, /\n {2}note {4}new lesson: incident-138 [^\n]*\n {2}note {4}lesson incident-138: test\/api\.test\.ts/);
+  assert.match((await found.call(['doctor'])).stdout, /\n {2}note {4}new lesson: incident-138 [^\n]*\n {2}note {4}lesson incident-138: test\/api\.test\.ts/);
   // After full doctor has seen it, a fresh session state never brings it back.
   writeFileSync(foundState, JSON.stringify({ seenLessons: ['incident-138'] }));
-  assert.ok(!startFound({ session_id: 's-3', source: 'startup' }).stdout.includes('new lesson'));
+  assert.ok(!(await startFound({ session_id: 's-3', source: 'startup' })).stdout.includes('new lesson'));
   // The plugin names its own command; "not now" silences the line.
   rmSync(foundState);
-  assert.ok(found.run(['doctor', '--session'], { extra: { CLAUDE_PLUGIN_ROOT: found.repo } }).stdout.includes('Run /yokoten:doctor to see where.'));
+  assert.ok((await found.call(['doctor', '--session'], { extra: { CLAUDE_PLUGIN_ROOT: found.repo } })).stdout.includes('Run /yokoten:doctor to see where.'));
   rmSync(foundState);
   found.write('yokoten.json', JSON.stringify({ notNow: { 'incident-138': 'no proxy on this team' } }));
-  assert.ok(!found.run(['doctor', '--session']).stdout.includes('new lesson'));
+  assert.ok(!(await found.call(['doctor', '--session'])).stdout.includes('new lesson'));
 });
 
 test('learn: the draft takes what, why and the fix from the issue\'s sections', () => {
@@ -407,27 +408,27 @@ test('lessons: --ship refuses a draft with a TODO or a failing test, and moves n
     else process.env.TMPDIR = savedTmp;
   });
   const draftDir = join(root, 'lessons/incident-12');
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no kit\/ here/);
+  assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /no kit\/ here/);
   mkdirSync(join(root, 'kit'));
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /no lesson in lessons\/incident-12: run `yokoten learn <issue> --write` first/);
-  assert.match(String((shipLesson(root, '../x', '0.1.0') as { problems: string[] }).problems), /is not a lesson id/);
+  assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /no lesson in lessons\/incident-12: run `yokoten learn <issue> --write` first/);
+  assert.match(String((shipLesson(root, '../x', '0.1.0', process.env) as { problems: string[] }).problems), /is not a lesson id/);
   // A fresh draft: TODOs in both files.
   writeDraft(root, draftLesson(incidentOf('## Why it matters\n\nA leak.\n\n## Fix\n\nA check.\n')));
-  let shipped = shipLesson(root, '12', '0.1.0') as { problems: string[] };
+  let shipped = shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] };
   assert.deepEqual(shipped.problems.map((problem) => problem.replace(/\d+ TODO/, 'N TODO')), ['lessons/incident-12/lesson.ts still has N TODO(reviewer): fill each one in', 'lessons/incident-12/lesson.test.ts still has N TODO(reviewer): fill each one in']);
   // No TODO left, but the check finds nothing: its positive control fails.
   writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON.replace("existsSync(join(root, '.env')) ? [lesson] : []", '[]'));
   writeFileSync(join(draftDir, 'lesson.test.ts'), ENV_LESSON_TEST);
-  shipped = shipLesson(root, 'incident-12', '0.1.0') as { problems: string[] };
+  shipped = shipLesson(root, 'incident-12', '0.1.0', process.env) as { problems: string[] };
   assert.deepEqual(shipped.problems, ['the lesson\'s test fails: run `node --test lessons/incident-12/lesson.test.ts` to see why, and fix the check']);
   assert.ok(existsSync(join(draftDir, 'lesson.ts')) && !existsSync(join(root, 'kit/lessons')), 'nothing moved');
   // Reviewed: it moves, with a row in the table, and the empty drafts folder goes.
   writeFileSync(join(draftDir, 'lesson.ts'), ENV_LESSON);
-  assert.deepEqual(shipLesson(root, '12', '0.1.0'), { lesson: { id: 'incident-12', folder: '1/incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
+  assert.deepEqual(shipLesson(root, '12', '0.1.0', process.env), { lesson: { id: 'incident-12', folder: '1/incident-12', url: 'https://example.com/issues/12', version: '0.1.0' } });
   assert.ok(existsSync(join(root, 'kit/lessons/1/incident-12/lesson.test.ts')) && !existsSync(join(root, 'lessons')));
   assert.deepEqual(readLessonTable(readFileSync(join(root, 'kit/lessons/README.md'), 'utf8')).map((row) => row.id), ['incident-12']);
   writeDraft(root, draftLesson(incidentOf('')));
-  assert.match(String((shipLesson(root, '12', '0.1.0') as { problems: string[] }).problems), /kit\/lessons\/1\/incident-12 is already there/);
+  assert.match(String((shipLesson(root, '12', '0.1.0', process.env) as { problems: string[] }).problems), /kit\/lessons\/1\/incident-12 is already there/);
 });
 
 test('lessons: doctor runs each lesson as a note; a broken lesson is a note for itself alone; not now skips one', () => {
@@ -489,7 +490,7 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
   const checks = lessonChecks(clean, { 'incident-3': 'not for us' }, place, ['incident-2']);
   assert.deepEqual(checks.map(({ id, isNew }) => `${id} ${isNew === true}`), ['incident-1 true', 'incident-2 false', 'incident-3 false']);
   assert.deepEqual(formatLessonChecks(checks), [
-    '  note    new lesson: incident-1 (a .env file is in the repo); doctor now runs it in this project',
+    '  note    a new check ran: ok (incident-1); doctor now runs it in this project',
     '  ok      lesson incident-1',
     '  ok      lesson incident-2',
     '  not now lesson incident-3: not for us',
@@ -516,12 +517,12 @@ test('lessons: a lesson not yet seen is new, with what it looks for; not now and
 
 test('lessons: the state file is in the git folder; missing, broken or unwritable state is empty, never an error', () => {
   const outside = makeTempDir('yokoten-outside-');
-  assert.equal(findStateFile(outside), null, 'outside a git repo: no state');
+  assert.equal(findStateFile(outside, process.env), null, 'outside a git repo: no state');
   assert.deepEqual(readState(null), {});
   saveState(null, { seenLessons: ['incident-1'] });
   const repo = makeTempDir('yokoten-state-');
   execFileSync('git', ['init', '-q'], { cwd: repo });
-  const file = findStateFile(repo) as string;
+  const file = findStateFile(repo, process.env) as string;
   assert.equal(file, join(realpathSync(repo), '.git', 'yokoten', 'state.json'));
   assert.deepEqual(readState(file), {}, 'missing');
   for (const broken of ['{ not json', '[1]', 'null', '{"seenLessons": "incident-1"}']) {
@@ -571,16 +572,17 @@ test('upstream: a note hides the project, home and owner, and refuses a secret o
   mkdirSync(root, { recursive: true });
   const place = placeIn(root, { projects: ['acme-app'], owners: ['Jane Roe'], hosts: ['git.corp.test'], marks: ['secret-city'] });
   const note = redactNote(`In ${root}/src/x.ts the hook\nfor Acme-App broke; Jane Roe saw it in ${join(home, 'logs')} and ${root}2, near Secret-City, on git.corp.test`, place, env);
-  // `${root}2` is another folder: the path is not hidden as a prefix of it.
-  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/acme-app2, near <mark>, on <host>' });
+  // `${root}2` is another folder: the path is not hidden as a prefix of it. The name in it is,
+  // as the check finds it: a digit is not a letter (#434).
+  assert.deepEqual(note, { text: 'In <project>/src/x.ts the hook for <project> broke; <owner> saw it in ~/logs and ~/work/<project>2, near <mark>, on <host>' });
   // A secret is refused, not hidden; the finding names its kind, never the value.
   const token = `ghp_${'a'.repeat(36)}`;
   const refused = redactNote(`the token ${token} leaked`, place, env);
   assert.ok('problems' in refused && refused.problems.every((problem) => problem.id === 'secret' && !JSON.stringify(problem).includes(token)));
   // An IP address is not hidden by redact, so the scan refuses it.
   assert.deepEqual(kindsOf(redactNote(`the server ${[10, 1, 2, 3].join('.')} was down`, place, env)), ['ip']);
-  // A mark inside a longer word is not a whole word for redact, but the scan still catches it.
-  assert.deepEqual(kindsOf(redactNote('at secret-cityhall', place, env)), ['private-mark']);
+  // A mark with a - is found as a part: redact hides it where the scan would find it (#434).
+  assert.deepEqual(redactNote('at secret-cityhall', place, env), { text: 'at <mark>hall' });
   // An email address is kept as <email>, not refused.
   assert.deepEqual(redactNote(`mail jane${'@'}corp-mail.com`, place, env), { text: 'mail <email>' });
   // No repo: the home folder is still hidden.
@@ -613,7 +615,8 @@ test('upstream: every spelling of the project name is hidden; a name under three
   const env = { HOME: tmpdir() };
   const place = placeIn(null, { projects: ['secret-proj', 'ab'] });
   assert.deepEqual(redactNote('secret-proj, secret_proj, SecretProj, secretproj, SECRET PROJ and ab', place, env), { text: '<project>, <project>, <project>, <project>, <project> and ab' });
-  assert.deepEqual(redactNote('secret-projector', place, env), { text: 'secret-projector' }, 'a whole name only');
+  // A name with a - is found as a part, by the check and by redact alike (#434).
+  assert.deepEqual(redactNote('secret-projector', place, env), { text: '<project>ector' });
 });
 
 test('upstream: a note refuses known secret shapes, by kind and never by value', () => {

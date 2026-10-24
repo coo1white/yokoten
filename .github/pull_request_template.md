@@ -17,3 +17,5 @@ Closes #
 
 <!-- The commands you ran and what they printed. "Tests pass" is not enough: which tests, and the output.
      A change to what the project does adds a file in changes/ (changes/README.md shows the form), or says `No changelog: <reason>`. -->
+
+<!-- End the body with one line that names the agent and the model that made it, for example `🤖 Made with Claude Code (Claude Opus 5.5)`. Add each reviewer: `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)`. `check --pr` and `yokoten bot` refuse a body without it. -->

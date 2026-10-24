@@ -570,6 +570,9 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
   const defaultName = facts.defaultRef?.replace(/^refs\/(heads|remotes)\//, '') ?? 'the default branch';
   const remote = facts.remotes.includes('origin') ? 'origin' : (facts.remotes[0] ?? 'origin');
   const present = facts.worktrees.filter((worktree) => !worktree.isMissing);
+  // With no remote there is nowhere to push (#524): the advice says commit, and push once one is added.
+  const hasNoRemote = !facts.remotes.length && !facts.isPartial;
+  const pushLater = 'once the repo has a remote, push it';
   const volatileAtRisk = present.filter((worktree) => worktree.volatile && isWorktreeAtRisk(worktree, facts));
   // The worktrees whose place is already said in one of their notes.
   const told = new Set<string>();
@@ -597,11 +600,16 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     const where = show(worktree.path);
     const since = age === null ? '' : `, the oldest changed ${showAge(age)} ago`;
     const place = placeOf(worktree);
-    notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}${place ? `, and is ${place}` : ''}`, `commit them: ${code(`git -C ${where} add -A && git -C ${where} commit`)}, then push`));
+    // The first commit after init carries .yokoten/, a copy of yokoten: say so, so the file count is expected.
+    const hasRuntime = files.some((file) => file === '.yokoten' || file.startsWith('.yokoten/'));
+    const at = where === '.' ? 'git' : `git -C ${where}`;
+    const message = hasRuntime ? 'chore: add yokoten' : 'chore: save work';
+    const runtime = hasRuntime ? '; .yokoten/ is a copy of yokoten (about 90 files), and committing it is the point' : '';
+    notes.push(finding('uncommitted-changes', `${where} has ${plural(files.length, 'uncommitted file')}${since}${place ? `, and is ${place}` : ''}`, `commit them: ${code(`${at} add -A && ${at} commit -m "${message}"`)}${runtime}${hasNoRemote ? `; ${pushLater}` : ', then push'}`));
   }
   // A branch exists once there is a commit. A read that stopped early may not have read the remotes.
   if (!facts.remotes.length && facts.branches.length && !facts.isPartial) {
-    notes.push(finding('unpushed-commits', 'this repo has no remote, so every commit is still only on this machine', `add one and push: ${code('git remote add origin <url>')}, then ${code('git push -u origin --all')}`));
+    notes.push(finding('unpushed-commits', 'this repo has no remote, so every commit is still only on this machine', `make the repo on your code host, add it as origin: ${code('git remote add origin <url>')}; then push: ${code('git push -u origin --all')}`));
   } else {
     for (const branch of facts.branches) {
       if (!isBranchAtRisk(branch, facts)) continue;
@@ -623,7 +631,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     if (!worktree.isHeadUnreferenced) continue;
     const where = show(worktree.path);
     const place = placeOf(worktree);
-    notes.push(finding('unpushed-commits', `worktree ${where} has commits on a detached HEAD that no branch holds, so they are still only on this machine${place ? `; it is ${place}` : ''}`, `give them a branch and push it: ${code(`git -C ${where} switch -c <name>`)}, then ${code(`git -C ${where} push -u ${remote} <name>`)}`));
+    notes.push(finding('unpushed-commits', `worktree ${where} has commits on a detached HEAD that no branch holds, so they are still only on this machine${place ? `; it is ${place}` : ''}`, hasNoRemote ? `give them a branch: ${code(`git -C ${where} switch -c <name>`)}; ${pushLater}` : `give them a branch and push it: ${code(`git -C ${where} switch -c <name>`)}, then ${code(`git -C ${where} push -u ${remote} <name>`)}`));
   }
   // The clone itself always: a repo set up there loses everything on restart.
   const main = present.find((worktree) => worktree.isMain);
@@ -637,7 +645,7 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
     // At-risk worktrees whose note a session hid (or no remote folded): say the place on its own.
     for (const worktree of volatileAtRisk.filter((tree) => !told.has(tree.path))) {
       told.add(worktree.path);
-      notes.push(finding(VOLATILE_IDS[(worktree.volatile as { kind: 'tmpfs' | 'temp' }).kind], `${show(worktree.path)} holds work only on this machine, and is ${describePlace(worktree.volatile as { kind: 'tmpfs' | 'temp'; folder: string }, home)}`, 'save it: commit and push, then make it again in a folder that lasts'));
+      notes.push(finding(VOLATILE_IDS[(worktree.volatile as { kind: 'tmpfs' | 'temp' }).kind], `${show(worktree.path)} holds work only on this machine, and is ${describePlace(worktree.volatile as { kind: 'tmpfs' | 'temp'; folder: string }, home)}`, hasNoRemote ? `save it: commit; ${pushLater}; then make it again under .worktrees/` : 'save it: commit and push, then make it again under .worktrees/'));
     }
     // The rest hold nothing at risk: one line per kind, for the next worktree made there.
     for (const kind of ['tmpfs', 'temp'] as const) {
@@ -646,11 +654,12 @@ export function unsavedNotes(facts: UnsavedFacts, { home, now = Date.now(), plat
       const folders = [...new Set(clean.map((worktree) => showFolder((worktree.volatile as { folder: string }).folder, home)))].join(', ');
       const where = kind === 'tmpfs' ? `on a tmpfs (${folders})` : `under the temp folder (${folders})`;
       const count = clean.length === 1 ? `1 worktree is ${where}; it holds no unsaved work` : `${clean.length} worktrees are ${where}; none holds unsaved work`;
-      notes.push(finding(VOLATILE_IDS[kind], `${count}, but new work there may be lost on restart`, 'make new worktrees in a folder that lasts'));
+      const fix = kind === 'tmpfs' ? 'make new worktrees under .worktrees/, never on a tmpfs' : 'make new worktrees under .worktrees/, never under a temp folder';
+      notes.push(finding(VOLATILE_IDS[kind], `${count}, but new work there may be lost on restart`, fix));
     }
   }
   if (facts.stashes) {
-    notes.push(finding('stashes', `there ${facts.stashes === 1 ? 'is 1 stash' : `are ${facts.stashes} stashes`}, and a stash is only on this machine`, `turn each into a branch and push it: ${code('git stash branch <name>')}, then ${code(`git push -u ${remote} <name>`)}`));
+    notes.push(finding('stashes', `there ${facts.stashes === 1 ? 'is 1 stash' : `are ${facts.stashes} stashes`}, and a stash is only on this machine`, hasNoRemote ? `turn each into a branch: ${code('git stash branch <name>')}; ${pushLater}` : `turn each into a branch and push it: ${code('git stash branch <name>')}, then ${code(`git push -u ${remote} <name>`)}`));
   }
   for (const worktree of facts.worktrees) {
     if (!worktree.indexLock || worktree.isMissing) continue;
