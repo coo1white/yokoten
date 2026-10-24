@@ -1423,6 +1423,7 @@ yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
 | Codex，以及通过 Codex 用 DeepSeek | `codex` | `CODEX_HOME` | `auth.json` | `api.openai.com`、`api.deepseek.com` | `codex exec --sandbox danger-full-access "<任务说明>"` |
 | Grok | `grok` | `GROK_HOME` | `auth.json` | `api.x.ai` | `grok -p "<任务说明>"` |
 | Muse Code | `muse` | `XDG_CONFIG_HOME`、`XDG_DATA_HOME` | `muse/auth.json` | `api.meta.ai` | `muse exec "<任务说明>"` |
+| OpenCode | `opencode` | `XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CONFIG_HOME` | `opencode.db`（只复制登录那几行） | `opencode.ai`、`api.opencode.ai`、`models.opencode.ai` | `opencode run --standalone "<任务说明>"` |
 
 - **Claude Code** 到 `platform.claude.com` 续登录。用 `claude setup-token` 拿的 token 放在
   `CLAUDE_CODE_OAUTH_TOKEN` 里，或者用 API key，就不用续，它们会作为登录变量传进去。
@@ -1430,11 +1431,14 @@ yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
   `.git` 设成只读，还会挡住测试要用的管道。工位本身就是围栏，用不着它那一层。你的 `config.toml`
   不带进来：模型提供方用命令里的 `-c` 给。用 ChatGPT 登录的话，还要加 `--host chatgpt.com,auth.openai.com`。
 - **Grok**：如果 `--sandbox` 挡住了提交或测试，在工位里把它关掉。
+- **OpenCode**：在工位里要加 `--standalone`，让它在工位里启动自己的服务，而不是用你机器上的那个。
+  登录存在 `opencode.db` 里，不在叫 `auth.json` 的文件里；工位只复制登录那几行，你的会话不会跟过来。
+  这个服务通过 loopback 和自己说话，所以工位给 `127.0.0.1,localhost,::1` 设了 `NO_PROXY`。
 - **加主机**：`--host <主机>` 让 agent 多连一个 API 主机（443 端口）。几个主机用逗号隔开。
 - **加文件**：`--read <路径>` 多放一个路径进来，只能读。会露出主目录、藏起来的文件夹或你自己 agent
   状态的路径，命令会拒绝。
 
-**代理。** 四个 agent 的程序里都认 `HTTPS_PROXY`。工位会把 `HTTPS_PROXY`、`HTTP_PROXY`、
+**代理。** 每个 agent 的程序里都认 `HTTPS_PROXY`。工位会把 `HTTPS_PROXY`、`HTTP_PROXY`、
 `ALL_PROXY` 的大写和小写都设好，还设 `NODE_USE_ENV_PROXY=1`，这样 Node 自带的 `fetch` 也走代理。
 代理只接受 `CONNECT`，只放行名单上的主机，从不看传的内容。它同时最多开 64 条通道，一条通道 10 分钟
 没动静就关掉。它拒绝了哪个主机，工位结束时会说出来。
