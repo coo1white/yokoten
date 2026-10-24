@@ -89,10 +89,12 @@ flowchart LR
 ## Keep CI fast
 
 Agents add tests fast. A suite then gets slow, and a slow red run teaches people to stop
-waiting. `yokoten init` writes a tests job that runs the tests in three shards, with
-`fail-fast: false`. It then runs `yokoten speed`. The command prints the total, the
-slowest tests, and the share of the run that the slowest test files hold. It fails when
-the run passes the budget by more than the room a busy runner needs.
+waiting. When a Node project's test script runs `node --test`, `yokoten init` writes a
+tests job with three shards and `fail-fast: false`. It then runs `yokoten speed`. A
+project with another test runner gets the tests job without the shards and without the
+speed step. The command prints the total, the slowest tests, and the share
+of the run that the slowest test files hold. It fails when the run passes the budget by
+more than the room a busy runner needs.
 
 When the run is over, the command says what to change. The advice is grouped by cause:
 

@@ -365,6 +365,8 @@ test('tests-job: a node --test project gets the time budget, another runner does
   writeTestsJob(node, { ask: () => 'y' });
   const text = readFileSync(join(node, WORKFLOW), 'utf8');
   assert.match(text, /NODE_OPTIONS: .*--test-reporter=tap .*tests-\$\{\{ matrix\.shard \}\}\.tap --test-shard=\$\{\{ matrix\.shard \}\}\/3/);
+  assert.doesNotMatch(text, /^ {4}env:/m, 'no job-wide env: it would replace the workflow NODE_OPTIONS for install and every other step (#479)');
+  assert.match(text, /- run: npm test\n {8}env:\n {10}# [^\n]*\n {10}# [^\n]*\n {10}NODE_OPTIONS: /, 'NODE_OPTIONS belongs to the test step alone');
   assert.match(text, /strategy:/);
   assert.match(text, /fail-fast: false/);
   assert.match(text, /shard: \[1, 2, 3\]/);

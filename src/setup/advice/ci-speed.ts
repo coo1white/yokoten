@@ -211,11 +211,18 @@ export function speedView(report: SpeedReport, { budgetSeconds = SPEED_BUDGET, p
     }
     const named = half.slice(0, NAMED);
     // Only the slowest tests are matched to a file, so the sum is a share of the run, not
-    // half of it: say the share, which is always true (#479).
+    // half of it. A file's tests can run at the same time, so their sum can pass the run
+    // itself: a share over 100% is not a number the run can show (#479).
     const shown = named.reduce((sum, file) => sum + file.ms, 0);
-    const share = report.ms > 0 ? Math.round((shown / report.ms) * 100) : 0;
     const count = named.length === 1 ? '1 test file holds' : `${named.length} test files hold`;
-    lines.push('', `${count} ${share}% of the run:`, ...named.map((file) => `- ${formatDuration(file.ms)}: ${file.path} (${file.count === 1 ? '1 test' : `${file.count} tests`})`));
+    const list = named.map((file) => `- ${formatDuration(file.ms)}: ${file.path} (${file.count === 1 ? '1 test' : `${file.count} tests`})`);
+    if (shown > report.ms) {
+      const which = named.length === 1 ? 'its' : 'their';
+      lines.push('', `${count} more test time than the run: ${which} tests add up to ${formatDuration(shown)}, and the run took ${formatDuration(report.ms)} (tests in a file can run at the same time).`, ...list);
+    } else {
+      const share = report.ms > 0 ? Math.round((shown / report.ms) * 100) : 0;
+      lines.push('', `${count} ${share}% of the run:`, ...list);
+    }
   }
   if (previous) {
     const change = report.ms - previous.ms;

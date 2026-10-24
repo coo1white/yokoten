@@ -90,13 +90,6 @@ export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutSt
     '    timeout-minutes: 10',
     '    permissions:',
     '      contents: read',
-    ...(options.cli
-      ? [
-          '    env:',
-          '      # One report per shard, so the time check below can read the slowest tests.',
-          `      NODE_OPTIONS: --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${report}${shardFlag}`,
-        ]
-      : []),
     '    steps:',
     `      - uses: ${checkout.uses}${checkout.note ? ` ${checkout.note}` : ''}`,
     '        with:',
@@ -108,6 +101,10 @@ export const testsJobText = (job: TestsJob, runner: string, checkout: CheckoutSt
     `      - run: ${runner}`,
     ...(options.cli
       ? [
+          '        env:',
+          '          # The test step only: a job-wide value replaces the workflow\'s NODE_OPTIONS for',
+          '          # every step, including the install and the time check below (#479).',
+          `          NODE_OPTIONS: --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=${report}${shardFlag}`,
           '      # The test time against the budget: slow files and what to do about them (#479).',
           '      - if: ${{ !cancelled() }}',
           `        run: node ${options.cli} speed ${report} --budget ${SPEED_BUDGET}`,

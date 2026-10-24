@@ -59,6 +59,16 @@ test('speed: over the budget says by how much, and six equal files name three th
   assert.deepEqual(testsByFile(report.tests, sources).length, 6);
 });
 
+test('speed: a file whose tests run at once does not claim a share over 100% (#479)', () => {
+  const sources = [{ path: 'test/parallel.test.ts', text: "test('a long test', () => {});\ntest('another long test', () => {});" }];
+  const report = readTapReport(tapReport(10_000, [['a long test', 10_000], ['another long test', 10_000]]));
+  const view = speedView(report, { budgetSeconds: 100, sources });
+  const line = view.lines.find((text) => text.includes('test file'));
+  assert.ok(line);
+  assert.doesNotMatch(line, /%/);
+  assert.equal(line, '1 test file holds more test time than the run: its tests add up to 20.0 s, and the run took 10.0 s (tests in a file can run at the same time).');
+});
+
 test('speed: the room a busy runner needs is the margin, and a change over it fails (#479)', () => {
   const over = readTapReport(tapReport(SPEED_BUDGET * 1000 * 1.5 + 1, [['a test', 1]]));
   assert.equal(speedView(over).isOver, true);
