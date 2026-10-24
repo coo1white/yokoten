@@ -1025,3 +1025,19 @@ test('fillMarks and addOwnMark: a mark only in the setting\'s file still goes in
   assert.equal(addOwnMark(env, 'quietharbor'), false, 'once there, it is known');
   assert.equal(readFileSync(extra, 'utf8'), `jane${at}personal-mail.dev\nquietharbor\n`, 'the setting\'s file is never written');
 });
+
+// #621: uninstall removes the stop log, and keeps the rest of ~/.config/yokoten.
+test('uninstall: removes the stop log (#621)', async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  mkdirSync(dirname(log), { recursive: true });
+  writeFileSync(log, '{"time":"2026-10-23T00:00:00.000Z","vendor":"codex","role":"lead","rule":"release","answer":"refused"}\n');
+  const result = await sandbox.call(['uninstall']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(log));
+  assert.match(result.stdout, /^removed the stop log$/m);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten \(your keys and private marks\)$/m, 'the folder stays');
+  const again = await sandbox.call(['uninstall']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /^not there the stop log$/m);
+});
