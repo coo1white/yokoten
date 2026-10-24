@@ -67,7 +67,7 @@ import {
   readGit,
   timeZoneNote,
 } from '../../src/run/check.ts';
-import { lateFinding } from '../../src/run/hook.ts';
+import { lateFinding, repeatStopFinding } from '../../src/run/hook.ts';
 import {
   lintCallResult,
   lintServerEntry,
@@ -158,6 +158,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkCommand('git push', { cwd: process.cwd(), env }));
   add(checkCommand('git worktree remove ../wt', { cwd: process.cwd(), env }));
   add(lateFinding({ command: 'ls', paths: [], worker: false }, 5000));
+  // The third same refusal in one session (#711): the count needs a session, so the message
+  // is asked for here, as `late` is.
+  add(repeatStopFinding());
   found.push(...scanText(`${POSITIVE_CONTROL}\n${SECRET_CONTROL}\nhome town`, { file: 'a.md', marks: ['home town'] }));
   add(scanText(`// ${['yokoten', 'ignore'].join('-')} secret`, { file: 'a.md' })[0]);
   add(addedIgnores('a.ts', `// ${['yokoten', 'ignore'].join('-')} secret: a fixture`, new Set([1]), {})[0]);
@@ -305,6 +308,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   found.push(...lintStdout(['starting server']));
   found.push(...lintServerEntry('demo', { command: 'npx', args: ['-y', 'demo'] }));
   found.push(...lintServerEntry('demo', {}));
+
+  // The event log's daily anchor check (#768): one finding of each shape, so the rule is reached.
+  found.push(finding('anchor', '2026-10-20 no longer matches its anchor: Rekor holds no entry for this hash', 'restore the line the chain names, or keep this log and start a new one'));
 
   const known = new Set(ids());
   for (const f of found) {

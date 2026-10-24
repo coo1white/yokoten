@@ -136,6 +136,12 @@ export const RULES = {
     check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
     docs: guide('what-it-doesnt-do'),
   },
+  'repeat-stop': {
+    rule: 'a session stops after the same step fails three times (#711)',
+    why: 'a loop does not find a way through, and every extra try costs the team time and money',
+    check: 'the tool-call guard counts, per session, the same refusal for the same command shape and the same failing command; at the third repeat it stops with a stop message; a call that succeeds resets the count. The worker stop check stops a task after its time limit',
+    docs: guide('the-core-rules'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
@@ -319,6 +325,11 @@ export const RULES = {
     why: 'the pull request or the issue is in that file, so without it nothing is checked',
     check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
     docs: guide('use-it-as-a-github-action'),
+  },
+  anchor: {
+    rule: 'each past day of the event log is anchored in Sigstore Rekor (record 0029)',
+    why: 'a rewritten log can carry a chain that holds, because the writer makes every hash; only an outside witness shows that a day did not change after it was anchored',
+    check: '`yokoten check --anchor` takes the hash of the last line of each past UTC day, asks Rekor for it, and verifies the signed entry timestamp with Rekor\'s key, the workflow certificate and its signature over the hash; a day with no entry, a weak chain, or an entry another identity signed fails',
   },
   'pr-approve': {
     rule: 'a tier A pull request merges only on the commit the owner approved (core rule 9)',

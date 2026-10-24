@@ -92,7 +92,9 @@ npx yokoten doctor      # where you are, and the one next step
 installed the command.
 
 In Claude Code you can use the plugin instead: `/plugin marketplace add yokoten-labs/yokoten`,
-then `/plugin install yokoten@yokoten`. Use the plugin or `npx`, not both. For CI only,
+then `/plugin install yokoten@yokoten`. Use the plugin or `npx`, not both.
+Choose [which version to install](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install):
+Stable (the default), Beta or Dev. For CI only,
 [use it as a GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action).
 The commit check asks for UTC commit times, so add `export TZ=UTC` to your shell profile once.
 

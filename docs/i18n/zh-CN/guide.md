@@ -455,6 +455,23 @@ Windows 上请用 Git Bash。
 说明，真正拦住命令的是守卫。所以只装技能等于没有守卫：要跑 `npx yokoten install`，或者用插件，
 守卫才会打开。
 
+### 装哪个版本
+
+有三个发布通道。Stable 是稳妥的默认选择。
+
+| 通道 | 插件 | npm | 装到的是什么 | 适合谁 |
+|---|---|---|---|---|
+| Stable | `yokoten` | `latest` | 最新的正式发布标签，例如 v0.1.0，带更新日志 | 所有人 |
+| Beta | `yokoten-beta` | `next` | 最新的预发布标签，例如 v0.2.0-beta.1 | 想早点用新功能、出了问题愿意报告的人 |
+| Dev | `yokoten-dev` | 无 | 默认分支，每个合并的 pull request | 贡献者，以及我们自己的测试 |
+
+`/plugin install yokoten@yokoten` 装的是 Stable。Beta 用 `yokoten-beta@yokoten`，Dev 用
+`yokoten-dev@yokoten`。只装一个通道，不要同时装几个。要换通道，先运行
+`/plugin uninstall yokoten@yokoten`，再装另一个名字。在终端里，`claude plugin uninstall`
+和 `claude plugin install` 也一样。`doctor` 会在输出的最上面写出通道和版本。
+
+预发布版可能比正式版先出问题。Dev 每次合并都会变，而且没有更新日志。
+
 ### 用 Claude Code 插件装
 
 在 Claude Code 里输入：
@@ -484,7 +501,9 @@ Windows 上请用 Git Bash。
 Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，是因为插件不放在
 `node_modules` 下面（Node 不处理 `node_modules` 里的 TypeScript）。想更新，就打开 `/plugin`，
 在 **Installed** 里选 yokoten，点 **Update now**。别人做的插件市场默认不自动更新，要自己打开。在终端里跑
-`claude plugin update yokoten@yokoten` 也一样。下一次工具调用会跑更新后的守卫。还带着旧 hook 命令的会话需要重启一次。会话还在跑的时候，要是旧的插件文件夹被删掉了，这次工具调用会被拒绝，并提示你重启。插件要是比跑 `doctor`
+`claude plugin update yokoten@yokoten` 也一样；Beta 或 Dev 要用 `yokoten-beta@yokoten` 或
+`yokoten-dev@yokoten`。下一次工具调用会跑更新后的守卫。还带着旧 hook 命令的会话需要重启一次。
+会话还在跑的时候，要是旧的插件文件夹被删掉了，这次工具调用会被拒绝，并提示你重启。插件要是比跑 `doctor`
 的这份 yokoten 旧，`doctor` 会提醒你。
 
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
@@ -697,9 +716,11 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `check --pr` | 在 CI 里检查 PR：标题格式、第一行的 `tier:`、三个小节、关联的 issue、需要时的变更文件、milestone 和标签；最后一行写明做出这个 PR 的每个 AI 和模型：`🤖 Made with <agent> (<model>)`，可写一个或多个逗号分隔的组合；审阅的 AI 也可以写上：`🤖 Made with worker <X> (<模型>), reviewed by <Y> (<模型>) and <Z> (<模型>), lead Claude Code (<模型>)`（一个或两个审阅者，最多两个）。见下面的「更新日志」。改到 CODEOWNERS 里列出的文件，必须写 `tier: A`。改动的文档里句子太长、改动的代码里名字难读、改动超过 400 行，都只提醒，不算失败。`Made with` 里的模型和 worker 状态文件不一致时也只提醒，而且只在有 worker 工作副本的机器上检查：CI 看不到那个文件 |
 | `check --pr <number>` | 同样的检查，但通过 `gh` 读这个编号的 PR，没有 CI 的仓库合并前自己跑 |
 | `check --issue` | 在 CI 里检查 issue 的标题，见下面的「issue 标题」 |
+| `check --anchor [--repo <owner/name>]` | 每个已经过去的 UTC 日，拿事件日志最后一行的哈希去 Sigstore Rekor 里对；对不上就点名是哪一天。发到 Rekor 的只有那 64 个十六进制字符，日志的行、路径和名字都不出这台电脑。`--repo` 指定给它签名的仓库的锚定工作流 |
 | `borrowed [--dry-run] [--json]` | 通过 `gh` 把 `src/borrowed/` 里的每个文件和上游默认分支对比，每个有变化的来源开一个 issue。安全修复会在标题里点出来。`--dry-run` 只显示报告，不开 issue；`--json` 以数据形式输出报告。见[借来的代码](#借来的代码) |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
+| `anchor [--json]` | 列出这个检出里记录的锚点，最新的在前。worker 的检查通过、工作区干净时记录一个。锚点是一个提交：用 `git switch -c try-2 <commit>` 回去，什么都不会被重置或删除。见下面的「停止检查」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `mcp [dir] [--command "<command>"] [--json]` | 启动 `.mcp.json`、`.vscode/mcp.json` 或 `mcp.json` 里的每个 stdio 服务器，按各个客户端的要求检查它的工具：schema、名字、注解、数量、结果格式和多余的 stdout。`--command` 检查没有配置条目的服务器；`--json` 输出检查结果。Windows 的提醒不会让它失败。见英文指南的「Shipping an MCP server that works in every agent」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
@@ -716,7 +737,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `msg send <收件人> [<文字>]`、`msg inbox`、`msg who`、`msg log` | 各家 agent 通过这台电脑上的文件互相发消息。只有 lead 能跑 `log`。见 [agent 之间发消息](#agent-之间发消息) |
 | `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
 | `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着；拦截记录会被删掉。再跑一次什么也不会变 |
-| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
+| `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。`gh pr edit` 换了标题或正文时也会这样补，并在正文给出新 tier 时移除旧的 tier 标签。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <秒>]` | 按给出的顺序，以 bot 的身份合并一批已批准、检查全绿的 PR；第一个需要人来处理的 PR 就让它停下。第一次合并之前先记下每个 PR 的基础分支，所以叠在被 squash 合并的分支上的 PR，会用它和那个分支真正共有的基础来合并。只涉及 import 行的冲突取并集；真正的冲突、测试失败、`check` 失败或缺少批准都会让列车停下。每次合并后的树先测试再推送；推送后的合并要等 CI 通过；`--wait` 设等多久，默认 1800 秒。只有 lead 能跑 |
 | `board [--text] [--no-open] [--role name] [--vendor name]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态，以及每个 agent 估算的 API 费用。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR、worktree 和用量；这时再用 `--role` 和 `--vendor`，只保留该角色或该厂商的用量行。见「团队看板」 |
 
@@ -1312,7 +1333,8 @@ src/rules/guards.ts:195: "i" is used for 101 lines. A reader must scroll back to
 
 这套做法把 AI 当成产线上的员工：每个人分工清楚，权限也有限。
 
-- **主人**（你）决定做什么、什么时候发布。只有你能批准 PR、打发版 tag、改仓库设置。
+- **主人**（你）决定做什么、什么时候发布。只有你能批准硬线、打发版 tag、改仓库设置。区域
+  lead 可以批准自己区域里的 PR（记录 0026）。
 - **lead** 是和你对话的那个会话。它做计划、拆任务、做审查，通过 **bot** 开 PR，从不用你的
   账号。
 - **worker** 是 lead 为单个任务启动的会话，各自在自己的 worktree 里，带着
@@ -1335,7 +1357,7 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 |------|--------------|--------|
 | C | 日常小改：文档、措辞、样式 | lead 审 |
 | B | 普通改动：其他代码，带测试 | 另一家厂商的 agent 审，lead 批准 |
-| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审 |
+| A | 改错了很难收回：CODEOWNERS 里的文件，或让规则变松的改动 | 主人审；既不是硬线、也没让规则变松的路径，另一个厂商的区域 lead 可以批准 |
 
 在 yokoten 自己的仓库里，`.github/CODEOWNERS` 只列出改错了很难收回的文件：核心规则、CODEOWNERS、
 会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和 `package.json`（记录 0037）。
@@ -1348,6 +1370,37 @@ tag 由主人来打。`merge` 只通过 bot 合并，新提交不是 UTC 就停�
 检查读的是目标分支（base）上的 CODEOWNERS，不是 PR 自己改过的那份。这样 PR 没法靠改这个
 文件来给自己降级。本地跑、没有 base 的时候，读工作区里的文件，提示里会说读的是哪一份。
 没有 CODEOWNERS 文件，就不查。
+
+### 区域 lead 在自己区域里批准
+
+记录 [0026](../../records/0026-the-owner-is-the-board.md) 把非硬线路径的锁从你的 code owner
+审查移到 yokoten 的合并检查。区域 lead 用 GitHub 审查来批准。审查正文的最后一行写明 lead、
+它的厂商和模型：
+
+```text
+Approved by area lead Grok (xAI, Grok 4.7)
+```
+
+GitHub 会记下这次审查针对的提交。之后又有新提交，就要重新审查。检查从 `Made with` 行读出
+写代码的厂商；同一个厂商的 lead 批准不算。`.github/CODEOWNERS` 列出的文件，以及放松规则的
+改动，仍然要你批准。在差异 tier 检查（#697）完成之前，改动一个已经存在的测试算放松规则；
+新增测试不算。
+
+这里不改任何仓库设置。你准备好以后，按这个顺序做。
+
+1. **确认 `.github/CODEOWNERS` 只列硬线。** 这个仓库已经是这样了（记录 0037）：核心规则、
+   `.github/CODEOWNERS` 本身、会发版或用到密钥的 CI、bot 的令牌、能关掉保护的配置和
+   `package.json`。不是硬线的路径就删掉；删掉的路径就由区域 lead 批准。
+2. **保留一个必需批准。** lead 的审查就是 GitHub 审查，所以「Required approvals」保持 1。
+   不要让 GitHub Actions 批准 PR。
+3. **保留必需的 CI 检查。** 分支规则集仍要要求跑 `yokoten check --pr` 的那个 CI 检查。
+   bot 的合并检查是第二道锁：在 `gh pr merge` 之前读 lead 的批准。
+4. **硬线安全以后，关掉「Require review from Code Owners」。** 做完第 1 步，这个设置只列
+   硬线，开着也只会找你审这些。关掉它，其余路径就交给 bot 的检查。
+
+`yokoten doctor` 现在仍期望 code owner 审查。在它学会新锁之前，这一步会提醒你。合并被拒时，
+提示会说明原因和下一步：换一个厂商的 lead、请人在 head 上重新审查，或者硬线、放松规则的改动
+去找主人。
 
 审的人靠标签找 tier，所以 `check --pr` 也看标签。一个 PR 要有一个类型标签和一个 tier 标签。
 类型标签可以直接用标题里的类型（`feat`、`fix`、`docs`、`refactor`、`ci` 等），也可以用常见的叫法：

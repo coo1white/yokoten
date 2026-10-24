@@ -78,7 +78,7 @@ npx yokoten doctor       # 你在第幾關，下一步做什麼
 
 `yokoten install` 幫這台電腦加上 skills、agents 和鉤子。前面用哪種方式裝命令都一樣。
 
-用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
+用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。選擇[要安裝哪個版本](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)：Stable（預設）、Beta 或 Dev。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
 
 ## 你會看到的畫面
 
