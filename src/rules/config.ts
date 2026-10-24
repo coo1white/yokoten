@@ -273,6 +273,6 @@ export function matcher(globs: string[], { foldsCase = false }: { foldsCase?: bo
   return matches;
 }
 
-/** How many compiled glob lists are kept before the oldest clear (#710). */
+/** How many compiled glob lists are kept before the whole cache clears (#710). */
 const MATCHER_LIMIT = 64;
 const matchers = new Map<string, (path: string) => boolean>();

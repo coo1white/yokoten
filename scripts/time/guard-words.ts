@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { globToRegExp, loadConfig } from '../../src/rules/config.ts';
 import { checkCommand, checkEdit, isLeadOnly } from '../../src/rules/guards.ts';
-import { findSecretHits } from '../../src/rules/secrets.ts';
+import { findSecretHits } from '../../src/rules/privacy/secrets.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
