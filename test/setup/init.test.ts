@@ -176,7 +176,8 @@ test('init: adds the practices, keeps what is there, and doctor asks for the rem
   assert.match(readFileSync(join(sandbox.repo, 'changes/README.md'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts changelog --write/, 'the change files folder (#132)');
   assert.ok(statSync(join(sandbox.repo, '.githooks', 'pre-commit')).mode & 0o100);
   const workflow = readFileSync(join(sandbox.repo, '.github/workflows/yokoten.yml'), 'utf8');
-  assert.match(workflow, /node \.yokoten\/bin\/yokoten\.ts check/);
+  assert.match(workflow, /- run: node \.yokoten\/bin\/yokoten\.ts check\n/, 'the check is the project\'s copy, the same as the commit hook (#129, core rule 6)');
+  assert.match(workflow, /uses: yokoten-labs\/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0\.1\.0/, 'and the released Action, pinned to a commit (#129)');
   assert.match(workflow, /persist-credentials: false/, 'the hardened workflow (#36)');
   assert.match(workflow, /^  ci:\n    if: always\(\)\n    needs: \[changes, check, lint\]$/m, 'one required check that waits for the rest (#36)');
   assert.match(readFileSync(join(sandbox.repo, '.github/workflows/pr.yml'), 'utf8'), /node \.yokoten\/bin\/yokoten\.ts check --pr/, 'the pull request check (#47)');
@@ -1907,6 +1908,11 @@ const withTestsJob = (yml: string): string =>
 /** The kit's yokoten.yml before #451, rebuilt from the newest: one of the versions init wrote. */
 const oldYokotenYml = () =>
   kitWorkflow('yokoten.yml')
+    // Before #129, the kit ran only its own copy of yokoten, not the released Action.
+    .replace(
+      "      # yokoten as a released Action (#129), pinned to the first release by its full\n      # commit: a tag can move, a commit cannot. Dependabot keeps it current. It runs the\n      # release's own copy, so a pull request that changes .yokoten/ still meets a check\n      # it cannot edit. pr.yml and issue.yml still run the project's copy.\n      - uses: yokoten-labs/yokoten@6b76595e24e7b796a863b8717120edffc69bad0a # v0.1.0\n        with:\n          pr-check: 'false'\n          issue-check: 'false'\n          node-version: '^22.23.4'\n",
+      '',
+    )
     .replace(
       '# A newer run cancels the one still going for the same pull request: only its newest\n# commit can merge. Every other event gets a group of its own, so a run on main is never\n# cancelled, waiting or running: every commit stays in history (#660, #798).\n',
       '# A new push to a pull request cancels the run still going for it. A push to main gets\n# a group of its own, so a run on main is never cancelled.\n',
@@ -2054,7 +2060,7 @@ test('doctor: no kit-workflows note after adding the tests job the way doctor sa
 test('doctor: a kit-workflows note when the kit\'s own jobs fall behind (#552)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('package.json', '{"scripts": {"test": "node --test"}}\n');
-  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')).replace('node .yokoten/bin/yokoten.ts check', 'node .yokoten/bin/yokoten.ts check --stray'));
+  sandbox.write(YML, withTestsJob(kitWorkflow('yokoten.yml')).replace("          pr-check: 'false'", "          pr-check: 'true'"));
   assert.match((await sandbox.call(['doctor'])).stdout, /note +kit-workflows: \.github\/workflows\/yokoten\.yml has your changes, and the kit's newest copy differs/);
 });
 

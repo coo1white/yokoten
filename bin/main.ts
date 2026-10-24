@@ -94,6 +94,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/setup.ts').then((m) => m.runUpdate(invocation));
     case 'bot':
       return import('../src/commands/merge/bot.ts').then((m) => m.runBot(invocation));
+    case 'pr':
+      return import('../src/commands/check.ts').then((m) => m.runPr(invocation));
     case 'train':
       return import('../src/commands/merge/train.ts').then((m) => m.runTrain(invocation));
     case 'board':
