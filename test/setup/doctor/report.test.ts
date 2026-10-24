@@ -4,7 +4,7 @@ import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -535,6 +535,11 @@ test('doctor: a stage that jumped says which stages it passed, once (#514)', asy
   const first = await sandbox.call(['doctor']);
   assert.match(first.stdout, /^the road: stage 1 of 5/m);
   assert.doesNotMatch(first.stdout, jumpLine);
+  // The stage file sits next to the lessons state, in the git folder, not one folder deeper (#514).
+  const stagePath = join(sandbox.repo, '.git/yokoten/stage.json');
+  assert.ok(existsSync(stagePath), `the stage file is ${stagePath}`);
+  assert.deepEqual(JSON.parse(readFileSync(stagePath, 'utf8')), { lastStage: 1 });
+  assert.equal(existsSync(join(sandbox.repo, '.git/yokoten/yokoten')), false, 'no nested yokoten folder');
   // Stage 1 to stage 4 at once: init writes the rules, hooks and changelog, and the
   // remote, the test workflow and the templates finish stages 2 and 3.
   assert.equal((await sandbox.call(['init'])).status, 0);

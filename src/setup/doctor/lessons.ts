@@ -124,10 +124,16 @@ export function seenAfter(seen: string[], lessons: LessonCheck[]): string[] {
 export const STATE_FILE = 'yokoten/state.json';
 
 /**
- * Where the road's stage at the last full doctor is kept (#514). It has its own file so the
- * lessons state keeps its shape: a project that saves no lesson still records its stage.
+ * The name of the file that keeps the road's stage at the last full doctor (#514). It has its
+ * own file so the lessons state keeps its shape: a project that saves no lesson still records
+ * its stage. It sits in the folder of `STATE_FILE`; get its path from `stageFileFor`.
  */
-export const STAGE_FILE = 'yokoten/stage.json';
+export const STAGE_FILE = 'stage.json';
+
+/** The stage file that belongs to `stateFile`, in the same folder, or null with no state file. */
+export function stageFileFor(stateFile: string | null): string | null {
+  return stateFile ? join(dirname(stateFile), STAGE_FILE) : null;
+}
 
 /** What the state file holds. Keys this version does not know are kept as they are. */
 export interface DoctorState {
