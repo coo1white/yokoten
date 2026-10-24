@@ -8,7 +8,7 @@ import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
-import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
+import { enabledPluginChannel, hasPlugin, hasProjectHook, hasSessionDoctor, type PluginChannel, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as copilot from '../../agents/copilot.ts';
 import * as dsh from '../../agents/runtimes/small/deepseek-harness.ts';
@@ -346,8 +346,23 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
   return { mark: 'MISSING', finding: finding('core-rules', `the core rules in AGENTS.md are behind yokoten ${VERSION}'s, or were edited by hand (${summarizeUpdate(rules)})`, fix) };
 }
 
-/** The one command that updates the plugin, from a shell. */
-export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart';
+/** The one command that updates a plugin, from a shell. */
+const updatePluginCommand = (id: string) => `\`claude plugin update ${id}\`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart`;
+
+/** The one command that updates the stable plugin, from a shell. */
+export const PLUGIN_UPDATE = updatePluginCommand('yokoten@yokoten');
+
+/**
+ * The release channel this machine runs (#632): the yokoten plugin it has on, else the
+ * released package. Inside yokoten's own checkout, the source is Dev. A clone that runs
+ * yokoten from source still gets its version from `VERSION`; the channel says which
+ * install path is in use.
+ */
+export function releaseChannel(root: string | null, env: Env): PluginChannel {
+  const plugin = enabledPluginChannel(env);
+  if (plugin) return plugin;
+  return root !== null && isSelf(root) ? 'dev' : 'stable';
+}
 
 /** The default branch refs doctor compares against, the first one present wins. Local only, no fetch. */
 const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/heads/main'];
@@ -430,7 +445,7 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const plugin = readInstalledPlugin(env, root);
   if (!plugin) return null;
-  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${PLUGIN_UPDATE}`);
+  const note = (older: string, newer: string) => finding('plugin-version', `the yokoten plugin is older than this yokoten (${older} < ${newer})`, `update it: ${updatePluginCommand(plugin.id)}`);
   if (plugin.version && compareVersions(plugin.version, VERSION) === -1) return note(plugin.version, VERSION);
   if (!root || !plugin.commit || !isSelf(root)) return null;
   const tip = readDefaultBranch(root, env);

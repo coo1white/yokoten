@@ -570,6 +570,116 @@ export interface ApprovalRead {
   sameDiff: boolean;
 }
 
+/** An area lead's approval, written on the last line of its review body (#699). */
+export interface LeadApproval {
+  /** The lead's name, as it writes it. */
+  lead: string;
+  /** The lead's vendor, for example `xAI`. */
+  vendor: string;
+  /** The lead's model, for example `Grok 4.7`. */
+  model: string;
+}
+
+/** One approval and what came after its commit. */
+export interface ApprovalCommit {
+  commit: string;
+  after: number;
+  sameDiff: boolean;
+}
+
+/** What the merge check reads about a tier A pull request (#699). */
+export interface MergeApprovalRead extends ApprovalRead {
+  /** The lead whose approval may count, or null. */
+  lead?: (LeadApproval & ApprovalCommit) | null;
+  /** The vendor families that wrote the change, from the Made-with line. */
+  writers?: string[];
+  /** True when a hard-line file or a looser change keeps the owner's approval. */
+  ownerOnly?: boolean;
+  /** Why the owner must approve, when `ownerOnly`. */
+  ownerWhy?: string | null;
+}
+
+// `Approved by area lead Grok (xAI, Grok 4.7)`. The last line of a review body says
+// which lead, its vendor and its model. The review itself records the commit.
+const LEAD_APPROVAL = /^(?:🤖 )?approved by area lead ([^()]+?) \(([^(),]+), ([^()]+)\)$/i;
+
+/** The area lead approval on the last line of a review body, or null. */
+export function parseLeadApproval(body: string): LeadApproval | null {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const match = LEAD_APPROVAL.exec(lines.at(-1) ?? '');
+  if (!match) return null;
+  const lead = match[1].trim();
+  const vendor = match[2].trim();
+  const model = match[3].trim();
+  return lead && vendor && model ? { lead, vendor, model } : null;
+}
+
+// A vendor family, so `Claude Code (Opus 5.5)` and `Anthropic (Sonnet 5.5)` are one
+// line. The model is checked first, because a worker's first word is often its tool.
+const VENDOR_FAMILIES: [RegExp, string][] = [
+  [/deepseek/i, 'deepseek'],
+  [/anthropic|claude|opus|sonnet|haiku/i, 'anthropic'],
+  [/xai|x\.ai|grok/i, 'xai'],
+  [/meta|muse|llama/i, 'meta'],
+  [/openai|codex|gpt|(^|[^a-z])o\d/i, 'openai'],
+  [/google|gemini/i, 'google'],
+];
+
+/** The vendor family of an agent, or its vendor name in lowercase when none is known. */
+export function vendorFamily(agent: MadeWithAgent): string {
+  const text = `${agent.vendor} ${agent.model}`;
+  for (const [pattern, family] of VENDOR_FAMILIES) if (pattern.test(text)) return family;
+  return agent.vendor.trim().toLowerCase();
+}
+
+/**
+ * The vendors that wrote a pull request, from the Made-with line: its workers, or its
+ * lead and unnamed others when no worker is named. Empty when the line names nobody.
+ */
+export function writerVendors(body: string): string[] {
+  const roles = parseMadeWith(body)?.roles;
+  if (!roles) return [];
+  const writers = roles.writers.length ? roles.writers : [...roles.leads, ...roles.others];
+  return [...new Set(writers.map(vendorFamily))];
+}
+
+/** Whether an approval is on `head`, or only base merges came after it with the same own diff. */
+const isFreshApproval = (head: string, approval: ApprovalCommit): boolean =>
+  approval.commit.toLowerCase() === head.toLowerCase() || (approval.after === 0 && approval.sameDiff);
+
+/** The finding for a stale area lead approval. */
+function staleLeadApproval(lead: ApprovalCommit): Finding {
+  const short = lead.commit.slice(0, 7);
+  const fix = "ask another vendor's area lead to approve the head commit, then merge";
+  if (lead.after > 0) {
+    return finding('pr-approve', `the area lead's approval is on ${short}; ${lead.after} commit${lead.after === 1 ? '' : 's'} with changes came after it; ask the area lead to approve again`, fix);
+  }
+  return finding('pr-approve', `the area lead's approval is on ${short}; the pull request's own diff is not the same as at the approval; ask the area lead to approve again`, fix);
+}
+
+/**
+ * The finding that stops a tier A pull request from merging (#699), or null when it may
+ * merge. Without a lead approval this is the owner's gate (#612), unchanged. With one,
+ * the owner's fresh Approve still wins, a hard-line file or a looser change still needs
+ * the owner, and a lead of the writer's own vendor never counts.
+ */
+export function checkMergeApproval(read: MergeApprovalRead): Finding | null {
+  if (read.tier !== 'A') return null;
+  // No lead approval, or a change only the owner may approve: keep the owner's gate.
+  if (!read.lead || read.ownerOnly) return checkApprovalFreshness(read);
+  const owner: ApprovalCommit | null = read.approved === null ? null : { commit: read.approved, after: read.after, sameDiff: read.sameDiff };
+  if (owner && isFreshApproval(read.head, owner)) return null;
+  const family = vendorFamily({ vendor: read.lead.vendor, model: read.lead.model });
+  if (!read.writers?.length) {
+    return finding('pr-approve', "the Made-with line names no writer, so the area lead's vendor can't be checked", "name the writers on the Made-with line, then ask another vendor's area lead to approve");
+  }
+  if (read.writers.includes(family)) {
+    return finding('pr-approve', `the area lead is from ${read.lead.vendor}, the same vendor as the writer; another vendor's lead must approve`, "ask an area lead of another vendor to approve the head commit");
+  }
+  if (isFreshApproval(read.head, read.lead)) return null;
+  return staleLeadApproval(read.lead);
+}
+
 /**
  * The finding that stops a tier A pull request from merging, or null when it may
  * merge: not tier A, or the Approve is on the head, or only base merges came after it
