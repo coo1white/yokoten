@@ -40,6 +40,7 @@ import {
   readServer,
   type ServerSettings,
 } from '../../src/host/github/index.ts';
+import type { Env } from '../../src/rules/config.ts';
 import type { Fact } from '../../src/setup/advice/adopt.ts';
 import {
   road,
@@ -199,6 +200,19 @@ export function runChild(command: string, args: string[], options: Pick<SpawnSyn
 // NODE_OPTIONS carries the real-home preload that home.ts builds. A sandbox child gets a fresh env,
 // so without this it would read the real private-marks file when its own file is missing (#739).
 const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
+
+// A host sets markers in the environment it runs its hooks in. A test that starts
+// `yokoten hook` must not inherit them from whoever runs the tests (#800): the hook answers
+// for that host, so the same test can pass outside an agent and fail inside one.
+// `hookEnvironment` is this process's environment with those markers cleared; `host` sets
+// the ones a test wants back, after the clear.
+const HOST_MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'YOKOTEN_HOOK_DENIAL'] as const;
+
+export function hookEnvironment(host: Env = {}): Env {
+  const env: Env = { ...process.env };
+  for (const name of HOST_MARKERS) delete env[name];
+  return { ...env, ...host };
+}
 
 /** A repo built once per test process by `build`, copied into each folder given (#475): see git-template.ts. */
 export const makeRepoTemplate = (build: (dir: string) => void) => templateRepo(makeFileTempDir, build);

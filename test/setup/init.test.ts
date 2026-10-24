@@ -79,12 +79,15 @@ function stubGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string,
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
-const answers = ${JSON.stringify(answers)};
-const call = process.argv.slice(2).join(' ');
-require('node:fs').appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
-const said = answers[call];
-if (said === undefined) process.exit(1);
-console.log(said);
+// A dynamic import works whether Node loads this file as CommonJS or as an ES module.
+import('node:fs').then(({ appendFileSync }) => {
+  const answers = ${JSON.stringify(answers)};
+  const call = process.argv.slice(2).join(' ');
+  appendFileSync(${JSON.stringify(join(sandbox.home, 'gh.log'))}, call + '\\n');
+  const said = answers[call];
+  if (said === undefined) process.exit(1);
+  console.log(said);
+});
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);
@@ -1343,7 +1346,7 @@ test('update: the .yokoten/ copy has the kit\'s AGENTS.md, so doctor and update 
   const workflows = join('project', '.github', 'workflows');
   assert.deepEqual(
     kitFiles.filter((path) => !path.startsWith('lessons')),
-    ['project', join('project', '.github'), workflows, ...['issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
+    ['project', join('project', '.github'), workflows, ...['actions-health.yml', 'issue.yml', 'pr.yml', 'yokoten.yml'].map((name) => join(workflows, name)), join('project', 'AGENTS.md'), 'workflow-hashes.json'],
     'the kit\'s AGENTS.md, workflows and their hashes, and the lessons, no more',
   );
   assert.ok(kitFiles.includes(join('lessons', 'README.md')), 'the lessons table');
@@ -1489,7 +1492,8 @@ test('init: reads GitHub and says what it would do; --github --yes does it, and 
   writeFileSync(
     join(bin, 'gh'),
     `#!/usr/bin/env node
-const fs = require('node:fs');
+// A dynamic import works whether Node loads this file as CommonJS or as an ES module.
+import('node:fs').then((fs) => {
 const s = JSON.parse(fs.readFileSync(${JSON.stringify(state)}, 'utf8'));
 const a = process.argv.slice(2);
 const option = (name) => a[a.indexOf(name) + 1];
@@ -1500,6 +1504,7 @@ else if (a.includes('POST')) s.milestones.push(a.at(-1).slice(6));
 else if (a[0] === 'api' && a.some((w) => w.includes('/labels'))) s.labels.forEach((l) => console.log(JSON.stringify(l)));
 else if (a[0] === 'api') s.milestones.forEach((m) => console.log('open ' + m));
 fs.writeFileSync(${JSON.stringify(state)}, JSON.stringify(s));
+});
 `,
   );
   chmodSync(join(bin, 'gh'), 0o755);
@@ -1598,7 +1603,7 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   // The remote step is done once a branch is pushed; a local ref is enough for the road.
   sandbox.git('commit', '--allow-empty', '-qm', 'first');
   sandbox.git('update-ref', 'refs/remotes/origin/main', 'HEAD');
-  const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/dependabot.yml'];
+  const ciFiles = ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/issue.yml', '.github/workflows/actions-health.yml', '.github/dependabot.yml'];
   const isThere = (file: string) => existsSync(join(sandbox.repo, file));
   const notNow = () => JSON.parse(readFileSync(join(sandbox.repo, 'yokoten.json'), 'utf8')).notNow;
   const marks = join(sandbox.home, 'marks');
@@ -1625,7 +1630,7 @@ test('init: a private repo can keep CI off with --no-ci, finish the road, and ta
   result = await sandbox.call(['init', '--no-ci'], { extra });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^wrote "notNow" ci in yokoten\.json/m);
-  for (const file of ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/dependabot.yml']) {
+  for (const file of ['.github/workflows/yokoten.yml', '.github/workflows/pr.yml', '.github/workflows/actions-health.yml', '.github/dependabot.yml']) {
     assert.match(result.stdout, new RegExp(`^removed ${file.replaceAll('.', '\\.')} \\(the kit's copy; CI is off\\)$`, 'm'));
     assert.ok(!isThere(file), file);
   }
@@ -1712,7 +1717,7 @@ test('init --no-ci: a kit copy with Windows line ends is removed; a symlinked fi
   result = await other.call(['init', '--no-ci']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^kept \.github\/workflows\/yokoten\.yml: \.github\/workflows is a symlink/m);
-  assert.deepEqual(readdirSync(real).sort(), ['issue.yml', 'pr.yml', 'yokoten.yml']);
+  assert.deepEqual(readdirSync(real).sort(), ['actions-health.yml', 'issue.yml', 'pr.yml', 'yokoten.yml']);
   // The control: dependabot.yml is a plain file, the kit's copy, so it goes.
   assert.match(result.stdout, /^removed \.github\/dependabot\.yml/m);
 });

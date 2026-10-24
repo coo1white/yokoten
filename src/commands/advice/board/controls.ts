@@ -25,6 +25,7 @@ import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
+import { readGit } from '../../../run/check/inspect.ts';
 import { hookCliPath } from '../../../setup/init.ts';
 import { type MachineState, type ScheduleRoom, type ScheduleSettings, type ScheduleSummary, roomStateOf, SCHEDULE_DEFAULTS, takeStarts } from '../schedule.ts';
 import { planOf, roomOf } from './waiting.ts';
@@ -239,15 +240,33 @@ export interface BoardStartAsk {
   model: string;
 }
 
-/** The brief the board hands the agent: the issue, its worktree, and the model. */
-export function boardBrief(issue: string, worktree: string, model: string): string {
+/**
+ * The commit a reused worktree resumes from: the branch's short hash, or '' when git
+ * cannot read one. The hash is enough to go back to; the subject stays out of the log.
+ */
+export function boardAnchor(dir: string, env: Env): string {
+  try {
+    return readGit(dir, ['rev-parse', '--short', 'HEAD'], { env }).toString('utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The brief the board hands the agent: the issue, its worktree, the model, and the
+ * safe exit. The exit names three anchors: a commit after each green test, a stop after
+ * the same step fails three times, and the last commit to resume from.
+ */
+export function boardBrief(issue: string, worktree: string, model: string, anchor = ''): string {
   return [
     `Issue: #${issue}`,
     `Worktree: ${worktree}`,
     `Model: ${model}`,
     'Goal: do the issue in this worktree as a yokoten worker. Follow AGENTS.md. Commit the work. Never push.',
     `Report: write ${BOARD_REPORT_PREFIX}${issue}.md in the worktree before you stop.`,
-    'Stuck: if the same step fails three times, stop, go back to your last anchor, or write your report. Stopping is good work.',
+    'Stop: after the same step fails 3 times, or the guard refuses 3 times, stop. Tell the lead where you stopped and what is left. Stopping is good work, not failure.',
+    'Anchor: after the tests you touched pass, commit. That commit is where you resume.',
+    `Resume: ${anchor ? `the last commit is ${anchor}. ` : ''}Read \`git log --oneline -5\` and \`git status\` first, then continue. Do not undo the earlier work.`,
   ].join('\n');
 }
 
@@ -430,7 +449,7 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
   if ('fail' in made) return made.fail;
   const ready = boardGuardReady(ask.vendor, made.dir, env);
   if (ready) return ready;
-  const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model), ask.model);
+  const parts = boardStartParts(ask.vendor, boardBrief(ask.issue, made.dir, ask.model, boardAnchor(made.dir, env)), ask.model);
   if (!parts) return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${ask.vendor} by hand`;
   const marked = markWorktree(root, made.dir, env);
   if ('fail' in marked) return `the board could not mark the worktree at ${hideHome(made.dir, env)} as a worker's: ${marked.fail}`;

@@ -143,10 +143,72 @@ export function requireRoot(invocation: Invocation, dir: string, json?: (missing
   return null;
 }
 
+// A person's terminal output (#707): colour and a shape that reads at a glance, like
+// `node -h`. An agent reads plain text, so a hook answer, a log and a file never get a
+// code. Colour is for a terminal only, and `NO_COLOR` turns it off (no-color.org).
+const BOLD = '1';
+const GREEN = '32';
+const YELLOW = '33';
+const RED = '31';
+const CYAN = '36';
+
+/** `text` in a colour code, or as it is when colour is off. */
+export const paint = (text: string, code: string, isColour: boolean): string => (isColour ? `\u001b[${code}m${text}\u001b[0m` : text);
+
+/**
+ * Whether a stream gets colour: a terminal, and `NO_COLOR` is not set. `TERM=dumb` is a
+ * terminal that can't show it either.
+ */
+export const isColourTerminal = (env: Env, stream: { isTTY?: boolean }): boolean => stream.isTTY === true && env.NO_COLOR === undefined && env.TERM !== 'dumb';
+
+// A mark at the start of a line, padded to the column the next word starts in.
+const MARK = /^(\s*)(ok|done|MISSING|note|next|to do|not now|can't check)(\s+)(.*)$/;
+const HEADING = /^(?:yokoten \d|yokoten stopped this:|the road:|project:|machine:|unsaved work|server \(|Usage:|Start:|Exit codes:)/;
+const STAGE = /^\s+\d+\. \S/;
+const COMMAND = /`[^`\n]+`/g;
+
+/**
+ * One line of a person's output: a mark in its colour, a heading in bold, a refusal in
+ * red, a command in cyan. Everything else stays as it is. The columns do not move: the
+ * code goes around the mark, not in place of its padding.
+ */
+export function styleLine(line: string, isColour: boolean): string {
+  if (!isColour) return line;
+  const mark = MARK.exec(line);
+  // The style of the whole line, when one covers it. A command's reset would end that
+  // style for the rest of the line, so it is opened again after each command (#707).
+  let outer: string | undefined;
+  let styled = line;
+  if (line.startsWith('yokoten stopped this: ')) {
+    outer = `${BOLD};${RED}`;
+  } else if (mark) {
+    const colour = mark[2] === 'ok' || mark[2] === 'done' ? GREEN : mark[2] === 'MISSING' ? RED : YELLOW;
+    styled = `${mark[1] ?? ''}${paint(mark[2] ?? '', colour, true)}${mark[3] ?? ''}${mark[4] ?? ''}`;
+  } else if (HEADING.test(line) || STAGE.test(line)) {
+    outer = BOLD;
+  }
+  const painted = styled.replace(COMMAND, (command, offset: number) =>
+    `${paint(command, CYAN, true)}${outer !== undefined && offset + command.length < styled.length ? `\u001b[${outer}m` : ''}`,
+  );
+  return outer === undefined ? painted : paint(painted, outer, true);
+}
+
+/** A whole text, line by line. */
+export const styleText = (text: string, isColour: boolean): string => (isColour ? text.split('\n').map((line) => styleLine(line, true)).join('\n') : text);
+
+/**
+ * Whether a command may colour its text on this stream (#707): a terminal, no `NO_COLOR`,
+ * and never the hook, whose answer an agent reads.
+ */
+export const canColour = (invocation: Invocation, stream: Output): boolean => invocation.command !== 'hook' && isColourTerminal(invocation.env, stream);
+
 // Everything yokoten prints goes through here or `say`, never straight to a stream: the
 // output lands in transcripts and CI logs, so the home folder is shown as ~ (core rule 11).
+// Colour is added here only, and only on a terminal, so an agent or a file never sees it.
 export function print(invocation: Invocation, lines: string[], stream: Output = invocation.stdout): void {
-  if (lines.length) say(invocation, `${lines.join('\n')}\n`, stream);
+  if (!lines.length) return;
+  const text = lines.join('\n');
+  say(invocation, `${canColour(invocation, stream) ? styleText(text, true) : text}\n`, stream);
 }
 export function say(invocation: Invocation, text: string, stream: Output): void {
   stream.write(hideHome(text, invocation.env));
