@@ -443,6 +443,21 @@ export const COMMANDS: Command[] = [
     example: 'yokoten explain release',
   },
   {
+    name: 'pr',
+    summary: 'keep open pull requests up to date and resolve mechanical conflicts',
+    usage: 'sync',
+    text: [
+      'For each open pull request whose branch is behind its base branch, merges the base',
+      'in, resolves only the mechanical conflicts (two added blocks, or two changed import',
+      'lists), runs typecheck and the tests of the touched files, and pushes as the bot.',
+      'Anything else stops with the files, the hunks and a dispatch brief. It never',
+      'force-pushes, rebases or resolves on GitHub. Run it after every merge.',
+    ],
+    options: [],
+    argument: 'action',
+    example: 'yokoten pr sync',
+  },
+  {
     name: 'bot',
     summary: 'run one command as the bot (gh, git push); the token is never printed',
     usage: '-- <command>',
