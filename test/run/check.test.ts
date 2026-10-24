@@ -32,17 +32,27 @@ import { useRealHome } from '../../src/rules/privacy.ts';
 import {
   assumeEmptyFolder,
   batchBlobs,
+  BORROWED_DIR,
+  borrowedFiles,
+  type BorrowedFile,
+  type BorrowedHost,
+  borrowedProblems,
   changedFiles,
   checkHistory,
+  CLEAN_ROOM_FIX,
   configEntries,
   configKey,
   forgetGitReads,
   gitConfig,
   GitReadError,
+  isBorrowedFile,
+  parseBorrowedHeader,
   parseConfigList,
   readBlobs,
   readGit,
   remembered,
+  type UpstreamCommit,
+  watchBorrowed,
   syncPull,
   withGitReads,
 } from '../../src/run/check.ts';
@@ -189,6 +199,33 @@ test('check --staged: stops build output and binaries, lets images and allowed p
   sandbox.git('add', '.');
   r = await sandbox.call(['check', '--staged']);
   assert.equal(r.status, 0, r.stderr);
+});
+
+test('check --staged: borrowed code carries its source, commit, license and notice (#676)', async () => {
+  const sandbox = makeSandbox();
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const header = [
+    '// source: https://github.com/example/upstream/blob/main/src/thing.ts',
+    `// commit: ${sha}`,
+    '// license: MIT',
+    '// copyright: Copyright (c) 2026 Example Authors',
+  ].join('\n');
+  const wheel = `${header}\n\nexport const thing = 1;\n`;
+  sandbox.write('src/borrowed/thing.ts', wheel);
+  sandbox.git('add', '.');
+  let result = await sandbox.call(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  result = await sandbox.call(['check']);
+  assert.equal(result.status, 0, result.stderr);
+  // A license yokoten may not copy stops the commit, in the tree and when staged.
+  sandbox.write('src/borrowed/thing.ts', wheel.replace('license: MIT', 'license: GPL-3.0-only'));
+  result = await sandbox.call(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /src\/borrowed\/thing\.ts: borrowed code under GPL-3\.0-only, which yokoten cannot copy/);
+  assert.match(result.stderr, /use the clean-room road in record 0024/i);
+  sandbox.git('add', '.');
+  result = await sandbox.call(['check', '--staged']);
+  assert.equal(result.status, 1);
 });
 
 test('check --staged: a submodule and a path with a colon pass, read by blob id (#244)', async () => {
@@ -1437,6 +1474,203 @@ test('check --staged: a staged node_modules is one line with the untrack command
   assert.match(result.stderr, /git rm -r --cached node_modules.*add `node_modules\/` to \.gitignore/);
   assert.match(result.stderr, /To take this folder out of the commit, run `git rm -r --cached node_modules\/`\. It stays on disk/);
   assert.doesNotMatch(result.stderr, /f29\.js/);
+});
+
+const SHA = '0123456789abcdef0123456789abcdef01234567';
+const OLDER = 'fedcba9876543210fedcba9876543210fedcba98';
+const SOURCE = 'https://github.com/example/upstream/blob/main/src/thing.ts';
+const PATH = `${BORROWED_DIR}thing.ts`;
+
+type Field = 'source' | 'commit' | 'license' | 'copyright' | 'notice';
+const VALUES: Record<Field, string> = {
+  source: SOURCE,
+  commit: SHA,
+  license: 'MIT',
+  copyright: 'Copyright (c) 2026 Example Authors',
+  notice: 'Example NOTICE text',
+};
+
+/** A borrowed file with the full header, less the fields `drop` removes. */
+function wheel(drop: Field[] = [], extra: Partial<Record<Field, string>> = {}): string {
+  const values = { ...VALUES, ...extra };
+  const lines = (Object.keys(VALUES) as Field[]).filter((field) => !drop.includes(field)).map((field) => `// ${field}: ${values[field]}`);
+  return `${lines.join('\n')}\n\nexport const thing = 1;\n`;
+}
+
+test('borrowed: a full header passes and is read back', () => {
+  assert.deepEqual(borrowedProblems(PATH, wheel()), []);
+  assert.deepEqual(parseBorrowedHeader(wheel()), {
+    source: SOURCE,
+    commit: SHA,
+    license: 'MIT',
+    copyright: 'Copyright (c) 2026 Example Authors',
+    notice: 'Example NOTICE text',
+  });
+  // A header inside one block comment is read too.
+  const block = `/*\n * source: ${SOURCE}\n * commit: ${SHA}\n * license: ISC\n * copyright: Copyright (c) 2026 Example\n */\n\nexport const thing = 1;\n`;
+  assert.equal(parseBorrowedHeader(block)?.license, 'ISC');
+});
+
+test('borrowed: each missing field is reported with the file and a fix', () => {
+  const fields: [Field, RegExp][] = [
+    ['source', /no source URL/],
+    ['commit', /no upstream commit/],
+    ['license', /no license/],
+    ['copyright', /no copyright notice/],
+  ];
+  for (const [field, what] of fields) {
+    const problems = borrowedProblems(PATH, wheel([field]));
+    assert.equal(problems.length, 1, field);
+    assert.equal(problems[0].file, PATH, field);
+    assert.match(problems[0].what, what, field);
+    assert.match(problems[0].fix, /top of the file/, field);
+  }
+});
+
+test('borrowed: a field that is there but wrong is still refused', () => {
+  assert.match(borrowedProblems(PATH, wheel([], { source: 'git://example.com/thing.ts' }))[0].what, /not a URL/);
+  // The watch reads only a GitHub file page, so the check refuses any other host (#676).
+  const otherHost = borrowedProblems(PATH, wheel([], { source: 'https://gitlab.com/example/upstream/blob/main/src/thing.ts' }));
+  assert.equal(otherHost.length, 1);
+  assert.match(otherHost[0].what, /not a GitHub file link/);
+  assert.match(otherHost[0].fix, /github\.com\/<owner>\/<repo>\/blob/);
+  assert.match(borrowedProblems(PATH, wheel([], { source: 'https://github.com/example/upstream/tree/main/src' }))[0].what, /not a GitHub file link/);
+  assert.match(borrowedProblems(PATH, wheel([], { commit: SHA.slice(0, 7) }))[0].what, /not a full 40-character sha/);
+  // Code before the header leaves every field out: the header must start the file.
+  const late = `export const thing = 1;\n\n${wheel()}`;
+  assert.equal(borrowedProblems(PATH, late).length, 4);
+});
+
+test('borrowed: Apache-2.0 keeps the NOTICE text', () => {
+  const missing = borrowedProblems(PATH, wheel(['notice'], { license: 'Apache-2.0' }));
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].what, /NOTICE/);
+  assert.deepEqual(borrowedProblems(PATH, wheel([], { license: 'Apache-2.0' })), []);
+});
+
+test('borrowed: a license outside the permissive list is refused with the clean-room road', () => {
+  for (const license of ['GPL-3.0-only', 'AGPL-3.0', 'WTFPL', 'see LICENSE']) {
+    const problems = borrowedProblems(PATH, wheel([], { license }));
+    assert.equal(problems.length, 1, license);
+    assert.match(problems[0].what, new RegExp(`under ${license.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.equal(problems[0].fix, CLEAN_ROOM_FIX, license);
+  }
+  // SPDX names are case-insensitive.
+  assert.deepEqual(borrowedProblems(PATH, wheel([], { license: 'apache-2.0' })), []);
+});
+
+test('borrowed: only a file in src/borrowed/ carries a header', () => {
+  assert.deepEqual(borrowedProblems('src/rules/thing.ts', ''), []);
+  assert.equal(isBorrowedFile(PATH), true);
+  assert.equal(isBorrowedFile(`${BORROWED_DIR}nested/thing.ts`), true);
+  assert.equal(isBorrowedFile('src/borrowed.ts'), false);
+});
+
+test('borrowed: the watch reads only whole headers in src/borrowed/', () => {
+  const texts: Record<string, string | null> = {
+    [`${BORROWED_DIR}a.ts`]: wheel(),
+    [`${BORROWED_DIR}b.ts`]: wheel(['commit']),
+    'src/rules/c.ts': wheel(),
+    [`${BORROWED_DIR}d.ts`]: null,
+    // A source the watch cannot read is not taken in, so the check and the watch agree.
+    [`${BORROWED_DIR}e.ts`]: wheel([], { source: 'https://example.com/upstream/blob/main/src/thing.ts' }),
+  };
+  assert.deepEqual(borrowedFiles(Object.keys(texts), (path) => texts[path]).map((file) => file.path), [`${BORROWED_DIR}a.ts`]);
+});
+
+// ---- The watch ----
+
+const file = (path: string, overrides: Partial<BorrowedFile> = {}): BorrowedFile => ({ path, source: SOURCE, commit: SHA, license: 'MIT', ...overrides });
+const hostOf = (commits: Record<string, UpstreamCommit[] | null>, dates: Record<string, string | null> = {}): BorrowedHost => ({
+  commits: (source) => commits[source] ?? null,
+  commitDate: (_, sha) => dates[sha] ?? null,
+});
+const commit = (sha: string, message: string, date?: string): UpstreamCommit => ({ sha, message, ...(date === undefined ? {} : { date }) });
+
+test('watch: upstream is where we left it', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(SHA, 'feat: the version we took')] }));
+  assert.deepEqual(watch, { changed: [], unreadable: [] });
+});
+
+test('watch: a newer upstream commit is one change per source, and a security fix is called out', () => {
+  const other = `${BORROWED_DIR}other.ts`;
+  const watch = watchBorrowed(
+    [file(PATH), file(other), file(`${BORROWED_DIR}third.ts`, { source: 'https://github.com/example/other/blob/main/x.ts' })],
+    hostOf({
+      [SOURCE]: [commit('1111111111111111111111111111111111111111', 'fix: security hole in parse'), commit(OLDER, 'docs: word'), commit(SHA, 'the version we took')],
+      'https://github.com/example/other/blob/main/x.ts': [commit(SHA, 'the version we took')],
+    }),
+  );
+  assert.equal(watch.changed.length, 1);
+  const change = watch.changed[0];
+  assert.equal(change.source, SOURCE);
+  assert.deepEqual(change.files, [PATH, other]);
+  assert.equal(change.borrowedCommit, SHA);
+  assert.equal(change.latestCommit, '1111111111111111111111111111111111111111');
+  assert.deepEqual(change.commits.map((c) => c.sha), ['1111111111111111111111111111111111111111', OLDER]);
+  assert.equal(change.isSecurity, true);
+});
+
+test('watch: a commit message without a security word is not called a security fix', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(OLDER, 'refactor: rename a helper'), commit(SHA, 'taken')] }));
+  assert.equal(watch.changed[0].isSecurity, false);
+});
+
+test('watch: a source the host cannot answer for is a gap, never a pass', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: null }));
+  assert.deepEqual(watch.changed, []);
+  assert.equal(watch.unreadable.length, 1);
+  assert.equal(watch.unreadable[0].source, SOURCE);
+  assert.equal(watch.unreadable[0].reason, 'the host gave no answer');
+});
+
+test('watch: a file gone upstream is a change', () => {
+  const gone = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [] }));
+  assert.equal(gone.changed[0].latestCommit, null);
+  assert.match(gone.changed[0].note ?? '', /gone/);
+});
+
+test('watch: a snapshot commit that never touched the file is not taken as everything newer', () => {
+  const base = '2222222222222222222222222222222222222222';
+  // The borrowed sha is not in the list, and its date is after every listed commit: no issue.
+  const snapshot = watchBorrowed(
+    [file(PATH)],
+    hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug', '2026-09-01T00:00:00Z'), commit(base, 'feat: base', '2026-08-01T00:00:00Z')] }, { [SHA]: '2026-10-01T00:00:00Z' }),
+  );
+  assert.deepEqual(snapshot, { changed: [], unreadable: [] });
+});
+
+test('watch: a commit missing from the list counts only the commits its date says are newer', () => {
+  const newer = '1111111111111111111111111111111111111111';
+  const watch = watchBorrowed(
+    [file(PATH)],
+    hostOf({ [SOURCE]: [commit(newer, 'fix: later', '2026-10-02T00:00:00Z'), commit(OLDER, 'docs: earlier', '2026-09-01T00:00:00Z')] }, { [SHA]: '2026-09-15T00:00:00Z' }),
+  );
+  assert.equal(watch.changed.length, 1);
+  assert.deepEqual(watch.changed[0].commits.map((c) => c.sha), [newer]);
+});
+
+test('watch: a commit missing from the list with no date is a gap, never a false issue', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug', '2026-09-01T00:00:00Z')] }));
+  assert.deepEqual(watch.changed, []);
+  assert.equal(watch.unreadable.length, 1);
+  assert.match(watch.unreadable[0].reason, /0123456789abcdef/);
+});
+
+test('watch: files that share a source are each compared, not only the first', () => {
+  const other = `${BORROWED_DIR}other.ts`;
+  const newest = '1111111111111111111111111111111111111111';
+  const middle = '2222222222222222222222222222222222222222';
+  const watch = watchBorrowed(
+    [file(PATH), file(other, { commit: OLDER })],
+    hostOf({
+      [SOURCE]: [commit(newest, 'fix: newest', '2026-10-03T00:00:00Z'), commit(middle, 'docs: middle', '2026-10-02T00:00:00Z'), commit(OLDER, 'the version the other file took', '2026-09-01T00:00:00Z')],
+    }, { [SHA]: '2026-10-02T12:00:00Z' }),
+  );
+  assert.equal(watch.changed.length, 1);
+  assert.deepEqual(watch.changed[0].files, [PATH, other]);
+  assert.equal(watch.changed[0].borrowedCommit, OLDER);
+  assert.deepEqual(watch.changed[0].commits.map((c) => c.sha), [newest, middle]);
 });
 
 // ---- `yokoten pr sync` (#432) ----

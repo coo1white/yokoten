@@ -1,6 +1,7 @@
 // The checks that see every road: an agent can change a file with its edit tool, with
 // sed, or with a script, and only the commit sees all three. The hook stops the edit
-// tool early; this is the inspection at the end of the line.
+// tool early; this is the inspection at the end of the line. The header of borrowed code
+// and the watch of its upstream (record 0024) live at the end of this file.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
@@ -458,6 +459,8 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
     for (const { path, blob } of kept) {
       const found = blobs.get(blob);
       if (found?.whole) privacy(path, found.bytes);
+      // The header a borrowed file must carry (record 0024): source, commit, license, notice.
+      if (found?.whole && !looksBinary(found.bytes)) problems.push(...borrowedProblems(path, found.bytes.toString('utf8')));
       // A staged change file is read as `check --pr` reads it (#346): a problem for
       // `yokoten changelog`'s parser fails the commit, a long sentence is a note.
       if (found?.whole && isChangeFile(path)) {
@@ -470,7 +473,10 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   } else {
     for (const path of indexed()) {
       const buf = readEntry(root, path); // none if deleted in the work tree but not yet staged
-      if (buf) privacy(path, buf);
+      if (buf) {
+        privacy(path, buf);
+        if (!looksBinary(buf)) problems.push(...borrowedProblems(path, buf.toString('utf8')));
+      }
     }
     for (const note of translationNotes(root, indexed(), env)) (config.translations.fail && !isShallowNote(note) ? problems : notes).push(note);
     // A key yokoten.json holds but yokoten does not know (#228).
@@ -514,6 +520,7 @@ export function checkChanged(root: string, { config, env, notes = [] }: { config
     if (buf && !looksBinary(buf)) {
       const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
       for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
+      problems.push(...borrowedProblems(path, buf.toString('utf8')));
     }
   }
   return problems;
@@ -638,6 +645,239 @@ function firstCommits(root: string, env: Env): Map<string, { commit: string; pat
 export const timeZoneNote = (commits: number): Finding =>
   finding('time-zone', `${commits} commit(s) record a time zone other than UTC`, "leave them unless the owner decides to rewrite history; new commits are checked");
 
+// ---- Borrowed code (record 0024): the header a wheel carries, and the watch ----
+
+/** The folder borrowed code lives in. */
+export const BORROWED_DIR = 'src/borrowed/';
+
+/** The licenses a wheel may carry (record 0024), as SPDX names. */
+export const BORROWED_LICENSES = ['MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'Apache-2.0'];
+
+/** What to do with code under any other license: clean-room, never copy. */
+export const CLEAN_ROOM_FIX = 'use the clean-room road in record 0024';
+
+/** One borrowed file's header, as the first lines of the file write it. */
+export interface BorrowedHeader {
+  /** The upstream file URL. */
+  source: string;
+  /** The full 40-character commit the code was taken from. */
+  commit: string;
+  /** The SPDX license name. */
+  license: string;
+  /** The upstream copyright notice. */
+  copyright: string;
+  /** The upstream NOTICE text, which Apache-2.0 needs. */
+  notice?: string;
+}
+
+/** The fields a header writes, each on its own comment line: `// source: https://…`. */
+const FIELD = /^(source|commit|license|copyright|notice):\s*(.+)$/;
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+const HEADER_LINES = 60;
+
+/** Whether a path is a borrowed file, at any depth under the folder. */
+export const isBorrowedFile = (path: string): boolean => path.startsWith(BORROWED_DIR);
+
+/** The text of a comment line, or null for a line that holds code. */
+function commentText(line: string): string | null {
+  const text = line.trim();
+  if (!text) return '';
+  if (text.startsWith('//')) return text.slice(2).trim();
+  if (text.startsWith('#')) return text.slice(1).trim();
+  if (text.startsWith('/*')) return text.slice(2).replace(/\*\/\s*$/, '').trim();
+  if (text.startsWith('*')) return text.slice(1).replace(/\*\/\s*$/, '').trim();
+  return null;
+}
+
+/**
+ * The header a borrowed file starts with, or null when code comes before any field.
+ * Only the first comment block counts, and the first value of a field wins.
+ */
+export function parseBorrowedHeader(text: string): BorrowedHeader | null {
+  const fields = new Map<string, string>();
+  for (const line of text.split('\n').slice(0, HEADER_LINES)) {
+    const comment = commentText(line);
+    if (comment === null) break; // the header ends at the first line of code
+    const match = comment.match(FIELD);
+    if (match && !fields.has(match[1])) fields.set(match[1], match[2].trim());
+  }
+  if (fields.size === 0) return null;
+  const header: BorrowedHeader = {
+    source: fields.get('source') ?? '',
+    commit: fields.get('commit') ?? '',
+    license: fields.get('license') ?? '',
+    copyright: fields.get('copyright') ?? '',
+  };
+  const notice = fields.get('notice');
+  if (notice !== undefined) header.notice = notice;
+  return header;
+}
+
+const isUrl = (source: string): boolean => /^https?:\/\/\S+$/i.test(source);
+// The watch reads a GitHub file page: owner, repo, `blob`, a ref and a path. Any other
+// URL would pass the header and then fail in the watch, so the check refuses it too.
+const isBorrowedSource = (source: string): boolean =>
+  /^https?:\/\/(?:www\.)?github\.com\/[^/\s?#]+\/[^/\s?#]+\/blob\/[^/\s?#]+\/\S+$/i.test(source);
+const isAllowedLicense = (license: string): boolean =>
+  BORROWED_LICENSES.some((allowed) => allowed.toLowerCase() === license.toLowerCase());
+
+/**
+ * The problems with one borrowed file's header: one finding for each field the header
+ * lacks, and one for a license yokoten may not copy. A file outside `src/borrowed/` has
+ * none.
+ */
+export function borrowedProblems(path: string, text: string): Finding[] {
+  if (!isBorrowedFile(path)) return [];
+  const header = parseBorrowedHeader(text);
+  const problems: Finding[] = [];
+  const at = { file: path };
+  if (!header?.source) problems.push(finding('borrowed', 'borrowed code with no source URL', 'add `// source: <the upstream file URL>` at the top of the file', at));
+  else if (!isUrl(header.source)) problems.push(finding('borrowed', 'the borrowed source is not a URL', 'write the upstream file URL as `// source: https://…` at the top of the file', at));
+  else if (!isBorrowedSource(header.source)) problems.push(finding('borrowed', 'the borrowed source is not a GitHub file link', 'write `// source: https://github.com/<owner>/<repo>/blob/<commit>/<path>` at the top of the file, because the watch reads only GitHub', at));
+  if (!header?.commit) problems.push(finding('borrowed', 'borrowed code with no upstream commit', 'add `// commit: <the 40-character upstream commit sha>` at the top of the file', at));
+  else if (!FULL_COMMIT.test(header.commit)) problems.push(finding('borrowed', 'the upstream commit is not a full 40-character sha', 'write the commit the code was taken from as `// commit: <40 lowercase hex digits>` at the top of the file', at));
+  if (!header?.license) problems.push(finding('borrowed', 'borrowed code with no license', 'add `// license: <SPDX name>` at the top of the file: MIT, BSD-2-Clause, BSD-3-Clause, ISC or Apache-2.0', at));
+  else if (!isAllowedLicense(header.license)) problems.push(finding('borrowed', `borrowed code under ${header.license}, which yokoten cannot copy`, CLEAN_ROOM_FIX, at));
+  if (!header?.copyright) problems.push(finding('borrowed', 'borrowed code with no copyright notice', 'add `// copyright: <the upstream copyright notice>` at the top of the file', at));
+  if (header && header.license.toLowerCase() === 'apache-2.0' && !header.notice) problems.push(finding('borrowed', 'Apache-2.0 borrowed code with no NOTICE text', 'add the upstream NOTICE text as `// notice: <text>` at the top of the file', at));
+  return problems;
+}
+
+/** A borrowed file the watch reads: its local path and the four fields it needs. */
+export interface BorrowedFile {
+  path: string;
+  source: string;
+  commit: string;
+  license: string;
+}
+
+/**
+ * The borrowed files among `paths` whose header is whole: a source URL, a full commit
+ * and a license. `read` gives a file's text, or null when it can't be read.
+ */
+export function borrowedFiles(paths: string[], read: (path: string) => string | null): BorrowedFile[] {
+  const files: BorrowedFile[] = [];
+  for (const path of paths) {
+    if (!isBorrowedFile(path)) continue;
+    const text = read(path);
+    if (text === null) continue;
+    const header = parseBorrowedHeader(text);
+    if (!header || !isBorrowedSource(header.source) || !FULL_COMMIT.test(header.commit) || !header.license) continue;
+    files.push({ path, source: header.source, commit: header.commit, license: header.license });
+  }
+  return files;
+}
+
+/** One upstream commit that touched a borrowed file. */
+export interface UpstreamCommit {
+  sha: string;
+  message: string;
+  /** The commit's date, as the host gives it. */
+  date?: string;
+}
+
+/** What the watch asks a code host: the commits on upstream's default branch that hold the file. */
+export interface BorrowedHost {
+  /** Commits that touched the source file on the default branch, newest first; null when the host can't tell. */
+  commits(source: string): UpstreamCommit[] | null;
+  /** One commit's date, to compare it with the list when the list does not hold it; null when the host can't tell. */
+  commitDate?(source: string, commit: string): string | null;
+}
+
+/** One source upstream has moved past: the local files, and what upstream did. */
+export interface BorrowedChange {
+  source: string;
+  /** The local files that borrowed from this source. */
+  files: string[];
+  borrowedCommit: string;
+  /** The newest commit touching the file, or null when the file is gone. */
+  latestCommit: string | null;
+  /** The commits after the borrowed one, newest first. */
+  commits: UpstreamCommit[];
+  /** Whether one of those commits looks like a security fix. */
+  isSecurity: boolean;
+  /** What happened when the commits don't tell the whole story, as when the file is gone. */
+  note?: string;
+}
+
+/** What one run of the watch found. */
+export interface BorrowedWatch {
+  /** One entry per source upstream has moved past. */
+  changed: BorrowedChange[];
+  /** Sources the host could not answer for; each is a gap, never a pass. */
+  unreadable: { source: string; files: string[]; reason: string }[];
+}
+
+// A commit message that names a security fix. It is a hint for the issue, never a proof.
+const SECURITY = /cve-\d{4}-\d+|\bsecurity\b|vulnerab|exploit|denial of service|remote code execution|\bxss\b|\bcsrf\b|sql injection/i;
+
+/**
+ * Compare each borrowed file's commit with what the host says about upstream's default
+ * branch. One entry per source, whatever number of files borrowed from it. The commits
+ * are newest first: those before the borrowed commit are the ones we don't have.
+ */
+export function watchBorrowed(files: BorrowedFile[], host: BorrowedHost): BorrowedWatch {
+  const groups = new Map<string, BorrowedFile[]>();
+  for (const file of files) {
+    const group = groups.get(file.source);
+    if (group) group.push(file);
+    else groups.set(file.source, [file]);
+  }
+  const watch: BorrowedWatch = { changed: [], unreadable: [] };
+  for (const [source, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
+    const paths = group.map((file) => file.path);
+    const commits = host.commits(source);
+    if (commits === null) {
+      watch.unreadable.push({ source, files: paths, reason: 'the host gave no answer' });
+      continue;
+    }
+    if (commits.length === 0) {
+      watch.changed.push({ source, files: paths, borrowedCommit: group[0].commit, latestCommit: null, commits: [], isSecurity: false, note: 'the file is gone from the default branch' });
+      continue;
+    }
+    // Compare every file in the group, not only the first: two wheels may share a source
+    // and hold different commits. The one with the most commits behind names the issue.
+    let borrowedCommit = group[0].commit;
+    let newer: UpstreamCommit[] = [];
+    let unknown: string | null = null;
+    for (const file of group) {
+      const at = commits.findIndex((commit) => commit.sha === file.commit);
+      if (at === 0) continue; // this file holds the newest change to the file
+      let after: UpstreamCommit[];
+      if (at > 0) {
+        after = commits.slice(0, at);
+      } else {
+        // Our commit is not in the list: it may be a snapshot that never touched the
+        // file, so compare by date instead of calling every listed commit newer.
+        const borrowedDate = host.commitDate?.(source, file.commit) ?? null;
+        if (!borrowedDate) {
+          unknown = file.commit;
+          continue;
+        }
+        after = commits.filter((commit) => commit.date !== undefined && commit.date > borrowedDate);
+        if (after.length === 0) continue;
+      }
+      if (after.length > newer.length) {
+        newer = after;
+        borrowedCommit = file.commit;
+      }
+    }
+    if (unknown) {
+      watch.unreadable.push({ source, files: paths, reason: `the host does not hold commit ${unknown} in the file's history, and did not give its date` });
+      continue;
+    }
+    if (newer.length === 0) continue;
+    watch.changed.push({
+      source,
+      files: paths,
+      borrowedCommit,
+      latestCommit: commits[0].sha,
+      commits: newer,
+      isSecurity: newer.some((commit) => SECURITY.test(commit.message)),
+    });
+  }
+  return watch;
+}
 // ---- Keeping a pull request up to date (#432) ----
 //
 // A merge to main leaves other pull requests behind it. `yokoten pr sync` merges main into

@@ -66,6 +66,10 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/advice/messages.ts').then((m) => m.runMsg(invocation));
     case 'check':
       return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
+    case 'mcp':
+      return import('../src/commands/advice/mcp.ts').then((m) => m.runMcp(invocation));
+    case 'borrowed':
+      return import('../src/commands/check.ts').then((m) => m.runBorrowed(invocation));
     case 'redact':
       return import('../src/commands/check.ts').then((m) => m.runRedact(invocation));
     case 'marks':
@@ -85,9 +89,11 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     case 'update':
       return import('../src/commands/setup.ts').then((m) => m.runUpdate(invocation));
     case 'bot':
-      return import('../src/commands/bot.ts').then((m) => m.runBot(invocation));
+      return import('../src/commands/merge/bot.ts').then((m) => m.runBot(invocation));
     case 'pr':
       return import('../src/commands/check.ts').then((m) => m.runPr(invocation));
+    case 'train':
+      return import('../src/commands/merge/train.ts').then((m) => m.runTrain(invocation));
     case 'board':
       return import('../src/commands/advice/board/server.ts').then((m) => m.runBoard(invocation));
     case 'install':
