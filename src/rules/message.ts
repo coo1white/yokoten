@@ -889,11 +889,146 @@ export const refusalParts = (f: Finding): Refusal => ({
   docs: f.docs ?? DOCS_URL,
 });
 
-/** The text form of a refusal, every rule the same: title, why, do instead, more. */
-export const formatRefusal = (f: Finding): string => {
+/**
+ * The text form of a refusal, every rule the same: title, why, do instead, the optional
+ * sentence for the AI (#816), more. The sentence is left out when the caller has none,
+ * so a reader of the older four lines still gets the same four lines.
+ */
+export const formatRefusal = (f: Finding, tell?: string): string => {
   const parts = refusalParts(f);
-  return `${parts.title}\nWhy: ${parts.why}\nDo instead: ${parts.fix}\nMore: ${parts.docs}`;
+  const lines = [parts.title, `Why: ${parts.why}`, `Do instead: ${parts.fix}`];
+  if (tell !== undefined) lines.push(tell);
+  lines.push(`More: ${parts.docs}`);
+  return lines.join('\n');
 };
+
+/** The two languages a refusal's sentence speaks: English, or Simplified Chinese. */
+export type RefusalLanguage = 'en' | 'zh-CN';
+
+/** What the guard can read about the person and the place before it writes a refusal. */
+export interface RefusalVoice {
+  /** The language of the sentence: `YOKOTEN_LANG` first, then the usual locale variables. */
+  lang?: RefusalLanguage;
+  /** The action comes from a worker: the person it tells is its lead, not its owner. */
+  worker?: boolean;
+  /** The repo has a yokoten.json, so its own rules are on top of the safeguard. */
+  hasConfig?: boolean;
+}
+
+/** The language of a refusal: YOKOTEN_LANG first, then the usual locale variables. */
+export function refusalLanguage(env: Record<string, string | undefined>): RefusalLanguage {
+  const tag = env.YOKOTEN_LANG ?? env.LC_ALL ?? env.LC_MESSAGES ?? env.LANG ?? '';
+  return /^zh([-_]|$)/i.test(tag) ? 'zh-CN' : 'en';
+}
+
+/**
+ * The sentence a person says back to the AI for this finding (#816), as the line a refusal
+ * prints after `Do instead:`. A person who reads no code can use it, and a worker says it
+ * to its lead, who decides. The words follow the case: a tag, a package, a repo made
+ * public, a project with no yokoten.json. A rule with no words of its own gets one plain
+ * sentence, never nothing. The refusal itself never bends.
+ */
+export function tellLine(f: Finding, voice: RefusalVoice = {}): string {
+  const zh = voice.lang === 'zh-CN';
+  const worker = voice.worker === true;
+  const say = (en: string, cn: string): string => (zh ? cn : en);
+  let sentence: string;
+  switch (f.id) {
+    case 'release':
+      if (/public repo|making the repo public/i.test(f.what)) sentence = say('I will make this repo public myself.', '这个仓库我自己来公开。');
+      else if (/publish(?:es)? a package|npm|pnpm|yarn/i.test(f.what)) sentence = say('I will publish this package myself.', '这个软件包我自己来发布。');
+      else if (/^git push .+ (?:pushes|publishes)\b/.test(f.what)) sentence = say('I will push these tags myself.', '这些 tag 我自己来推。');
+      else sentence = say('I will publish this release myself.', '这个版本我自己来发布。');
+      break;
+    case 'force-push':
+      sentence = worker
+        ? say('Do not force push; report this branch to your lead.', '不要把分支强推上去；请把这个分支交给 lead。')
+        : say('Do not force push; put my work on a new branch instead.', '不要 force push；把我的工作推到新分支。');
+      break;
+    case 'hard-reset':
+      sentence = say('Do not reset hard; keep my uncommitted work.', '不要 hard reset；保留我没有提交的改动。');
+      break;
+    case 'remove-git':
+      sentence = say('Do not delete .git; delete only the file I named.', '不要删 .git；只删我指定的文件。');
+      break;
+    case 'delete-default-branch':
+      sentence = say('Do not delete the default branch; delete only the branch I named.', '不要删默认分支；只删我指定的分支。');
+      break;
+    case 'pipe-to-shell':
+      sentence = say('Download the file and show it to me before anything runs it.', '先把文件下载下来给我看，再运行。');
+      break;
+    case 'skip-check':
+      sentence = say('Do not skip the commit check; fix what it reports.', '不要跳过提交检查；先修好它报告的问题。');
+      break;
+    case 'hooks-path':
+      sentence = say('Leave the commit check on; I need it.', '保留提交检查；我需要它。');
+      break;
+    case 'workflow-disable':
+      sentence = say('Leave the workflow on; I will decide.', '别关掉这个 workflow；由我来决定。');
+      break;
+    case 'test-file':
+      sentence = say('Do not change the test; fix the code until the test passes.', '不要改测试；改代码直到测试通过。');
+      break;
+    case 'lead-only':
+      // A repo with no yokoten.json still has the safeguard, so say so: the reader may never
+      // have set yokoten up (#816). A worker takes the change to its lead; the lead makes it.
+      if (voice.hasConfig === false && worker)
+        sentence = say(
+          'This project has no yokoten.json, so the safeguard uses its defaults; the rules and CI belong to my lead, who takes the change to you.',
+          '这个项目没有 yokoten.json，守桥用默认规则；规则和 CI 属于我的 lead，由 lead 交给你决定。',
+        );
+      else if (voice.hasConfig === false)
+        sentence = say(
+          'This project has no yokoten.json, so the safeguard uses its defaults; I will make the change to the rules or CI myself.',
+          '这个项目没有 yokoten.json，守桥用默认规则；规则或 CI 的改动由我自己来。',
+        );
+      else if (worker) sentence = say('This file belongs to my lead; report it to your lead.', '这是 lead 的文件；请把它报告给 lead。');
+      else sentence = say('This file is lead-only; I will make this change myself.', '这是 lead 专属文件；这个改动由我自己来。');
+      break;
+    case 'worker-push':
+      sentence = say('This is a worker; report the work to your lead, who reviews and pushes it.', '这是 worker；请把工作报告给 lead，由 lead 审查后推送。');
+      break;
+    case 'worker-mark':
+      sentence = say('Leave the worker mark alone; report this to your lead.', '不要动 worker 标记；请把这件事报告给 lead。');
+      break;
+    case 'secret':
+      sentence = say('Move the key to a file git ignores, then rotate it.', '把密钥移到 git 忽略的文件里，然后换掉这个密钥。');
+      break;
+    case 'email':
+    case 'ip':
+    case 'private-mark':
+      sentence = say('Replace it with a placeholder before you commit.', '提交前把它换成占位内容。');
+      break;
+    case 'gh-token':
+      sentence = say('Do not print the token; let gh use it without showing it.', '不要把 token 打出来；让 gh 自己用，不显示它。');
+      break;
+    case 'alias':
+      sentence = say('Run the full command instead of an alias.', '直接跑完整命令，不要用别名。');
+      break;
+    case 'blocked-command':
+      sentence = say('Do not run that program; this project blocks it.', '不要运行这个程序；这个项目禁用了它。');
+      break;
+    case 'unreadable-command':
+      sentence = say('Split it into simpler commands, one per call.', '把它拆成几条更小的命令。');
+      break;
+    case 'run-remove':
+      sentence = say('Leave the Actions run alone; tell me what you need.', '不要动这次 Actions 运行；告诉我你需要什么。');
+      break;
+    case 'private-output':
+      sentence = say('Show me the output through yokoten redact.', '把输出交给 yokoten redact 再给我看。');
+      break;
+    case 'home-folder':
+      sentence = say('Do not change my home folder; yokoten needs it.', '不要改我的主目录；yokoten 要用它。');
+      break;
+    case 'repeat-stop':
+      sentence = say('Do not repeat that step; stop, go back to your last anchor or write your report.', '不要重复同一步骤；停下来，回到上一个锚点，或者写报告。');
+      break;
+    default:
+      sentence = say('I did not ask for that; stop and explain it to me in plain words.', '我没有让你这样做；请先停下来，用简单的话解释给我听。');
+  }
+  return `${worker ? 'Tell the lead: ' : 'Tell the AI: '}"${sentence}"`;
+}
+
 
 /**
  * The four parts back from text, or null when the text is not a refusal in this shape.

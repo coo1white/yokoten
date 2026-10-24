@@ -29,7 +29,8 @@ without `yokoten init` and without any setting. The agent cannot:
 
 Everything else runs, and the agent saves a restore point before it changes files.
 When a question is needed, it is one a beginner can answer, with the answer we
-recommend. A refusal is one plain sentence: what was stopped, why, and what to do.
+recommend. A refusal is one plain block: what was stopped, why, the safe road, and a
+sentence the person can say back to the agent. The rule id and its link come last.
 
 `yokoten init` adds project rules on top (roles, tiers, reviews). It never removes any of
 the five.
@@ -47,6 +48,9 @@ the five.
 ## Consequences
 
 - The guide and every refusal use plain words first; file names and rule ids come after.
+- A refusal is four lines: what was stopped with its rule id, why, the safe road, and the
+  link. A fifth line is optional: `Tell the AI: "…"`, a sentence a person can say back.
+  A worker says it to its lead instead. The sentence speaks English or zh-CN.
 - In a repo without `yokoten.json`, CI and hook edits are refused, and the message says
   how the owner makes that change. This is new and needs tests on all three systems.
 - Creating a tag is refused (issue #812).

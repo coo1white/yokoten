@@ -1736,6 +1736,7 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
       return release(`git tag ${tagArgs.join(' ')} creates a tag`);
     }
   }
+  // git reads a long option by any start of its name, so `--har` is `--hard` (#816).
   if (sub === 'reset' && args.some((arg) => isGitLongOption(arg, '--hard'))) {
     return finding('hard-reset', 'git reset --hard throws away uncommitted work', 'commit or stash the work first; to undo a commit, use `git revert`');
   }

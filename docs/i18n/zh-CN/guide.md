@@ -60,26 +60,34 @@ yokoten 把这些经验写成规则，再配上会自己跑的检查：
 
 ## 守桥：五条保护
 
-同样的五条保护，从第一天起就对每个人、每个 agent 生效。不需要 `yokoten init`，也不需要改任何设置。
+同样的五条保护，从第一天起就对每个人、每个 agent 生效。不需要 `yokoten init`，也不需要改任何设置。没跑过 `init` 的仓库一样有。
 
 1. **别丢工作**：不许 force push，不许 hard reset，不许删 `.git` 或历史。
 2. **别泄密**：提交或发帖里不许有密钥、令牌、邮箱地址或主目录路径。
 3. **别替你发布**：不许打 tag、发 release、发布软件包，也不许把仓库改成公开。
 4. **别运行没读过的网上代码**：不许把下载内容直接管道给 shell。
-5. **别拆掉守桥**：不许关闭检查或 hook；worker 不许改 CI 或规则，lead 的改动要经过你的审阅。
+5. **别拆掉守桥**：不许关闭检查或 hook。worker 不许改 CI 或规则；它把改动报告给
+   lead，由 lead 交给你审阅。第五条保护里的改动只有主人能做；agent 要请主人来改。
 
-它拦下动作时，总是显示同样的四个部分：
+它拦下动作时，先说清楚拦下了什么，再显示同样这五行：
 
 ```
 yokoten stopped this: creating the tag v1.2.0 [release]
-Why: A tag publishes a release, and only you decide when to release.
-Do instead: If the owner asked for this, they run `git tag v1.2.0` themselves.
-More: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-safeguard
+Why: Only the owner decides when to release.
+Do instead: If the owner asked for this, they run `git tag v1.2.0` themselves; do not look for another way.
+Tell the AI: "这个版本我自己来发布。"
+More: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
 ```
 
-第一行点名被拦下的 tag、文件或分支，以及规则。`Why` 说明可能出什么问题。`Do instead`
-给出安全的做法，不会读代码的人也能照着说。`More` 链接到规则全文。第五条保护里的改动
-只有主人能做；agent 要请主人来改。
+标题点名被拦下的 tag、文件或分支。`Why` 说风险在哪。`Do instead` 给出安全的那条路。
+`Tell the AI` 是一句可以直接对 AI 说的普通话，不会读代码的人也能用；worker 这句话对
+lead 说，打 tag、发软件包、把仓库改成公开各有自己的说法。规则编号和链接放在最后。
+
+没有专门措辞的规则也得一句普通的话："I did not ask for that; stop and explain it to me
+in plain words." 调用方没有句子时，这一行就不出现，原来的四行形状不变。
+
+有一道检查在 git 里跑：提交检查，由 `yokoten init` 安装。在那之前，hook 会读 agent 运行
+的每条命令，手动提交的 commit 不会被读。
 
 ## 三道检查，一把锁
 

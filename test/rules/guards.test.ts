@@ -191,6 +191,11 @@ test('release: making a tag is creating a release, so the owner does it (#812)',
   allowed('git tag -v v1.2.0');
   allowed('git tag v1.2.0', { YOKOTEN_RELEASE_APPROVAL: '1' });
   assert.match(checkCommand('git tag v1.2.0', { cwd: process.cwd(), env: {} })?.fix ?? '', /run `git tag v1\.2\.0` themselves/);
+  // The tag a refusal hands back cannot run a value from the stopped command (#816).
+  const hostile = checkCommand('git tag v1`echo-PWNED`', { cwd: process.cwd(), env: {} })?.fix ?? '';
+  assert.match(hostile, /`git tag 'v1`echo-PWNED`'`/, 'a backtick in the tag stays text');
+  const dollar = checkCommand('git tag v1$(id)', { cwd: process.cwd(), env: {} })?.fix ?? '';
+  assert.match(dollar, /`git tag 'v1\$\(id\)'`/, 'a substitution in the tag stays text');
   // A name the shell would run is quoted, so the line handed back can be pasted (#847).
   const runLine = checkCommand('git tag v1$(id)', { cwd: process.cwd(), env: {} })?.fix ?? '';
   assert.match(runLine, /run `git tag 'v1\$\(id\)'` themselves/);
@@ -200,15 +205,22 @@ test('release: making a repo public is the owner\'s', () => {
   blocked('gh repo edit --visibility public');
   blocked('gh repo edit octo/demo --visibility=public');
   blocked('gh repo create octo/demo --public');
+  blocked('gh repo create octo/demo --visibility=public');
+  blocked('gh repo create octo/demo --visibility public');
   blocked('gh repo create demo --visibility=public');
+  // gh keeps the last flag, so the second one decides.
   blocked('gh repo edit --visibility private --visibility public');
   allowed('gh repo edit --visibility public --visibility private');
   allowed('gh repo edit --visibility private');
   allowed('gh repo create octo/demo --private');
+  allowed('gh repo create octo/demo --visibility=private');
 });
 
 test('losing work: a hard reset is stopped', () => {
-  for (const command of ['git reset --hard', 'git reset --hard origin/main', 'git -C ../other reset --hard HEAD~1']) blocked(command);
+  // git takes any start of a long option, so `--har` is `--hard` (#816).
+  for (const command of ['git reset --hard', 'git reset --hard origin/main', 'git reset --har HEAD', 'git -C ../other reset --hard HEAD~1']) blocked(command);
+  // A longer word is another option (or none), so git rejects it and nothing is reset (#816).
+  allowed('git reset --harder');
   allowed('git reset --soft HEAD~1');
   allowed('git reset');
   allowed('git restore --staged AGENTS.md');
@@ -3286,17 +3298,21 @@ test('guard: deleting the default branch is refused (#560)', () => {
       'git branch -D main',
       'git branch -d main',
       'git branch --delete main',
+      'git branch --del main',
       'git update-ref -d refs/heads/main',
       'git push --delete origin main',
+      'git push --del origin main',
       'git push origin :main',
     ]) stop(command, main);
     for (const command of [
       'git branch -D feature',
       'git branch',
       'git branch -d',
+      'git branch --del feature',
       'git update-ref -d refs/heads/feature',
       'git update-ref refs/heads/feature HEAD',
       'git push --delete origin feature',
+      'git push --del origin feature',
       'git push origin main',
     ]) pass(command, main);
     // The default branch git names counts, not the fallback names.
