@@ -16,7 +16,7 @@ import { closeSync, constants, existsSync, openSync, realpathSync, rmSync } from
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
 import { gitLinkAbove, workerMarkAt, workerRole } from '../../../rules/guards.ts';
-import { DESK_FILE, isDeskName, LEAD, readCapped, readRoster, teamFolderFor } from './team.ts';
+import { DESK_FILE, isDeskName, LEAD, readCapped, readRoster, teamFolderFor, vendorOf } from './team.ts';
 
 /** Who runs this command, and where its team and its read state are. */
 export interface Me {
@@ -126,4 +126,18 @@ export function whoAmI(root: string, env: Env, { locked = isLockedMount }: { loc
   if (typeof main !== 'string') return main;
   const folder = teamFolderFor(main);
   return { name: LEAD, team: folder, readState: join(folder, 'lead', 'read.json'), inDesk: false };
+}
+
+/**
+ * The one line a desk gives an agent whose vendor is not its harness's own (#748), or ''
+ * when the desk named no vendor, or named the harness's own. The harness's own prompt
+ * already tells the truth for its own models, so no line is needed. `runtime` is the name
+ * `yokoten desk` takes, such as `codex`.
+ */
+export function identityLine(runtime: string, env: Env): string {
+  const oneLine = (text: string | undefined) => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 64);
+  const vendor = oneLine(env.YOKOTEN_VENDOR);
+  const model = oneLine(env.YOKOTEN_MODEL);
+  if (!vendor || !model || vendor === vendorOf(runtime, '')) return '';
+  return `yokoten: you are ${vendor} (${model}), served through ${runtime}; ${runtime} is your harness, and what it says about its own maker is the tool, not you.`;
 }

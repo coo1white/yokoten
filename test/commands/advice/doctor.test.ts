@@ -3,6 +3,8 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox, pick } from '../../repo/helpers.ts';
@@ -28,6 +30,18 @@ test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON fo
   // Outside a repo there is nothing to say, and no JSON either.
   assert.equal((await sandbox.call(['doctor', '--session', '--agent', 'gemini'], { cwd: sandbox.home })).stdout, '');
   assert.equal((await sandbox.call(['doctor', '--session', '--agent', 'cursor'])).status, 1);
+});
+
+test('doctor --session: a desk names the real model and vendor first, and the board keeps the model (#748)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  const identity = 'yokoten: you are DeepSeek (deepseek-flash), served through codex; codex is your harness, and what it says about its own maker is the tool, not you.';
+  const out = (await sandbox.call(['doctor', '--session', '--agent', 'codex'], { extra: { YOKOTEN_MODEL: 'deepseek-flash', YOKOTEN_VENDOR: 'DeepSeek' } })).stdout;
+  assert.equal(out.split('\n')[0], identity, 'the brief starts with who the agent is');
+  assert.equal(JSON.parse(readFileSync(join(sandbox.repo, '.yokoten-agent.json'), 'utf8')).model, 'deepseek-flash', 'the board reads the real model');
+  // A model of the harness's own vendor needs no line: its prompt already tells the truth.
+  const own = (await sandbox.call(['doctor', '--session', '--agent', 'codex'], { extra: { YOKOTEN_MODEL: 'gpt-6.1-sol', YOKOTEN_VENDOR: 'OpenAI' } })).stdout;
+  assert.ok(!own.includes('you are'), 'no identity line for the harness own vendor');
 });
 
 test('doctor --session: an agent that cannot filter output hears it once, with the opt-in (#390)', async () => {

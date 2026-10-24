@@ -20,7 +20,8 @@ import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current
 import { asText, borrowedHost, type Gh, ghIn, isObject, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
-import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
+import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, madeWithModelNote, splitForDependabot } from '../rules/pr.ts';
+import { BOARD_AGENT_FILE, parseBoardAgent, readBoardWorktrees } from './advice/board/agents.ts';
 import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, borrowedFiles, type BorrowedChange, GitReadError, gitReadFinding, historyTimeZones, indexFiles, readGit, timeZoneNote, unstageHint, watchBorrowed } from '../run/check.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
@@ -127,6 +128,24 @@ async function runAnchor(invocation: Invocation, root: string, notes: Finding[],
 /** Returned by `runMode` when there is nothing to check; it has already said so. */
 const SKIPPED: Finding[] = [];
 
+/**
+ * The agent that filed a status file in the checkout on `branch`, or null (#748). A desk
+ * is a plain clone, so the list `yokoten desk` keeps supplies it too. No status file, or a
+ * status file with no model, gives null: there is nothing to compare.
+ */
+function branchWorker(root: string, env: Invocation['env'], branch: string): { name: string; model: string } | null {
+  const trees = readBoardWorktrees(root, env);
+  if (typeof trees === 'string') return null;
+  const tree = trees.find((one) => one.branch === branch);
+  if (!tree) return null;
+  try {
+    const agent = parseBoardAgent(readFileSync(join(tree.path, BOARD_AGENT_FILE), 'utf8'), tree.path);
+    return agent?.model ? { name: agent.name, model: agent.model } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The problems of one mode of `check`; its notes go into `notes`, and some are printed as they are found. */
 async function runMode(invocation: Invocation, mode: string, root: string, config: ReturnType<typeof loadConfig>, notes: Finding[], { name, json, number, values }: { name: string; json: boolean; number?: string; values: Record<string, string> }): Promise<Finding[]> {
   const { env } = invocation;
@@ -212,6 +231,15 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       if (large) {
         notes.push(large);
         if (!json) print(invocation, [`${name}: note: ${formatFinding(large)}`]);
+      }
+      // The `Made with` line names the model the worker ran (#748). The worker's own
+      // checkout filed that model in its status file; when the two disagree, the line
+      // names the wrong vendor's model, and the note says so. Never a failure.
+      const worker = pr.branch ? branchWorker(root, env, pr.branch) : null;
+      const modelNote = worker ? madeWithModelNote(pr.body, worker.model, pr.branch) : null;
+      if (modelNote) {
+        notes.push(modelNote);
+        if (!json) print(invocation, [`${name}: note: ${formatFinding(modelNote)}`]);
       }
       problems = checkPullRequest(pr, config);
       // Each change file the pull request leaves (#132) must be one `yokoten changelog` can read.
