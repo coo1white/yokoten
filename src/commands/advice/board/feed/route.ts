@@ -5,7 +5,7 @@
 // closed: it sends nothing.
 
 import { type Env } from '../../../../rules/config.ts';
-import { hideHome, loadMarks, makeRedactor } from '../../../../rules/privacy.ts';
+import { hideHome, loadMarkKinds, makeMarkMatcher, makeRedactor } from '../../../../rules/privacy.ts';
 import { machineMarks, machineUserNames } from '../../../../setup/install.ts';
 import { readBoardAgents, readBoardWorktrees } from '../agents.ts';
 import { makeStreamStore, readStream, type StreamAnswer, type StreamStore } from './tail.ts';
@@ -16,9 +16,10 @@ const MASK_AGAIN_MS = 60000;
 /** The masks for every line /feed sends. Throws when the marks can't be read: the caller sends nothing then. */
 export function makeFeedMask(env: Env, root: string): (text: string) => string {
   const found = machineMarks(env, { cwd: root });
+  const kinds = loadMarkKinds(env);
   return makeRedactor(
     {
-      marks: loadMarks(env),
+      matcher: makeMarkMatcher(kinds),
       owners: [...found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value), ...machineUserNames(env)],
       hosts: found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value),
     },

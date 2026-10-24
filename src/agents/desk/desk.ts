@@ -94,7 +94,7 @@ export interface DeskRequest {
   extraHosts?: string[];
   /** yokoten runtime folders to show read-only: this copy and the installed one. */
   runtimes?: string[];
-  /** The private-marks file, shown read-only only when the lead asks (`--marks`). Off by default until #665. */
+  /** The private-marks file, shown read-only. It holds salted hashes, never the words (#665). */
   marks?: string;
   /** The system the plan is for: its hidden folders differ. */
   platform?: NodeJS.Platform;

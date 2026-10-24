@@ -30,8 +30,8 @@ import { parseChange } from '../run/changelog.ts';
 import { borrowedFiles, type BorrowedChange, check, checkHistory, GitReadError, gitReadFinding, type GitRun, historyTimeZones, indexFiles, readGit, syncPull, timeZoneNote, unstageHint, verifyMerge, watchBorrowed } from '../run/check.ts';
 import { readBranchDesks } from '../run/hook.ts';
 import { isCodeFile, nameNotes } from '../run/notes/names.ts';
-import { addedIgnores, type AllowEntry, hideHome, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
-import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
+import { addedIgnores, type AllowEntry, hasMarkValue, hideHome, isLink, loadMarkKinds, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeMarkMatcher, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
+import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, removeValueMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
 import { readOriginUrl } from '../setup/plan.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
@@ -392,9 +392,10 @@ export function runRedact(invocation: Invocation): number | Promise<number> {
   let redact = (text: string) => text;
   try {
     const found = machineMarks(env, { cwd: invocation.cwd });
+    const kinds = loadMarkKinds(env);
     redact = makeRedactor(
       {
-        marks: loadMarks(env),
+        matcher: makeMarkMatcher(kinds),
         owners: [...found.filter((mark) => mark.kind === 'git name' || mark.kind === 'git email').map((mark) => mark.value), ...machineUserNames(env)],
         hosts: found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value),
       },
@@ -608,7 +609,8 @@ function changeOne(invocation: Invocation, action: 'add' | 'remove', value: stri
   }
   let removed: Mark[];
   try {
-    removed = removeMarks(env, (one) => one.value === mark.toLowerCase());
+    // A hashed file stores a salted hash, so the typed mark is hashed with the file's salt.
+    removed = removeValueMarks(env, mark);
   } catch {
     return refuse(invocation, "your private-marks file can't be changed, so nothing changed");
   }
@@ -671,16 +673,16 @@ function allowHere(invocation: Invocation, mark: string, { isRemoving }: { isRem
   const root = requireRoot(invocation, invocation.cwd);
   if (!root) return 1;
   let file: string;
-  let marks: string[];
+  let isInFile: boolean;
   try {
     file = machineAllowFile(env);
-    marks = loadMarks(env);
+    isInFile = hasMarkValue(env, mark);
   } catch (err) {
     if ((err as Error).message === NO_HOME) return refuse(invocation, `${NO_HOME}. Set HOME to your home folder`);
     return refuse(invocation, "your private-marks file can't be read, so nothing was changed");
   }
   // Only a mark the file holds: anything else is not private to this machine, so nothing to allow.
-  if (!isRemoving && !marks.includes(mark)) return refuse(invocation, 'that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
+  if (!isRemoving && !isInFile) return refuse(invocation, 'that is not a line of your private-marks file, so there is nothing to allow. Check the spelling, or add it to the file first');
   const key = repoKey(root, env);
   if ('none' in key) return refuse(invocation, `nothing was changed, because ${key.none}. The allow from this machine is for a repo with one; use "privacy.allow" in yokoten.json instead`);
   if ('unsure' in key) return refuse(invocation, `nothing was changed, because ${key.unsure}`);

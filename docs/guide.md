@@ -2051,12 +2051,11 @@ git diff main refs/desks/42
 `.git/config` and `.git/hooks` are read-only in the desk, so a worker can't plant a hook or
 an alias there. Set an upstream or other config from outside, before you start the desk.
 
-**The commit check and your private marks.** The commit check reads your private-marks
-file. An agent that can read the file can also print it. So the desk hides it by default,
-and the check in the desk does not see your marks. Until marks are kept as hashes (#665),
-run the check yourself, outside the desk. Check out the fetched branch in your own
-checkout, then run `yokoten check` there; it checks the whole tree. `--marks` shows the file in the
-desk, read-only. Use it only for an agent you trust with the words.
+**The commit check and your private marks.** The private-marks file holds salted hashes,
+never the words (#665), so the desk gets it read-only and the commit check runs inside the
+desk. A copy of the file does not show a mark at a glance, and a finding names only its
+kind and where it was. `--marks` is still accepted for older scripts; the desk gets the
+file either way.
 
 **Systems.**
 
@@ -2109,8 +2108,8 @@ yokoten msg log
 - **Privacy**: a message gets the same scan as posted text: private marks, secrets, email
   and IP addresses, and secret variables. A message that fails is not sent, and you get
   the reason. The scan reads plain text, so a secret that is encoded or split passes it.
-  A desk sees your private marks only with `--marks`, so a message from one desk to
-  another is checked against them only then. What the lead reads is always checked.
+  A desk gets the hashed private-marks file read-only, so a message from one desk to
+  another is checked against them too. What the lead reads is always checked.
 - **Who reads**: every desk on the team can read every message, not only its own.
 - **Caps**: 2,000 characters a message, 20 messages per agent in 10 minutes, and 256 KB
   per outbox.
@@ -2301,11 +2300,19 @@ view of it.
 Rule 11 has a check. It scans for personal email addresses and IP addresses, in CI and
 on every commit. On your own machine it also reads `~/.config/yokoten/private-marks`:
 your name, your city, your domains, your server names. That file stays outside the
-repo, because a list of what must not be published can't itself be published. A hit
-is reported by file and line; the mark itself is never printed. The hit names the kind
-of mark, such as `matches your git name (a private mark yokoten added by itself)` or
-`matches a word you added to your private marks`. Its fix says how to change the mark:
-`yokoten marks off git-name` for a kind yokoten adds, `yokoten marks remove` for your own.
+repo, because a list of what must not be published can't itself be published. It holds a
+salt and one salted hash per mark, never the words. `install` moves an old plain file to
+hashes once: it writes the hashed file, reads it back, and only then lets the plain list
+go. The check hashes each word and each short run of words in a change, up to the longest
+mark, and compares. A mark is found inside a word too: `jane_doe`, `janeDoe`, a ligature
+and a name in a Chinese line are all read as words, as the plain check read them. A hash
+of a common word is still guessable, so the salt is not a
+secret: it stops a precomputed table and a copy of the file from showing the words at a
+glance. A hit is reported by file and line; the mark itself is never printed, and the hit
+never says which mark it was. The hit names the kind of mark, such as `matches your git
+name (a private mark yokoten added by itself)` or `matches a word you added to your
+private marks`. Its fix says how to change the mark: `yokoten marks off git-name` for a
+kind yokoten adds, `yokoten marks remove` for your own.
 
 `YOKOTEN_PRIVATE_MARKS` names a second marks file. The check reads both files and uses
 every mark in them. So the setting can only add marks, never remove them. When

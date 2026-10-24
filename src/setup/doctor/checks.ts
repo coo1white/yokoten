@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
-import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
+import { allowedMarkKinds, homeIn, homeOf, loadMarkKinds, machineAllowed, notUtc, repoKey, sameNameMarkKinds, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
 import { enabledPluginChannel, hasPlugin, hasProjectHook, hasSessionDoctor, type PluginChannel, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
@@ -219,17 +219,17 @@ export function machineChecks(env: Env): Practice[] {
  * machine allows nothing here when yokoten can't tell.
  */
 export function allowedMarkCount(env: Env, config: Pick<Config, 'privacy'>, root: string): { project: number; machine: number; ownName: number; unsure: string | null } {
-  let marks: string[];
+  let marks: ReturnType<typeof loadMarkKinds>;
   try {
-    marks = loadMarks(env);
+    marks = loadMarkKinds(env);
   } catch {
     return { project: 0, machine: 0, ownName: 0, unsure: null }; // An unreadable file: the private-marks check says so.
   }
   if (!marks.length) return { project: 0, machine: 0, ownName: 0, unsure: null };
   const key = repoKey(root, env);
   const machine = machineAllowed(env, root, key);
-  const ownName = skipsOwnName(env, config.privacy) ? sameNameMarks(marks, key).length : 0;
-  return { project: ownMarks(marks, config.privacy.allow).length, machine: ownMarks(marks, machine.allow).length, ownName, unsure: machine.unsure };
+  const ownName = skipsOwnName(env, config.privacy) ? sameNameMarkKinds(marks, key).length : 0;
+  return { project: allowedMarkKinds(marks, config.privacy.allow).length, machine: allowedMarkKinds(marks, machine.allow).length, ownName, unsure: machine.unsure };
 }
 
 /** What doctor says when an agent can't filter command output, and how to opt in to the stop (#390). */
@@ -277,13 +277,17 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', `run \`yokoten install\`; it writes ${MAILMAP_SETTING} and sets \`git config --global mailmap.file ${MAILMAP_SETTING}\`, so git prints a private address in place of your email`));
   if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
   let marks: string[] = [];
+  let isHashed = false;
   try {
-    marks = loadMarks(env);
+    const kinds = loadMarkKinds(env);
+    marks = kinds.map((mark) => mark.value);
+    isHashed = kinds.some((mark) => mark.salt !== undefined);
   } catch {
     // An unreadable file: the private-marks check says so.
   }
   // An offer, only when the file has marks: with none, the private-marks check says what to do (#522).
-  const missing = marks.length ? missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined })) : [];
+  // A hashed file has no shape left, so it cannot say which kinds are missing (#665).
+  const missing = marks.length && !isHashed ? missingMarkKinds(marks, machineMarks(env, { cwd: root ?? undefined })) : [];
   if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, offerMarkKinds(missing), OFFER_MARKS_FIX));
   const claudeRules = museClaudeRules(env, root);
   if (claudeRules) notes.push(claudeRules);

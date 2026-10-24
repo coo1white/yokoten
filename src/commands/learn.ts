@@ -5,7 +5,7 @@ import { formatChanges, readChanges, writeChanges } from '../run/changelog.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { loadConfig } from '../rules/config.ts';
-import { loadMarks, NO_HOME } from '../rules/privacy.ts';
+import { loadMarkKinds, loadMarks, NO_HOME } from '../rules/privacy.ts';
 import { draftLesson, exportLesson, formatDraft, formatLessonPack, importLesson, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, makeNoteCleaner, NOTE_ID, type NotePlace, originParts, redactNote, removeNote, shipLesson, terminalText, upstreamDir, writeDraft, writeLessonFiles, writeNote } from '../run/learn.ts';
 import { HOME_DIR, VERSION } from '../setup/files.ts';
 import { isSelf } from '../setup/init.ts';
@@ -193,7 +193,8 @@ function notePlace({ env, cwd }: Invocation, root: string | null, { withProject 
     owners.push(...origin.owners);
     if (origin.project) projects.push(origin.project);
   }
-  return { root, projects, owners, hosts, marks: loadMarks(env), cwd };
+  const markKinds = loadMarkKinds(env);
+  return { root, projects, owners, hosts, marks: loadMarks(env), markKinds, cwd };
 }
 
 /** The areas a note may name: yokoten's own, when this copy has its yokoten.json; else any lowercase word. */

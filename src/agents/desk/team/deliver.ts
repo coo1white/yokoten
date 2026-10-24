@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Env, loadConfig } from '../../../rules/config.ts';
-import { hideHome, loadMarkKinds, mapMarkKinds, scanText } from '../../../rules/privacy.ts';
+import { hideHome, loadMarkKinds, makeMarkMatcher, scanText } from '../../../rules/privacy.ts';
 import { isSecretValue, SECRET_NAME } from '../agent-env.ts';
 import { keepReadState, type Message, unread } from './outbox.ts';
 import { LEAD, MAX_DELIVERED, type Member, oneLine, readRoster, UNSEEN } from './team.ts';
@@ -31,7 +31,7 @@ export function messageProblem(text: string, env: Env, root: string | null): { w
     } catch {}
   }
   const withKinds = loadMarkKinds(env);
-  const [hit] = scanText(text, { file: 'message', marks: withKinds.map((mark) => mark.value), allow, ownAllow: [], kinds: mapMarkKinds(withKinds) });
+  const [hit] = scanText(text, { file: 'message', matcher: makeMarkMatcher(withKinds), allow });
   if (hit) return { what: `${hit.what}${text.includes('\n') ? ` (line ${hit.line})` : ''}`, fix: hit.fix };
   for (const [name, value] of Object.entries(env)) {
     if (value && value.length >= 8 && SECRET_NAME.test(name.toUpperCase()) && text.includes(value)) {

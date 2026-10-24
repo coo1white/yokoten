@@ -12,6 +12,7 @@
 //   so every caller (the commit, CI, the history) catches them.
 
 import { execFileSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { Config, Env } from './config.ts';
@@ -19,9 +20,316 @@ import { type Finding, finding, isFailingFinding, noteWork, type RuleId } from '
 import { findEnvironmentValues, findLineIgnores, findSecretHits, type IgnoreDirective, makeSafeIgnoreReason, makeSecretHider, parseIgnoreFile, SECRET } from './privacy/secrets.ts';
 
 import { homeIn, homeOf, NO_HOME, systemHome, useRealHome, withHome } from './privacy/home.ts';
-import { loadMarks, marksFile, marksFiles, marksTexts, writtenMarksOnly } from './privacy/marks.ts';
+import { marksFile, marksFiles, marksTexts, writtenMarksOnly } from './privacy/marks.ts';
 
-export { homeIn, homeOf, NO_HOME, systemHome, useRealHome, withHome, loadMarks, marksFile, marksFiles, writtenMarksOnly };
+export { homeIn, homeOf, NO_HOME, systemHome, useRealHome, withHome, marksFile, marksFiles, writtenMarksOnly };
+
+// ---- Private marks as salted hashes (#665) ----
+//
+// A marks file holds a salt and one hash per mark, never the words. The check hashes each
+// word and each run of words in a line, up to the longest mark, and compares. A hash of a
+// common word is still guessable, so the salt is not a secret: it stops a precomputed table
+// and a copy of the file from showing the words at a glance. A sandbox may read the file
+// and still run the check.
+
+/** The first line of a hashed file. Its absence means the old plain file, still read until the next install moves it. */
+export const HASHED_MARKS_MARKER = '# yokoten private marks: salted hashes, v2; the words are not stored';
+/** The version before v2 (#665 review). Its lines cannot say how long a mark is, so the check stops rather than hide one. */
+const HASHED_MARKS_MARKER_V1 = '# yokoten private marks: salted hashes, v1; the words are not stored';
+/** Said when a hashed file is malformed. The check stops, so a damaged file hides no mark. */
+export const MARK_FILE_DAMAGED = 'the private-marks file is damaged (a hashed file needs its salt, its longest mark and one whole mark per line)';
+const SALT_LINE = /^# salt: ([0-9a-f]{64})$/;
+const LONGEST_LINE = /^# longest: (\d+)$/;
+const STARTS_LINE = /^# starts:(.*)$/;
+/** One mark line: the hash, the hash with no space between its words, its word count, its character count, and its first word's sieve (#665 review). */
+const HASH_LINE = /^([0-9a-f]{64}) ([0-9a-f]{64}) ([1-9]\d{0,2}) ([1-9]\d{0,4}) ([0-9a-f]{8})$/;
+const SIEVE_LINE_VALUE = /^[0-9a-f]{8}$/;
+/** The line that names a cheap fingerprint of every mark's first word: a sieve, so most words cost no SHA. */
+export const STARTS_PREFIX = '# starts:';
+/** A mark longer than this many words is not a name, a city or a host: the check would do too much work. */
+const MAX_MARK_WORDS = 32;
+/** A mark longer than this many code units is not one either. */
+const MAX_MARK_CHARS = 2048;
+
+/** A zero-width space, joiner, non-joiner or word joiner: it is never a boundary (#507). */
+const ZERO_WIDTH = /[\u200B-\u200D\u2060]/g;
+const ZERO_WIDTH_CHAR = /[\u200B-\u200D\u2060]/;
+const NON_ASCII = /[^\x00-\x7f]/;
+/** A script that joins words or particles onto a name: there a mark is found as a run of characters. */
+const JOINED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Arabic}\p{Script=Hebrew}]/u;
+const LETTER_CHAR = /[\p{L}\p{M}]/u;
+const DIGIT_CHAR = /\p{N}/u;
+const LOWER_CHAR = /\p{Ll}/u;
+const UPPER_CHAR = /\p{Lu}/u;
+
+/** A fresh salt: 32 bytes, as 64 hex characters. One per file. */
+export const newMarkSalt = (): string => randomBytes(32).toString('hex');
+
+/** A word as the check reads it: its folded text, and where it sits in the original line. */
+export interface MarkWord {
+  word: string;
+  start: number;
+  end: number;
+}
+
+/** One word folded: NFKC (a ligature becomes its letters), no zero-width character, lowercased. */
+function foldWord(raw: string): string {
+  return (NON_ASCII.test(raw) ? raw.normalize('NFKC').replace(ZERO_WIDTH, '') : raw).toLowerCase();
+}
+
+/**
+ * The words of a line, split the way the plain check does (#665 review): at any character
+ * that is not a letter, mark or digit (`_ - . @ /` included), at a digit run, and where a
+ * small letter turns into a capital (`janeDoe`). A character in a script that joins words
+ * onto a name is a word of its own, so a mark is found in a run of characters. A zero-width
+ * character is skipped, never a boundary: `s<ZW>am` is still `sam`. `splitCase` is off for a
+ * mark: its own case is not an edge, so `QuietHarbor` stays the one mark the owner wrote.
+ */
+export function splitWords(value: string, splitCase = true): MarkWord[] {
+  const words: MarkWord[] = [];
+  let start = -1;
+  let end = -1;
+  let kind: 'letter' | 'digit' | null = null;
+  let isLastLower = false;
+  const close = () => {
+    if (start !== -1) {
+      const word = foldWord(value.slice(start, end));
+      if (word) words.push({ word, start, end });
+    }
+    start = -1;
+    end = -1;
+    kind = null;
+  };
+  for (let index = 0; index < value.length; ) {
+    const code = value.codePointAt(index)!;
+    const width = code > 0xffff ? 2 : 1;
+    // An escape (`\n`, `\u00e9`) or a URL-encoded slash, backslash or space (`%2F`, `%20`) is
+    // an edge on its own, as the plain check reads it: the letter it carries starts no word.
+    if (code === 0x5c) {
+      close();
+      const next = value[index + 1] ?? '';
+      if (next !== '' && 'ntrbf'.includes(next)) index += 2;
+      else if (next === 'u' && /^[0-9A-Fa-f]{4}$/.test(value.slice(index + 2, index + 6))) index += 6;
+      else index += 1;
+      continue;
+    }
+    if (code === 0x25 && ['%2f', '%5c', '%20'].includes(value.slice(index, index + 3).toLowerCase())) {
+      close();
+      index += 3;
+      continue;
+    }
+    let isLetter = false;
+    let isDigit = false;
+    let isJoined = false;
+    let isUpper = false;
+    let isLower = false;
+    if (code < 0x80) {
+      // The common case: no regex, no normalize.
+      isDigit = code >= 48 && code <= 57;
+      isUpper = code >= 65 && code <= 90;
+      isLower = code >= 97 && code <= 122;
+      isLetter = isUpper || isLower;
+    } else {
+      const char = value.slice(index, index + width);
+      if (ZERO_WIDTH_CHAR.test(char)) {
+        index += width;
+        continue;
+      }
+      isJoined = JOINED_SCRIPT.test(char);
+      isDigit = DIGIT_CHAR.test(char);
+      isLetter = !isJoined && !isDigit && LETTER_CHAR.test(char);
+      isUpper = isLetter && UPPER_CHAR.test(char);
+      isLower = isLetter && LOWER_CHAR.test(char);
+      if (!isLetter && !isDigit && !isJoined) {
+        close();
+        index += width;
+        continue;
+      }
+    }
+    if (isJoined) {
+      close();
+      const word = foldWord(value.slice(index, index + width));
+      if (word) words.push({ word, start: index, end: index + width });
+      index += width;
+      continue;
+    }
+    if (!isLetter && !isDigit) {
+      close();
+      index += width;
+      continue;
+    }
+    const here: 'letter' | 'digit' = isDigit ? 'digit' : 'letter';
+    if (kind !== null && (kind !== here || (splitCase && here === 'letter' && isUpper && isLastLower))) close();
+    if (start === -1) {
+      start = index;
+      kind = here;
+    }
+    if (isLetter) isLastLower = isLower;
+    end = index + width;
+    index += width;
+  }
+  close();
+  return words;
+}
+
+/** The words of a mark, as the hash reads them: folded, lowercased, one per token. Its own case is no edge. */
+export function markWords(value: string): string[] {
+  return splitWords(value, false).map((word) => word.word);
+}
+
+/** A mark as the hash reads it: its words, lowercased, one space between. Empty when it has no word. */
+export const normalizeMark = (value: string): string => markWords(value).join(' ');
+
+/** The salted hash of a mark's words. */
+export function hashMarkValue(salt: string, value: string): string {
+  const words = markWords(value);
+  return hashMarkWords(salt, words);
+}
+
+/** The salted hash of text as it stands: one run of words with a space between, or none. */
+function hashText(salt: string, text: string): string {
+  return createHash('sha256').update(salt).update('\0').update(text).digest('hex');
+}
+
+function hashMarkWords(salt: string, words: string[]): string {
+  return hashText(salt, words.join(' '));
+}
+
+/**
+ * A cheap salted fingerprint of one word (FNV-1a, 32 bits), for the starts sieve only. A hit
+ * costs one SHA; a collision costs one more, never a wrong answer. The full hash stays SHA-256.
+ */
+export function sieveWord(salt: string, word: string): string {
+  return sieveFrom(sieveState(`${salt}\0`), word);
+}
+
+/** The FNV state after a fixed prefix, so the salt is walked once per file, not once per word. */
+export function sieveState(prefix: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < prefix.length; index++) {
+    hash = Math.imul(hash ^ prefix.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return hash;
+}
+
+/** The sieve value of one word from a state `sieveState` gives, as a number: the check compares numbers. */
+export function sieveNumberFrom(state: number, word: string): number {
+  let hash = state;
+  for (let index = 0; index < word.length; index++) hash = Math.imul(hash ^ word.charCodeAt(index), 0x01000193) >>> 0;
+  return hash;
+}
+
+/** The sieve value of one word from a state `sieveState` gives, as the 8 hex characters a file holds. */
+export function sieveFrom(state: number, word: string): string {
+  return sieveNumberFrom(state, word).toString(16).padStart(8, '0');
+}
+
+/**
+ * The starts line values for one mark: its first word (the check reads a run from there) and
+ * its whole run with no space, so a mark such as `sam smith` is found in `samsmith` too.
+ */
+export function markSieves(salt: string, value: string): string[] {
+  const words = markWords(value);
+  return words.length ? [sieveWord(salt, words[0]), sieveWord(salt, words.join(''))] : [];
+}
+
+/** One mark as its line in a hashed file: both hashes, its word and character counts, and its first word's sieve. */
+export function hashMarkLine(salt: string, value: string): string {
+  const words = markWords(value);
+  return `${hashText(salt, words.join(' '))} ${hashText(salt, words.join(''))} ${words.length} ${words.join('').length} ${sieveWord(salt, words[0] ?? '')}`;
+}
+
+/** One file's marks, as the file reads them: a salt for a hashed file, null for the old plain one. */
+export interface MarkSource {
+  salt: string | null;
+  marks: Mark[];
+  /** The longest mark, in words: how far the check reads a run of words. */
+  longest: number;
+}
+
+/** The old plain file, read as before: a hashless source. */
+function plainSource(text: string): MarkSource {
+  const marks = markLines(text).flatMap((mark) => (mark ? [mark] : []));
+  const longest = Math.max(1, ...marks.map((mark) => markWords(mark.value).length));
+  return { salt: null, marks, longest };
+}
+
+/**
+ * The marks one file holds. A file with `HASHED_MARKS_MARKER` is read as hashes and must be
+ * whole: its salt, its longest mark, one hash per line with its length, and a starts line
+ * that names every mark's first word. Anything else stops the check, so a damaged file never
+ * lets a mark through. The v1 format has no mark lengths, so it stops too (#665 review).
+ */
+export function parseMarkSource(text: string): MarkSource {
+  const lines = text.split(/\r?\n/);
+  if (lines.some((line) => line.trim() === HASHED_MARKS_MARKER_V1)) throw new Error(MARK_FILE_DAMAGED);
+  if (!lines.some((line) => line.trim() === HASHED_MARKS_MARKER)) return plainSource(text);
+  let salt: string | null = null;
+  let longest = 0;
+  let section: string | null = null;
+  let starts: Set<string> | null = null;
+  const marks: Mark[] = [];
+  const seen = new Set<string>();
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) {
+      const saltMatch = line.match(SALT_LINE);
+      const longestMatch = line.match(LONGEST_LINE);
+      const startsMatch = line.match(STARTS_LINE);
+      if (saltMatch) salt = saltMatch[1];
+      else if (longestMatch) longest = Number(longestMatch[1]);
+      else if (startsMatch) {
+        starts = new Set();
+        for (const hash of startsMatch[1].trim().split(/\s+/).filter(Boolean)) {
+          if (!SIEVE_LINE_VALUE.test(hash)) throw new Error(MARK_FILE_DAMAGED);
+          starts.add(hash);
+        }
+      } else if (line === FOUND_HEADER) section = '';
+      else if (line.startsWith(`${FOUND_HEADER}: `)) section = line.slice(FOUND_HEADER.length + 2).trim();
+      else if (line === OWN_HEADER || line === HASHED_MARKS_MARKER) section = null;
+      else section = null;
+      continue;
+    }
+    const fit = line.match(HASH_LINE);
+    if (!fit) throw new Error(MARK_FILE_DAMAGED);
+    if (seen.has(fit[1])) continue;
+    seen.add(fit[1]);
+    marks.push({ value: fit[1], kind: section, concat: fit[2], words: Number(fit[3]), chars: Number(fit[4]), firstSieve: fit[5] });
+  }
+  if (!salt || !Number.isInteger(longest) || longest < 1 || longest > MAX_MARK_WORDS) throw new Error(MARK_FILE_DAMAGED);
+  if (marks.some((mark) => (mark.chars ?? 0) < 1 || (mark.chars ?? 0) > MAX_MARK_CHARS)) throw new Error(MARK_FILE_DAMAGED);
+  // A mark longer than the longest line says, or one its starts line cannot reach, would hide.
+  if (marks.some((mark) => (mark.words ?? 0) > longest)) throw new Error(MARK_FILE_DAMAGED);
+  if (starts && marks.some((mark) => !starts!.has(mark.firstSieve ?? ''))) throw new Error(MARK_FILE_DAMAGED);
+  return { salt, marks: marks.map((mark) => ({ ...mark, salt, longest, starts: starts ?? undefined })), longest };
+}
+
+/** Every marks file as a source, real home included (#739). */
+function markSources(env: Env): MarkSource[] {
+  return marksTexts(env).map(parseMarkSource);
+}
+
+/**
+ * The owner's marks from every marks file, as stored: the lowercased words in an old plain
+ * file, the salted hash in a hashed one. Each once. An empty list when no file is there.
+ */
+export function loadMarks(env: Env): string[] {
+  return loadMarkKinds(env).map((mark) => mark.value);
+}
+
+/** The stored keys a typed value has in every marks file: its hash for a hashed file, the value itself for an old one. */
+export function markKeysForValue(env: Env, value: string): Set<string> {
+  const keys = new Set<string>([value.toLowerCase()]);
+  for (const mark of loadMarkKinds(env)) if (mark.salt) keys.add(hashMarkValue(mark.salt, value));
+  return keys;
+}
+
+/** Whether a marks file already holds a typed value: the hash for a hashed file, the value itself for an old one. */
+export function hasMarkValue(env: Env, value: string): boolean {
+  const keys = markKeysForValue(env, value);
+  return loadMarkKinds(env).some((mark) => keys.has(mark.value));
+}
 
 /**
  * The marks a project allows in its own repo (#424): those its yokoten.json "privacy.allow"
@@ -31,6 +339,25 @@ export function ownMarks(marks: string[], allow: string[] = []): string[] {
   const allowed = new Set(allow.map((entry) => entry.toLowerCase()));
   return marks.filter((mark) => allowed.has(mark.toLowerCase()));
 }
+
+/** Whether one stored mark is allowed in this repo: the same words case aside, hashed with the file's salt. */
+function isMarkAllowed(mark: Mark, allow: string[]): boolean {
+  if (!mark.salt) return allow.some((entry) => entry.toLowerCase() === mark.value.toLowerCase());
+  return allow.some((entry) => hashMarkValue(mark.salt!, entry) === mark.value);
+}
+
+/** The stored marks a project or this machine allows: the hashed ones included (#665). */
+export function allowedMarkKinds(marks: Mark[], allow: string[] = []): Mark[] {
+  return marks.filter((mark) => isMarkAllowed(mark, allow));
+}
+
+/** The stored marks left to look for: those no allow names, so an empty allow keeps every one. */
+export function withoutAllowedMarks(marks: Mark[], allow: string[] = []): Mark[] {
+  return marks.filter((mark) => !isMarkAllowed(mark, allow));
+}
+
+/** A stored mark's identity: its file's salt and its line, so two files never compare equal. */
+const markIdentity = (mark: Mark): string => (mark.salt ? `${mark.salt}:${mark.value}` : mark.value);
 
 // ---- The machine's allow, for one repo (#447) ----
 // A repo with no yokoten.json, or one that must not name yokoten in public, can't use
@@ -339,6 +666,17 @@ export function sameNameMarks(marks: string[], repo: ReturnType<typeof repoKey> 
   return name ? marks.filter((mark) => plainName(mark) === name) : [];
 }
 
+/** The stored marks that are the name of the repo they run in (#447), a hashed file included. */
+export function sameNameMarkKinds(marks: Mark[], repo: ReturnType<typeof repoKey> | null): Mark[] {
+  if (!repo || !('remote' in repo) || repo.local) return [];
+  const name = plainName(repo.remote.split('/').pop() ?? '');
+  if (!name) return [];
+  return marks.filter((mark) => {
+    if (!mark.salt) return plainName(mark.value) === name;
+    return hashMarkValue(mark.salt!, name) === mark.value;
+  });
+}
+
 /**
  * Whether a mark that names the repo is skipped there (#447, record 0014): on by default.
  * `"privacy": { "skipOwnName": false }` in yokoten.json turns it off for one repo, and
@@ -355,11 +693,10 @@ export function skipsOwnName(env: Env, privacy?: Partial<Pick<Config['privacy'],
 export function repoMarkKinds(env: Env, root: string, privacy?: Partial<Pick<Config['privacy'], 'skipOwnName'>>): Mark[] {
   const kinds = loadMarkKinds(env);
   if (!kinds.length) return kinds;
-  const values = kinds.map((mark) => mark.value);
   const key = repoKey(root, env);
-  const named = skipsOwnName(env, privacy) ? sameNameMarks(values, key) : [];
-  const own = new Set([...ownMarks(values, machineAllowed(env, root, key).allow), ...named]);
-  return own.size ? kinds.filter((mark) => !own.has(mark.value)) : kinds;
+  const named = new Set(skipsOwnName(env, privacy) ? sameNameMarkKinds(kinds, key).map(markIdentity) : []);
+  const allowed = new Set(allowedMarkKinds(kinds, machineAllowed(env, root, key).allow).map(markIdentity));
+  return named.size || allowed.size ? kinds.filter((mark) => !named.has(markIdentity(mark)) && !allowed.has(markIdentity(mark))) : kinds;
 }
 
 /** The comment above the marks yokoten adds from this machine. They run to the next comment line. */
@@ -373,8 +710,23 @@ export const OWN_HEADER = '# your own marks';
 
 /** One line of the private-marks file: the mark, lowercased, and the kind yokoten added it as, or null for one the owner wrote. */
 export interface Mark {
+  /** The line as stored: the words in an old plain file, the salted hash in a hashed one. */
   value: string;
   kind: string | null;
+  /** The file's salt when `value` is a hash. */
+  salt?: string;
+  /** How many words the longest mark in its file has, so a matcher knows where to stop. */
+  longest?: number;
+  /** The hash of each mark's first word in its file: a sieve, so most words are hashed once (#665). */
+  starts?: ReadonlySet<string>;
+  /** How many words this mark has: a file's longest line must reach it, or the file is damaged (#665 review). */
+  words?: number;
+  /** How many code units its words hold with no space: the length a run must have to be its concat. */
+  chars?: number;
+  /** The sieve of this mark's first word, so the parser can see a starts line that lacks it (#665 review). */
+  firstSieve?: string;
+  /** The same words with no space, hashed: so `sam smith` is found in `samsmith` (#665 review). */
+  concat?: string;
 }
 
 /**
@@ -387,7 +739,15 @@ export interface Mark {
 export function loadMarkKinds(env: Env): Mark[] {
   const seen = new Set<string>();
   // Each file on its own, so a header in one never names the kind of a line in the next.
-  return marksTexts(env).flatMap((text) => markLines(text).flatMap((mark) => (mark && !seen.has(mark.value) && seen.add(mark.value) ? [mark] : [])));
+  return markSources(env).flatMap((source) =>
+    source.marks.flatMap((mark) => {
+      // A hash means nothing without its salt: the same words in two files give two keys.
+      const key = mark.salt ? `${mark.salt}:${mark.value}` : mark.value;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [mark];
+    }),
+  );
 }
 
 /**
@@ -403,7 +763,9 @@ export function markLines(text: string): (Mark | null)[] {
       return null;
     }
     if (!line) return null;
-    const value = line.toLowerCase();
+    // A hashed line holds its metadata after the hash; the mark is the hash alone (#665 review).
+    const fit = line.toLowerCase().match(/^([0-9a-f]{64}) /);
+    const value = fit ? fit[1] : line.toLowerCase();
     const kind = section === null ? null : section || (isEmailShaped(value) ? 'git email' : isDomainShaped(value) ? 'private remote host' : null);
     return { value, kind };
   });
@@ -469,15 +831,28 @@ function personLines(lines: string[]): boolean[] {
   return inside;
 }
 
+/** The places a file may name an account: mentions, a copyright line, a person field. Null when it has none. */
+interface AccountPlaces {
+  isMentions: boolean;
+  isLicense: boolean;
+  persons: boolean[] | null;
+}
+
+function accountPlaces(file: string, lines: string[]): AccountPlaces | null {
+  const isMentions = CODEOWNERS_FILE.test(file) || GITHUB_FILE.test(file);
+  const isLicense = LICENSE_FILE.test(file);
+  const persons = MANIFEST_FILE.test(file) ? personLines(lines) : null;
+  return !isMentions && !isLicense && !persons ? null : { isMentions, isLicense, persons };
+}
+
 /**
  * For a file with places that name accounts: a function that gives a lowercased line back
  * without the places where `login` is fine. Null when the file has no such place.
  */
 function loginPlaces(file: string, lines: string[]): ((line: string, index: number, login: string) => string) | null {
-  const isMentions = CODEOWNERS_FILE.test(file) || GITHUB_FILE.test(file);
-  const isLicense = LICENSE_FILE.test(file);
-  const persons = MANIFEST_FILE.test(file) ? personLines(lines) : null;
-  if (!isMentions && !isLicense && !persons) return null;
+  const places = accountPlaces(file, lines);
+  if (!places) return null;
+  const { isMentions, isLicense, persons } = places;
   return (line, index, login) => {
     if (isLicense && COPYRIGHT_LINE.test(line)) return '';
     if (persons?.[index]) return '';
@@ -485,6 +860,15 @@ function loginPlaces(file: string, lines: string[]): ((line: string, index: numb
     if (isMentions) return line.replace(new RegExp(String.raw`(?<![\w.+-])@${escapeRegExp(login)}(?![\w-]|\.\w)`, 'gi'), '');
     return line;
   };
+}
+
+/** Whether a forge login at `start`..`end` sits in a place that names accounts, where it is fine (#410). */
+function isAccountPlace(places: AccountPlaces | null, line: string, index: number, start: number, end: number): boolean {
+  if (!places) return false;
+  if (places.isLicense && COPYRIGHT_LINE.test(line)) return true;
+  if (places.persons?.[index]) return true;
+  if (!places.isMentions || line[start - 1] !== '@') return false;
+  return !/[\w-]/.test(line[end] ?? '') && !/^\.\w/.test(line.slice(end, end + 2));
 }
 
 // A match starts only where a word starts, so a long run with no @ is read once, not once per letter.
@@ -578,9 +962,7 @@ export const isPersonalEmail = (hit: string, allow: string[] = []): boolean => !
 // because a change from a small letter to a capital is an edge; its pattern ignores case
 // instead (`caseless`). Homoglyphs, such as a Cyrillic letter that looks Latin, stay out.
 
-const ZERO_WIDTH = /[\u200B-\u200D\u2060]/g;
 const ZERO_WIDTH_RUN = '[\\u200B-\\u200D\\u2060]*';
-const NON_ASCII = /[^\x00-\x7f]/;
 // A character that NFKD may join onto the one before it: a combining mark, a Hangul vowel or
 // final consonant, a half-width voicing mark. It is folded with that character.
 const JOINER = /^[\p{M}\u1160-\u11FF\uFF9E\uFF9F]/u;
@@ -710,7 +1092,6 @@ export const foldLine = (line: string): FoldedLine => {
 // A slash, a backslash or a space as a URL writes it (`%2F`, `%5C`, `%20`), in either case (#404).
 const ENCODED_EDGE = '%(?:2[Ff]|5[Cc]|20)';
 const NAME_SHAPED = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
-const JOINED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Arabic}\p{Script=Hebrew}]/u;
 const LETTER = String.raw`[\p{L}\p{M}]`;
 // What may sit right before a name: no letter, or a letter that ends an escape or an encoded
 // edge, or a small letter before the name's capital.
@@ -778,6 +1159,143 @@ export function hasMark(text: string, mark: string, folded: FoldedLine = foldLin
   }
   noteWork(folded.text.length);
   return test(folded.text, folded.lower);
+}
+
+/** One place a mark was found: never the mark itself, only its key and where it sits. */
+export interface MarkHit {
+  /** The stored key: a plain word in an old file, a salted hash in a hashed one. */
+  key: string;
+  kind: string | null;
+  start: number;
+  end: number;
+  /** The text that matched, for a redactor's placeholder and for a place that names an account. */
+  text: string;
+  salt?: string;
+}
+
+/** Finds the owner's marks in a line: whole words and short runs of words in a hashed file, as before in an old one. */
+export interface MarkMatcher {
+  isEmpty: boolean;
+  longest: number;
+  find(text: string): MarkHit[];
+}
+
+/**
+ * A matcher for one set of marks (#665). A mark from an old plain file keeps its old
+ * pattern; a hashed mark is found by hashing each run of words, up to the longest mark, and
+ * comparing. The words of a run are the ones `splitWords` gives, so a mark is found inside
+ * `jane_doe`, `janeDoe`, `jane2doe` and the start of a Chinese name. Each mark is also
+ * hashed with no space between its words, so `sam smith` is found in `samsmith`, as the old
+ * plain check found it. A hash is per file salt, so marks from two files stay separate.
+ */
+export function makeMarkMatcher(marks: Mark[]): MarkMatcher {
+  const plain = marks.filter((mark) => !mark.salt && markWords(mark.value).length > 0);
+  const hashed = new Map<string, { byHash: Map<string, string | null>; byConcat: Map<string, string | null>; starts: Set<number> | null; shapes: Set<number>; cache: Map<string, string> }>();
+  // How far a run of words is read. The text splits a word at a case edge, so one mark word
+  // can be several words of the text: `mycity` is found in `MyCity`. A mark's characters are
+  // the most words such a run can hold, and its own words plus one space each the most a
+  // spaced run can hold (#665 review).
+  let longest = 1;
+  let longestSpaced = 1;
+  for (const mark of marks) {
+    if (mark.salt) {
+      let source = hashed.get(mark.salt);
+      if (!source) hashed.set(mark.salt, (source = { byHash: new Map(), byConcat: new Map(), starts: new Set(), shapes: new Set(), cache: new Map() }));
+      source.byHash.set(mark.value, mark.kind);
+      // The same words with no space, for `sam smith` in `samsmith`.
+      source.byConcat.set(mark.concat ?? mark.value, mark.kind);
+      if (mark.chars) source.shapes.add(mark.chars);
+      // A file without its starts line is still read, by hashing every run of words.
+      if (!mark.starts) source.starts = null;
+      else if (source.starts) for (const hash of mark.starts) source.starts.add(Number.parseInt(hash, 16) >>> 0);
+      const words = mark.words ?? mark.longest ?? 1;
+      const chars = mark.chars ?? words;
+      longest = Math.max(longest, chars);
+      longestSpaced = Math.max(longestSpaced, chars + words - 1);
+    } else {
+      const words = markWords(mark.value).length;
+      longest = Math.max(longest, words);
+      longestSpaced = Math.max(longestSpaced, mark.value.length);
+    }
+  }
+  const patterns = plain.flatMap((mark) => {
+    try {
+      return [{ mark, pattern: new RegExp(markPattern(mark.value), 'gu') }];
+    } catch {
+      return [];
+    }
+  });
+  const sources = [...hashed.entries()].map(([salt, source]) => ({ ...source, salt, sieve: sieveState(`${salt}\0`) }));
+  return {
+    isEmpty: !patterns.length && !sources.length,
+    longest,
+    find(text: string): MarkHit[] {
+      noteWork(text.length);
+      const hits: MarkHit[] = [];
+      for (const { mark, pattern } of patterns) {
+        pattern.lastIndex = 0;
+        for (const fit of text.matchAll(pattern)) {
+          if (!fit[0]) continue;
+          hits.push({ key: mark.value, kind: mark.kind, start: fit.index, end: fit.index + fit[0].length, text: fit[0] });
+        }
+      }
+      if (!sources.length) return hits;
+      const tokens = splitWords(text);
+      // A line repeats across a file, and so does each word: one SHA per distinct run is enough.
+      const hashOf = (source: (typeof sources)[number], run: string): string => {
+        let hash = source.cache.get(run);
+        if (hash === undefined) {
+          hash = hashText(source.salt, run);
+          if (source.cache.size >= 4096) source.cache.clear();
+          source.cache.set(run, hash);
+        }
+        return hash;
+      };
+      // One file is the common case: no per-word object, and most words stop at the sieve.
+      const findAt = (source: (typeof sources)[number], index: number): { hit: MarkHit; length: number } | null => {
+        const most = Math.min(longest, tokens.length - index);
+        const start = tokens[index].start;
+        const firstOk = !source.starts || source.starts.has(sieveNumberFrom(source.sieve, tokens[index].word));
+        let spaced = '';
+        let concat = '';
+        let state = source.sieve;
+        let found: { hit: MarkHit; length: number } | null = null;
+        // Forward, so the longest run's hit is the one kept, as the old check preferred it.
+        for (let length = 1; length <= most; length++) {
+          // No longer run can match: both hashes only grow with each word.
+          if (length > 1 && concat.length > longest && spaced.length > longestSpaced) break;
+          const word = tokens[index + length - 1].word;
+          spaced += (length === 1 ? '' : ' ') + word;
+          concat += word;
+          state = sieveNumberFrom(state, word);
+          const end = tokens[index + length - 1].end;
+          if (firstOk) {
+            const hash = hashOf(source, spaced);
+            if (source.byHash.has(hash)) {
+              found = { hit: { key: hash, kind: source.byHash.get(hash) ?? null, start, end, text: spaced, salt: source.salt }, length };
+              continue;
+            }
+          }
+          // Only a run of a length some mark's concat has can match it, and its sieve must be known.
+          if (!source.shapes.has(concat.length) || (source.starts && !source.starts.has(state))) continue;
+          const hash = hashOf(source, concat);
+          if (source.byConcat.has(hash)) found = { hit: { key: hash, kind: source.byConcat.get(hash) ?? null, start, end, text: concat, salt: source.salt }, length };
+        }
+        return found;
+      };
+      for (let index = 0; index < tokens.length; index++) {
+        let longestHit = 0;
+        for (const source of sources) {
+          const found = findAt(source, index);
+          if (!found) continue;
+          hits.push(found.hit);
+          longestHit = Math.max(longestHit, found.length);
+        }
+        if (longestHit > 0) index += longestHit - 1;
+      }
+      return hits;
+    },
+  };
 }
 
 // ---- What a stopped mark is (#523) ----
@@ -883,19 +1401,21 @@ export function loadIgnores(root: string): { entries: IgnoreDirective[]; problem
  */
 export function scanText(
   text: string,
-  { file, marks = [], allow = [], logins = [], ownAllow = allow, kinds, ignores = [], env = {}, inlineIgnores = true }: { file: string; marks?: string[]; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null>; ignores?: IgnoreDirective[]; env?: Env; inlineIgnores?: boolean },
+  { file, marks = [], matcher, allow = [], logins = [], ownAllow = allow, kinds, ignores = [], env = {}, inlineIgnores = true }: { file: string; marks?: string[]; matcher?: MarkMatcher; allow?: string[]; logins?: string[]; ownAllow?: string[]; kinds?: ReadonlyMap<string, string | null>; ignores?: IgnoreDirective[]; env?: Env; inlineIgnores?: boolean },
 ): Finding[] {
   const problems: Finding[] = [];
   const lines = text.split('\n');
   // `logins`: the forge logins yokoten added to the marks, fine where a file names accounts (#410).
-  const places = logins.length && marks.length ? loginPlaces(file, lines) : null;
+  const places = !matcher && logins.length && marks.length ? loginPlaces(file, lines) : null;
+  // A hashed mark carries its kind in the matcher; a place that names accounts still lets a login through.
+  const accounts = matcher ? accountPlaces(file, lines) : null;
   const secrets = findSecretHits(lines, { allow, env });
   const secretValues = secrets.map((hit) => lines[hit.line].slice(hit.start, hit.end));
   const fileIgnore = new Map<string, string>();
   for (const entry of ignores) if (!fileIgnore.has(entry.rule)) fileIgnore.set(entry.rule, entry.reason);
   // `ownAllow`: what may allow a mark, `allow` unless the caller says otherwise (a gh post to another repo, #447).
-  const own = ownMarks(marks, ownAllow);
-  const stopped = own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
+  const own = matcher ? [] : ownMarks(marks, ownAllow);
+  const stopped = matcher ? [] : own.length ? marks.filter((mark) => !own.includes(mark)) : marks;
   let cleanReason: ((text: string) => string) | undefined;
   lines.forEach((line, index) => {
     const where = { file, line: index + 1 };
@@ -907,7 +1427,7 @@ export function scanText(
     const ignoreFields = (rule: string, values: string[], isInlineAllowed: boolean): { ignored?: string } => {
       const reason = (isInlineAllowed ? inlineReason(rule) : undefined) ?? fileIgnore.get(rule);
       if (reason === undefined) return {};
-      cleanReason ??= makeRedactor({ marks: stopped }, env);
+      cleanReason ??= makeRedactor({ marks: stopped, matcher }, env);
       return { ignored: hideInReason(cleanReason, reason, env, values) };
     };
     for (const entry of inline) {
@@ -933,13 +1453,26 @@ export function scanText(
       if (octets.some((n) => n > 255) || OK_IP.some((re) => re.test(hit)) || allow.includes(hit) || isSectionNumber(line, index, hit)) continue;
       problems.push(finding('ip', 'an IP address', 'use a placeholder from 192.0.2.0/24', { ...where, grade: 'sure', ...ignoreFields('ip', [hit], true) }));
     }
-    const folded = stopped.length ? foldLine(line) : null;
-    for (const mark of stopped) {
-      // The mark itself is never printed: the output may land in a CI log or a chat.
-      if (!hasMark(line, mark, folded!)) continue;
-      if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
-      const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
-      problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [mark], false) }));
+    if (matcher) {
+      const seen = new Set<string>();
+      for (const hit of matcher.find(line)) {
+        const key = hit.salt ? `${hit.salt}:${hit.key}` : hit.key;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        // A forge login may sit in a place that names accounts, as it did before (#410).
+        if (hit.kind === 'forge login' && isAccountPlace(accounts, line, index, hit.start, hit.end)) continue;
+        const { what, fix } = describeMark(hit.kind);
+        problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [hit.text], false) }));
+      }
+    } else {
+      const folded = stopped.length ? foldLine(line) : null;
+      for (const mark of stopped) {
+        // The mark itself is never printed: the output may land in a CI log or a chat.
+        if (!hasMark(line, mark, folded!)) continue;
+        if (places && logins.includes(mark) && !hasMark(places(line, index, mark), mark)) continue;
+        const { what, fix } = describeMark(kinds && kinds.has(mark) ? kinds.get(mark) : undefined);
+        problems.push(finding('private-mark', what, fix, { ...where, grade: 'sure', ...ignoreFields('private-mark', [mark], false) }));
+      }
     }
   });
   return problems;
@@ -1037,8 +1570,10 @@ export const isDomainShaped = (value: string): boolean => /^(?:[a-z0-9-]+\.)+[a-
 
 /** What `redact` hides beyond the patterns. Each list may be empty: then only the patterns apply. */
 export interface Hidden {
-  /** Lines of the private-marks file. */
+  /** Lines of the private-marks file, as an old plain file stores them. */
   marks?: string[];
+  /** The marks as a hashed file stores them, when the caller has them (#665). */
+  matcher?: MarkMatcher;
   /** The owner's own names on this machine: git user.name, the forge login, the Linux and Windows user names. */
   owners?: string[];
   /** Hosts of remotes outside the public forges. */
@@ -1097,12 +1632,32 @@ export function makeRedactor(hidden: Hidden, env: Env): (text: string) => string
   };
   const hideSecrets = makeSecretHider();
   const secretValues = findEnvironmentValues(env);
+  // A hashed mark is found per line, by the same matcher as the check (#665).
+  const markMatcher = hidden.matcher;
+  const hideMatched = (text: string) => {
+    if (!markMatcher || markMatcher.isEmpty) return text;
+    return text
+      .split('\n')
+      .map((line) => {
+        const hits = markMatcher.find(line);
+        if (!hits.length) return line;
+        let out = '';
+        let last = 0;
+        for (const hit of hits) {
+          if (hit.start < last) continue;
+          out += line.slice(last, hit.start) + markPlaceholder(hit.text);
+          last = hit.end;
+        }
+        return out + line.slice(last);
+      })
+      .join('\n');
+  };
   return (text) => {
     // An SSH remote at a private host (git@host) names the host, not a person.
     let out = hideSecrets(text);
     for (const value of secretValues) out = out.replaceAll(value, SECRET);
     out = out.replace(EMAIL, (hit) => (!isPersonalEmail(hit) ? hit : /^git@/i.test(hit) ? `git@${PLACEHOLDERS.host}` : PLACEHOLDERS.email));
-    return hideMarks(hideHome(out, env));
+    return hideMatched(hideMarks(hideHome(out, env)));
   };
 }
 
@@ -1439,8 +1994,9 @@ const postFix = (f: Finding) =>
   f.id === 'ip' ? `${f.fix}. ${ALLOW_FIX}` : f.id === 'secret' ? 'take it out of the text, and rotate it if it was ever sent' : f.fix;
 
 /** A file's path as a finding may show it: home as `~`, and only its name, or no name, when the path holds a mark. */
-function shownPath(path: string, env: Env, marks: string[]): string {
+function shownPath(path: string, env: Env, marks: string[], matcher?: MarkMatcher): string {
   const holdsMark = (text: string) => {
+    if (matcher) return !matcher.isEmpty && matcher.find(text).length > 0;
     const folded = foldLine(text);
     return marks.some((mark) => hasMark(text, mark, folded));
   };
@@ -1660,14 +2216,11 @@ export function checkPost(
   // or home is a symlink (#470).
   // A word in a refusal is tested against the marks as a path is in shownPath (#498). The
   // marks file is read only when a refusal names a word.
-  let namedMarks: string[] | undefined;
-  // Folded as the scan folds it (#507).
+  let namedMatcher: MarkMatcher | undefined;
+  // The same matcher as the check, so a hashed file works here too (#665).
   const isMarked = (word: string) => {
-    const { lower } = foldLine(word);
-    return (namedMarks ??= loadMarks(env)).some((mark) => {
-      const value = foldMark(mark);
-      return value !== '' && lower.includes(value);
-    });
+    namedMatcher ??= makeMarkMatcher(loadMarkKinds(env));
+    return !namedMatcher.isEmpty && namedMatcher.find(word).length > 0;
   };
   const readFile = (path: string): FileRead => {
     let full = path;
@@ -1725,18 +2278,17 @@ export function checkPost(
   // allow (#447) are for the repo the command runs in: a post gets them only when it is the
   // line's one command (after at most a cd within the same repo) and names no other target.
   const withKinds = loadMarkKinds(env);
-  const kinds = mapMarkKinds(withKinds);
-  const all = withKinds.map((mark) => mark.value);
-  const isHere = all.length > 0 && isPostHere(gh, { env, command, cwd, from });
+  const isHere = withKinds.length > 0 && isPostHere(gh, { env, command, cwd, from });
   const key = isHere && cwd !== null ? repoKey(cwd, env) : null;
-  const named = isHere && skipsOwnName(env, privacy) ? sameNameMarks(all, key) : [];
-  const own = isHere ? [...ownMarks(all, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]), ...named] : [];
-  const marks = all.filter((mark) => !own.includes(mark));
+  const named = new Set(isHere && skipsOwnName(env, privacy) ? sameNameMarkKinds(withKinds, key).map((mark) => `${mark.salt ?? ''}:${mark.value}`) : []);
+  const allowed = new Set(isHere ? allowedMarkKinds(withKinds, [...allow, ...machineAllowed(env, cwd, key ?? undefined).allow]).map((mark) => `${mark.salt ?? ''}:${mark.value}`) : []);
+  const kept = withKinds.filter((mark) => !named.has(`${mark.salt ?? ''}:${mark.value}`) && !allowed.has(`${mark.salt ?? ''}:${mark.value}`));
+  const matcher = makeMarkMatcher(kept);
   for (const piece of posted.pieces) {
-    const hit = scanText(piece.text, { file: piece.source, marks, allow, ownAllow: [], kinds, env, inlineIgnores: false }).find(isFailingFinding);
+    const hit = scanText(piece.text, { file: piece.source, matcher, allow, env, inlineIgnores: false }).find(isFailingFinding);
     if (!hit) continue;
     const more = { why: postWhy(hit.why) };
-    if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, marks), line: hit.line });
+    if (piece.isFile) return finding(hit.id as RuleId, hit.what, postFix(hit), { ...more, file: shownPath(piece.source, env, [], matcher), line: hit.line });
     const line = piece.text.includes('\n') ? `, line ${hit.line},` : '';
     const what = hit.id === 'private-mark' ? `${piece.source}${line} ${hit.what}` : `${piece.source}${line} holds ${hit.what}`;
     return finding(hit.id as RuleId, what, postFix(hit), more);

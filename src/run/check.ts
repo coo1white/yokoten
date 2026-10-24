@@ -12,7 +12,7 @@ import { checkEdit, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkCodeOwners, checkLayout, CODEOWNERS_PLACES, codeOwnersPath } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { withoutAllowedMarks, loadIgnores, makeMarkMatcher, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './notes/translations.ts';
 
@@ -414,16 +414,14 @@ export function check(root: string, { config, env, staged = false, notes = [] }:
   // The index is read once, here or in the run around this check (#453).
   let index: string[] | undefined;
   const indexed = () => (index ??= indexFiles(root, env));
-  const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
-  const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
-  const markKinds = mapMarkKinds(kinds);
+  // Less what the repo is named for and the machine allows (#447), and what yokoten.json allows (#424).
+  const marks = makeMarkMatcher(withoutAllowedMarks(repoMarkKinds(env, root, config.privacy), config.privacy.allow));
   const skip = matcher(config.privacy.skip);
   const ignoreFile = loadIgnores(root);
   problems.push(...ignoreFile.problems);
   const privacy = (path: string, buf: Buffer) => {
     if (skip(path) || looksBinary(buf)) return;
-    const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
+    const found = scanText(buf.toString('utf8'), { file: path, matcher: marks, allow: config.privacy.allow, ignores: ignoreFile.entries, env });
     for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
   };
   if (staged) {
@@ -524,10 +522,8 @@ export const changedFiles = (root: string, env: Env): string[] =>
  */
 export function checkChanged(root: string, { config, env, notes = [] }: { config: Config; env: Env; notes?: Finding[] }): Finding[] {
   const problems: Finding[] = [];
-  const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
-  const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
-  const markKinds = mapMarkKinds(kinds);
+  // Less what the repo is named for and the machine allows (#447), and what yokoten.json allows (#424).
+  const marks = makeMarkMatcher(withoutAllowedMarks(repoMarkKinds(env, root, config.privacy), config.privacy.allow));
   const skip = matcher(config.privacy.skip);
   const ignoreFile = loadIgnores(root);
   problems.push(...ignoreFile.problems);
@@ -537,7 +533,7 @@ export function checkChanged(root: string, { config, env, notes = [] }: { config
     if (skip(path)) continue;
     const buf = readEntry(root, path); // none if deleted, or a folder (a submodule)
     if (buf && !looksBinary(buf)) {
-      const found = scanText(buf.toString('utf8'), { file: path, marks, logins, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env });
+      const found = scanText(buf.toString('utf8'), { file: path, matcher: marks, allow: config.privacy.allow, ignores: ignoreFile.entries, env });
       for (const hit of found) (isFailingFinding(hit) ? problems : notes).push(hit);
       problems.push(...borrowedProblems(path, buf.toString('utf8')));
     }
@@ -592,14 +588,12 @@ export function checkHistory(root: string, { config, env, notes = [] }: { config
   const add = (found: Finding[]) => {
     for (const f of found) (isFailingFinding(f) ? problems : warnings).set(JSON.stringify(f), f);
   };
-  const kinds = repoMarkKinds(env, root, config.privacy); // less what the repo is named for and the machine allows (#447)
-  const marks = kinds.map((mark) => mark.value);
-  const logins = autoLogins(kinds);
-  const markKinds = mapMarkKinds(kinds);
+  // Less what the repo is named for and the machine allows (#447), and what yokoten.json allows (#424).
+  const marks = makeMarkMatcher(withoutAllowedMarks(repoMarkKinds(env, root, config.privacy), config.privacy.allow));
   const skip = matcher(config.privacy.skip);
   const ignoreFile = loadIgnores(root);
   add(ignoreFile.problems);
-  const opts = { marks, allow: config.privacy.allow, kinds: markKinds, ignores: ignoreFile.entries, env };
+  const opts = { matcher: marks, allow: config.privacy.allow, ignores: ignoreFile.entries, env };
 
   const log = git(root, env, ['log', '--all', '--format=%h%x00%ae%x00%ce%x00%B%x1e']);
   for (const entry of log.split('\x1e')) {
@@ -624,7 +618,7 @@ export function checkHistory(root: string, { config, env, notes = [] }: { config
   for (const [sha, { bytes, whole }] of readBlobs(root, wanted, env, BATCH_CAP)) {
     if (!whole || looksBinary(bytes)) continue;
     // The blob's path places an added forge login (#410); the finding is named below.
-    const hits = scanText(bytes.toString('utf8'), { file: blobs.get(sha) ?? '', ...opts, logins });
+    const hits = scanText(bytes.toString('utf8'), { file: blobs.get(sha) ?? '', ...opts });
     if (hits.length) found.set(sha, hits);
   }
   // Name each blob by the commit that added it (#208), read only when there is a hit.

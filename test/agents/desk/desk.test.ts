@@ -149,12 +149,11 @@ test('prepareDeskState: only the login file comes from the lead; a newer one is 
   }
 });
 
-test('planDesk: the marks file only with --marks; the worker mark is locked', () => {
+test('planDesk: the hashed marks file is readable; the worker mark is locked', () => {
   const { desk } = makeDesk();
   const marks = join(makeTempDir('config-'), 'private-marks');
   writeFileSync(marks, 'x\n');
   writeFileSync(join(desk, '.git', 'yokoten-worker'), 'mark\n');
-  assert.ok(!planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark }).readable.includes(realpathSync(marks)));
   const plan = planDesk({ runtime: 'grok', desk, command: ['node'], env: env(), markDesk: writeMark, marks });
   assert.ok(plan.readable.includes(realpathSync(marks)));
   assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')]);

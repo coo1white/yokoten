@@ -25,19 +25,27 @@ import {
   hasMark,
   isBotProgram,
   hideHome,
+  HASHED_MARKS_MARKER,
+  hashMarkLine,
+  hashMarkValue,
   homeIn,
   loadMarkKinds,
   loadMarks,
   lonePost,
   machineAllowed,
   machineAllowFile,
+  makeMarkMatcher,
   makeRedactor,
+  MARK_FILE_DAMAGED,
+  markSieves,
+  markWords,
   marksFile,
   marksFiles,
   mapMarkKinds,
   normalizeRemote,
   notUtc,
   ownMarks,
+  parseMarkSource,
   POSITIVE_CONTROL,
   privateRemoteHosts,
   readMachineAllow,
@@ -383,6 +391,104 @@ test('private marks file: the kind of each added mark, by its header or, under t
     { value: 'old-login', kind: null },
     { value: 'myserver', kind: null },
   ]);
+});
+
+// A hashed marks file as yokoten writes it: a salt, the longest mark, the starts sieve, and
+// one line per mark (#665). Tests build samples from pieces, so this file passes its own check.
+const MARKS_SALT = 'a'.repeat(64);
+const hashedMarksFile = (marks: string[], salt = MARKS_SALT): string => {
+  const longest = Math.max(1, ...marks.map((mark) => markWords(mark).length));
+  const starts = marks.flatMap((mark) => markSieves(salt, mark));
+  return [HASHED_MARKS_MARKER, `# salt: ${salt}`, `# longest: ${longest}`, `# starts: ${starts.join(' ')}`, ...marks.map((mark) => hashMarkLine(salt, mark))].join('\n') + '\n';
+};
+const hashedMatchers = new Map<string, ReturnType<typeof makeMarkMatcher>>();
+const hashedMatcherFor = (marks: string[]) => {
+  const key = marks.join('\0');
+  let matcher = hashedMatchers.get(key);
+  if (!matcher) {
+    const file = join(makeTempDir('yokoten-'), 'marks');
+    writeFileSync(file, hashedMarksFile(marks));
+    matcher = makeMarkMatcher(loadMarkKinds({ YOKOTEN_PRIVATE_MARKS: file }));
+    hashedMatchers.set(key, matcher);
+  }
+  return matcher;
+};
+
+test('private marks as hashes: every shape the plain check found, it finds again (#665 review)', () => {
+  const finds = (text: string, marks: string[]) => scanText(text, { file: 'a.md', matcher: hashedMatcherFor(marks) }).filter((finding) => finding.id === 'private-mark');
+  const name = ['quiet', 'harbor'].join(' ');
+  const address = ['jane', 'sample.dev'].join(at);
+  // Each row the old plain check caught: the hashed check must catch it too.
+  const hits: Array<[string, string, string[]]> = [
+    ['a word on its own', 'Quiet ships tonight', ['quiet']],
+    ['a word in upper case', 'QUIET ships', ['quiet']],
+    ['a word at an underscore', 'my_quiet_log', ['quiet']],
+    ['a word at a hyphen', 'my-quiet-log', ['quiet']],
+    ['a word at a dot', 'a.quiet.b', ['quiet']],
+    ['a word after an at sign', 'quiet@host', ['quiet']],
+    ['a word in a path', 'path/quiet/x', ['quiet']],
+    ['a word after a digit', 'quiet2', ['quiet']],
+    ['a word in camelCase', 'githubQuiet', ['quiet']],
+    ['a whole word split at a case edge', 'MyCity ships', ['mycity']],
+    ['two words', 'Quiet Harbor ships tonight', [name]],
+    ['two words with punctuation between', 'Quiet, Harbor ships', [name]],
+    ['two words with a dot between', 'quiet.harbor', [name]],
+    ['two words with an underscore', 'quiet_harbor', [name]],
+    ['two words with no separator', 'quietharbor', [name]],
+    ['a domain in a path', 'mail.example.com', ['example.com']],
+    ['an email in a line', `write to ${address} now`, [address]],
+    ['a number in a word', 'build1234x', ['1234']],
+    ['a name in Chinese text', '今天张三来了', ['张三']],
+    ['a zero-width character inside a word', 'qui\u200Bet ships', ['quiet']],
+    ['full-width letters', 'ｑｕｉｅｔ ships', ['quiet']],
+    ['a ligature', 'ﬁsh and chips', ['fish']],
+    ['a decomposed accent', 'cafe\u0301 au lait', ['café']],
+    ['an escaped edge', '"hi\\nquiet"', ['quiet']],
+    ['a URL-encoded edge', 'hello%20quiet', ['quiet']],
+  ];
+  for (const [label, text, marks] of hits) {
+    const found = finds(text, marks);
+    assert.equal(found.length, 1, `${label}: ${text}`);
+    assert.equal(found[0].id, 'private-mark', label);
+    assert.equal(found[0].line, 1, label);
+    assert.ok(!/quiet|harbor|example|zhang/i.test(formatFinding(found[0])), 'the finding never names the mark');
+  }
+  // The file holds hashes and counts, never a word.
+  const text = hashedMarksFile([name]);
+  assert.doesNotMatch(text, /quiet|harbor/i, 'the file holds a hash, never the words');
+  // Rows the old check missed: a longer word is not the mark.
+  assert.equal(finds('Quiet Harbors ships', [name]).length, 0, 'a longer word is not the mark');
+  assert.equal(finds('the fleet sails at dawn', [['fleet', 'sail'].join(' ')]).length, 0, 'a longer word is not the mark');
+  // A part of a two-word mark alone is not the mark.
+  assert.equal(finds('Quiet ships', [name]).length, 0, 'a part is not the mark');
+  // Redact finds the same places as the check.
+  const redact = makeRedactor({ matcher: hashedMatcherFor([name]) }, {});
+  assert.equal(redact('by Quiet Harbor and quietharbor.'), 'by <mark> and <mark>.');
+  assert.equal(redact('by ｑｕｉｅｔ ｈａｒｂｏｒ.'), 'by <mark>.');
+  assert.equal(redact('Quiet Harbors ships'), 'Quiet Harbors ships');
+});
+
+test('private marks as hashes: a damaged file stops the check, so a mark never slips through (#665 review)', () => {
+  const salt = 'b'.repeat(64);
+  const line = hashMarkLine(salt, 'quiet harbor');
+  const sieves = markSieves(salt, 'quiet harbor');
+  const head = `${HASHED_MARKS_MARKER}\n# salt: ${salt}\n`;
+  const cases: Array<[string, string]> = [
+    ['no salt', `${HASHED_MARKS_MARKER}\n# longest: 2\n# starts: ${sieves.join(' ')}\n${line}\n`],
+    ['no longest', `${head}# starts: ${sieves.join(' ')}\n${line}\n`],
+    ['a plain word in a hashed file', `${head}# longest: 2\n# starts: ${sieves.join(' ')}\nquiet harbor\n`],
+    ['a broken salt', `${HASHED_MARKS_MARKER}\n# salt: short\n# longest: 2\n# starts: ${sieves.join(' ')}\n${line}\n`],
+    ['the v1 format, with no mark length', `${HASHED_MARKS_MARKER.replace('v2', 'v1')}\n# salt: ${salt}\n# longest: 2\n${hashMarkValue(salt, 'quiet harbor')}\n`],
+    ['a longest line shorter than a mark', `${head}# longest: 1\n# starts: ${sieves.join(' ')}\n${line}\n`],
+    ["a starts line that lacks a mark's first word", `${head}# longest: 2\n# starts: ${sieves[1]}\n${line}\n`],
+  ];
+  const isDamaged = (err: unknown) => (err as Error).message === MARK_FILE_DAMAGED;
+  for (const [label, text] of cases) assert.throws(() => parseMarkSource(text), isDamaged, label);
+  const dir = makeTempDir('yokoten-');
+  const file = join(dir, 'marks');
+  writeFileSync(file, cases[0][1]);
+  assert.throws(() => loadMarks({ YOKOTEN_PRIVATE_MARKS: file }), isDamaged);
+  assert.throws(() => scanText('quiet harbor', { file: 'a', matcher: makeMarkMatcher(loadMarkKinds({ YOKOTEN_PRIVATE_MARKS: file })) }), isDamaged);
 });
 
 test('private marks: an added forge login is fine only where a file names accounts (#410)', () => {

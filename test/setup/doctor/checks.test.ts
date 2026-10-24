@@ -24,7 +24,8 @@ test('install then doctor: the private-marks lines agree, in full doctor and a s
   said.push(full.stdout, full.stderr);
   const lines = marksLines(full.stdout);
   assert.ok(lines.some((line) => /^ +ok +private-marks$/.test(line)), lines.join('\n'));
-  assert.match(lines.join('\n'), /^ +note +private-mark-kinds: optional: add your city or your domains too/m);
+  // A hashed file has no shape left, so doctor no longer guesses which kinds are missing (#665).
+  assert.doesNotMatch(lines.join('\n'), /private-mark-kinds/);
   for (const line of [...lines, ...marksLines(installed.stdout)]) assert.doesNotMatch(line, /MISSING|missing|may lack|already has what/, line);
   const session = await sandbox.call(['doctor', '--session']);
   said.push(session.stdout, session.stderr);
