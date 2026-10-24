@@ -68,7 +68,7 @@ test('board column: the desk shows the lead decision, and Needs you stays out of
     needs: [{ kind: 'approve', title: 'Approve PR #7', why: 'secret approval row', agentKey: '', pull: 7 }],
     pulls: [], merged: [], worktrees: [],
     desk: { ...EMPTY_DESK, now: 'Writing the timeline', decisions: [{ question: 'Ship the board?', recommend: 'yes', answers: ['yes', 'no'] }] },
-    updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} },
+    updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 },
   };
   const pinned = renderSide(makeState(data), data)[0] as unknown as FakeNode;
   assert.match(pinned.textContent, /Calm Hopper/);
@@ -98,7 +98,7 @@ test('board column: the bell carries the desk, for a phone', () => {
     needs: [{ kind: 'approve', title: 'Approve PR #7', why: 'secret approval row', agentKey: '', pull: 7 }],
     pulls: [], merged: [], worktrees: [],
     desk: { ...EMPTY_DESK, now: 'Writing the timeline', decisions: [{ question: 'Ship the board?', recommend: 'yes', answers: ['yes', 'no'] }] },
-    updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} },
+    updated: '', feeds: {}, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 },
   };
   const state = makeState(data);
   state.isNeedsOpen = true;
