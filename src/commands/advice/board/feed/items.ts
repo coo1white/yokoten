@@ -2,6 +2,7 @@
 // its own log. Each reader maps one line onto the standard in shape.ts. Nothing here masks:
 // tail.ts masks every item before it leaves the server. Nothing here is HTML.
 
+import { parseRefusal } from '../../../../rules/message.ts';
 import { commonTool, type StreamItem, type StreamSource } from './shape.ts';
 
 export { commonTool, type StreamItem, type StreamSource };
@@ -65,7 +66,12 @@ function toolItem(name: string, args: Record<string, unknown>, call: string, tre
 /** A tool's output as an item: a guard's refusal stands out, any other output rides under its call. */
 function resultItem(text: string, call: string, isError: boolean, time: string): StreamItem {
   const isGuard = /\byokoten\b/i.test(text) && (isError || /blocked by hook/i.test(text)) && /block|refus|stop|not allowed/i.test(text);
-  if (isGuard) return { kind: 'stop', text: cut(text.trim(), RESULT_LIMIT), call, time };
+  if (isGuard) {
+    const item: StreamItem = { kind: 'stop', text: cut(text.trim(), RESULT_LIMIT), call, time };
+    const refusal = parseRefusal(text);
+    if (refusal) item.refusal = refusal;
+    return item;
+  }
   const item: StreamItem = { kind: 'result', text: cut(text, RESULT_LIMIT), call, time };
   if (isError) item.isFailed = true;
   return item;
@@ -164,57 +170,128 @@ export function grokItems(record: unknown, tree: string): StreamItem[] {
   return [];
 }
 
+/** The text of a Codex message: a string, or the text parts that go in it. */
+function codexMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (!isObject(part)) return textOf(part);
+      const type = textOf(part.type);
+      return !type || type === 'output_text' || type === 'text' ? textOf(part.text) : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** A Codex reasoning summary, from its summary and content parts. */
+function codexSummaryText(payload: Record<string, unknown>): string {
+  return [payload.summary, payload.content]
+    .flatMap((value) => (Array.isArray(value) ? value : [value]))
+    .map((part) => (isObject(part) ? textOf(part.text) : textOf(part)))
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** A shell command without its `bash -lc` wrapper: the words the agent chose to run. */
+function shellWords(text: string): string {
+  const words = text.trim().split(/\s+/);
+  if (words.length > 2 && /(?:^|\/)(?:bash|sh|zsh|dash|fish)$/.test(words[0]) && /^-[A-Za-z]*c[A-Za-z]*$/.test(words[1])) {
+    return words.slice(2).join(' ').replace(/^(['"])(.*)\1$/, '$2');
+  }
+  return text;
+}
+
 /** Codex arguments as the shared describer reads them: a command string, or the patch's file. */
 function codexArgs(name: string, raw: Record<string, unknown>): Record<string, unknown> {
   const args: Record<string, unknown> = { ...raw };
   const listed = Array.isArray(raw.command) ? raw.command.filter((part): part is string => typeof part === 'string').join(' ') : '';
-  const command = textOf(raw.command) || textOf(raw.cmd) || listed;
+  const command = shellWords(textOf(raw.command) || textOf(raw.cmd) || listed);
   const isPatch = /patch/i.test(name);
   if (command && !isPatch) args.command = command;
-  const body = textOf(raw.patch) || (isPatch ? command : '');
+  const body = textOf(raw.patch) || textOf(raw.input) || (isPatch ? command : '');
   const header = /\*\*\* (?:Add|Update|Delete) File: ([^\n]+)/.exec(body);
   if (header) args.file_path = header[1].trim();
   if (isPatch) delete args.command;
   return args;
 }
 
-/** A Codex tool output: a string, or the text a result object carries. */
+/** A Codex tool output: a string, the text a result object carries, or the parts of a list. */
 function codexOutput(value: unknown): string {
   if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(codexOutput).filter(Boolean).join('\n');
   if (!isObject(value)) return '';
   return textOf(value.content) || textOf(value.stdout) || textOf(value.text) || textOf(value.output);
 }
 
+/** A result object Codex sometimes keeps as JSON text. Not JSON, or not an object: null. */
+function codexJson(value: unknown): Record<string, unknown> | null {
+  if (isObject(value)) return value;
+  try {
+    const parsed: unknown = JSON.parse(textOf(value));
+    return isObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A Codex result's text, with a JSON result object opened to the text it carries. */
+function codexResultText(value: unknown): string {
+  const parsed = codexJson(value);
+  if (parsed && typeof value === 'string') {
+    return textOf(parsed.content) || textOf(parsed.stdout) || textOf(parsed.text) || textOf(parsed.output) || value;
+  }
+  return codexOutput(value);
+}
+
+/** True when a Codex result says it failed: a flag, a status, an exit code, or the output's own line. */
+function codexFailed(payload: Record<string, unknown>, output: unknown): boolean {
+  const box = codexJson(output);
+  if (payload.is_error === true || payload.success === false || payload.status === 'failed') return true;
+  if (box && (box.is_error === true || box.success === false)) return true;
+  const code = typeof payload.exit_code === 'number' ? payload.exit_code : box && typeof box.exit_code === 'number' ? box.exit_code : null;
+  if (code !== null) return code !== 0;
+  const hit = /(?:process )?exited with code (\d+)/i.exec(codexOutput(output));
+  return hit ? Number(hit[1]) !== 0 : false;
+}
+
 /**
- * One line of a Codex rollout (`sessions/<year>/<month>/<day>/rollout-*.jsonl`). The line
- * shape is a guess (#698): a `response_item` holds a message, a reasoning summary, a
- * function call or its output. `event_msg` repeats the message, so it is left out.
+ * One line of a Codex rollout (`sessions/<year>/<month>/<day>/rollout-*.jsonl`). A
+ * `response_item` holds a message, a reasoning summary, a tool call or its output.
+ * `event_msg` repeats the message, so it is left out. Codex names a shell call three
+ * ways (`shell`, `local_shell_call`, `custom_tool_call` for `apply_patch`), and all
+ * three become the same kinds here.
  */
 export function codexItems(record: unknown, tree: string): StreamItem[] {
   if (!isObject(record) || record.type === 'event_msg' || record.type === 'session_meta') return [];
   const time = textOf(record.timestamp);
   const payload = record.type === 'response_item' && isObject(record.payload) ? record.payload : record;
   const kind = textOf(payload.type);
-  if (kind === 'message' && payload.role === 'assistant') {
-    const parts = Array.isArray(payload.content) ? payload.content : [];
-    const text = parts.map((part) => (isObject(part) && part.type === 'output_text' ? textOf(part.text) : '')).filter(Boolean).join('\n');
-    return saidItem('say', text, time);
+  if (kind === 'message' && payload.role === 'assistant') return saidItem('say', codexMessageText(payload.content), time);
+  if (kind === 'reasoning') return saidItem('think', codexSummaryText(payload), time);
+  if (kind === 'function_call' || kind === 'custom_tool_call' || kind === 'local_shell_call') {
+    const name = textOf(payload.name) || (kind === 'local_shell_call' ? 'shell' : 'tool');
+    const input = textOf(payload.input);
+    const raw = kind === 'custom_tool_call' && input ? { input, patch: input } : argsOf(payload.arguments ?? payload.input ?? payload.action);
+    return [toolItem(name, codexArgs(name, raw), textOf(payload.call_id) || textOf(payload.id), tree, time)];
   }
-  if (kind === 'reasoning') {
-    const summary = Array.isArray(payload.summary) ? payload.summary.map((part) => (isObject(part) ? textOf(part.text) : textOf(part))).join('\n') : textOf(payload.summary);
-    return saidItem('think', summary, time);
+  if (kind === 'function_call_output' || kind === 'custom_tool_call_output' || kind === 'local_shell_call_output') {
+    return [resultItem(codexResultText(payload.output), textOf(payload.call_id) || textOf(payload.id), codexFailed(payload, payload.output), time)];
   }
-  if (kind === 'function_call') {
-    const name = textOf(payload.name);
-    return [toolItem(name, codexArgs(name, argsOf(payload.arguments)), textOf(payload.call_id), tree, time)];
-  }
-  if (kind === 'function_call_output') {
-    const output = isObject(payload.output) ? payload.output : {};
-    const code = typeof payload.exit_code === 'number' ? payload.exit_code : typeof output.exit_code === 'number' ? output.exit_code : 0;
-    const isError = payload.is_error === true || output.is_error === true || code !== 0;
-    return [resultItem(codexOutput(payload.output), textOf(payload.call_id), isError, time)];
+  if (kind === 'web_search_call') {
+    const action = isObject(payload.action) ? payload.action : {};
+    const query = textOf(action.query) || textOf(payload.query);
+    return [toolItem('web_search', query ? { pattern: query } : {}, textOf(payload.id) || textOf(payload.call_id), tree, time)];
   }
   return [];
+}
+
+/**
+ * One line of a plain text log (`log` in the status file): the line itself, as the agent's
+ * words, cut when long. No JSON, no tool calls.
+ */
+export function plainItems(line: unknown, _: string): StreamItem[] {
+  return typeof line === 'string' ? saidItem('say', line.replace(/\r$/, ''), '') : [];
 }
 
 /** The reader for each runtime's log lines. A new runtime is one reader here, and nothing else. */
@@ -223,4 +300,5 @@ export const LINE_READERS: Record<StreamSource, (record: unknown, tree: string) 
   muse: museItems,
   grok: grokItems,
   codex: codexItems,
+  plain: plainItems,
 };

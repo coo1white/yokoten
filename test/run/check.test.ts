@@ -32,17 +32,28 @@ import { useRealHome } from '../../src/rules/privacy.ts';
 import {
   assumeEmptyFolder,
   batchBlobs,
+  BORROWED_DIR,
+  borrowedFiles,
+  type BorrowedFile,
+  type BorrowedHost,
+  borrowedProblems,
   changedFiles,
   checkHistory,
+  CLEAN_ROOM_FIX,
   configEntries,
   configKey,
   forgetGitReads,
   gitConfig,
   GitReadError,
+  isBorrowedFile,
+  parseBorrowedHeader,
   parseConfigList,
   readBlobs,
   readGit,
   remembered,
+  type UpstreamCommit,
+  watchBorrowed,
+  syncPull,
   withGitReads,
 } from '../../src/run/check.ts';
 
@@ -188,6 +199,33 @@ test('check --staged: stops build output and binaries, lets images and allowed p
   sandbox.git('add', '.');
   r = await sandbox.call(['check', '--staged']);
   assert.equal(r.status, 0, r.stderr);
+});
+
+test('check --staged: borrowed code carries its source, commit, license and notice (#676)', async () => {
+  const sandbox = makeSandbox();
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const header = [
+    '// source: https://github.com/example/upstream/blob/main/src/thing.ts',
+    `// commit: ${sha}`,
+    '// license: MIT',
+    '// copyright: Copyright (c) 2026 Example Authors',
+  ].join('\n');
+  const wheel = `${header}\n\nexport const thing = 1;\n`;
+  sandbox.write('src/borrowed/thing.ts', wheel);
+  sandbox.git('add', '.');
+  let result = await sandbox.call(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+  result = await sandbox.call(['check']);
+  assert.equal(result.status, 0, result.stderr);
+  // A license yokoten may not copy stops the commit, in the tree and when staged.
+  sandbox.write('src/borrowed/thing.ts', wheel.replace('license: MIT', 'license: GPL-3.0-only'));
+  result = await sandbox.call(['check']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /src\/borrowed\/thing\.ts: borrowed code under GPL-3\.0-only, which yokoten cannot copy/);
+  assert.match(result.stderr, /use the clean-room road in record 0024/i);
+  sandbox.git('add', '.');
+  result = await sandbox.call(['check', '--staged']);
+  assert.equal(result.status, 1);
 });
 
 test('check --staged: a submodule and a path with a colon pass, read by blob id (#244)', async () => {
@@ -1436,4 +1474,458 @@ test('check --staged: a staged node_modules is one line with the untrack command
   assert.match(result.stderr, /git rm -r --cached node_modules.*add `node_modules\/` to \.gitignore/);
   assert.match(result.stderr, /To take this folder out of the commit, run `git rm -r --cached node_modules\/`\. It stays on disk/);
   assert.doesNotMatch(result.stderr, /f29\.js/);
+});
+
+// #756: `check --pr` reads the Made-with line against the desk status files of the
+// branch, so a line that names another vendor or model is a finding.
+test('check --pr: the Made-with line is checked against the branch desks (#756)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'head');
+  const head = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const body = (line: string) => `tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\n${line}\n`;
+  const event = (text: string) => {
+    const file = join(sandbox.home, 'event.json');
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body: text, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return file;
+  };
+  const status = (model: string) => writeFileSync(join(sandbox.repo, '.yokoten-agent.json'), JSON.stringify({ name: 'worker', vendor: 'deepseek-harness', model, role: 'engineer' }));
+  status('deepseek-v4.1-flash');
+  let result = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event(body('Made with worker DeepSeek (deepseek-v4.1-flash)')) } });
+  assert.equal(result.status, 0, result.stderr);
+  status('deepseek-v4.2-flash');
+  result = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event(body('Made with worker DeepSeek (deepseek-v4.1-flash)')) } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /a desk on this branch ran deepseek-harness \(deepseek-v4\.2-flash\), but the Made-with line does not name it/);
+  // The same line under another vendor is a finding too.
+  result = await sandbox.call(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event(body('Made with worker Claude Code (deepseek-v4.2-flash)')) } });
+  assert.equal(result.status, 1);
+  assert.ok(JSON.parse(result.stdout).findings.some((finding: { id: string }) => finding.id === 'pr-provenance'));
+});
+const SHA = '0123456789abcdef0123456789abcdef01234567';
+const OLDER = 'fedcba9876543210fedcba9876543210fedcba98';
+const SOURCE = 'https://github.com/example/upstream/blob/main/src/thing.ts';
+const PATH = `${BORROWED_DIR}thing.ts`;
+
+type Field = 'source' | 'commit' | 'license' | 'copyright' | 'notice';
+const VALUES: Record<Field, string> = {
+  source: SOURCE,
+  commit: SHA,
+  license: 'MIT',
+  copyright: 'Copyright (c) 2026 Example Authors',
+  notice: 'Example NOTICE text',
+};
+
+/** A borrowed file with the full header, less the fields `drop` removes. */
+function wheel(drop: Field[] = [], extra: Partial<Record<Field, string>> = {}): string {
+  const values = { ...VALUES, ...extra };
+  const lines = (Object.keys(VALUES) as Field[]).filter((field) => !drop.includes(field)).map((field) => `// ${field}: ${values[field]}`);
+  return `${lines.join('\n')}\n\nexport const thing = 1;\n`;
+}
+
+test('borrowed: a full header passes and is read back', () => {
+  assert.deepEqual(borrowedProblems(PATH, wheel()), []);
+  assert.deepEqual(parseBorrowedHeader(wheel()), {
+    source: SOURCE,
+    commit: SHA,
+    license: 'MIT',
+    copyright: 'Copyright (c) 2026 Example Authors',
+    notice: 'Example NOTICE text',
+  });
+  // A header inside one block comment is read too.
+  const block = `/*\n * source: ${SOURCE}\n * commit: ${SHA}\n * license: ISC\n * copyright: Copyright (c) 2026 Example\n */\n\nexport const thing = 1;\n`;
+  assert.equal(parseBorrowedHeader(block)?.license, 'ISC');
+});
+
+test('borrowed: each missing field is reported with the file and a fix', () => {
+  const fields: [Field, RegExp][] = [
+    ['source', /no source URL/],
+    ['commit', /no upstream commit/],
+    ['license', /no license/],
+    ['copyright', /no copyright notice/],
+  ];
+  for (const [field, what] of fields) {
+    const problems = borrowedProblems(PATH, wheel([field]));
+    assert.equal(problems.length, 1, field);
+    assert.equal(problems[0].file, PATH, field);
+    assert.match(problems[0].what, what, field);
+    assert.match(problems[0].fix, /top of the file/, field);
+  }
+});
+
+test('borrowed: a field that is there but wrong is still refused', () => {
+  assert.match(borrowedProblems(PATH, wheel([], { source: 'git://example.com/thing.ts' }))[0].what, /not a URL/);
+  // The watch reads only a GitHub file page, so the check refuses any other host (#676).
+  const otherHost = borrowedProblems(PATH, wheel([], { source: 'https://gitlab.com/example/upstream/blob/main/src/thing.ts' }));
+  assert.equal(otherHost.length, 1);
+  assert.match(otherHost[0].what, /not a GitHub file link/);
+  assert.match(otherHost[0].fix, /github\.com\/<owner>\/<repo>\/blob/);
+  assert.match(borrowedProblems(PATH, wheel([], { source: 'https://github.com/example/upstream/tree/main/src' }))[0].what, /not a GitHub file link/);
+  assert.match(borrowedProblems(PATH, wheel([], { commit: SHA.slice(0, 7) }))[0].what, /not a full 40-character sha/);
+  // Code before the header leaves every field out: the header must start the file.
+  const late = `export const thing = 1;\n\n${wheel()}`;
+  assert.equal(borrowedProblems(PATH, late).length, 4);
+});
+
+test('borrowed: Apache-2.0 keeps the NOTICE text', () => {
+  const missing = borrowedProblems(PATH, wheel(['notice'], { license: 'Apache-2.0' }));
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].what, /NOTICE/);
+  assert.deepEqual(borrowedProblems(PATH, wheel([], { license: 'Apache-2.0' })), []);
+});
+
+test('borrowed: a license outside the permissive list is refused with the clean-room road', () => {
+  for (const license of ['GPL-3.0-only', 'AGPL-3.0', 'WTFPL', 'see LICENSE']) {
+    const problems = borrowedProblems(PATH, wheel([], { license }));
+    assert.equal(problems.length, 1, license);
+    assert.match(problems[0].what, new RegExp(`under ${license.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.equal(problems[0].fix, CLEAN_ROOM_FIX, license);
+  }
+  // SPDX names are case-insensitive.
+  assert.deepEqual(borrowedProblems(PATH, wheel([], { license: 'apache-2.0' })), []);
+});
+
+test('borrowed: only a file in src/borrowed/ carries a header', () => {
+  assert.deepEqual(borrowedProblems('src/rules/thing.ts', ''), []);
+  assert.equal(isBorrowedFile(PATH), true);
+  assert.equal(isBorrowedFile(`${BORROWED_DIR}nested/thing.ts`), true);
+  assert.equal(isBorrowedFile('src/borrowed.ts'), false);
+});
+
+test('borrowed: the watch reads only whole headers in src/borrowed/', () => {
+  const texts: Record<string, string | null> = {
+    [`${BORROWED_DIR}a.ts`]: wheel(),
+    [`${BORROWED_DIR}b.ts`]: wheel(['commit']),
+    'src/rules/c.ts': wheel(),
+    [`${BORROWED_DIR}d.ts`]: null,
+    // A source the watch cannot read is not taken in, so the check and the watch agree.
+    [`${BORROWED_DIR}e.ts`]: wheel([], { source: 'https://example.com/upstream/blob/main/src/thing.ts' }),
+  };
+  assert.deepEqual(borrowedFiles(Object.keys(texts), (path) => texts[path]).map((file) => file.path), [`${BORROWED_DIR}a.ts`]);
+});
+
+// ---- The watch ----
+
+const file = (path: string, overrides: Partial<BorrowedFile> = {}): BorrowedFile => ({ path, source: SOURCE, commit: SHA, license: 'MIT', ...overrides });
+const hostOf = (commits: Record<string, UpstreamCommit[] | null>, dates: Record<string, string | null> = {}): BorrowedHost => ({
+  commits: (source) => commits[source] ?? null,
+  commitDate: (_, sha) => dates[sha] ?? null,
+});
+const commit = (sha: string, message: string, date?: string): UpstreamCommit => ({ sha, message, ...(date === undefined ? {} : { date }) });
+
+test('watch: upstream is where we left it', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(SHA, 'feat: the version we took')] }));
+  assert.deepEqual(watch, { changed: [], unreadable: [] });
+});
+
+test('watch: a newer upstream commit is one change per source, and a security fix is called out', () => {
+  const other = `${BORROWED_DIR}other.ts`;
+  const watch = watchBorrowed(
+    [file(PATH), file(other), file(`${BORROWED_DIR}third.ts`, { source: 'https://github.com/example/other/blob/main/x.ts' })],
+    hostOf({
+      [SOURCE]: [commit('1111111111111111111111111111111111111111', 'fix: security hole in parse'), commit(OLDER, 'docs: word'), commit(SHA, 'the version we took')],
+      'https://github.com/example/other/blob/main/x.ts': [commit(SHA, 'the version we took')],
+    }),
+  );
+  assert.equal(watch.changed.length, 1);
+  const change = watch.changed[0];
+  assert.equal(change.source, SOURCE);
+  assert.deepEqual(change.files, [PATH, other]);
+  assert.equal(change.borrowedCommit, SHA);
+  assert.equal(change.latestCommit, '1111111111111111111111111111111111111111');
+  assert.deepEqual(change.commits.map((c) => c.sha), ['1111111111111111111111111111111111111111', OLDER]);
+  assert.equal(change.isSecurity, true);
+});
+
+test('watch: a commit message without a security word is not called a security fix', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(OLDER, 'refactor: rename a helper'), commit(SHA, 'taken')] }));
+  assert.equal(watch.changed[0].isSecurity, false);
+});
+
+test('watch: a source the host cannot answer for is a gap, never a pass', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: null }));
+  assert.deepEqual(watch.changed, []);
+  assert.equal(watch.unreadable.length, 1);
+  assert.equal(watch.unreadable[0].source, SOURCE);
+  assert.equal(watch.unreadable[0].reason, 'the host gave no answer');
+});
+
+test('watch: a file gone upstream is a change', () => {
+  const gone = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [] }));
+  assert.equal(gone.changed[0].latestCommit, null);
+  assert.match(gone.changed[0].note ?? '', /gone/);
+});
+
+test('watch: a snapshot commit that never touched the file is not taken as everything newer', () => {
+  const base = '2222222222222222222222222222222222222222';
+  // The borrowed sha is not in the list, and its date is after every listed commit: no issue.
+  const snapshot = watchBorrowed(
+    [file(PATH)],
+    hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug', '2026-09-01T00:00:00Z'), commit(base, 'feat: base', '2026-08-01T00:00:00Z')] }, { [SHA]: '2026-10-01T00:00:00Z' }),
+  );
+  assert.deepEqual(snapshot, { changed: [], unreadable: [] });
+});
+
+test('watch: a commit missing from the list counts only the commits its date says are newer', () => {
+  const newer = '1111111111111111111111111111111111111111';
+  const watch = watchBorrowed(
+    [file(PATH)],
+    hostOf({ [SOURCE]: [commit(newer, 'fix: later', '2026-10-02T00:00:00Z'), commit(OLDER, 'docs: earlier', '2026-09-01T00:00:00Z')] }, { [SHA]: '2026-09-15T00:00:00Z' }),
+  );
+  assert.equal(watch.changed.length, 1);
+  assert.deepEqual(watch.changed[0].commits.map((c) => c.sha), [newer]);
+});
+
+test('watch: a commit missing from the list with no date is a gap, never a false issue', () => {
+  const watch = watchBorrowed([file(PATH)], hostOf({ [SOURCE]: [commit(OLDER, 'fix: bug', '2026-09-01T00:00:00Z')] }));
+  assert.deepEqual(watch.changed, []);
+  assert.equal(watch.unreadable.length, 1);
+  assert.match(watch.unreadable[0].reason, /0123456789abcdef/);
+});
+
+test('watch: files that share a source are each compared, not only the first', () => {
+  const other = `${BORROWED_DIR}other.ts`;
+  const newest = '1111111111111111111111111111111111111111';
+  const middle = '2222222222222222222222222222222222222222';
+  const watch = watchBorrowed(
+    [file(PATH), file(other, { commit: OLDER })],
+    hostOf({
+      [SOURCE]: [commit(newest, 'fix: newest', '2026-10-03T00:00:00Z'), commit(middle, 'docs: middle', '2026-10-02T00:00:00Z'), commit(OLDER, 'the version the other file took', '2026-09-01T00:00:00Z')],
+    }, { [SHA]: '2026-10-02T12:00:00Z' }),
+  );
+  assert.equal(watch.changed.length, 1);
+  assert.deepEqual(watch.changed[0].files, [PATH, other]);
+  assert.equal(watch.changed[0].borrowedCommit, OLDER);
+  assert.deepEqual(watch.changed[0].commits.map((c) => c.sha), [newest, middle]);
+});
+
+// ---- `yokoten pr sync` (#432) ----
+//
+// Real git, a bare remote and two branches: the sync merges the base into the branch,
+// resolves only the two mechanical conflicts, verifies, and pushes. A push in these tests
+// is the same git push, to the bare remote; the bot is tested where it belongs.
+
+/** A sandbox with a bare origin, one commit on main, and main pushed. */
+function remoteSandbox() {
+  const sandbox = makeSandbox();
+  const remote = makeTempDir('yokoten-remote-');
+  const bare = spawnSync('git', ['init', '--bare', '-q', remote], { env: sandbox.env, encoding: 'utf8' });
+  assert.equal(bare.status, 0, bare.stderr);
+  sandbox.write('base.txt', 'base\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  sandbox.git('remote', 'add', 'origin', remote);
+  sandbox.git('push', '-q', '-u', 'origin', 'main');
+  return { sandbox, remote };
+}
+
+/** The sync's git, run where it asks. The real commands keep the test honest. */
+const syncGit = (sandbox: ReturnType<typeof makeSandbox>) => (args: string[], cwd: string) => {
+  const result = spawnSync('git', args, { cwd, env: sandbox.env, encoding: 'utf8' });
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+};
+
+/** Push as the test's bot stand-in: the same git push, to the bare remote. */
+const syncPush = (sandbox: ReturnType<typeof makeSandbox>, pushes: string[]) => async (worktree: string, branch: string) => {
+  pushes.push(branch);
+  const result = spawnSync('git', ['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: worktree, env: sandbox.env, encoding: 'utf8' });
+  return { ok: result.status === 0, said: String(result.stderr ?? '').trim() };
+};
+
+/** Put a branch and main apart: the branch works, then main moves on, and both are pushed. */
+function diverge(sandbox: ReturnType<typeof makeSandbox>, change: (side: 'branch' | 'main') => void) {
+  sandbox.git('switch', '-q', '-c', 'work');
+  change('branch');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'work');
+  sandbox.git('push', '-q', '-u', 'origin', 'work');
+  sandbox.git('switch', '-q', 'main');
+  change('main');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'main');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('fetch', '-q', 'origin');
+}
+
+/** One sync run of `work` into `main`, with the test's push and a chosen verifier. */
+function runSync(sandbox: ReturnType<typeof makeSandbox>, verifier = () => ({ ok: true, said: '' })) {
+  const pushes: string[] = [];
+  const checked: string[][] = [];
+  const run = () =>
+    syncPull({
+      root: sandbox.repo,
+      number: 1,
+      branch: 'work',
+      base: 'main',
+      git: syncGit(sandbox),
+      push: syncPush(sandbox, pushes),
+      verify: (_, files) => {
+        checked.push(files);
+        return verifier();
+      },
+      tempRoot: join(sandbox.repo, '.tmp', 'yokoten-pr-sync'),
+    });
+  return { go: run, pushes, checked };
+}
+
+test('pr sync: a branch behind main gets main merged in and is pushed (#432)', async () => {
+  const { sandbox } = remoteSandbox();
+  diverge(sandbox, (side) => sandbox.write(`${side}.txt`, `${side}\n`));
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'merged');
+  assert.deepEqual(sync.checked, [['main.txt']], 'a clean merge is verified before the push (#809)');
+  assert.deepEqual(sync.pushes, ['work'], 'the branch is pushed once');
+  sandbox.git('fetch', '-q', 'origin');
+  assert.equal(sandbox.git('merge-base', '--is-ancestor', 'origin/main', 'origin/work').status, 0, 'the remote branch holds main');
+  assert.equal(sandbox.git('status', '--porcelain').stdout.trim(), '', 'the main checkout is untouched');
+});
+
+test('pr sync: a clean merge that fails verification is not pushed (#809)', async () => {
+  const { sandbox } = remoteSandbox();
+  diverge(sandbox, (side) => sandbox.write(`${side}.txt`, `${side}\n`));
+  const before = sandbox.git('rev-parse', 'origin/work').stdout.trim();
+  const sync = runSync(sandbox, () => ({ ok: false, said: 'typecheck failed: boom' }));
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'needs-agent');
+  assert.match(outcome.reason ?? '', /failed after the merge/);
+  assert.deepEqual(sync.checked, [['main.txt']]);
+  assert.deepEqual(sync.pushes, [], 'nothing is pushed');
+  assert.equal(sandbox.git('rev-parse', 'origin/work').stdout.trim(), before, 'the remote branch is untouched');
+  assert.ok(outcome.worktree && existsSync(outcome.worktree), 'the temporary worktree waits for the agent');
+});
+
+test('pr sync: two added blocks at one spot are kept, tested and pushed (#432)', async () => {
+  const { sandbox } = remoteSandbox();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  diverge(sandbox, (side) =>
+    sandbox.write('src/a.ts', `export const a = 1;\nexport const ${side === 'branch' ? 'work' : 'main'} = () => ${side === 'branch' ? 2 : 3};\n`),
+  );
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'resolved');
+  assert.equal(outcome.hunks, 1);
+  assert.deepEqual(sync.checked, [['src/a.ts']], 'typecheck and the tests of the touched file run');
+  assert.deepEqual(sync.pushes, ['work']);
+  sandbox.git('fetch', '-q', 'origin');
+  const merged = sandbox.git('show', 'origin/work:src/a.ts').stdout;
+  assert.match(merged, /export const work = \(\) => 2;/);
+  assert.match(merged, /export const main = \(\) => 3;/);
+});
+
+test('pr sync: two changed import lists become one list, then pass and push (#432)', async () => {
+  const { sandbox } = remoteSandbox();
+  const base = "import { a } from './x.ts';\nimport { b } from './y.ts';\n\nexport const value = a + b;\n";
+  sandbox.write('src/b.ts', base);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  diverge(sandbox, (side) =>
+    sandbox.write('src/b.ts', base.replace("import { a } from './x.ts';", `import { a, ${side === 'branch' ? 'c' : 'd'} } from './x.ts';`)),
+  );
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'resolved');
+  assert.equal(outcome.hunks, 1);
+  assert.deepEqual(sync.pushes, ['work']);
+  sandbox.git('fetch', '-q', 'origin');
+  const merged = sandbox.git('show', 'origin/work:src/b.ts').stdout;
+  assert.match(merged, /^import \{ a, c, d \} from '\.\/x\.ts';$/m, 'both additions are kept, each name once');
+});
+
+test('pr sync: an import list keeps a name the base had unless one side deleted it (#809)', async () => {
+  const { sandbox } = remoteSandbox();
+  const base = "import { a, secret } from './x.ts';\n\nexport const value = a;\n";
+  sandbox.write('src/d.ts', base);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  diverge(sandbox, (side) => {
+    const names = side === 'branch' ? 'a, secret, b' : 'a';
+    sandbox.write('src/d.ts', base.replace('{ a, secret }', `{ ${names} }`));
+  });
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'resolved');
+  assert.equal(outcome.hunks, 1);
+  assert.deepEqual(sync.pushes, ['work']);
+  sandbox.git('fetch', '-q', 'origin');
+  const merged = sandbox.git('show', 'origin/work:src/d.ts').stdout;
+  assert.match(merged, /^import \{ a, b \} from '\.\/x\.ts';$/m, 'the branch keeps its add and main\'s delete applies');
+});
+
+test('pr sync: a semantic conflict stops, prints its hunks, and pushes nothing (#432)', async () => {
+  const { sandbox } = remoteSandbox();
+  sandbox.write('src/c.ts', 'export const n = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  diverge(sandbox, (side) => sandbox.write('src/c.ts', `export const n = ${side === 'branch' ? 2 : 3};\n`));
+  const before = sandbox.git('rev-parse', 'origin/work').stdout.trim();
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'needs-agent');
+  assert.deepEqual(sync.pushes, [], 'nothing is pushed');
+  assert.deepEqual(outcome.files, ['src/c.ts']);
+  const hunks = outcome.hunksText?.join('\n') ?? '';
+  assert.match(hunks, /<<<<<<< HEAD/);
+  assert.match(hunks, /export const n = 2;/);
+  assert.match(hunks, /export const n = 3;/);
+  assert.match(outcome.brief ?? '', /Worktree: /, 'the dispatch brief is ready');
+  assert.equal(sandbox.git('rev-parse', 'origin/work').stdout.trim(), before, 'the remote branch is untouched');
+  assert.ok(outcome.worktree && existsSync(outcome.worktree), 'the conflict is left for the agent to resolve');
+});
+
+test('pr sync: a conflict on a checked-out branch is aborted before needs-agent (#809)', async () => {
+  const { sandbox } = remoteSandbox();
+  sandbox.write('src/e.ts', 'export const n = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('switch', '-q', '-c', 'work');
+  sandbox.write('src/e.ts', 'export const n = 2;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'work');
+  sandbox.git('push', '-q', '-u', 'origin', 'work');
+  sandbox.git('switch', '-q', 'main');
+  sandbox.write('src/e.ts', 'export const n = 3;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'main');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('fetch', '-q', 'origin');
+  sandbox.git('switch', '-q', 'work');
+  const sync = runSync(sandbox);
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'needs-agent');
+  assert.deepEqual(sync.pushes, [], 'nothing is pushed');
+  assert.deepEqual(outcome.files, ['src/e.ts']);
+  assert.equal(sandbox.git('status', '--porcelain').stdout.trim(), '', 'the checked-out branch is left clean');
+  assert.notEqual(sandbox.git('rev-parse', '--verify', '--quiet', 'MERGE_HEAD').status, 0, 'no merge is left in progress');
+  assert.equal(readFileSync(join(sandbox.repo, 'src/e.ts'), 'utf8'), 'export const n = 2;\n', 'the branch file is back as it was');
+  assert.equal(outcome.worktree, undefined, 'the checkout is not handed to an agent mid-merge');
+});
+
+test('pr sync: a resolution whose tests fail stops and pushes nothing (#432)', async () => {
+  const { sandbox } = remoteSandbox();
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'code');
+  sandbox.git('push', '-q', 'origin', 'main');
+  diverge(sandbox, (side) => sandbox.write('src/a.ts', `export const a = 1;\nexport const ${side === 'branch' ? 'work' : 'main'} = 2;\n`));
+  const before = sandbox.git('rev-parse', 'origin/work').stdout.trim();
+  const sync = runSync(sandbox, () => ({ ok: false, said: 'the tests failed: boom' }));
+  const outcome = await sync.go();
+  assert.equal(outcome.state, 'needs-agent');
+  assert.match(outcome.reason ?? '', /tests failed/);
+  assert.deepEqual(sync.pushes, [], 'nothing is pushed');
+  assert.equal(sandbox.git('rev-parse', 'origin/work').stdout.trim(), before, 'the remote branch is untouched');
+  assert.ok(outcome.worktree && existsSync(outcome.worktree), 'the merge commit waits for the agent');
 });

@@ -89,7 +89,7 @@ function commitsProblem(root: string, base: string, head: string, env: Env, fix:
   return null;
 }
 
-export type PullRequestRead = PullRequest & { base: string; head: string; numstat: string };
+export type PullRequestRead = PullRequest & { base: string; head: string; numstat: string; /** The head branch, '' when the host does not say. */ branch: string };
 
 /** The pull request of this run, null when the run is not for one, or why it can't be read. */
 export function readPullRequest(root: string, env: Env): PullRequestRead | Unreadable | null {
@@ -99,15 +99,16 @@ export function readPullRequest(root: string, env: Env): PullRequestRead | Unrea
   if (!isObject(pr)) return null;
   const base = isObject(pr.base) ? asText(pr.base.sha) : '';
   const head = isObject(pr.head) ? asText(pr.head.sha) : '';
+  const branch = isObject(pr.head) ? asText(pr.head.ref) : '';
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: isObject(pr.user) ? asText(pr.user.login) : '' }, base, head, env, branch);
 }
 
 export const milestoneTitle = (milestone: unknown): string | null => (isObject(milestone) && typeof milestone.title === 'string' ? milestone.title : null);
 
 /** The pull request with the files git lists between `base` and `head`. Both commits must be here. */
-function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string, env: Env): PullRequestRead {
+function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, base: string, head: string, env: Env, branch = ''): PullRequestRead {
   // A diff git can't give throws a GitReadError, and the check stops on it (#403).
   const diff = (...options: string[]) => readGit(root, ['diff', ...options, `${base}...${head}`], { env }).toString('utf8');
   return {
@@ -117,6 +118,7 @@ function withDiff(root: string, fields: Omit<PullRequest, 'files' | 'deleted'>, 
     base,
     head,
     numstat: diff('--numstat', '-z'),
+    branch,
   };
 }
 
@@ -144,7 +146,7 @@ function pullRequestFromGh(root: string, pr: unknown, number: string, fix: strin
   const head = asText(pr.headRefOid);
   const problem = shasProblem(base, head) ?? commitsProblem(root, base, head, env, fix);
   if (problem) return { problem };
-  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env);
+  return withDiff(root, { title: asText(pr.title), body: asText(pr.body), labels: labelNames(pr.labels), milestone: milestoneTitle(pr.milestone), author: ghAuthor(pr.author) }, base, head, env, asText(pr.headRefName));
 }
 
 /**
@@ -158,7 +160,7 @@ export function readNumberedPullRequest(root: string, gh: Gh, reference: string,
   if (number === null) return { problem: finding('pr-read', `"${reference}" is not a pull request number or URL`, 'give the number alone, such as `yokoten check --pr 12`, or its URL') };
   let pr: unknown;
   try {
-    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+    pr = JSON.parse(gh(['pr', 'view', number, '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid,headRefName']));
   } catch (err) {
     // gh says this when the repo has no such pull request: a wrong number, not a network problem.
     if (/Could not resolve to a PullRequest/i.test(String((err as { stderr?: string }).stderr || (err as Error).message))) {
@@ -178,7 +180,7 @@ export function readNumberedPullRequest(root: string, gh: Gh, reference: string,
 export function readBranchPullRequest(root: string, gh: Gh, env: Env): PullRequestRead | Unreadable | null {
   let pr: unknown;
   try {
-    pr = JSON.parse(gh(['pr', 'view', '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid']));
+    pr = JSON.parse(gh(['pr', 'view', '--json', 'title,body,labels,milestone,author,baseRefOid,headRefOid,headRefName']));
   } catch (err) {
     const said = String((err as { stderr?: string }).stderr || (err as Error).message);
     if (/no (?:open )?pull requests? found|no pull requests? for branch/i.test(said)) return null;
@@ -186,6 +188,56 @@ export function readBranchPullRequest(root: string, gh: Gh, env: Env): PullReque
     return { problem: finding('pr-read', `the pull request for this branch can't be read: ${why.unread}`, why.fix) };
   }
   return pullRequestFromGh(root, pr, 'this branch', 'run `git fetch origin`, then run it again', env);
+}
+
+/** One open pull request the sync may update: its number, its branch, and the base branch. */
+export interface OpenPull {
+  number: number;
+  branch: string;
+  base: string;
+  isFork: boolean;
+}
+
+/** The most open pull requests `pr sync` reads: enough for one team's open work. */
+export const OPEN_PULL_LIMIT = 100;
+
+/** The open pull requests, and whether gh stopped at the limit so the list may be cut. */
+export interface OpenPullList {
+  pulls: OpenPull[];
+  isCut: boolean;
+}
+
+/** Why gh could not list the open pull requests, in words a beginner can act on. */
+function openPullsFailed(err: unknown): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+  const reason = unread(err).unread;
+  return `gh can't list the open pull requests (${reason}): check the network and \`gh auth login\``;
+}
+
+/**
+ * The open pull requests of `repo`, read through gh (#432): the ones whose branches the
+ * sync can update. A pull request from a fork is kept and marked, since its branch is not
+ * on origin. A row without a number or branch is skipped. The list says when it stopped at
+ * the limit, so a caller can report that some pull requests were not read. Or why the list
+ * can't be read.
+ */
+export function readOpenPulls(gh: Gh, repo: string): OpenPullList | string {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', String(OPEN_PULL_LIMIT), '--json', 'number,headRefName,baseRefName,isCrossRepository']));
+  } catch (err) {
+    return openPullsFailed(err);
+  }
+  if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+  const pulls: OpenPull[] = [];
+  for (const row of rows) {
+    if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number) || row.number < 1) continue;
+    const branch = asText(row.headRefName);
+    const base = asText(row.baseRefName);
+    if (!branch || !base) continue;
+    pulls.push({ number: row.number, branch, base, isFork: row.isCrossRepository === true });
+  }
+  return { pulls, isCut: rows.length >= OPEN_PULL_LIMIT };
 }
 
 /**
@@ -268,7 +320,8 @@ export function readIssue(env: Env): { title: string; labels: string[] } | Unrea
 }
 
 // The findings of a check on the pull request page (#91), so a beginner need not open the
-// log. Two parts, and neither needs a token:
+// log. The scope stops at yokoten's own check results: this repeats no other review bot
+// and reviews no code a second time. Two parts, and neither needs a token:
 // - an annotation per finding: a line on stdout, `::error file=…,line=…,title=…::message`,
 //   shown on that line of the diff (docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands);
 // - Markdown appended to the file named by GITHUB_STEP_SUMMARY, shown on the run's page.
@@ -349,4 +402,133 @@ export function stepSummary(name: string, problems: Finding[], notes: Finding[])
     else lines.push(`The job log lists them.`, '');
   }
   return `${lines.join('\n')}\n`;
+}
+
+// One comment per pull request (#615). The `pr` workflow's comment job posts the
+// findings of `check --pr`, edits that same comment on every run, and deletes it when
+// the check passes. A local run never gets here: only GitHub Actions with --comment
+// calls this module.
+//
+// The comment is found by a hidden marker, so an edit follows the same comment however
+// many runs there are. Its text is the same summary the job page shows; a finding never
+// carries a private value or text from the pull request (core rule 11).
+//
+// The token is sent only over https (or to this machine, for tests). No message names
+// the token or the API's address.
+
+/** The hidden line that marks yokoten's comment. */
+export const CHECK_COMMENT_MARKER = '<!-- yokoten check --pr -->';
+
+/** What the comment job did, and why when it failed. Never holds a token. */
+export interface CommentOutcome {
+  action: 'created' | 'updated' | 'deleted' | 'none' | 'failed';
+  problem?: string;
+}
+
+/** How long one API call waits. */
+const API_TIMEOUT_MS = 15000;
+
+/** The comment's body for one check: the marker, the summary, and how it behaves. */
+export function checkComment(name: string, problems: Finding[], notes: Finding[]): string {
+  const summary = stepSummary(name, problems, notes).trimEnd();
+  return `${CHECK_COMMENT_MARKER}\n${summary}\n\nThis comment is edited on each run. It is removed when the check passes.\n`;
+}
+
+/** The API's address can carry a token: https, or plain http to this machine only. */
+function isSafeApi(api: string): boolean {
+  try {
+    const url = new URL(api);
+    return url.protocol === 'https:' || (url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+interface Place {
+  api: string;
+  token: string;
+  repo: string;
+  number: number;
+}
+
+const PLACE_FIX = 'run it in a pull_request job with `GITHUB_TOKEN: ${{ github.token }}` and `pull-requests: write`';
+
+/** The repo, number, token and API of this run, or why they can't be read. */
+function placeOf(env: Env): Place | string {
+  const token = env.GITHUB_TOKEN;
+  if (!token) return `GITHUB_TOKEN is not set, so the comment can't be posted; ${PLACE_FIX}`;
+  const event = readEvent(env);
+  if (event === null) return `there is no CI event file (GITHUB_EVENT_PATH), so the pull request is not named; ${PLACE_FIX}`;
+  if (isUnreadable(event)) return `the CI event file (GITHUB_EVENT_PATH) can't be read, so the pull request is not named; ${PLACE_FIX}`;
+  const pr = isObject(event.pull_request) ? event.pull_request : {};
+  const number = pr.number;
+  const repo = isObject(event.repository) ? asText(event.repository.full_name) : asText(env.GITHUB_REPOSITORY);
+  if (typeof number !== 'number' || !Number.isSafeInteger(number) || number < 1) return `the CI event names no pull request number; ${PLACE_FIX}`;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return `the CI event names no repository; ${PLACE_FIX}`;
+  const api = (env.YOKOTEN_GITHUB_API || env.GITHUB_API_URL || 'https://api.github.com').replace(/\/$/, '');
+  if (!isSafeApi(api)) return 'the GitHub API address is not https, so the token is not sent; set GITHUB_API_URL or YOKOTEN_GITHUB_API to an https address';
+  return { api, token, repo, number };
+}
+
+/** One API call with the token in the header. The answer is JSON, or null for an empty one. */
+async function call(place: Place, method: string, route: string, body?: unknown): Promise<{ status: number; answer: unknown }> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${place.token}`,
+    accept: 'application/vnd.github+json',
+    'x-github-api-version': '2022-11-28',
+    'user-agent': 'yokoten',
+  };
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const res = await fetch(`${place.api}${route}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(API_TIMEOUT_MS) });
+  let answer: unknown = null;
+  if (res.status !== 204) {
+    try {
+      answer = await res.json();
+    } catch {
+      answer = null;
+    }
+  }
+  return { status: res.status, answer };
+}
+
+/** The pull request's first comment that carries yokoten's marker, or null. */
+function markerComment(comments: unknown): { id: number; body: string } | null {
+  if (!Array.isArray(comments)) return null;
+  for (const comment of comments) {
+    if (!isObject(comment) || typeof comment.id !== 'number') continue;
+    const body = asText(comment.body);
+    if (body.startsWith(CHECK_COMMENT_MARKER)) return { id: comment.id, body };
+  }
+  return null;
+}
+
+/**
+ * Keep one comment on the pull request: create it, edit it, or delete it when `body` is
+ * null. A failed call returns `failed` and never throws, so a comment problem never
+ * changes the check's result.
+ */
+export async function upsertPullRequestComment(env: Env, body: string | null): Promise<CommentOutcome> {
+  const place = placeOf(env);
+  if (typeof place === 'string') return { action: 'failed', problem: place };
+  try {
+    const list = await call(place, 'GET', `/repos/${place.repo}/issues/${place.number}/comments?per_page=100`);
+    if (list.status !== 200) return { action: 'failed', problem: `GitHub answered ${list.status} when the comments were read` };
+    const found = markerComment(list.answer);
+    if (body === null) {
+      if (!found) return { action: 'none' };
+      const removed = await call(place, 'DELETE', `/repos/${place.repo}/issues/comments/${found.id}`);
+      if (removed.status !== 204 && removed.status !== 200) return { action: 'failed', problem: `GitHub answered ${removed.status} when the comment was removed` };
+      return { action: 'deleted' };
+    }
+    if (found) {
+      const edited = await call(place, 'PATCH', `/repos/${place.repo}/issues/comments/${found.id}`, { body });
+      if (edited.status !== 200) return { action: 'failed', problem: `GitHub answered ${edited.status} when the comment was edited` };
+      return { action: 'updated' };
+    }
+    const made = await call(place, 'POST', `/repos/${place.repo}/issues/${place.number}/comments`, { body });
+    if (made.status !== 201) return { action: 'failed', problem: `GitHub answered ${made.status} when the comment was made` };
+    return { action: 'created' };
+  } catch {
+    return { action: 'failed', problem: 'GitHub gave no answer when the comment was posted' };
+  }
 }

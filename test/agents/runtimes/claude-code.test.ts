@@ -21,7 +21,7 @@ import {
   ROOT,
 } from '../../repo/helpers.ts';
 import { addProjectSandbox, addProjectStopHook, formatRewrite, hasSessionInput, readSessionStart, readStop, sandboxProblem } from '../../../src/agents/runtimes/claude-code.ts';
-import { refuseOnFailure } from '../../../src/run/cli.ts';
+import { pluginHookCommand } from '../../../src/run/cli.ts';
 
 test('claude-code readStop: a Stop or SubagentStop event is checked; a worker subagent is a worker (#614)', () => {
   assert.deepEqual(readStop({ cwd: '/w', stop_hook_active: false }), { cwd: '/w', active: false, worker: false, subagent: false, sessionId: undefined });
@@ -53,23 +53,33 @@ test('claude-code addProjectStopHook: Stop and SubagentStop both run hook --stop
   assert.equal(addProjectStopHook(sandbox.repo, '.yokoten/bin/yokoten.mjs'), 'same');
 });
 
-test('plugin: the marketplace and the plugin have the documented fields', () => {
+test('plugin: the marketplace lists the three release channels and their refs (#632)', () => {
   const market = manifest('marketplace.json');
   const plugin = manifest('plugin.json');
   const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
   assert.match(market.name, idPattern);
   assert.equal(typeof market.owner?.name, 'string');
   assert.ok(market.owner.name.length > 0);
-  assert.equal(market.plugins.length, 1);
-  const [entry] = market.plugins;
-  assert.match(entry.name, idPattern);
-  // The entry name and the manifest name are the same, or an install by name fails.
-  assert.equal(entry.name, plugin.name);
-  assert.equal(entry.source, './', 'the repo root is the plugin');
+  // One repo serves all three channels; the entry name and the git ref pick the channel.
+  assert.deepEqual(market.plugins.map((entry: { name: string }) => entry.name), ['yokoten', 'yokoten-beta', 'yokoten-dev']);
+  const [stable, beta, dev] = market.plugins;
+  for (const entry of market.plugins) {
+    assert.match(entry.name, idPattern);
+    assert.equal(entry.source.source, 'github', 'Claude Code names a tag on a github source with source and ref');
+    assert.equal(entry.source.repo, 'yokoten-labs/yokoten');
+    assert.equal(typeof entry.description, 'string');
+    // No version in a marketplace entry: the git ref is the version users get.
+    assert.equal(entry.version, undefined);
+  }
+  // Stable follows a release tag, beta a pre-release tag (or the release when it is newer).
+  assert.match(stable.source.ref, /^v\d+\.\d+\.\d+$/, 'stable is a release tag');
+  assert.match(beta.source.ref, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, 'beta is a release or pre-release tag');
+  assert.equal(dev.source.ref, 'main', 'dev is the default branch');
+  // The stable entry and the manifest name are the same, so `yokoten@yokoten` finds it.
+  assert.equal(stable.name, plugin.name);
   assert.match(plugin.name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'kebab-case');
-  // No version in either file: users get each commit, and package.json keeps the one version.
+  // No version in the manifest either: package.json keeps the one version.
   assert.equal(plugin.version, undefined);
-  assert.equal(entry.version, undefined);
 });
 
 test('plugin: every path it names exists inside the plugin, and the kit is not copied', () => {
@@ -93,24 +103,29 @@ test('plugin: every path it names exists inside the plugin, and the kit is not c
   for (const s of scripts) assert.ok(existsSync(join(ROOT, s)), s);
 });
 
-test('plugin: its hooks are the ones install adds, and the guard it registers blocks', async () => {
+test('plugin: install keeps a direct path, and the guard the plugin registers blocks (#706)', async () => {
   const sandbox = makeSandbox();
   const hooks = manifest('plugin.json').hooks as Record<string, { matcher?: string; hooks: { type: string; command: string }[] }[]>;
-  // install's user-level hooks, with the plugin's root in place of the machine copy.
-  // install's entry, through the real binary.
+  // install's entry, through the real binary. Its hooks stay a direct path (#706).
   assert.equal(sandbox.run(['install']).status, 0);
-  const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks;
-  // Claude Code keeps the plugin's copy, so only install's commands check that the copy is there (#204).
-  const unguard = (command: string) => command.replace(/^\[ -f .*?; \}; (?=node |command -v node )/, '');
-  const shape = (h: typeof hooks, cli: string) => Object.fromEntries(Object.entries(h).map(([event, groups]) => [event, groups.map((g) => ({ matcher: g.matcher, commands: g.hooks.map((x) => `${x.type}: ${unguard(x.command).replace(cli, 'CLI')}`) }))]));
-  assert.deepEqual(shape(hooks, `"${PLUGIN_ROOT}/bin/yokoten.mjs"`), shape(installed, '"$HOME/.local/share/yokoten/bin/yokoten.mjs"'));
+  const installed = JSON.parse(readFileSync(join(sandbox.home, '.claude', 'settings.json'), 'utf8')).hooks as typeof hooks;
+  // The same events and hook types. The commands differ: the plugin resolves a cache copy on each call.
+  const shape = (table: typeof hooks) => Object.fromEntries(Object.entries(table).map(([event, groups]) => [event, groups.map((group) => ({ matcher: group.matcher, types: group.hooks.map((hook) => hook.type) }))]));
+  assert.deepEqual(shape(hooks), shape(installed));
+  const direct = '"$HOME/.local/share/yokoten/bin/yokoten.mjs"';
+  for (const event of ['SessionStart', 'PreToolUse'] as const) {
+    assert.ok(installed[event][0].hooks[0].command.includes(direct), event);
+    assert.notEqual(hooks[event][0].hooks[0].command, installed[event][0].hooks[0].command, event);
+  }
   // The command as Claude Code runs it: the root filled in, through the shell.
   const run = (command: string, input?: string, extra: Record<string, string> = {}) =>
     spawnSync(command.replaceAll(PLUGIN_ROOT, ROOT), { shell: true, cwd: sandbox.repo, env: { ...sandbox.env, CLAUDE_PLUGIN_ROOT: ROOT, ...extra }, input, encoding: 'utf8' });
   const guard = hooks.PreToolUse[0].hooks[0].command;
   const call = (command: string) => JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
   const r = run(guard, call('git push --force origin main'));
-  assert.equal(r.status, 2, r.stderr);
+  // The plugin's hook names Claude Code, so its refusal is a deny in JSON on exit 0 (#707).
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
   assert.match(r.stderr, /force/);
   assert.equal(run(guard, call('git status')).status, 0);
   // At session start, doctor tells the agent how to run yokoten from the plugin.
@@ -157,9 +172,20 @@ test('plugin: /yokoten:update previews from the plugin, then writes with --write
   assert.match(run(commands[0]).stdout, /up to date/);
 });
 
-// The plugin's guard is the text the builder makes, so the two cannot drift (#260).
-test('plugin: its tool-call guard is the command refuseOnFailure builds', () => {
-  assert.equal(manifest('plugin.json').hooks.PreToolUse[0].hooks[0].command, refuseOnFailure(`"${PLUGIN_ROOT}/bin/yokoten.mjs"`, 'hook --commands-only'));
+// The plugin's hooks are the text the builder makes, so the two cannot drift (#260, #706).
+test('plugin: its hooks are the commands pluginHookCommand builds (#706)', () => {
+  const hooks = manifest('plugin.json').hooks;
+  assert.equal(hooks.PreToolUse[0].hooks[0].command, pluginHookCommand(false));
+  assert.equal(hooks.SessionStart[0].hooks[0].command, pluginHookCommand(true));
+});
+
+// Claude Code prints the hook command in front of a refusal, so the line stays short (#706).
+test('plugin: the longest hook command is under 400 characters (#706)', () => {
+  const hooks = manifest('plugin.json').hooks;
+  const commands = [hooks.PreToolUse[0].hooks[0].command, hooks.SessionStart[0].hooks[0].command] as string[];
+  const longest = Math.max(...commands.map((command) => command.length));
+  assert.ok(longest < 400, `the longest hook command is ${longest} characters`);
+  for (const command of commands) assert.equal(command.includes('\n'), false, 'one line');
 });
 
 test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude/settings.json, is refused with the reason on stdout too (#30)', async () => {
@@ -175,7 +201,7 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
   });
   const result = await sandbox.call(['hook'], { input });
   assert.equal(result.status, 2, 'Claude Code reads exit 2 and stderr');
-  assert.match(result.stderr, /^yokoten: git push --tags pushes tags\./);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: .+\nDo instead: .+\nMore: https:\/\/\S+\n$/);
   // Copilot CLI shows the agent only "hook exited with code 2" unless stdout names the reason.
   assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
   const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });

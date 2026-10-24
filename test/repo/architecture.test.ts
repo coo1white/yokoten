@@ -207,13 +207,17 @@ test('action.yml: check --issue on issues; a notice, not check --pr, on pull_req
 
 // Node runs .ts as it is, so no other code file is needed; one appearing means someone
 // reached for a build-era habit (AGENTS.md, "This project").
-// One exception: bin/yokoten.mjs, the entry the agent hooks run. A .ts entry makes Node load
-// its type stripper before the compile cache is on, on every hook call (record 0013).
+// Two exceptions, both plain JavaScript the hooks start directly. bin/yokoten.mjs is the
+// entry the agent hooks run: a .ts entry makes Node load its type stripper before the
+// compile cache is on, on every hook call (record 0013). bin/launch.mjs is the Claude
+// Code plugin hook (#706): the hook command stays one short line, and the resolver
+// lives in that file, so a refusal does not print a long program.
 const ENTRY = 'bin/yokoten.mjs';
-const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
+const LAUNCH = 'bin/launch.mjs';
+const strayCode = (paths: string[]) => paths.filter((p) => p !== ENTRY && p !== LAUNCH && /^(bin|src|test)\//.test(p) && /\.(js|mjs|cjs|jsx|tsx|mts|cts)$/.test(p));
 
 test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)', () => {
-  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
+  assert.deepEqual(strayCode(['src/a.ts', 'src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs', 'kit/e.js', 'docs/f.md', ENTRY, LAUNCH]), ['src/b.mjs', 'test/c.tsx', 'bin/d.js', 'bin/main.mjs']);
   const files = execFileSync('git', ['ls-files', 'bin', 'src', 'test'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean);
   assert.ok(files.some((f) => f.endsWith('.ts')), 'no .ts found; the scan is broken');
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
@@ -284,6 +288,17 @@ test('child processes: a killed child names the test that ran it (#436)', () => 
   assert.equal(killedLine('a', 'git', 5, { signal: 'SIGTERM', error: tooMuch }), 'test "a": its child `git` was killed for printing more than maxBuffer\n');
   assert.equal(runChild('node', ['-e', "process.stdout.write('x'.repeat(2 ** 21))"]).stdout.length, 2 ** 21, 'more than Node\'s 1 MB default');
   assert.equal(runChild('node', ['-e', '']).status, 0);
+});
+
+// #813: runChild spread the caller's options into spawnSync, so `shell: true` let a test value
+// (a temp path, a file name) become shell code. A caller that asks for a shell gets none.
+test('child processes: runChild never starts a shell (#813)', () => {
+  // The type names every field, so TypeScript callers cannot ask. Plain JavaScript, or this cast,
+  // still can: the helper must ignore it at runtime, not only refuse it at compile time.
+  const asksForShell = { shell: true } as unknown as Parameters<typeof runChild>[2];
+  const result = runChild('/bin/echo', ['a; echo shell ran'], asksForShell);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'a; echo shell ran\n', 'an argument stays a value, even when a caller asks for a shell');
 });
 
 // #436: one gh call in 100 left a telemetry sender running, which wrote its device id into
@@ -426,7 +441,7 @@ const WORKFLOWS = ['.github/workflows/yokoten.yml', 'kit/project/.github/workflo
 const jobBlock = (text: string, name: string) => jobs(text).find((job) => job.name === name)?.block ?? '';
 const changesScript = (text: string) => (jobBlock(text, 'changes').match(/^ {8}run: \|\n((?: {10}.*\n|\n)+)/m)?.[1] ?? '').replace(/^ {10}/gm, '');
 type Needs = Record<string, { result: string; outputs?: Record<string, string> }>;
-const evaluate = (expression: string, needs: Needs, github: { event_name: string; event?: object } = { event_name: '' }): unknown => {
+const evaluate = (expression: string, needs: Needs, github: { event_name: string; event?: object; workflow?: string; ref?: string; run_id?: number } = { event_name: '' }): unknown => {
   const code = expression
     .replace(/contains\(needs\.\*\.result, '(\w+)'\)/g, "contains('$1')")
     .replace(/needs\.([\w-]+)\.outputs\.([\w-]+)/g, "(needs['$1'].outputs?.['$2'] ?? '')")
@@ -631,26 +646,44 @@ test('workflows: the required checks run on merge_group, with the same jobs as a
   }
 });
 
-// ---- A merge to main never cancels the run before it (#660) ----
+// ---- A run on main is kept while it waits, and never cancelled (#660, #798) ----
 //
 // Cancelling an older run is right for a pull request: only its newest commit can
-// merge. A push to main is not: every commit stays in history, so each one is tested on
-// its own, and a cancelled run leaves a ✗ on it. So only a pull request cancels.
+// merge. Every other event gets a group of its own. GitHub keeps one running and one
+// waiting run per group and cancels the waiting one when a newer run arrives, so a
+// shared group on main would cancel a run that never started. Each commit then stays in
+// history, is tested on its own, and never leaves a ✗ on it.
 const readCancel = (text: string) => inBraces(text, /^ {2}cancel-in-progress: (?:\$\{\{ )?(.+?)(?: \}\})?$/m);
+// The group line as a template literal: each `${{ ... }}` is one `${...}`, so the literal
+// text between two of them (the `-`) keeps its meaning in JavaScript.
+const readGroup = (text: string) =>
+  `\`${inBraces(text, /^ {2}group: (.+)$/m).replace(/\$\{\{ /g, '${').replace(/ \}\}/g, '}')}\``;
 
-test('workflows: only a pull request cancels the run still going for it (#660)', () => {
+test('workflows: a run on main is never cancelled, waiting or running (#660, #798)', () => {
   const cancels = (text: string, event_name: string) => evaluate(readCancel(text), {}, { event_name }) === true;
+  const groupFor = (text: string, github: { event_name: string; ref: string; run_id: number }) => String(evaluate(readGroup(text), {}, { workflow: 'yokoten', ...github }));
   for (const dir of ['.github/workflows', 'kit/project/.github/workflows']) {
     const text = readFileSync(join(ROOT, dir, 'yokoten.yml'), 'utf8');
     assert.equal(cancels(text, 'pull_request'), true, `${dir}/yokoten.yml: a new push to a pull request runs beside the old one`);
     assert.equal(cancels(text, 'push'), false, `${dir}/yokoten.yml: a push to main cancels the run before it`);
     assert.equal(cancels(text, 'merge_group'), false, `${dir}/yokoten.yml cancels a merge queue run`);
-    // The group is the workflow and the ref, so two pull requests never cancel each other.
-    assert.match(text, /^ {2}group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}$/m, `${dir}/yokoten.yml: the group is not the workflow and the ref`);
+    // Two runs on one pull request share a group, so a new push cancels the older run;
+    // two pull requests never share one.
+    const pullRequest = { event_name: 'pull_request', ref: 'refs/pull/798/merge' };
+    assert.equal(groupFor(text, { ...pullRequest, run_id: 1 }), groupFor(text, { ...pullRequest, run_id: 2 }), `${dir}/yokoten.yml: two runs on one pull request never share a group, so neither cancels the other`);
+    assert.notEqual(groupFor(text, { ...pullRequest, run_id: 1 }), groupFor(text, { event_name: 'pull_request', ref: 'refs/pull/799/merge', run_id: 1 }), `${dir}/yokoten.yml: two pull requests share a group, so they cancel each other`);
+    // Every other event gets a group per run: a newer run leaves both the running and the
+    // waiting run alone, so every commit on main is tested (#798).
+    for (const event_name of ['push', 'schedule', 'merge_group']) {
+      const run = { event_name, ref: 'refs/heads/main' };
+      assert.notEqual(groupFor(text, { ...run, run_id: 1 }), groupFor(text, { ...run, run_id: 2 }), `${dir}/yokoten.yml: two ${event_name} runs share a group, so the waiting one is cancelled`);
+    }
   }
-  // The positive control: the old `true` cancels on a push, and this read says so.
-  const old = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8').replace(/^ {2}cancel-in-progress: .+$/m, '  cancel-in-progress: true');
-  assert.equal(cancels(old, 'push'), true, 'the read misses the old setting');
+  // The positive control: the old group of the workflow and the ref shares one group for
+  // two pushes, and this read says so.
+  const old = readFileSync(join(ROOT, WORKFLOWS[0]), 'utf8').replace(/^ {2}group: .+$/m, '  group: ${{ github.workflow }}-${{ github.ref }}');
+  const run = { event_name: 'push', ref: 'refs/heads/main' };
+  assert.equal(groupFor(old, { ...run, run_id: 1 }), groupFor(old, { ...run, run_id: 2 }), 'the read misses the old group');
 });
 
 // ---- Names (#109, record 0006) ----
@@ -1173,9 +1206,9 @@ test('home: every test file loads the temp home first, and no child gets an env 
   assert.deepEqual(homeProblems(files), [], 'import test/repo/home.ts first; give a child process HOME, or spread an env that has it');
 });
 
-test('home: in src, only privacy.ts asks the system for the home folder (#356)', () => {
+test('home: in src, only privacy/home.ts asks the system for the home folder (#356)', () => {
   const found = filesUnder(SRC).filter((path) => /\bhomedir\(|userInfo\(\)\.homedir/.test(readFileSync(join(SRC, path), 'utf8')));
-  assert.deepEqual(found, ['rules/privacy.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
+  assert.deepEqual(found, ['rules/privacy/home.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
 });
 
 test('home: a test that reads the home folder gets the empty temp one, not the real one (#356)', () => {
@@ -1565,11 +1598,22 @@ test('suite time: a run over the budget fails and says why; one under passes; th
   const under = judgeSuite(tapReport(30_000));
   assert.equal(under.isOver, false);
   assert.equal(under.text, `The tests took 30.0 s, under the budget of ${SUITE_BUDGET} s.\n\nThe slowest tests:\n- 12.0 s: check: a slow one\n- 4.2 s: install: the copy runs\n- 0.0 s: names: a # in a name\n`);
-  const over = judgeSuite(tapReport(SUITE_BUDGET * 1000 + 1));
+  const over = judgeSuite(tapReport(SUITE_BUDGET * 1000 * 1.5 + 1));
   assert.equal(over.isOver, true);
-  assert.match(over.text, new RegExp(`^The tests took ${SUITE_BUDGET}\\.0 s, over the budget of ${SUITE_BUDGET} s by 0\\.0 s\\. Find what made them slow: .*use sandbox\\.call`));
-  assert.equal(judgeSuite(tapReport(95_000), 90).text.split('\n')[0], 'The tests took 95.0 s, over the budget of 90 s by 5.0 s. Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.', 'a budget of its own');
-  assert.throws(() => readReport('TAP version 13\nok 1 - cut off\n'), /no '# duration_ms' line/);
+  assert.match(over.text, new RegExp(`^The tests took ${SUITE_BUDGET * 1.5}\\.0 s, over the budget of ${SUITE_BUDGET} s by ${SUITE_BUDGET * 0.5}\\.0 s, past the room a busy runner needs \\(50%\\)\\. Find what made them slow: .*use sandbox\\.call`));
+  assert.equal(judgeSuite(tapReport(140_000), 90).text.split('\n')[0], 'The tests took 140.0 s, over the budget of 90 s by 50.0 s, past the room a busy runner needs (50%). Find what made them slow: most often a new child process per test (use sandbox.call), or a large stress input.', 'a budget of its own');
+  assert.throws(() => readReport('TAP version 13\nok 1 - cut off\n'), /no \'# duration_ms\' line/);
+});
+
+test('suite time: a busy runner gets 50% more time for the same work, and a child per test still fails the cap (#783)', () => {
+  // The same report, 20% slower: the runner was busy, not the tests.
+  const slowRunner = judgeSuite(tapReport(SUITE_BUDGET * 1000 * 1.2));
+  assert.equal(slowRunner.isOver, false);
+  assert.match(slowRunner.text, /inside the room a busy runner needs \(50%\)/);
+
+  // One child process per test is work, not load: the cap still catches it.
+  const childPerTest = Array.from({ length: 5 }, (_, index) => `test('case ${index}', () => {\n  sandbox.run(['doctor']);\n});`).join('\n');
+  assert.match(childProblems({ 'test/a.test.ts': childPerTest }, [], {})[0], /starts 5 child processes.*over its cap of 4/);
 });
 
 test('suite time: it reads the report node --test writes on this Node (#475)', () => {

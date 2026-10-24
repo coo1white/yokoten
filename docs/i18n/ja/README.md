@@ -33,13 +33,21 @@ yokoten は、今使っているエージェントの上に、三つのことを
 必要なのは [Node](https://nodejs.org/) 22.23.4 以降だけです（Node 24 は 24.22.1 以降、Node 26 は 26.12.1 以降）。他には何も要りません。
 
 ```sh
-npx yokoten install      # PC ごとに一度
 cd your-project
-npx yokoten init         # プロジェクトごとに一度
-npx yokoten doctor       # 今いる関所と、次の一手
+npx yokoten             # 一度だけ: yokoten を入れ、ルールを加え、次の一手を表示
 ```
 
-Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
+これで始められます。どのプロジェクトでも `npx yokoten` をもう一度実行すると、足りないものだけを行います。一つずつ進めたい場合はこうです。
+
+```sh
+npx yokoten install     # PC ごとに一度
+npx yokoten init        # プロジェクトごとに一度
+npx yokoten doctor      # 今いる関所と、次の一手
+```
+
+Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。[どのバージョンを入れるか](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)を選べます。Stable（既定）、Beta、Dev です。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
+
+`npx skills add yokoten-labs/yokoten` は、スキルだけをコピーします。`npx yokoten install` も実行してください。でないと、コマンドの番人も、セッションの doctor も入りません。
 
 ## 見えるもの
 
@@ -56,6 +64,8 @@ yokoten 自身も、このようなチームで作っています。リードの
 - **一つのボード。** `yokoten board` は、あなたのコンピューターでページを出します。各エージェントが何をしているか、各プルリクエストが「作成」「チェック」「あなた（ティア A のみ）」「マージ」のどこにいるか、あなたの対応が必要なことが分かります。スマートフォンでも使え、四つの言語で表示します。インターネットからは何も読み込みません。
 
 ボードとデスクは `main` にあります。次のリリースで npm に入ります。
+
+yokoten はプルリクエストの前に動き、[PR レビューボット](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) と並んで働きます。
 
 ## 対応しているもの
 
@@ -92,7 +102,7 @@ yokoten 自身も、このようなチームで作っています。リードの
 
 ## もっと知る
 
-- **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
+- **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
 - **[決定記録](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：なぜこう作ったのか。
 - **[変更履歴](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[コントリビュート](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[セキュリティ](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[サーバーの設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 

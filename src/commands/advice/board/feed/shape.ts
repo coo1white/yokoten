@@ -2,6 +2,8 @@
 // its log onto these kinds and these tool names. The page draws only this. A new
 // vendor is one reader, and nothing else.
 
+import type { Refusal } from '../../../../rules/message.ts';
+
 /** The tool names the board shows, whoever ran the tool. */
 export const TOOL_NAMES = ['Bash', 'Read', 'Edit', 'Write', 'Search', 'Web', 'Agent', 'Other'] as const;
 
@@ -17,6 +19,8 @@ export type ToolName = (typeof TOOL_NAMES)[number];
 export interface StreamItem {
   kind: 'say' | 'think' | 'tool' | 'result' | 'stop';
   text: string;
+  /** On a stop, the refusal by its parts when the text has them (#707). */
+  refusal?: Refusal;
   /** The common tool name, on a tool step. */
   tool?: ToolName;
   /** True when `text` is a command, shown in monospace. */
@@ -31,8 +35,8 @@ export interface StreamItem {
   time: string;
 }
 
-/** The runtimes whose session log the board reads. */
-export type StreamSource = 'claude' | 'muse' | 'grok' | 'codex';
+/** The runtimes whose session log the board reads, and `plain`, a runner's own text log. */
+export type StreamSource = 'claude' | 'muse' | 'grok' | 'codex' | 'plain';
 
 /** A vendor's own tool name as one common name. The first match wins. */
 export function commonTool(name: string): ToolName {

@@ -4,6 +4,7 @@ import '../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -20,7 +21,8 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { cutPoint } from '../../src/commands/check.ts';
+import { borrowedIssue, cutPoint, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
+import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
@@ -429,11 +431,26 @@ test('check --pr: a Dependabot pull request passes with notes; the same body fro
   assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title']);
 });
 
+/** The error code when this machine may not listen on 127.0.0.1 (a sandbox), else null. */
+async function listenRefusal(): Promise<string | null> {
+  const server = createServer();
+  return new Promise((done) => {
+    server.once('error', (error: NodeJS.ErrnoException) => done(error.code ?? 'a refusal'));
+    server.listen(0, '127.0.0.1', () => server.close(() => done(null)));
+  });
+}
+
 // #645: GitHub can start the runs of one pull request in any order, and each event file
 // keeps the labels of its own moment. When the workflow asks (YOKOTEN_PR_LIVE), every run
 // reads the pull request as it is now, so a late run for `opened` judges the labels added
 // since, and a rerun judges it again. A draft is judged in full, like any pull request.
-test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async () => {
+test('check --pr with YOKOTEN_PR_LIVE: judges the pull request as it is now, a draft in full; a failed read fails (#645)', async (t) => {
+  // A sandbox can refuse the call itself (`listen EPERM`) before any assertion runs; say so
+  // in one line and skip (#827). CI allows a local server, so the test runs there.
+  if ((await listenRefusal()) !== null) {
+    t.skip('this machine does not allow a local server; skipped');
+    return;
+  }
   const sandbox = makeSandbox();
   sandbox.write('README.md', 'Short.\n');
   sandbox.git('add', '.');
@@ -652,13 +669,13 @@ test('check --pr <number>: reads the pull request through gh and checks it with 
   const bin = join(sandbox.home, 'bin');
   mkdirSync(bin);
   sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
-  const answer = (title: string, headSha: string, author: object = { login: 'octo' }, prBody = body) =>
+  const answer = (title: string, headSha: string, author: object = { login: 'octo' }, prBody = body, headRefName = 'no-such-branch') =>
     writeFileSync(
       join(bin, 'gh'),
       `#!/usr/bin/env node
 if (process.argv[4] === '13') { console.error('GraphQL: Could not resolve to a PullRequest with the number of 13. (repository.pullRequest)'); process.exit(1); }
 if (process.argv.slice(2, 4).join(' ') !== 'pr view' || process.argv[4] !== '12') process.exit(1);
-console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author, baseRefOid: base, headRefOid: headSha }))});
+console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author, baseRefOid: base, headRefOid: headSha, headRefName }))});
 `,
       { mode: 0o755 },
     );
@@ -702,6 +719,21 @@ console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ na
   result = await sandbox.call(['check', '--pr', 'main', '--json'], { extra });
   assert.equal(result.status, 1);
   assert.match(JSON.parse(result.stdout).findings[0].what, /"main" is not a pull request number/);
+
+  // #748: the `Made with` model must be the one the worker's status file filed. A worker
+  // checkout on the pull request's branch holds it; another model there is a note only.
+  const worker = join(sandbox.home, 'wt-12');
+  sandbox.git('worktree', 'add', '-q', '-b', 'pr-12', worker, head);
+  writeFileSync(join(worker, '.yokoten-agent.json'), JSON.stringify({ name: 'w1', vendor: 'codex', model: 'deepseek-flash', role: 'engineer', state: 'done' }));
+  const withWorker = (model: string) => body.replace('Made with worker (opus)', `Made with worker (${model})`);
+  const notesOf = async (prBody: string) => {
+    answer('feat: a', head, { login: 'octo' }, prBody, 'pr-12');
+    return JSON.parse((await sandbox.call(['check', '--pr', '12', '--json'], { extra })).stdout).notes as { id: string; what: string }[];
+  };
+  const wrong = await notesOf(withWorker('gpt-6.1-sol'));
+  assert.ok(wrong.some((f) => f.id === 'pr-made-with' && /status file of pr-12 says the worker ran deepseek-flash/.test(f.what)), JSON.stringify(wrong));
+  const right = await notesOf(withWorker('deepseek-flash'));
+  assert.ok(!right.some((f) => f.id === 'pr-made-with'), JSON.stringify(right));
 });
 
 // ---- yokoten marks: add, remove, off, on (#434) ----
@@ -893,7 +925,6 @@ console.log(${JSON.stringify(JSON.stringify({ title, body, labels: [{ name: 'fea
   assert.equal(clean.status, 0);
   assert.match(clean.stdout, /no open pull request for this branch/);
 });
-
 // #615: the CI comment job makes one comment, edits it on the next run, and removes it
 // when the check passes. A local run never posts.
 test('check --pr --comment: one comment per pull request, edited, then removed (#615)', async () => {
@@ -957,4 +988,155 @@ test('check --pr --comment: one comment per pull request, edited, then removed (
   } finally {
     server.close();
   }
+});
+
+// #756: `yokoten provenance <ref>` reads a squashed commit's message and the host's
+// Approve, in plain text and with --json.
+test('provenance: a commit names its writer, reviewers, approver, tier and issue (#756)', async () => {
+  const sandbox = makeSandbox();
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const gh = (body: string, code = 0) => {
+    writeFileSync(join(bin, 'gh'), `#!/bin/sh\n${body}\nexit ${code}\n`);
+    chmodSync(join(bin, 'gh'), 0o755);
+  };
+  const path = { PATH: `${bin}:${process.env.PATH}` };
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const message = join(sandbox.home, 'message');
+  writeFileSync(message, ['feat(guard): a pipe is refused (#12)', '', 'tier: B', '', 'Closes #12', 'Refs #13', '', '## Why', 'x', '', '🤖 Made with worker Grok (grok-4.7), reviewed by Claude Code (claude-opus-5-5), lead Claude Code (claude-opus-5-5)', '', 'Co-authored-by: someone <someone@example.com>', ''].join('\n'));
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-F', message);
+  gh('printf "coo1white\\t2026-10-20T00:00:00Z\\n"');
+  let result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^[0-9a-f]{7} feat\(guard\): a pipe is refused \(#12\)\n  writer: Grok \(grok-4\.7\)\n  reviewers: Claude Code \(claude-opus-5-5\)\n  approver: coo1white\n  tier: B\n  issue: #12, #13$/m);
+  const json = JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout);
+  assert.equal(json.length, 1);
+  assert.equal(json[0].approver, 'coo1white');
+  assert.deepEqual(json[0].writers, [{ vendor: 'Grok', model: 'grok-4.7' }]);
+  assert.deepEqual(json[0].reviewers, [{ vendor: 'Claude Code', model: 'claude-opus-5-5' }]);
+  assert.equal(json[0].tier, 'B');
+  assert.deepEqual(json[0].issues, [12, 13]);
+  // gh that cannot answer leaves the approver unknown, not an error.
+  gh('exit 1');
+  result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /  approver: unknown$/m);
+  assert.equal(JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout)[0].approver, null);
+});
+
+test('provenance: a range shows each commit, and a bad ref is one finding (#756)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', 'Short.\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const commit = (title: string, line: string) => {
+    const file = join(sandbox.home, 'message');
+    writeFileSync(file, `${title}\n\ntier: C\n\nCloses #7\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\n${line}\n`);
+    sandbox.write(`docs/${title.split(':')[0]}.md`, `${title}\n`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-q', '-F', file);
+  };
+  commit('docs: first (#7)', 'Made with lead Claude Code (claude-opus-5-5)');
+  commit('docs: second (#8)', 'Made with worker Grok (grok-4.7)');
+  const result = await sandbox.call(['provenance', 'HEAD~2..HEAD']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal((result.stdout.match(/^  writer: /gm) ?? []).length, 2, result.stdout);
+  assert.match(result.stdout, /docs: first \(#7\)/);
+  assert.match(result.stdout, /docs: second \(#8\)/);
+  const bad = await sandbox.call(['provenance', 'not-a-ref']);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /^yokoten provenance: git can't answer, so the check stopped without looking: `git log .+` gave no answer: /);
+  const usage = await sandbox.call(['provenance']);
+  assert.equal(usage.status, 1);
+  assert.match(usage.stderr, /give a commit or a range/);
+});
+
+// ---- Borrowed code (record 0024): the issue, and the command ----
+
+test('borrowed: the issue names the source and the security fix, and a second run sees it open', () => {
+  const source = 'https://github.com/example/upstream/blob/main/src/thing.ts';
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  const older = 'fedcba9876543210fedcba9876543210fedcba98';
+  const path = 'src/borrowed/thing.ts';
+  const host: BorrowedHost = {
+    commits: () => [
+      { sha: older, message: 'fix: CVE-2026-1 remote code execution' },
+      { sha, message: 'taken' },
+    ],
+  };
+  const change = watchBorrowed([{ path, source, commit: sha, license: 'MIT' }], host).changed[0];
+  const issue = borrowedIssue(change);
+  assert.match(issue.title, /^check: /);
+  assert.ok(issue.title.length <= 60, issue.title);
+  assert.ok(issue.body.includes(source));
+  assert.ok(issue.body.includes(path));
+  assert.ok(issue.body.includes('security'));
+  assert.deepEqual(issue.labels, ['bug', 'hotfix', 'tier B']);
+  assert.deepEqual(borrowedIssue({ ...change, isSecurity: false }).labels, ['bug', 'tier B']);
+  assert.equal(borrowedIssue({ ...change, isSecurity: false }).title, 'check: review borrowed code upstream');
+  const calls: string[][] = [];
+  const gh = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify([{ number: 7, body: `Upstream changed \`${source}\`` }]);
+  };
+  assert.equal(hasOpenIssue(gh, source), true);
+  assert.equal(hasOpenIssue(gh, 'https://github.com/example/elsewhere/blob/main/x.ts'), false);
+  assert.match(calls[0].join(' '), /issue list --state open/);
+  // An answer that is not a list is a gap: stop, never open a duplicate (#676).
+  for (const answer of ['not json', '{}', 'null']) {
+    assert.throws(() => hasOpenIssue(() => answer, source), /did not give an issue list/, answer);
+  }
+});
+
+test('borrowed --dry-run: a repo with no wheel writes nothing and says so', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['borrowed', '--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /borrowed: 0 file\(s\), 0 source\(s\) changed, 0 unreadable/);
+});
+// #432: `pr sync` lists the open pull requests first. With none, it needs no bot and no
+// network, and says so in one line. The merge itself is tested in test/run/check.test.ts.
+test('pr sync: no open pull requests is one line, and no bot is needed (#432)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  writeFileSync(join(bin, 'gh'), '#!/usr/bin/env node\nprocess.stdout.write("[]")\n');
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^yokoten pr sync: no open pull requests$/m);
+});
+
+test('pr sync: a missing action is a usage error, not a silent no-op (#432)', async () => {
+  const sandbox = makeSandbox();
+  const result = await sandbox.call(['pr']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /give the action: `yokoten pr sync`/);
+});
+
+test('pr sync: every git call runs as UTC, so the merge commit does too (#809)', () => {
+  assert.equal(prSyncEnv({ ...process.env, TZ: 'America/New_York' }).TZ, 'UTC');
+});
+
+test('pr sync: each report line names the real base branch (#809)', () => {
+  assert.equal(pullLine({ number: 1, branch: 'work', base: 'release', state: 'merged' }), '#1 work: merged release');
+  assert.equal(pullLine({ number: 2, branch: 'fix', base: 'main', state: 'resolved', hunks: 2 }), '#2 fix: resolved 2 hunks then merged main');
+  assert.equal(pullLine({ number: 3, branch: 'docs', base: 'next', state: 'up-to-date' }), '#3 docs: up to date with next');
+});
+
+test('pr sync: a list that stops at the limit says so (#809)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('remote', 'add', 'origin', 'https://github.com/me/repo.git');
+  const bin = join(sandbox.home, 'bin');
+  mkdirSync(bin);
+  const rows = Array.from({ length: 100 }, (_, at) => ({ number: at + 1, headRefName: `work-${at + 1}`, baseRefName: 'main' }));
+  writeFileSync(join(bin, 'gh'), `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(rows))})\n`);
+  chmodSync(join(bin, 'gh'), 0o755);
+  const result = await sandbox.call(['pr', 'sync'], { extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.match(result.stdout, /the open pull request list stops at 100/);
 });

@@ -47,7 +47,7 @@ export function visibleLength(text: string): number {
  * `documentation`. A label that is the type name itself always counts.
  */
 const TYPE_LABEL_ALIASES: Record<string, string[]> = {
-  fix: ['bug', 'hotfix', 'incident'],
+  fix: ['bug', 'hotfix', 'incident', 'security'],
   feat: ['feature', 'enhancement'],
   docs: ['documentation'],
 };
@@ -230,7 +230,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   const body = pr.body ?? '';
   const tier = bodyTier(body);
   if (!tier) {
-    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: files CODEOWNERS owns, or a change that makes a rule looser; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);
@@ -587,6 +587,116 @@ export interface ApprovalRead {
   sameDiff: boolean;
 }
 
+/** An area lead's approval, written on the last line of its review body (#699). */
+export interface LeadApproval {
+  /** The lead's name, as it writes it. */
+  lead: string;
+  /** The lead's vendor, for example `xAI`. */
+  vendor: string;
+  /** The lead's model, for example `Grok 4.7`. */
+  model: string;
+}
+
+/** One approval and what came after its commit. */
+export interface ApprovalCommit {
+  commit: string;
+  after: number;
+  sameDiff: boolean;
+}
+
+/** What the merge check reads about a tier A pull request (#699). */
+export interface MergeApprovalRead extends ApprovalRead {
+  /** The lead whose approval may count, or null. */
+  lead?: (LeadApproval & ApprovalCommit) | null;
+  /** The vendor families that wrote the change, from the Made-with line. */
+  writers?: string[];
+  /** True when a hard-line file or a looser change keeps the owner's approval. */
+  ownerOnly?: boolean;
+  /** Why the owner must approve, when `ownerOnly`. */
+  ownerWhy?: string | null;
+}
+
+// `Approved by area lead Grok (xAI, Grok 4.7)`. The last line of a review body says
+// which lead, its vendor and its model. The review itself records the commit.
+const LEAD_APPROVAL = /^(?:🤖 )?approved by area lead ([^()]+?) \(([^(),]+), ([^()]+)\)$/i;
+
+/** The area lead approval on the last line of a review body, or null. */
+export function parseLeadApproval(body: string): LeadApproval | null {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const match = LEAD_APPROVAL.exec(lines.at(-1) ?? '');
+  if (!match) return null;
+  const lead = match[1].trim();
+  const vendor = match[2].trim();
+  const model = match[3].trim();
+  return lead && vendor && model ? { lead, vendor, model } : null;
+}
+
+// A vendor family, so `Claude Code (Opus 5.5)` and `Anthropic (Sonnet 5.5)` are one
+// line. The model is checked first, because a worker's first word is often its tool.
+const VENDOR_FAMILIES: [RegExp, string][] = [
+  [/deepseek/i, 'deepseek'],
+  [/anthropic|claude|opus|sonnet|haiku/i, 'anthropic'],
+  [/xai|x\.ai|grok/i, 'xai'],
+  [/meta|muse|llama/i, 'meta'],
+  [/openai|codex|gpt|(^|[^a-z])o\d/i, 'openai'],
+  [/google|gemini/i, 'google'],
+];
+
+/** The vendor family of an agent, or its vendor name in lowercase when none is known. */
+export function vendorFamily(agent: MadeWithAgent): string {
+  const text = `${agent.vendor} ${agent.model}`;
+  for (const [pattern, family] of VENDOR_FAMILIES) if (pattern.test(text)) return family;
+  return agent.vendor.trim().toLowerCase();
+}
+
+/**
+ * The vendors that wrote a pull request, from the Made-with line: its workers, or its
+ * lead and unnamed others when no worker is named. Empty when the line names nobody.
+ */
+export function writerVendors(body: string): string[] {
+  const roles = parseMadeWith(body)?.roles;
+  if (!roles) return [];
+  const writers = roles.writers.length ? roles.writers : [...roles.leads, ...roles.others];
+  return [...new Set(writers.map(vendorFamily))];
+}
+
+/** Whether an approval is on `head`, or only base merges came after it with the same own diff. */
+const isFreshApproval = (head: string, approval: ApprovalCommit): boolean =>
+  approval.commit.toLowerCase() === head.toLowerCase() || (approval.after === 0 && approval.sameDiff);
+
+/** The finding for a stale area lead approval. */
+function staleLeadApproval(lead: ApprovalCommit): Finding {
+  const short = lead.commit.slice(0, 7);
+  const fix = "ask another vendor's area lead to approve the head commit, then merge";
+  if (lead.after > 0) {
+    return finding('pr-approve', `the area lead's approval is on ${short}; ${lead.after} commit${lead.after === 1 ? '' : 's'} with changes came after it; ask the area lead to approve again`, fix);
+  }
+  return finding('pr-approve', `the area lead's approval is on ${short}; the pull request's own diff is not the same as at the approval; ask the area lead to approve again`, fix);
+}
+
+/**
+ * The finding that stops a tier A pull request from merging (#699), or null when it may
+ * merge. Without a lead approval this is the owner's gate (#612), unchanged. With one,
+ * the owner's fresh Approve still wins, a hard-line file or a looser change still needs
+ * the owner, and a lead of the writer's own vendor never counts.
+ */
+export function checkMergeApproval(read: MergeApprovalRead): Finding | null {
+  if (read.tier !== 'A') return null;
+  // No lead approval, or a change only the owner may approve: keep the owner's gate.
+  if (!read.lead || read.ownerOnly) return checkApprovalFreshness(read);
+  const owner: ApprovalCommit | null = read.approved === null ? null : { commit: read.approved, after: read.after, sameDiff: read.sameDiff };
+  if (owner && isFreshApproval(read.head, owner)) return null;
+  const family = vendorFamily({ vendor: read.lead.vendor, model: read.lead.model });
+  if (!read.writers?.length) {
+    return finding('pr-approve', "the Made-with line names no writer, so the area lead's vendor can't be checked", "name the writers on the Made-with line, then ask another vendor's area lead to approve");
+  }
+  if (read.writers.includes(family)) {
+    return finding('pr-approve', `the area lead is from ${read.lead.vendor}, the same vendor as the writer; another vendor's lead must approve`, "ask an area lead of another vendor to approve the head commit");
+  }
+  if (isFreshApproval(read.head, read.lead)) return null;
+  return staleLeadApproval(read.lead);
+}
+
 /**
  * The finding that stops a tier A pull request from merging, or null when it may
  * merge: not tier A, or the Approve is on the head, or only base merges came after it
@@ -774,15 +884,17 @@ export function readCommandTitle(command: string[]): CommandTitle | UnreadableTi
   return title === null ? null : { kind, title, labels };
 }
 
-/** The title (the last one, as in gh) and every label that one gh command's options set. */
-function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[] } {
+/** The title (the last one, as in gh), every label one gh command's options add, and those it removes. */
+function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[]; removes: string[] } {
   let title: string | null = null;
   const labels: string[] = [];
+  const removes: string[] = [];
   for (const [name, value] of options) {
     if (TITLE_OPTIONS.has(name)) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
+    else if (name === '--remove-label') removes.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
-  return { title, labels };
+  return { title, labels, removes };
 }
 
 /**
@@ -853,9 +965,10 @@ export function readCommandBody(command: string[]): CommandBody | null {
 // ---- The labels a gh command sets (#422) ----
 //
 // `yokoten bot` adds the type and tier labels `check --pr` asks for when `gh pr create`
-// leaves them out, from the title's type and the body's `tier:` line.
+// leaves them out, from the title's type and the body's `tier:` line. An edit keeps them
+// right too: a new title adds its type, a new body moves the tier label.
 
-/** The labels `gh pr create` leaves out that `check --pr` asks for, and the problems with those it gives. */
+/** The labels a `gh pr create` or `gh pr edit` leaves out that `check --pr` asks for, and the problems with those it gives. */
 export interface CommandLabels {
   /** Each missing label, as the label names that would do, best first. */
   missing: string[][];
@@ -863,10 +976,19 @@ export interface CommandLabels {
   problems: Finding[];
   /** The `--repo` value, or null when the command names none. */
   repo: string | null;
+  /** The labels the command already removes with `--remove-label`. */
+  removes: string[];
+  /** Whether the command gives a tier label itself, with `--label` or `--add-label`. */
+  hasTierLabel: boolean;
+  /**
+   * For `gh pr edit`, the pull request it names and the tier its new body sets; null for
+   * a create. A null selector means the pull request of the current branch.
+   */
+  edit: { selector: string | null; tier: string | null } | null;
 }
 
 // Aliases that say more than the type, so the bot never picks them for a person.
-const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident']);
+const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident', 'security']);
 
 /** The label names that say a title's type, best first: the shown one (`bug` for fix), the type, then its aliases. */
 function typeLabelNames(type: string): string[] {
@@ -878,15 +1000,19 @@ function typeLabelNames(type: string): string[] {
 /**
  * The type and tier labels that `gh pr create` (or `new`) leaves out, from the title's
  * type and the body's tier line, and the problems with the tier labels it gives. A label
- * it gives is kept. Null for any other command, or a run-together word it can't read.
+ * it gives is kept. An edit adds only what its new title or body asks for, and reports the
+ * tier it sets so the caller can remove the old label. Null for any other command, an edit
+ * that sets neither a title nor a body, or a run-together word it can't read.
  */
 export function readCommandLabels(command: string[], body: string | null): CommandLabels | null {
   const [file, ...rest] = command;
   if (!file || botProgram(file) !== 'gh') return null;
   const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
-  const [kind, verb] = words.map((index) => rest[index]);
-  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
-  const { title, labels } = readTitleAndLabels(options);
+  const [kind, verb, selector] = words.map((index) => rest[index]);
+  const isEdit = verb === 'edit';
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new' && !isEdit) || unreadable !== null) return null;
+  if (isEdit && body === null && !options.some(([name]) => TITLE_OPTIONS.has(name))) return null;
+  const { title, labels, removes } = readTitleAndLabels(options);
   const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
   const missing: string[][] = [];
   const type = title === null ? undefined : TITLE.exec(title.trim())?.[1];
@@ -894,7 +1020,7 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const tier = bodyTier(body ?? '');
   const hasTier = labels.some((label) => readLabelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
-  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
+  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo, removes, hasTierLabel: hasTier, edit: isEdit ? { selector: selector ?? null, tier } : null };
 }
 
 /** The labels a `gh issue create` command gives, and its `--repo` value. */
@@ -1032,6 +1158,147 @@ export function madeWithFindings(body: string): Finding[] {
   }
   if (parsed?.roles) return [];
   return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`; reviewers may follow the worker: `, reviewed by <agent> (<model>) and <agent> (<model>)`')];
+}
+
+/** One desk that worked on a branch, as its status file wrote it (#756). */
+export interface DeskAgent {
+  /** The runtime the desk ran, such as `deepseek-harness`. */
+  vendor: string;
+  /** The model the desk ran, or ''. */
+  model: string;
+  /** The status file's role: `lead`, `engineer`, `reviewer`, `verifier` or `helper`. */
+  role: string;
+}
+
+/** Vendors that mean the same company, as made-with lines and status files spell them differently. */
+const VENDOR_GROUPS: readonly (readonly string[])[] = [
+  ['claude', 'anthropic'],
+  ['grok', 'xai'],
+  ['deepseek'],
+  ['gemini', 'google'],
+  ['codex', 'openai'],
+  ['muse', 'meta'],
+  ['copilot', 'github'],
+];
+
+/** A vendor name as one lower-case word, so `Claude Code` and `claude-code` meet. */
+const vendorKey = (vendor: string): string => vendor.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** The group a vendor belongs to, or its own key when no group takes it. */
+function vendorGroup(vendor: string): string {
+  const key = vendorKey(vendor);
+  return VENDOR_GROUPS.find((words) => words.some((word) => key.includes(word)))?.[0] ?? key;
+}
+
+/** Whether two vendor names name the same vendor, whatever their spelling (#756). */
+export function isSameVendor(left: string, right: string): boolean {
+  const [one, two] = [vendorKey(left), vendorKey(right)];
+  if (!one || !two) return false;
+  return one === two || one.includes(two) || two.includes(one) || vendorGroup(left) === vendorGroup(right);
+}
+
+/** Whether a Made-with pair names the vendor and model a desk ran. An empty desk field says nothing. */
+function isSameDeskAgent(pair: MadeWithAgent, desk: DeskAgent): boolean {
+  const model = (one: string): string => one.trim().toLowerCase();
+  if (desk.model && model(pair.model) !== model(desk.model)) return false;
+  if (desk.vendor && !isSameVendor(pair.vendor, desk.vendor)) return false;
+  return Boolean(desk.vendor || desk.model);
+}
+
+/** The pairs a desk's role is written as on the line, or [] when that role is not named. */
+function pairsForRole(roles: MadeWithRoles, role: string): MadeWithAgent[] {
+  if (role === 'reviewer') return roles.reviewers;
+  if (role === 'lead') return roles.leads;
+  return roles.writers.length ? roles.writers : roles.others;
+}
+
+/**
+ * The provenance findings of a Made-with line (#756): a reviewer from the writer's own
+ * vendor (record 0021), and a desk that worked on the branch but is not named with its
+ * vendor and model. A desk the line does not name at all is skipped, so an older line
+ * that names no lead is not a finding. No desks (a run without status files) means no
+ * desk finding.
+ */
+export function provenanceFindings(roles: MadeWithRoles | null, desks: DeskAgent[]): Finding[] {
+  if (!roles) return [];
+  const problems: Finding[] = [];
+  // A solo lead writes the change; with a worker named, the worker is the writer.
+  const writers = roles.writers.length ? roles.writers : roles.others.length ? roles.others : roles.leads;
+  for (const reviewer of roles.reviewers) {
+    const writer = writers.find((pair) => isSameVendor(pair.vendor, reviewer.vendor));
+    if (!writer) continue;
+    problems.push(finding('pr-provenance', `body: the reviewer ${reviewer.vendor} (${reviewer.model}) has the writer's vendor, ${writer.vendor} (${writer.model})`, 'ask a reviewer from another vendor to review it (record 0021)'));
+  }
+  for (const desk of desks) {
+    const named = pairsForRole(roles, desk.role);
+    if (!named.length || named.some((pair) => isSameDeskAgent(pair, desk))) continue;
+    const role = desk.role === 'reviewer' ? 'reviewed by ' : desk.role === 'lead' ? 'lead ' : 'worker ';
+    problems.push(finding('pr-provenance', `body: a desk on this branch ran ${desk.vendor} (${desk.model}), but the Made-with line does not name it`, `name it as \`${role}${desk.vendor} (${desk.model})\``));
+  }
+  return problems;
+}
+
+/** One commit's provenance, from the message a squash merge leaves on `main` (#756). */
+export interface ProvenanceRecord {
+  /** The commit id. */
+  commit: string;
+  /** The commit's first line. */
+  subject: string;
+  /** The agents the line names as writers, or the old role-less pairs when it names none. */
+  writers: MadeWithAgent[];
+  /** The agents the line names as reviewers. */
+  reviewers: MadeWithAgent[];
+  /** The tier on the body's first line, or null. */
+  tier: string | null;
+  /** The issues the body links, in order, each once. */
+  issues: number[];
+}
+
+/**
+ * The roles a commit message names. A squash merge leaves `Co-authored-by` trailers
+ * after the Made-with line, so this finds the last line that starts the line, not
+ * only the message's last line (#756).
+ */
+function commitRoles(message: string): MadeWithRoles | null {
+  const lines = message.split(/\r?\n/);
+  for (let at = lines.length - 1; at >= 0; at--) {
+    if (/^(?:🤖 )?Made with /.test(lines[at].trim())) return parseMadeWith(lines[at])?.roles ?? null;
+  }
+  return parseMadeWith(message)?.roles ?? null;
+}
+
+/** Reads one commit's message as provenance: the Made-with roles, the tier and the issues. */
+export function parseProvenance(commit: string, message: string): ProvenanceRecord {
+  const roles = commitRoles(message);
+  return {
+    commit,
+    subject: message.split(/\r?\n/, 1)[0] ?? '',
+    writers: roles ? (roles.writers.length ? roles.writers : roles.others.length ? roles.others : roles.leads) : [],
+    reviewers: roles?.reviewers ?? [],
+    // The subject is the first line; the tier is the first line of the body after it.
+    tier: prTier(message.slice(message.indexOf('\n') + 1), []),
+    issues: readLinkedIssues(message),
+  };
+}
+
+/**
+ * A note when the worker part of a `Made with` line names no model that the worker's own
+ * checkout filed (#748): a harness's prompt can lead a worker to sign as the harness's
+ * vendor. Only the worker role counts, in its full form or its short form `worker (<model>)`;
+ * a lead or a reviewer that names the status model does not hide a wrong worker model. `statusModel` is the model in the status file at the
+ * worker's branch, and '' when there is none: then there is nothing to compare, and no note.
+ */
+export function madeWithModelNote(body: string, statusModel: string, branch: string): Finding | null {
+  const model = statusModel.replace(/\s+/g, ' ').trim();
+  const roles = parseMadeWith(body)?.roles;
+  if (!model || !roles) return null;
+  // A short `worker (<model>)` has no vendor role, so the parser files it as `worker` in others.
+  const workers = [...roles.writers, ...roles.others.filter((agent) => agent.vendor.toLowerCase() === 'worker')];
+  if (!workers.length) return null;
+  const named = workers.map((agent) => agent.model.replace(/\s+/g, ' ').trim());
+  if (named.some((one) => one.toLowerCase() === model.toLowerCase())) return null;
+  const models = [...new Set(named)].join(' and ');
+  return finding('pr-made-with', `body: the \`Made with\` line names worker ${models}, but the status file of ${branch} says the worker ran ${model}`, `name the model the worker ran (${model}), as its status file says`);
 }
 
 /**

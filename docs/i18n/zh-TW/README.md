@@ -31,13 +31,19 @@ yokoten 在你已經在用的 agent 上面，再補三件事。hook、沙箱、�
 只需要 [Node](https://nodejs.org/) 22.23.4 以上（Node 24 要 24.22.1 以上，Node 26 要 26.12.1 以上）。其他不用裝。
 
 ```sh
-npx yokoten install      # 每台電腦一次
 cd your-project
+npx yokoten             # 一次就好：裝好 yokoten，加上規則，顯示下一步
+```
+
+這就是全部的開始。在任何專案裡再執行一次 `npx yokoten`，它只做還缺的部分。想一步一步來的話：
+
+```sh
+npx yokoten install      # 每台電腦一次
 npx yokoten init         # 每個專案一次
 npx yokoten doctor       # 你在第幾關，下一步做什麼
 ```
 
-用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
+用 Claude Code 的話，可以改用外掛。先執行 `/plugin marketplace add yokoten-labs/yokoten`，再執行 `/plugin install yokoten@yokoten`。外掛和 `npx` 擇一，不要兩個都裝。選擇[要安裝哪個版本](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)：Stable（預設）、Beta 或 Dev。只用在 CI 的話，[把它當成 GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交檢查只接受 UTC 的時間。請在 shell 設定檔加一次 `export TZ=UTC`。
 
 ## 你會看到的畫面
 
@@ -54,6 +60,8 @@ yokoten 就是由這樣的團隊做出來的。lead 負責規劃和審查，各�
 - **一塊看板。** `yokoten board` 在你的電腦上開一個頁面。你可以看見每個 agent 在做什麼、每個 PR 走到「開發、檢查、你（只有 tier A）、合併」的哪一步，以及有什麼在等你。手機上看得到。有四種語言。頁面不會從網路上載入任何東西。
 
 看板和工位已經在 `main` 上。下一次發布，會一起進到 npm。
+
+yokoten 在 PR 之前工作，也和 [PR 審查機器人](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests) 一起工作。
 
 ## 支援範圍
 
