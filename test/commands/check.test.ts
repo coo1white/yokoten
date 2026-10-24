@@ -670,13 +670,13 @@ test('check --pr <number>: reads the pull request through gh and checks it with 
   const bin = join(sandbox.home, 'bin');
   mkdirSync(bin);
   sandbox.git('remote', 'add', 'origin', 'https://github.com/octo/app.git');
-  const answer = (title: string, headSha: string, author: object = { login: 'octo' }, prBody = body) =>
+  const answer = (title: string, headSha: string, author: object = { login: 'octo' }, prBody = body, headRefName = 'no-such-branch') =>
     writeFileSync(
       join(bin, 'gh'),
       `#!/usr/bin/env node
 if (process.argv[4] === '13') { console.error('GraphQL: Could not resolve to a PullRequest with the number of 13. (repository.pullRequest)'); process.exit(1); }
 if (process.argv.slice(2, 4).join(' ') !== 'pr view' || process.argv[4] !== '12') process.exit(1);
-console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author, baseRefOid: base, headRefOid: headSha }))});
+console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, author, baseRefOid: base, headRefOid: headSha, headRefName }))});
 `,
       { mode: 0o755 },
     );
@@ -720,6 +720,21 @@ console.log(${JSON.stringify(JSON.stringify({ title, body: prBody, labels: [{ na
   result = await sandbox.call(['check', '--pr', 'main', '--json'], { extra });
   assert.equal(result.status, 1);
   assert.match(JSON.parse(result.stdout).findings[0].what, /"main" is not a pull request number/);
+
+  // #748: the `Made with` model must be the one the worker's status file filed. A worker
+  // checkout on the pull request's branch holds it; another model there is a note only.
+  const worker = join(sandbox.home, 'wt-12');
+  sandbox.git('worktree', 'add', '-q', '-b', 'pr-12', worker, head);
+  writeFileSync(join(worker, '.yokoten-agent.json'), JSON.stringify({ name: 'w1', vendor: 'codex', model: 'deepseek-flash', role: 'engineer', state: 'done' }));
+  const withWorker = (model: string) => body.replace('Made with worker (opus)', `Made with worker (${model})`);
+  const notesOf = async (prBody: string) => {
+    answer('feat: a', head, { login: 'octo' }, prBody, 'pr-12');
+    return JSON.parse((await sandbox.call(['check', '--pr', '12', '--json'], { extra })).stdout).notes as { id: string; what: string }[];
+  };
+  const wrong = await notesOf(withWorker('gpt-6.1-sol'));
+  assert.ok(wrong.some((f) => f.id === 'pr-made-with' && /status file of pr-12 says the worker ran deepseek-flash/.test(f.what)), JSON.stringify(wrong));
+  const right = await notesOf(withWorker('deepseek-flash'));
+  assert.ok(!right.some((f) => f.id === 'pr-made-with'), JSON.stringify(right));
 });
 
 // ---- yokoten marks: add, remove, off, on (#434) ----
