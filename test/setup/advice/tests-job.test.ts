@@ -5,11 +5,11 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
+import { makeSandbox, makeTempDir, ROOT } from '../../repo/helpers.ts';
 import { init } from '../../../src/setup/init.ts';
 import { ROAD } from '../../../src/setup/road.ts';
 import { TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
-import { addTestsNeeds, nodeTestsFix, nodeVersion, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
+import { addTestsNeeds, findOldTestsPins, KIT_NODE, nodeTestsFix, nodeVersion, refreshTestsPins, TESTS_JOBS, testsJobText, testsPinNote, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
 
 const WORKFLOW = '.github/workflows/yokoten.yml';
 
@@ -205,6 +205,104 @@ test('tests-job: Go wins over a Node test script, and a placeholder or a workspa
   assert.deepEqual(writeTestsJob(placeholder, { ask: () => 'y' }), []);
   const workspaces = project({ 'package.json': JSON.stringify({ workspaces: ['packages/*'] }), [WORKFLOW]: workflowFile() });
   assert.deepEqual(writeTestsJob(workspaces, { ask: () => 'y' }), []);
+});
+
+const nodePin = (commit: string, version: string) => `actions/setup-node@${commit} # ${version}`;
+const OLD_SHA = 'a'.repeat(40);
+
+/** The sample workflow with a `tests` job that has a setup-node step, as init would have left it. */
+const testsJobFile = (setup: string) =>
+  workflowFile().replace(
+    '  # The one required check.\n  ci:',
+    ['  tests:', '    runs-on: ubuntu-latest', '    steps:', `      - uses: ${CHECKOUT}`, '      - uses: ' + setup, '        with:', '          node-version: "^22.23.4"', '      - run: npm test', '  # The one required check.', '  ci:'].join('\n'),
+  );
+
+test('tests-job: a pin the kit has moved on from is found, and only inside the tests job (#584)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  const old = nodePin(OLD_SHA, 'v6.1.0');
+  // The positive control: an old pin of an action the kit ships is caught.
+  assert.deepEqual(findOldTestsPins(testsJobFile(old)), [{ action: 'actions/setup-node', commit: OLD_SHA, version: 'v6.1.0', kitCommit: node.commit, kitVersion: 'v7.1.0' }]);
+  // The control: the kit's own pin, an action the kit does not ship, and a workflow with no tests job pass.
+  assert.deepEqual(findOldTestsPins(testsJobFile(nodePin(node.commit, node.version))), []);
+  assert.deepEqual(findOldTestsPins(testsJobFile(`docker/login-action@${OLD_SHA} # v3.0.0`)), []);
+  assert.deepEqual(findOldTestsPins(workflowFile()), []);
+  // A pin outside the tests job is another job's business.
+  assert.deepEqual(findOldTestsPins(workflowFile().replace(`- uses: ${CHECKOUT}`, `- uses: ${old}`)), []);
+  // Refreshing rewrites that line and touches nothing else.
+  const fresh = refreshTestsPins(testsJobFile(old));
+  assert.ok(fresh);
+  assert.ok(fresh.includes(`- uses: ${nodePin(node.commit, node.version)}`));
+  assert.equal(fresh.replace(nodePin(node.commit, node.version), old), testsJobFile(old), 'the rest is byte for byte');
+  assert.equal(refreshTestsPins(testsJobFile(nodePin(node.commit, node.version))), null, 'nothing old: null');
+  // A file with Windows line ends keeps them.
+  assert.equal(refreshTestsPins(testsJobFile(old).replaceAll('\n', '\r\n')), testsJobFile(nodePin(node.commit, node.version)).replaceAll('\n', '\r\n'));
+});
+
+test('tests-job: a pin newer than the kit\'s is kept, and so is one with no version (#584)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  // A project ahead of the kit: a newer commit and a newer version comment.
+  const newer = nodePin('f'.repeat(40), 'v9.9.9');
+  assert.deepEqual(findOldTestsPins(testsJobFile(newer)), [], 'a newer pin is not old');
+  assert.equal(refreshTestsPins(testsJobFile(newer)), null, 'a newer pin is not rewritten');
+  // A pin without a version comment: the commit alone cannot say which one is newer.
+  assert.deepEqual(findOldTestsPins(testsJobFile(nodePin('f'.repeat(40), ''))), [], 'no comment: left alone');
+  // A version comment the kit also names, on another commit, is the project's own choice.
+  assert.deepEqual(findOldTestsPins(testsJobFile(nodePin('f'.repeat(40), node.version))), [], 'the same version is not old');
+  // The positive control still holds beside it: a pin naming an older version is old.
+  assert.deepEqual(findOldTestsPins(testsJobFile(nodePin(OLD_SHA, 'v6.1.0'))).map((pin) => pin.version), ['v6.1.0']);
+  // doctor says nothing about a pin that is ahead of the kit.
+  assert.equal(testsPinNote(project({ [WORKFLOW]: testsJobFile(newer) })), null);
+});
+
+test('tests-job: init offers the kit pin, and a no or no terminal leaves the old one (#584)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  const old = nodePin(OLD_SHA, 'v6.1.0');
+  const files = { 'package.json': JSON.stringify({ scripts: { test: 'node --test' } }) };
+  const silent = project({ ...files, [WORKFLOW]: testsJobFile(old) });
+  assert.match(writeTestsJob(silent).join('\n'), /would refresh the tests job pins in .* \(actions\/setup-node v6\.1\.0 to v7\.1\.0\).*on a terminal to be asked/);
+  assert.equal(readFileSync(join(silent, WORKFLOW), 'utf8'), testsJobFile(old), 'no terminal writes nothing');
+  const declined = project({ ...files, [WORKFLOW]: testsJobFile(old) });
+  assert.match(writeTestsJob(declined, { ask: () => 'n' }).join('\n'), /left the tests job pins .* unchanged/);
+  assert.equal(readFileSync(join(declined, WORKFLOW), 'utf8'), testsJobFile(old), 'a no writes nothing');
+  const asked: string[] = [];
+  const dir = project({ ...files, [WORKFLOW]: testsJobFile(old) });
+  const lines = writeTestsJob(dir, { ask: (question) => (asked.push(question), 'y') });
+  assert.deepEqual(asked, [`Refresh the tests job pins in ${WORKFLOW} (actions/setup-node v6.1.0 to v7.1.0)? [Y/n]`]);
+  assert.match(lines.join('\n'), /refreshed the tests job pins in .*to undo, put the old pins back/);
+  const after = readFileSync(join(dir, WORKFLOW), 'utf8');
+  assert.ok(after.includes(`- uses: ${nodePin(node.commit, node.version)}`));
+  assert.equal(after.includes('v6.1.0'), false, 'the old pin is gone');
+  assert.deepEqual(unpinnedUses(after), [], 'the refreshed line stays pinned');
+  assert.deepEqual(findOldTestsPins(after), [], 'nothing left to refresh');
+});
+
+test('tests-job: doctor names an old pin, and says nothing when it is the kit\'s (#584)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  const old = project({ [WORKFLOW]: testsJobFile(nodePin(OLD_SHA, 'v6.1.0')) });
+  const note = testsPinNote(old);
+  assert.ok(note);
+  assert.equal(note.id, 'kit-workflows');
+  assert.equal(note.what, `the tests job in ${WORKFLOW} pins actions/setup-node v6.1.0; the kit pins actions/setup-node v7.1.0`);
+  assert.match(note.fix, /run `yokoten init` to refresh the pin/);
+  const current = project({ [WORKFLOW]: testsJobFile(nodePin(node.commit, node.version)) });
+  assert.equal(testsPinNote(current), null);
+  assert.equal(testsPinNote(project({})), null, 'no workflow: nothing to say');
+});
+
+test('tests-job: the Node pin the kit ships is the one action.yml sets up (#584)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  const action = readFileSync(join(ROOT, 'action.yml'), 'utf8');
+  const pinned = /- uses: (actions\/setup-node@[0-9a-f]{40}) # (\S+)/.exec(action);
+  assert.ok(pinned, 'action.yml: no pinned setup-node step found; the scan is broken');
+  assert.equal(pinned[1], `${node.action}@${node.commit}`, 'the tests job pins the commit action.yml pins');
+  assert.equal(pinned[2], node.version, 'the version comment matches too');
+  assert.equal(node.inputValue, KIT_NODE);
+  assert.ok(action.includes(`default: '${KIT_NODE}'`), 'action.yml sets up the version the tests job asks for');
 });
 
 // A marker for each language the table detects and TESTS_JOBS does not write.
