@@ -1579,7 +1579,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
-      (rules ? (env.YOKOTEN_ROLE === 'worker' ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : safeguard ? checkSafeguardWrites(words, { env, rules, folder: postCwd }) : null) : null);
+      (rules ? checkFileWrites(words, { env, rules, folder: postCwd, safeguard }) : null);
     if (reason) return reason;
     later ??=
       checkGitConfigEnvironment(words) ??
@@ -4587,6 +4587,21 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
     if (path !== null) return finding('lead-only', `this commit changes ${path}, which is lead-only (yokoten.json "leadOnly")`, `unstage it with \`git restore --staged ${path}\`, then ${LEAD_ONLY_FIX}`);
   }
   return null;
+}
+
+/**
+ * The file rules for one command's words: a worker hears its own rule first (#555), and
+ * where that rule has nothing to say the safeguard still holds (#815). A repo without
+ * yokoten.json has no lead-only list, so before this the worker's rule answered `null`
+ * and a shell write to CI or a hook passed. The edit tool already refused it
+ * (`checkSafeguardEdit`), so the shell and the edit tool now agree.
+ */
+function checkFileWrites(
+  words: string[],
+  { env, rules, folder, safeguard = false }: { env: Env; rules: FileRules; folder: string | null; safeguard?: boolean },
+): Finding | null {
+  const worker = env.YOKOTEN_ROLE === 'worker' ? checkLeadOnlyWrites(words, { env, rules, folder }) : null;
+  return worker ?? (safeguard ? checkSafeguardWrites(words, { env, rules, folder }) : null);
 }
 
 /**

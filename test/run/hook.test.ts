@@ -89,13 +89,18 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
 test('hook: the safeguard refuses CI and hook writes with no yokoten.json (#815)', async () => {
   const sandbox = makeSandbox();
   const tool = (tool_input: object) => JSON.stringify({ cwd: sandbox.repo, tool_input });
-  const call = (tool_input: object) => sandbox.call(['hook', '--commands-only'], { input: tool(tool_input) });
+  const call = (tool_input: object, extra?: Record<string, string>) => sandbox.call(['hook', '--commands-only'], { input: tool(tool_input), extra });
   for (const command of ['echo x >> .github/workflows/test.yml', 'rm -rf .github', 'cp x .husky/pre-commit']) {
     const result = await call({ command });
     assert.equal(result.status, 2, command);
     assert.match(result.stderr, /CI files and git hooks are the owner's/, command);
     assert.doesNotMatch(result.stderr, /PreToolUse:Bash hook error/, command);
   }
+  // A worker has no project rules here either: its own rule has nothing to say, and the
+  // safeguard holds for it too (#815).
+  const worker = await call({ command: 'echo x >> .github/workflows/test.yml' }, { YOKOTEN_ROLE: 'worker' });
+  assert.equal(worker.status, 2);
+  assert.match(worker.stderr, /CI files and git hooks are the owner's/);
   assert.equal((await call({ command: 'cat .github/workflows/test.yml' })).status, 0, 'a read passes');
   assert.equal((await call({ command: 'echo x > src/a.ts' })).status, 0, 'another write passes');
   // An edit, through the user-level hook: no yokoten.json, so the safeguard answers.

@@ -1000,6 +1000,35 @@ test('safeguard: CI and hooks are refused in a repo with no yokoten.json, for th
   assert.equal(checkCommand('echo x >> .github/workflows/test.yml', { env: {}, cwd: sandbox.repo }), null);
 });
 
+// #815: a worker's own rule answered first and, in a repo with no yokoten.json, had
+// nothing to say: the safeguard never ran, and a worker's shell write to CI passed while
+// the edit tool refused it. The shell and the edit tool now agree.
+test('safeguard: a worker is refused a shell write to CI or a hook too (#815)', () => {
+  const sandbox = makeSandbox();
+  const worker: Env = { YOKOTEN_ROLE: 'worker' };
+  const check = (command: string) => checkCommand(command, { env: worker, cwd: sandbox.repo, safeguard: true });
+  for (const command of [
+    'echo x >> .github/workflows/test.yml',
+    'rm -rf .github/workflows',
+    'echo x > .github/actions/local/action.yml',
+    'echo x > .githooks/pre-commit',
+  ]) {
+    const found = check(command);
+    assert.equal(found?.id, 'safeguard', command);
+    assert.match(found?.what ?? '', /CI files and git hooks are the owner's/, command);
+  }
+  // The edit tool refuses the same files, so the two paths agree.
+  assert.equal(checkSafeguardEdit(join(sandbox.repo, '.github/workflows/test.yml'))?.id, 'safeguard');
+  assert.equal(check('cat .github/workflows/test.yml'), null, 'a read passes');
+  assert.equal(check('echo x > src/a.ts'), null, 'another write passes');
+  // A project with yokoten.json decides for itself: its lead-only list answers instead,
+  // and the default list keeps CI for the lead (#815).
+  sandbox.write('yokoten.json', '{}\n');
+  assert.equal(check('echo x >> .github/workflows/test.yml')?.id, 'lead-only');
+  // Without the flag, direct callers keep their own rules, as for the lead.
+  assert.equal(checkCommand('echo x >> .github/workflows/test.yml', { env: worker, cwd: sandbox.repo })?.id, 'lead-only');
+});
+
 test('safeguard edit: an edit to CI or a hook is refused in a repo with no yokoten.json (#815)', () => {
   const sandbox = makeSandbox();
   for (const path of ['.github/workflows/test.yml', '.github/workflows/new.yml', '.githooks/pre-commit', '.husky/pre-commit', '.github/workflows']) {
