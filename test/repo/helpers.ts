@@ -199,7 +199,9 @@ export function runChild(command: string, args: string[], options: Pick<SpawnSyn
 // No gh telemetry (#436): see test/repo/home.ts.
 // NODE_OPTIONS carries the real-home preload that home.ts builds. A sandbox child gets a fresh env,
 // so without this it would read the real private-marks file when its own file is missing (#739).
-const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
+// The temp folder may sit inside a repo (a desk, a container image): GIT_CEILING_DIRECTORIES
+// stops the search for a repo at the sandbox's own folder, so a test outside a repo stays outside one.
+const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CEILING_DIRECTORIES: dirname(home), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
 
 // A host sets markers in the environment it runs its hooks in. A test that starts
 // `yokoten hook` must not inherit them from whoever runs the tests (#800): the hook answers
