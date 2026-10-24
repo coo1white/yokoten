@@ -44,13 +44,15 @@ export async function invoke(words: string[], { env, cwd, stdin = '', isTTY }: {
   const [command, ...args] = words;
   const stdout = collect();
   const stderr = collect();
+  const input = Readable.from([stdin], { objectMode: false });
   if (isTTY !== undefined) {
     (stdout.stream as typeof stdout.stream & { isTTY?: boolean }).isTTY = isTTY;
     (stderr.stream as typeof stderr.stream & { isTTY?: boolean }).isTTY = isTTY;
+    (input as typeof input & { isTTY?: boolean }).isTTY = isTTY;
   }
   const exitCode = process.exitCode;
   const folder = process.cwd();
-  const code = await main({ command, args, env: { ...env }, cwd, stdout: stdout.stream, stderr: stderr.stream, stdin: { fd: null, text: stdin, stream: Readable.from([stdin], { objectMode: false }) }, script: SCRIPT });
+  const code = await main({ command, args, env: { ...env }, cwd, stdout: stdout.stream, stderr: stderr.stream, stdin: { fd: null, text: stdin, stream: input }, script: SCRIPT });
   assert.equal(process.exitCode, exitCode, `yokoten ${words.join(' ')} set process.exitCode; it must only return its code`);
   assert.equal(process.cwd(), folder, `yokoten ${words.join(' ')} changed the process's folder`);
   return { code, stdout: stdout.text(), stderr: stderr.text() };

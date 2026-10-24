@@ -98,6 +98,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/advice/doctor.ts').then((m) => m.runAdopt(invocation));
     case 'init':
       return import('../src/commands/setup.ts').then((m) => m.runInit(invocation));
+    case 'trust':
+      return import('../src/commands/setup.ts').then((m) => m.runTrust(invocation));
     case 'update':
       return import('../src/commands/setup.ts').then((m) => m.runUpdate(invocation));
     case 'bot':
