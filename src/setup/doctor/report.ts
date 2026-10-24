@@ -367,7 +367,8 @@ function doctorRun(
   // compare with, and a move of one is the usual next step, so neither says anything.
   if (where.stage !== null && lastStage !== null && where.stage - lastStage >= 2) {
     for (let stage = lastStage + 1; stage < where.stage; stage++) {
-      const marks = where.steps.filter((walked) => walked.step.stage === stage).map((walked) => walked.mark);
+      // Advice does not hold the road, so it does not count against a passed stage (#479).
+      const marks = where.steps.filter((walked) => walked.step.stage === stage && !walked.step.isAdvice).map((walked) => walked.mark);
       const isDone = marks.every((mark) => mark === 'done');
       lines.push(`stage ${stage} ${isDone ? 'is done too' : 'counts as done'}: ${stageJumpText(marks)}`);
     }

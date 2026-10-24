@@ -50,6 +50,11 @@ export type ServerRead = ServerSettings | Unread | undefined;
 
 export interface Step {
   stage: number;
+  /**
+   * Advice, not a gate: the step shows what is worth doing, but it never holds the road
+   * back (#479). A project that gains a new piece of advice keeps the stage it reached.
+   */
+  isAdvice?: true;
   /** The step's name, and its key in yokoten.json "notNow". */
   key: string;
   /** `config` is yokoten.json when the caller has read it already; a step that needs it reads it otherwise. */
@@ -810,6 +815,10 @@ export const ROAD: Step[] = [
   {
     stage: 2,
     key: 'test-budget',
+    // Advice: a project with tests already in place should not be held at stage 2 because
+    // its CI does not keep the test time yet (#479). Doctor shows the step as the next one
+    // while the user is on stage 2; it never moves a project backwards.
+    isAdvice: true,
     // The budget lives in CI: the tests job writes a TAP report and `yokoten speed` judges
     // it (#479). Without CI, the step is "not now" with the rest of them.
     check: catchLongLines((root) => runs('speed').test(ciText(root))),
@@ -1138,23 +1147,30 @@ export interface Walked {
 }
 
 /**
- * Where a project is on the road. `next` is the first step that is neither done nor "not
- * now", and `stage` is its stage; both are null when nothing is left. A step that needs CI
- * (`withoutCi`) is "not now" too when "notNow" names `ci` (#377). A step yokoten
- * can't check here never holds the stage: a session can do nothing about it.
+ * Where a project is on the road. `stage` is the stage of the first step that holds the road
+ * back: not done, not "not now", and not advice. `next` is the first such step left in that
+ * stage, advice included, so advice is offered while its stage is the one to work on; both
+ * are null when nothing that holds the road is left. A step that needs CI (`withoutCi`) is
+ * "not now" too when `notNow` names `ci` (#377). A step yokoten can't check here never holds
+ * the stage: a session can do nothing about it.
  */
 export function walk(found: { step: Step; found: Found }[], notNow: Record<string, string>): { stage: number | null; next: Step | null; steps: Walked[] } {
-  let next: Step | null = null;
+  const isSkipped = (step: Step) => Object.hasOwn(notNow, step.key) || (step.withoutCi && Object.hasOwn(notNow, 'ci'));
+  const isLeft = ({ step, found: f }: { step: Step; found: Found }) => f !== true && f !== null && !isSkipped(step);
+  // Advice does not hold the stage: a new piece of advice must not move a project backwards.
+  const holds = found.find((entry) => !entry.step.isAdvice && isLeft(entry));
+  const stage = holds ? holds.step.stage : null;
+  // The next step is the first one left in the stage the user is on; advice in that stage
+  // comes before the roadmap step that holds it, in table order.
+  const next = stage === null ? null : found.find((entry) => entry.step.stage === stage && isLeft(entry))?.step ?? null;
   const steps = found.map(({ step, found: f }): Walked => {
     if (f === true) return { step, mark: 'done' };
-    if (Object.hasOwn(notNow, step.key) || (step.withoutCi && Object.hasOwn(notNow, 'ci'))) return { step, mark: 'not now' };
+    if (isSkipped(step)) return { step, mark: 'not now' };
     if (f === null) return { step, mark: "can't check" };
-    if (next) return { step, mark: 'to do' };
-    next = step;
-    return { step, mark: 'next' };
+    if (step === next) return { step, mark: 'next' };
+    return { step, mark: 'to do' };
   });
-  const first = next as Step | null;
-  return { stage: first ? first.stage : null, next: first, steps };
+  return { stage, next, steps };
 }
 
 /**
