@@ -67,6 +67,25 @@ function splitConfig(args: string[], isOldForm: boolean): { options: string[]; p
   return { options, plain };
 }
 
+/**
+ * Whether this `git config` call turns push.followTags on: it makes every later plain push
+ * carry the tags, so a tag is published without a push that names it (#829). A read, a
+ * removal and a false value change nothing.
+ */
+export function setsFollowTags(args: string[]): boolean {
+  const first = splitConfig(args, true);
+  const subcommand = CONFIG_SUBCOMMANDS.has(first.plain[0] ?? '') ? first.plain[0] : undefined;
+  const rest = subcommand ? splitConfig(first.plain.slice(1), false) : { options: [], plain: first.plain };
+  const options = [...first.options, ...rest.options];
+  const actions = subcommand ? [subcommand] : options;
+  if ((rest.plain[0] ?? '').toLowerCase() !== 'push.followtags') return false;
+  if (actions.some((a) => CONFIG_REMOVES.has(a))) return false;
+  const value = rest.plain[1];
+  const isSet = subcommand !== undefined || actions.some((a) => a === '--add' || a === '--replace-all');
+  if (actions.some((a) => CONFIG_READS.has(a)) || (value === undefined && !isSet)) return false;
+  return value === undefined || !/^(false|no|off|0)$/i.test(value);
+}
+
 // `git config`: a read passes; a change to core.hooksPath passes only to .githooks, or as
 // checkHooksFolder allows. `directory` is the folder git works in, or null when unknown.
 export function checkConfig(args: string[], directory: string | null, env: Env): Finding | null {

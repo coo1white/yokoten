@@ -376,9 +376,17 @@ export interface HostCommands {
   hostTokenReveal(words: string[]): Finding | undefined;
   /** A gh command that turns a workflow off (#668). */
   hostWorkflowOff(words: string[]): Finding | undefined;
+  /**
+   * Whether the words after the host's API command can publish a release, a tag or a public
+   * repo (#829). Optional, so a stub that only lists its own commands still fits.
+   */
+  isPublishingApiCall?(args: string[]): boolean;
 }
 
-/** The host adapter's checks, once it has loaded. Until then a `gh` command is refused, never let through. */
+/**
+ * The host adapter's checks, once it has loaded. The run rules refuse a `gh` command until
+ * then; the host-neutral checks read a missing adapter as "no route known".
+ */
 let hostCommands: HostCommands | undefined;
 
 /** The host adapter registers its command checks, once: a second registration is refused. */
@@ -409,5 +417,13 @@ export function hostTokenReveal(words: string[]): Finding | null {
 
 export function hostWorkflowOff(words: string[]): Finding | null {
   return hostCommands?.hostWorkflowOff(words) ?? null;
+}
+
+// The hook loads src/host/gh-commands.ts before it reads a call, so the route names live
+// in the host layer and this file stays host-neutral (record 0004). A caller that does not
+// load the adapter gets no route decision, so a publishing API call can pass: load the
+// adapter first (the hook does, see src/run/hook.ts).
+export function hostApiPublishes(args: string[]): boolean {
+  return hostCommands?.isPublishingApiCall?.(args) ?? false;
 }
 

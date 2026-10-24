@@ -287,6 +287,15 @@ export function findDeletedRef(args: string[]): string | null {
   return refs.length > 0 ? refs[0] : null;
 }
 
+/** The tag a `git update-ref <ref>` writes, or null when it deletes none (#829). */
+export function tagToUpdate(args: string[]): string | null {
+  if (args.includes('-d') || args.includes('--delete')) return null;
+  const refs = plainArgs(args, ['-m', '--message']);
+  const ref = refs[0];
+  if (ref === undefined || !ref.startsWith('refs/tags/')) return null;
+  return ref.slice('refs/tags/'.length);
+}
+
 /**
  * The default branch: what refs/remotes/origin/HEAD names, else main and master.
  */

@@ -1,19 +1,19 @@
-import { resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { finding, type Finding } from '../../message.ts';
 import { checkCommandTitle } from '../../pr.ts';
 import { checkPost, ghIndex, withoutReadPipe, type CommandFiles, type GhCommand } from '../../privacy.ts';
 import { type Config, type Env } from '../../config.ts';
 import { markFinding, checkWorkerWrites } from '../worker/mark.ts';
 import { checkWorkerBox } from '../worker/box.ts';
-import { checkWorkerPointers, hostRunRemoval, hostAlias, hostHiddenCommand, hostWorkflowOff } from '../worker/config-command.ts';
+import { checkWorkerPointers, hostRunRemoval, hostAlias, hostHiddenCommand, hostWorkflowOff, hostApiPublishes } from '../worker/config-command.ts';
 import { sends, checkWorkerSends, checkWorkerUnmark } from '../worker/sends.ts';
 import { base, isGit, GIT_VALUE_OPTIONS, unquotedRedirects, withoutShellRedirects, LAUNCHERS, programName, splitString, MAX_PROGRAMS, findPrograms, findProgramPlaces } from '../bash/read/words.ts';
-import { aliasFinding, checkShellAlias, checkRemoveGit, deleteBranchFinding, findDeletedBranches, findPushedDeletes, findDeletedRef, isDefaultBranch, checkPipeToShell, checkGitLoseWork, isGitLongOption } from './lose-work.ts';
+import { aliasFinding, checkShellAlias, checkRemoveGit, deleteBranchFinding, findDeletedBranches, findPushedDeletes, findDeletedRef, tagToUpdate, isDefaultBranch, checkPipeToShell, checkGitLoseWork, isGitLongOption } from './lose-work.ts';
 import { checkHooksSettings, checkHooksEnvironment, checkGitConfigEnvironment, checkGitSetupWrites, checkHomeSetting, checkWorkerRealHome } from '../hooks/settings.ts';
-import { CONFIG_READS, checkConfig, gitAnswers } from '../hooks/read.ts';
+import { CONFIG_READS, checkConfig, gitAnswers, readGit, setsFollowTags } from '../hooks/read.ts';
 import { heredocPost, plainBreak, writeRisk, withoutStdin, tildesPlain, isUnsure, writesNoFile, writesFile, QUOTED_TILDE, folderAfter } from '../bash/body.ts';
 import { checkLeadOnlyWrites } from '../lead-only/writes.ts';
-import { fileRules, type FileRules } from '../lead-only/targets.ts';
+import { fileRules, plainArgs, type FileRules } from '../lead-only/targets.ts';
 import { withBudget } from '../bash/read/run.ts';
 import { commandWords } from '../bash/read/read.ts';
 import { checkTokenUse } from './token.ts';
@@ -95,9 +95,11 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // the mark rule above already answers, with its own id.
       checkRemoveGit(words, postCwd, env) ??
       checkHooksEnvironment(words) ??
-      checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
+      // The text a post carries comes before the publish rule: a publish that would leak a
+      // private mark names the mark, which is the part the agent must fix (#391, #829).
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
+      checkPublish(words, env) ??
       (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
     if (reason) return reason;
     later ??=
@@ -200,6 +202,81 @@ function changesFolder(name: 'env' | 'sudo', words: string[], index: number): tr
 }
 
 
+/**
+ * The folder whose git reads the same tags and settings as `--git-dir <path>` (#865). A
+ * path that names a work tree's `.git` folder reads through its parent; any other path is
+ * the git folder itself, which git also opens from inside. A path the guard cannot place
+ * leaves the repo unknown, as before.
+ */
+function folderForGitDirectory(value: string | undefined, from: string | null): string | null {
+  if (value === undefined || value === '') return null;
+  // A relative folder needs a folder to start from: `GIT_DIR=` sets the working folder to
+  // null, and then only a path that stands on its own can be read.
+  if (from === null && !isAbsolute(value)) return null;
+  const folder = resolve(from ?? '', value);
+  return base(folder) === '.git' ? dirname(folder) : folder;
+}
+
+// The `git push` options that take the next word as their value. A value that looks like
+// an option belongs to its option, not to the push (#865).
+const PUSH_VALUE_OPTIONS = new Set(['--repo', '-o', '--push-option', '--receive-pack', '--exec']);
+
+/**
+ * The words `git push` reads as options, leaving out each option's value. The push still
+ * sends tags for `git push -o --dry-run --tags`, because `--dry-run` is the value of `-o`
+ * (#865).
+ */
+function pushOptions(args: string[]): string[] {
+  const options: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (word === '--') break;
+    if (!word.startsWith('-') || word === '-') continue;
+    options.push(word);
+    if (PUSH_VALUE_OPTIONS.has(word)) index++;
+  }
+  return options;
+}
+
+/**
+ * Whether a `git push` is a dry run. Git keeps the last of `--dry-run`, `--no-dry-run` and
+ * `-n`, so `--no-dry-run` after `--dry-run` makes the push send for real (#865).
+ */
+function pushDryRun(options: string[]): boolean {
+  let isDryRun = false;
+  for (const word of options) {
+    if (isGitLongOption(word, '--no-dry-run')) isDryRun = false;
+    else if (isGitLongOption(word, '--dry-run') || word === '-n') isDryRun = true;
+  }
+  return isDryRun;
+}
+
+/** Whether a ref name is a tag: a tag ref, a `v1` name, or a local tag (#829). */
+function isTagRef(refspec: string, directory: string | null, env: Env): boolean {
+  const [source, destination] = refspec.replace(/^\+/, '').split(':');
+  if (destination !== undefined && destination.startsWith('refs/tags/')) return true;
+  if (source === undefined || source === '') return false;
+  if (source.startsWith('refs/tags/') || /^v\d/.test(source)) return true;
+  return directory !== null && readGit(directory, ['rev-parse', '--verify', '--quiet', `refs/tags/${source}`], env) !== null;
+}
+
+/**
+ * Whether a `git push` names a tag. A tag ref, a `v1` name and a local tag all count; a
+ * plain branch name does not (#829).
+ */
+function pushesTag(args: string[], directory: string | null, env: Env): boolean {
+  const plain = plainArgs(args, ['--repo', '-o', '--push-option', '--receive-pack', '--exec']);
+  const refs = plain.length > 1 ? plain.slice(1) : plain;
+  return refs.some((ref) => isTagRef(ref, directory, env));
+}
+
+/** Whether git will carry tags on a plain push, because push.followTags is set (#829). */
+function followsTags(directory: string | null, env: Env): boolean {
+  if (directory === null) return false;
+  const answer = readGit(directory, ['config', '--get', 'push.followTags'], env);
+  return answer !== null && !/^(false|no|off|0)$/i.test(answer);
+}
+
 // Each check looks for its program anywhere in the command, so a prefix such as FOO=1,
 // sudo, env, command, exec, time, nice, nohup, timeout or xargs does not hide it.
 function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; config?: Pick<Config, 'commands'>; cwd: string | null; rules?: FileRules }): Finding | null {
@@ -207,20 +284,26 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
   if (start === -1) return null;
   const settings: string[] = [];
   const fromEnvironment: string[] = []; // --config-env name=VARIABLE
-  // The folder git works in: `-C` moves it. With --git-dir or --work-tree, the guard
-  // does not know the repo, so it is null.
+  // The folder git works in: `-C` moves it, and `GIT_DIR=…` names the git folder before
+  // the program does. With `--git-dir`, the folder that reads the same tags and settings is
+  // the git folder's parent, so a push of a tag stays visible; `--work-tree` does not move
+  // the git folder at all (#865).
+  // The shell keeps the last assignment, and so does git: the first one can be a decoy.
+  const namedDirectory = words.slice(0, start).findLast((word) => /^GIT_DIR=/.test(word));
   let directory: string | null = cwd;
-  let i = start + 1;
-  while (i < words.length && words[i].startsWith('-')) {
-    if (words[i] === '-C' && directory !== null) directory = resolve(directory, words[i + 1] ?? '');
-    if (/^--(git-dir|work-tree)(=|$)/.test(words[i])) directory = null;
-    if (words[i] === '-c') settings.push(words[i + 1] ?? '');
-    if (words[i] === '--config-env') fromEnvironment.push(words[i + 1] ?? '');
-    if (words[i].startsWith('--config-env=')) fromEnvironment.push(words[i].slice('--config-env='.length));
-    i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
+  if (namedDirectory !== undefined) directory = folderForGitDirectory(namedDirectory.slice('GIT_DIR='.length), cwd);
+  let index = start + 1;
+  while (index < words.length && words[index].startsWith('-')) {
+    if (words[index] === '-C' && directory !== null) directory = resolve(directory, words[index + 1] ?? '');
+    const gitDirectory = /^--git-dir(?:=(.*))?$/s.exec(words[index]);
+    if (gitDirectory) directory = folderForGitDirectory(gitDirectory[1] ?? words[index + 1], directory);
+    if (words[index] === '-c') settings.push(words[index + 1] ?? '');
+    if (words[index] === '--config-env') fromEnvironment.push(words[index + 1] ?? '');
+    if (words[index].startsWith('--config-env=')) fromEnvironment.push(words[index].slice('--config-env='.length));
+    index += GIT_VALUE_OPTIONS.has(words[index]) ? 2 : 1;
   }
-  const sub = words[i];
-  const argsAt = i + 1;
+  const sub = words[index];
+  const argsAt = index + 1;
   const args = words.slice(argsAt);
 
   const hooks = checkHooksSettings(settings, fromEnvironment);
@@ -245,13 +328,21 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     if (reason) return reason;
   }
   if (sub === 'push') {
-    if (!env.YOKOTEN_RELEASE_APPROVAL) {
-      const tagFlag = args.find((a) => ['--tags', '--follow-tags', '--mirror'].includes(a));
-      if (tagFlag) return release(`git push ${tagFlag} pushes tags`);
-      const tagRef = args.find((a) => /(^|[:+])(refs\/tags\/|v\d)/.test(a));
-      if (tagRef) return release(`git push ${args.join(' ')} pushes a release tag`);
+    // Only the words git reads as options count: a value of `-o` or `--repo` can look like
+    // one, and the push still sends what it names (#865).
+    const options = pushOptions(args);
+    const dryRun = pushDryRun(options);
+    const help = options.some((a) => a === '--help');
+    if (!env.YOKOTEN_RELEASE_APPROVAL && !help) {
+      const tagFlag = options.find((a) => isGitLongOption(a, '--tags') || isGitLongOption(a, '--follow-tags') || isGitLongOption(a, '--mirror'));
+      // A dry run changes nothing on the remote, so it may name tags.
+      if (tagFlag && !dryRun) return release(`git push ${tagFlag} pushes tags`);
+      if (!dryRun && pushesTag(args, directory, env)) return release(`git push ${args.join(' ')} pushes a release tag`);
+      // The setting can arrive in an earlier call: `git config push.followTags true`, then
+      // a plain `git push` (#829). Read the config git will read.
+      if (!dryRun && followsTags(directory, env)) return release('git push carries tags, because push.followTags is set');
     }
-    const force = args.find((a) => a === '--force' || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'));
+    const force = args.find((a) => isGitLongOption(a, '--force') || /^-[a-z]*f[a-z]*$/i.test(a) || a.startsWith('+'));
     if (force) return finding('force-push', `git push ${force} forces the push`, 'use --force-with-lease, which stops when the remote has work you have not seen');
     // A worker commits in its worktree; the lead reviews and pushes (#555).
     if (env.YOKOTEN_ROLE === 'worker') return sends('a worker does not push');
@@ -280,12 +371,25 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     if (gone !== undefined) return deleteBranchFinding(`\`git branch\` deletes the default branch \`${gone}\``);
   }
   if (sub === 'update-ref') {
-    const ref = findDeletedRef(withoutShellRedirects(words, argsAt));
+    const updateArgs = withoutShellRedirects(words, argsAt);
+    const ref = findDeletedRef(updateArgs);
     if (ref !== null && isDefaultBranch(ref, directory, env)) return deleteBranchFinding(`\`git update-ref -d ${ref}\` deletes the default branch directly`);
+    // `git update-ref refs/tags/rel-1 HEAD` makes a tag without `git tag` (#829). Stdin
+    // is already refused as `move-default-branch`, since it can write any ref (#847).
+    const tag = tagToUpdate(updateArgs);
+    if (tag !== null && !env.YOKOTEN_RELEASE_APPROVAL) {
+      return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${tag}\` themselves; do not look for another way`);
+    }
   }
   const skip = args.includes('--no-verify') ? '--no-verify' : sub === 'commit' ? args.find((a) => /^-[a-z]*n[a-z]*$/i.test(a)) : undefined;
   if (skip) return finding('skip-check', `git ${sub} ${skip} skips the commit check`, 'fix what the check reports instead');
-  if (sub === 'config') return checkConfig(withoutShellRedirects(words, argsAt), directory, env);
+  if (sub === 'config') {
+    const configArgs = withoutShellRedirects(words, argsAt);
+    // `push.followTags` makes every later plain push carry the tags: a tag published after a
+    // config change, not by a push that names it (#829).
+    if (!env.YOKOTEN_RELEASE_APPROVAL && setsFollowTags(configArgs)) return release('git config push.followTags makes every push carry tags');
+    return checkConfig(configArgs, directory, env);
+  }
   return null;
 }
 
@@ -309,36 +413,161 @@ function checkWorkerGit(words: string[], { options, settings, sub, args }: { opt
   return null;
 }
 
-// A word anywhere after the program counts, so an option in between (`npm --tag x publish`)
-// does not hide it. `npm run publish` blocks too: the script may well publish.
-/** The visibility a `gh repo` call ends up with: `--visibility[=]x`, `--public`, `--private`; the last one wins. */
+/** The visibility a `gh repo` call ends up with: `--visibility[=]x`, `--public`, `--private`; the last one wins. A `=false` turns the flag round (#865). */
 function visibilityOf(args: string[]): string | undefined {
   let value: string | undefined;
   for (const [at, word] of args.entries()) {
     if (word.startsWith('--visibility=')) value = word.slice('--visibility='.length);
     else if (word === '--visibility') value = args[at + 1];
     else if (word === '--public') value = 'public';
+    else if (word === '--public=true') value = 'public';
+    else if (word === '--public=false') value = 'private';
+    else if (word === '--private=false') value = 'public';
     else if (word === '--private' || word === '--internal') value = 'private';
   }
   return value;
 }
 
+// A word anywhere after the program counts, so an option in between (`npm --tag x publish`)
+// does not hide it. `npm run publish` blocks too: the script may well publish.
+// Each tool that publishes, with the words after it that publish. The list is a small set
+// of names, not grammar: a form that is not on it and not read as safe is refused.
+const PUBLISH_TOOLS: Record<string, string[]> = {
+  cargo: ['publish'],
+  gem: ['push'],
+  poetry: ['publish'],
+  uv: ['publish'],
+  twine: ['upload'],
+  bun: ['publish'],
+  deno: ['publish'],
+  docker: ['push'],
+  podman: ['push'],
+  helm: ['push'],
+};
+// A script name that may publish: `npm run release`, `make publish`. A name we cannot see
+// into is refused, never read as safe.
+const RELEASE_SCRIPT = /(publish|release|deploy|ship|upload)/i;
+// A release tool that publishes a package when a runner starts it (#829, #865).
+const RELEASE_TOOLS = new Set(['publish', 'semantic-release', 'release-it', 'np']);
+// A tool's name without a version: `semantic-release@latest` runs `semantic-release`, and
+// `release-it@1.2.3` runs `release-it` (#865).
+const toolName = (word: string) => base(word).replace(/\.(exe|cmd)$/i, '').replace(/@.*$/, '');
+// The words a boolean flag reads as false. npm reads `--dry-run false` as dry-run off and
+// then publishes (#865).
+const FALSE_WORDS = new Set(['false', '0', 'no', 'off']);
+
+// Whether a command carries an `npm`-style dry run. `--dry-run` alone and `--dry-run=true`
+// publish nothing; `--dry-run=false` and `--dry-run false` do publish, because npm's parser
+// takes the next word as the flag's value. A flag given twice keeps the last one, as npm
+// does, so `--dry-run --dry-run false` publishes (#865).
+function isDryRun(words: string[]): boolean {
+  let isDryRun = false;
+  for (const [index, word] of words.entries()) {
+    if (word === '--dry-run') isDryRun = !FALSE_WORDS.has((words[index + 1] ?? '').toLowerCase());
+    else if (word.startsWith('--dry-run=')) isDryRun = !FALSE_WORDS.has(word.slice('--dry-run='.length).toLowerCase());
+  }
+  return isDryRun;
+}
+
 function checkPublish(words: string[], env: Env): Finding | null {
   if (env.YOKOTEN_RELEASE_APPROVAL) return null;
+  // `--help` prints help instead of publishing for a direct tool. It does not save a
+  // script: `npm run release --help` still runs the release script.
+  const help = words.includes('--help');
   const after = (names: string[]) => {
     const i = words.findIndex((w) => names.includes(base(w).replace(/\.(exe|cmd)$/i, '')));
     return i === -1 ? [] : words.slice(i + 1);
   };
+  // The words that start a tool after a package runner: `npx <tool>` runs it, and so does
+  // `npm exec <tool>` or `pnpm dlx <tool>`. `npm install <tool>` only installs it (#865).
+  const startedBy = (names: string[], subcommands: string[]): string[] => {
+    const rest = after(names);
+    const first = rest.find((word) => !word.startsWith('-'));
+    if (first === undefined) return [];
+    if (subcommands.includes(first)) return rest.slice(rest.indexOf(first) + 1);
+    return subcommands.length === 0 ? rest : [];
+  };
   const gh = after(['gh']);
-  const sub = gh.indexOf('release');
-  if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
-  const repo = gh.indexOf('repo');
-  const repoCall = repo === -1 ? '' : gh[repo + 1] ?? '';
-  // gh keeps the last value when a visibility flag comes twice, so the last one counts.
-  if ((repoCall === 'create' || repoCall === 'edit') && visibilityOf(gh.slice(repo + 2)) === 'public') {
-    return release(repoCall === 'create' ? 'creating a public repo' : 'making the repo public');
+  if (!help) {
+    const sub = gh.indexOf('release');
+    if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
+    const repo = gh.indexOf('repo');
+    const repoCall = repo === -1 ? '' : gh[repo + 1] ?? '';
+    // gh keeps the last value when a visibility flag comes twice, so the last one counts.
+    if ((repoCall === 'create' || repoCall === 'edit') && visibilityOf(gh.slice(repo + 2)) === 'public') {
+      return release(repoCall === 'create' ? 'creating a public repo' : 'making the repo public');
+    }
+    // The host's API is the whole API behind one command: a release, a tag, or a public
+    // repo is one POST away. The host adapter knows which routes publish, and a write to
+    // one of them, an unreadable query or a mutation is refused. A plain read passes (#829).
+    const api = gh.indexOf('api');
+    if (api !== -1 && hostApiPublishes(gh.slice(api + 1))) return release('this call to the host API can publish a release, a tag or a public repo');
+    // A release workflow publishes after the owner starts it by name (#829). A test or
+    // lint workflow (`gh workflow run ci.yml`) still passes.
+    const workflow = gh.indexOf('workflow');
+    if (workflow !== -1 && gh[workflow + 1] === 'run' && gh.slice(workflow + 2).some((a) => RELEASE_SCRIPT.test(a))) {
+      return release('gh workflow run starts a release workflow');
+    }
+    // Another code host publishes a release the same way (#829).
+    for (const host of ['glab', 'tea']) {
+      const hostArgs = after([host]);
+      const at = hostArgs.indexOf('release');
+      if (at !== -1 && hostArgs.slice(at + 1).some((a) => ['create', 'upload'].includes(a))) return release(`${host} release publishes a release`);
+    }
   }
-  if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
+  // A script with a release-like name can publish, and the guard cannot see inside it. This
+  // comes before the dry-run and help checks: `npm run release -- --dry-run` still runs the
+  // script.
+  const runner = after(['npm', 'pnpm', 'yarn', 'yarnpkg']);
+  const run = runner.findIndex((a) => a === 'run' || a === 'run-script');
+  if (run !== -1) {
+    const script = runner.slice(run + 1).find((a) => !a.startsWith('-'));
+    if (script !== undefined && RELEASE_SCRIPT.test(script)) return release(`the script ${script} may publish`);
+  }
+  // `yarn release` and `pnpm release` run a script without `run`.
+  const runnerFirst = runner.find((a) => !a.startsWith('-'));
+  const runnerSubcommands = ['add', 'ci', 'create', 'dlx', 'exec', 'install', 'link', 'pack', 'publish', 'test', 'update', 'version'];
+  if (runnerFirst !== undefined && !runnerSubcommands.includes(runnerFirst) && RELEASE_SCRIPT.test(runnerFirst)) return release(`the script ${runnerFirst} may publish`);
+  const make = after(['make']);
+  const target = make.find((a) => !a.startsWith('-') && RELEASE_SCRIPT.test(a));
+  if (target !== undefined) return release(`the make target ${target} may publish`);
+  // `npm version patch` makes a commit and a tag, without `git tag` (#829).
+  if (!help) {
+    const npm = after(['npm', 'pnpm']);
+    const version = npm.indexOf('version');
+    if (version !== -1) {
+      const rest = npm.slice(version + 1);
+      if (!rest.some((a) => a === '--no-git-tag-version') && rest.some((a) => !a.startsWith('-'))) return release('npm version makes a tag');
+    }
+  }
+  // A dry run publishes nothing: `npm publish --dry-run` passes. It is read before the
+  // direct tools only, because `npm run release -- --dry-run` still runs the script. The
+  // exact word only, or `=true`: an option a tool does not know may be ignored, and then it
+  // publishes. A value of `false` turns the dry run off, and npm then publishes (#865).
+  const dryRun = isDryRun(words);
+  if (!dryRun && !help && after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
+  // A release tool started by a package runner publishes for the agent (#829, #865): `npx
+  // semantic-release`, and the same by `npm exec`, `pnpm dlx`, `yarn dlx` or `bun x`.
+  const startedTools = [
+    ...startedBy(['npx', 'bunx', 'pnpx'], []),
+    ...startedBy(['npm', 'pnpm', 'yarn', 'yarnpkg'], ['exec', 'dlx', 'x']),
+    ...startedBy(['bun'], ['x']),
+  ];
+  if (!dryRun && !help && startedTools.some((word) => RELEASE_TOOLS.has(toolName(word)))) return release('this publishes a package');
+  // Another language's package tool publishes the same way (#829).
+  if (!dryRun && !help) {
+    for (const [program, action] of Object.entries(PUBLISH_TOOLS)) {
+      if (after([program]).some((a) => action.includes(a))) return release('this publishes a package');
+    }
+    // `dotnet nuget push` publishes a package (#829).
+    const dotnet = after(['dotnet']);
+    const nuget = dotnet.indexOf('nuget');
+    if (nuget !== -1 && dotnet.slice(nuget + 1).includes('push')) return release('this publishes a package');
+    // `python -m twine upload` publishes a package (#829).
+    const python = after(['python', 'python3', 'python2', 'py']);
+    const module = python.indexOf('-m');
+    if (module !== -1 && python[module + 1] === 'twine' && python.slice(module + 2).includes('upload')) return release('this publishes a package');
+  }
   return null;
 }
 
