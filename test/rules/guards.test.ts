@@ -31,6 +31,7 @@ import {
   checkEdit,
   checkWorkerMarkEdit,
   commandWords,
+  findHeavyJob,
   hardenRead,
   gitLinkAbove,
   hookFile,
@@ -180,6 +181,47 @@ test('release: tag pushes, release commands and publishing are the owner\'s', ()
 test('release: the refusal names the whole push, remote included (#557)', () => {
   assert.equal(checkCommand('git push origin v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push origin v1.2.0 pushes a release tag');
   assert.equal(checkCommand('git push v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push v1.2.0 pushes a release tag');
+});
+
+test('release: creating a local tag is the owner\'s too, not only pushing it (#812)', () => {
+  for (const command of [
+    'git tag v1.2.3',
+    'git tag -a v1.2.3 -m "release 1.2.3"',
+    'git tag -s v1.2.3 -m "release 1.2.3"',
+    'git tag -f v1.2.3',
+    'git tag v1.2.3 HEAD~1',
+    'git -C ../other tag v1.2.3',
+    // A listing option does not turn a named tag into a listing (#873).
+    'git tag -a v1.2.3 --sort=creatordate -m msg',
+    'git tag -a v1.2.3 --sort creatordate -m msg',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag --format=%(refname) v1.2.3',
+    'git tag -a v1.2.3 --format=%(refname) -m msg',
+    'git tag -a v1.2.3 --column -m msg',
+    'git tag --column=always v1.2.3',
+    'git tag --sort creatordate -- v1.2.3',
+    // The word reader keeps a git format atom whole without hiding what follows it (#873).
+    'echo %(git push --tags)',
+    'git tag --format=%(refname; git push --tags)',
+    'git tag --format=%(refname\ngit push --tags',
+    // A short-flag group with a writing letter still writes.
+    'git tag -an v1.2.3 -m msg',
+  ]) blocked(command);
+  // Listing, and changing a tag that already exists, publish nothing.
+  allowed('git tag');
+  allowed('git tag -l');
+  allowed('git tag --contains HEAD');
+  allowed('git tag -n v1');
+  allowed('git tag -ln v1');
+  allowed('git tag -nl v1');
+  allowed('git tag -d old-tag');
+  allowed('git tag --sort=creatordate');
+  allowed('git tag --sort creatordate');
+  allowed('git tag --format=%(refname)');
+  allowed('git tag --format %(refname)');
+  allowed('git tag --column');
+  allowed('git tag -l --format=%(refname)');
+  allowed('git tag v1.2.3', { YOKOTEN_RELEASE_APPROVAL: '1' });
 });
 
 test('release: the owner\'s approval lets it through', () => {
@@ -4243,4 +4285,13 @@ test('token: an alias for the token and turning a workflow off are refused for e
   refusedAllAs(["gh alias set tk 'auth token'", "gh alias set --shell e 'env'", 'gh alias import aliases.yml', "yokoten bot -- gh alias set e 'env'"], 'alias');
   refusedAllAs(['gh workflow disable ci.yml', 'gh workflow disable 123 -R o/r', 'yokoten bot -- gh workflow disable ci.yml'], 'workflow-disable');
   allowedAll(['gh alias list', 'gh workflow list', 'gh workflow view ci.yml', 'gh workflow enable ci.yml', 'gh workflow run ci.yml']);
+});
+
+test('guard: a build, a test suite, a package install or a container build is a heavy job (#401)', () => {
+  for (const command of ['npm test', 'npm ci', 'npm install', 'npm run build', 'nice npm run -s typecheck', 'pnpm test', 'yarn run test', 'bun install', 'node --test test/a.test.ts', 'make', 'cargo build', 'go test ./...', 'docker build .', 'docker compose build', 'tsc -p .', 'pytest -q']) {
+    assert.ok(findHeavyJob(command), `should be heavy: ${command}`);
+  }
+  for (const command of ['git status', 'echo npm test', 'cat build.log', 'npm --version', 'docker ps', 'go version', 'cargo --version', 'npm run dev', 'npm run format', 'node app.js']) {
+    assert.equal(findHeavyJob(command), null, `should be light: ${command}`);
+  }
 });

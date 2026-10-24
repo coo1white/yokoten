@@ -5,9 +5,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
+import type { AgentAdapter } from './runtime.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -36,6 +38,13 @@ export function readToolCall(input: unknown): Action {
  * names the reason. Claude Code ignores stdout on exit 2.
  */
 export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
+
+/**
+ * How a question reaches the person before the call runs (#401): PreToolUse's `ask`
+ * decision, on exit 0. Claude Code shows the reason and runs the call only after a yes.
+ * A runtime that has no such question gets the ask from commands/hook.ts as a note.
+ */
+export const formatAsk = (reason: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } });
 
 /**
  * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`
@@ -396,4 +405,26 @@ export const DESK: RuntimeDesk = {
   starter: { '.claude.json': '{"hasCompletedOnboarding": true}\n' },
   stateEnv: (state) => ({ CLAUDE_CONFIG_DIR: state }),
   hosts: ['api.anthropic.com', 'platform.claude.com'],
+};
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'claude-code',
+  label: 'Claude Code',
+  projectHook: '`.claude/settings.json`: PreToolUse, Stop and SubagentStop',
+  userHook: '~/.claude/settings.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: true, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: true },
+  readToolCall,
+  readStop,
+  formatDenial,
+  formatAsk,
+  formatContext,
+  formatRewrite,
+  releaseFix: releaseFix(`${approve('claude')} (or your agent's command)`),
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
 };

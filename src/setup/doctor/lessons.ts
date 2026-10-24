@@ -22,6 +22,8 @@ const SERVER_CONTROL: ServerRead = {
   deleteBranchOnMerge: false,
   branch: { pullRequest: false, codeOwnerReview: false, mergeMethods: [], requiredChecks: [], noForcePush: false, noDeletion: false, approvals: 0 },
   tags: false,
+  tagBypass: { admin: false, bot: false },
+  release: { reviewer: false, tagRule: false, branchRule: false },
   security: { secretScanning: false, pushProtection: false, privateReporting: false, dependabotAlerts: false },
   forgotten: [],
   planning: { repo: 'octo/demo', labels: [], milestones: [{ title: 'v0.1', open: false }] },
@@ -122,6 +124,18 @@ export function seenAfter(seen: string[], lessons: LessonCheck[]): string[] {
 
 /** Where the state file is, in the git folder that all worktrees of a clone share. */
 export const STATE_FILE = 'yokoten/state.json';
+
+/**
+ * The name of the file that keeps the road's stage at the last full doctor (#514). It has its
+ * own file so the lessons state keeps its shape: a project that saves no lesson still records
+ * its stage. It sits in the folder of `STATE_FILE`; get its path from `stageFileFor`.
+ */
+export const STAGE_FILE = 'stage.json';
+
+/** The stage file that belongs to `stateFile`, in the same folder, or null with no state file. */
+export function stageFileFor(stateFile: string | null): string | null {
+  return stateFile ? join(dirname(stateFile), STAGE_FILE) : null;
+}
 
 /** What the state file holds. Keys this version does not know are kept as they are. */
 export interface DoctorState {

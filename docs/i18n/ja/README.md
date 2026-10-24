@@ -33,10 +33,16 @@ yokoten は、今使っているエージェントの上に、三つのことを
 必要なのは [Node](https://nodejs.org/) 22.23.4 以降だけです（Node 24 は 24.22.1 以降、Node 26 は 26.12.1 以降）。他には何も要りません。
 
 ```sh
-npx yokoten install      # PC ごとに一度
 cd your-project
-npx yokoten init         # プロジェクトごとに一度
-npx yokoten doctor       # 今いる関所と、次の一手
+npx yokoten             # 一度だけ: yokoten を入れ、ルールを加え、次の一手を表示
+```
+
+これで始められます。どのプロジェクトでも `npx yokoten` をもう一度実行すると、足りないものだけを行います。一つずつ進めたい場合はこうです。
+
+```sh
+npx yokoten install     # PC ごとに一度
+npx yokoten init        # プロジェクトごとに一度
+npx yokoten doctor      # 今いる関所と、次の一手
 ```
 
 Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。[どのバージョンを入れるか](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)を選べます。Stable（既定）、Beta、Dev です。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
