@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import * as antigravity from '../agents/runtimes/small/antigravity.ts';
-import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, setProjectEnv } from '../agents/runtimes/claude-code.ts';
+import { addProjectHook, addProjectSandbox as addClaudeSandbox, addProjectStopHook, checkProjectSettings, hasProjectHook as hasClaudeProjectHook, setProjectEnv } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as copilot from '../agents/copilot.ts';
 import * as dsh from '../agents/runtimes/small/deepseek-harness.ts';
@@ -276,10 +276,12 @@ function initRun(root: string, env: Env, gh: Gh, noCi: boolean, ask?: Ask): { ok
   if (omittedTrustStep) report.push('other agents: see the guide');
   // The guard stays off in an agent until it trusts yokoten's hooks. Ask once, here on a
   // terminal, and write only yokoten's entries (#661). With no terminal, name the command.
-  const trust = trustLines(root, env, ask);
-  report.push(...trust.lines);
+  // The sandboxes come first: trusting a folder is what lets its own sandbox apply, so
+  // trust reads the one init has just written (#661).
   const sandboxes = sandboxLines(root);
   report.push(...sandboxes.lines);
+  const trust = trustLines(root, env, ask);
+  report.push(...trust.lines);
   // Point git at the hooks last, so the files exist first. That call's first line leads
   // the report. Its other lines stay at the end (#654).
   const [hookLine, ...hookNotes] = setCommitCheck(root, cli, hooks, blocks, env);
@@ -1727,25 +1729,35 @@ interface Agent {
   isInstalled: (env: Env) => boolean;
   hasHooks: (root: string) => boolean;
   plan: (root: string, env: Env) => TrustPlan;
+  /**
+   * Why trusting this folder would apply a project setting that contains nothing, or null
+   * (#661). Trusting a folder is what lets its own settings apply, so it comes second.
+   */
+  problem?: (root: string, env: Env) => { what: string; fix: string } | null;
 }
 
-/** The agents whose trust is a file yokoten can write (#661), in the order a report names them. */
+/**
+ * The agents whose trust is a file yokoten can write (#661), in the order a report names them.
+ * `hasHooks` asks for yokoten's own guard hook, not just the file: a folder with an empty
+ * hooks file runs no guard, so trusting it would buy nothing and hide that it is off.
+ */
 const AGENTS: Agent[] = [
-  { name: 'Codex', isInstalled: codex.hasUserDir, hasHooks: (root) => existsSync(join(root, '.codex', 'hooks.json')), plan: codex.trustProject },
-  { name: 'Grok CLI', isInstalled: grok.hasUserDir, hasHooks: (root) => existsSync(join(root, grok.HOOKS_FILE)), plan: grok.trustProject },
-  { name: 'Copilot CLI', isInstalled: copilot.hasUserDir, hasHooks: (root) => existsSync(join(root, '.claude', 'settings.json')), plan: copilot.trustProject },
-  { name: 'Muse Code', isInstalled: muse.hasUserDir, hasHooks: (root) => existsSync(join(root, '.muse', 'hooks.json')), plan: muse.trustProject },
+  { name: 'Codex', isInstalled: codex.hasUserDir, hasHooks: codex.hasProjectHook, plan: codex.trustProject, problem: codex.sandboxProblem },
+  { name: 'Grok CLI', isInstalled: grok.hasUserDir, hasHooks: grok.hasProjectHook, plan: grok.trustProject },
+  { name: 'Copilot CLI', isInstalled: copilot.hasUserDir, hasHooks: hasClaudeProjectHook, plan: copilot.trustProject },
+  { name: 'Muse Code', isInstalled: muse.hasUserDir, hasHooks: muse.hasProjectHook, plan: muse.trustProject },
 ];
 
-/** A planned agent: the name a report uses, and what its store needs. */
+/** A planned agent: the name a report uses, what its store needs, and any sandbox problem. */
 interface Planned {
   name: string;
   plan: TrustPlan;
+  problem: { what: string; fix: string } | null;
 }
 
-/** The agents installed here that have yokoten's hooks in this project. */
+/** The agents installed here that have yokoten's guard hook in this project. */
 function planned(root: string, env: Env): Planned[] {
-  return AGENTS.filter((agent) => agent.isInstalled(env) && agent.hasHooks(root)).map((agent) => ({ name: agent.name, plan: agent.plan(root, env) }));
+  return AGENTS.filter((agent) => agent.isInstalled(env) && agent.hasHooks(root)).map((agent) => ({ name: agent.name, plan: agent.plan(root, env), problem: agent.problem?.(root, env) ?? null }));
 }
 
 /** `a`, `a and b`, `a, b and c`. */
@@ -1843,60 +1855,71 @@ function apply(root: string, env: Env, plans: readonly Planned[]): { ok: boolean
 }
 
 /**
+ * What the agents installed here need, sorted by what a report says about each (#661): the
+ * ones trust may write, and the ones it must leave off, and why.
+ */
+interface TrustWork {
+  found: number;
+  todo: Planned[];
+  same: string[];
+  edited: string[];
+  blocked: Planned[];
+  unsafe: { name: string; problem: { what: string; fix: string } }[];
+}
+
+function trustWork(root: string, env: Env): TrustWork {
+  const work: TrustWork = { found: 0, todo: [], same: [], edited: [], blocked: [], unsafe: [] };
+  for (const plannedAgent of planned(root, env)) {
+    work.found++;
+    if (plannedAgent.plan.state === 'same') work.same.push(plannedAgent.name);
+    else if (plannedAgent.plan.state === 'changed') work.edited.push(plannedAgent.name);
+    else if (plannedAgent.plan.state === 'trusted' && plannedAgent.problem) work.unsafe.push({ name: plannedAgent.name, problem: plannedAgent.problem });
+    else if (plannedAgent.plan.state === 'trusted') work.todo.push(plannedAgent);
+    else work.blocked.push(plannedAgent);
+  }
+  return work;
+}
+
+/** The agents trust leaves off, and why: a changed hook, an unsafe project sandbox, an unreadable store. */
+function refusedLines(work: TrustWork): { ok: boolean; lines: string[] } {
+  const lines: string[] = [];
+  if (work.same.length > 0) lines.push(`yokoten's guard is already on in ${listOf(work.same)}`);
+  for (const name of work.edited) {
+    lines.push(`left yokoten's guard off in ${name}: a hook yokoten wrote there was edited; run \`yokoten init\` to put it back, then \`yokoten trust\``);
+  }
+  // Trusting the folder is what lets the project's own settings apply (#661): a sandbox
+  // problem doctor finds is a reason to leave trust off, not to write it and look on.
+  for (const { name, problem } of work.unsafe) lines.push(`left yokoten's guard off in ${name}: ${problem.what}; ${problem.fix}`);
+  for (const { name, plan } of work.blocked) lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);
+  return { ok: work.edited.length === 0 && work.unsafe.length === 0 && work.blocked.length === 0, lines };
+}
+
+/**
  * The trust lines `init` prints. On a terminal it asks once about the agents installed
  * here; on yes, it writes. Without a terminal (an agent, CI) it writes nothing and names
  * the one command a person runs (#661).
  */
 export function trustLines(root: string, env: Env, ask?: Ask): { ok: boolean; lines: string[] } {
-  const plans = planned(root, env);
-  if (plans.length === 0) return { ok: true, lines: [] };
-  const todo = plans.filter(({ plan }) => plan.state === 'trusted');
-  const same = plans.filter(({ plan }) => plan.state === 'same');
-  const edited = plans.filter(({ plan }) => plan.state === 'changed');
-  const blocked = plans.filter(({ plan }) => plan.state === 'unreadable' || plan.state === 'no home');
-  const lines: string[] = [];
-  if (same.length > 0) lines.push(`yokoten's guard is already on in ${listOf(same.map(({ name }) => name))}`);
-  let ok = true;
-  for (const { name } of edited) {
-    ok = false;
-    lines.push(`left yokoten's guard off in ${name}: a hook yokoten wrote there was edited; run \`yokoten init\` to put it back, then \`yokoten trust\``);
-  }
-  for (const { name, plan } of blocked) {
-    ok = false;
-    lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);
-  }
-  if (todo.length === 0) return { ok, lines };
-  const names = listOf(todo.map(({ name }) => name));
-  if (!ask) return { ok, lines: [...lines, `to turn on yokoten's guard in ${names}, run \`yokoten trust\``] };
+  const work = trustWork(root, env);
+  const said = refusedLines(work);
+  if (work.todo.length === 0) return work.found === 0 ? { ok: true, lines: [] } : said;
+  const names = listOf(work.todo.map(({ name }) => name));
+  if (!ask) return { ok: said.ok, lines: [...said.lines, `to turn on yokoten's guard in ${names}, run \`yokoten trust\``] };
   if (!isYes(ask(`Turn on yokoten's guard in ${names} (the agents installed here)? [Y/n]`))) {
-    return { ok, lines: [...lines, `left yokoten's guard off in ${names}: run \`yokoten trust\` when you want it on`] };
+    return { ok: said.ok, lines: [...said.lines, `left yokoten's guard off in ${names}: run \`yokoten trust\` when you want it on`] };
   }
-  const done = apply(root, env, todo);
-  return { ok: ok && done.ok, lines: [...lines, ...done.lines] };
+  const done = apply(root, env, work.todo);
+  return { ok: said.ok && done.ok, lines: [...said.lines, ...done.lines] };
 }
 
 /** `yokoten trust`: turn the guard on in every agent installed here, with no question. */
 export function trust(root: string, env: Env): { ok: boolean; lines: string[] } {
-  const plans = planned(root, env);
-  if (plans.length === 0) return { ok: true, lines: ['no agent installed here runs yokoten\'s hooks in this project, so there is nothing to turn on'] };
-  const todo = plans.filter(({ plan }) => plan.state === 'trusted');
-  const same = plans.filter(({ plan }) => plan.state === 'same');
-  const edited = plans.filter(({ plan }) => plan.state === 'changed');
-  const blocked = plans.filter(({ plan }) => plan.state === 'unreadable' || plan.state === 'no home');
-  const lines: string[] = [];
-  if (same.length > 0) lines.push(`yokoten's guard is already on in ${listOf(same.map(({ name }) => name))}`);
-  let ok = true;
-  for (const { name } of edited) {
-    ok = false;
-    lines.push(`left yokoten's guard off in ${name}: a hook yokoten wrote there was edited; run \`yokoten init\` to put it back, then \`yokoten trust\``);
-  }
-  for (const { name, plan } of blocked) {
-    ok = false;
-    lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);
-  }
-  if (todo.length === 0) return { ok, lines };
-  const done = apply(root, env, todo);
-  return { ok: ok && done.ok, lines: [...lines, ...done.lines] };
+  const work = trustWork(root, env);
+  if (work.found === 0) return { ok: true, lines: ['no agent installed here runs yokoten\'s hooks in this project, so there is nothing to turn on'] };
+  const said = refusedLines(work);
+  if (work.todo.length === 0) return said;
+  const done = apply(root, env, work.todo);
+  return { ok: said.ok && done.ok, lines: [...said.lines, ...done.lines] };
 }
 
 /** `yokoten trust --undo`: put back only the entries this command recorded for this project. */

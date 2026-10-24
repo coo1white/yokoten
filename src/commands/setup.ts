@@ -60,6 +60,12 @@ const hasProjectRules = (root: string): boolean =>
   existsSync(resolve(root, 'AGENTS.md')) && existsSync(resolve(root, 'yokoten.json'));
 
 /**
+ * Whether someone is at the terminal. Trust has no question, so this is what makes its
+ * write the person's decision rather than a pipe's (#661).
+ */
+const isAtTerminal = (invocation: Invocation): boolean => invocation.stdin.stream.isTTY === true && invocation.stdout.isTTY === true;
+
+/**
  * The terminal to ask on, or undefined in a pipe, a hook or CI (#433): an asked question
  * with nobody there would stop the command.
  */
@@ -106,6 +112,15 @@ export function runInit(invocation: Invocation): number {
 export function runTrust(invocation: Invocation): number {
   const options = parse('trust', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
+  // A person turns the guard on (#661): a pipe, a hook or CI has nobody to decide, and an
+  // agent that ran the command would change the trust in its user's own settings.
+  if (!isAtTerminal(invocation)) {
+    print(invocation, [
+      'yokoten trust: a person runs this at a terminal, because it changes the trust in your own agent settings.',
+      'Nothing was written. Run `yokoten trust` in your terminal.',
+    ], invocation.stderr);
+    return 1;
+  }
   const dir = resolve(invocation.cwd, options.positional[0] ?? '.');
   if (!existsSync(dir)) {
     print(invocation, [`yokoten trust: ${options.positional[0]} does not exist; nothing was written.`], invocation.stderr);

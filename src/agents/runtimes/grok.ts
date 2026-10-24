@@ -29,7 +29,7 @@ import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
-import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject } from '../hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookState, hookState, isObject } from '../hooks-file.ts';
 import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables, type TrustChange, type TrustPlan } from './codex.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -130,6 +130,9 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
   guard: hookState(...guardArgs(root, cli)),
   stop: hookState(...stopArgs(root, cli)),
 });
+
+/** Whether yokoten's guard hook is in the project's hook file (#661): the file alone is not enough. */
+export const hasProjectHook = (root: string): boolean => hasHook(projectHooks(root), 'PreToolUse', 'hook');
 
 /** Grok's home folder: `$GROK_HOME`, or ~/.grok; empty with neither (#356). Read-only uses. */
 const homeDir = (env: Env) => {

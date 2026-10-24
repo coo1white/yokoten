@@ -204,9 +204,10 @@ export const COMMANDS: Command[] = [
     usage: '[dir] [--undo]',
     text: [
       'Writes the trust that makes Codex, Grok CLI, Copilot CLI and Muse Code run',
-      "yokoten's hooks in the project at [dir] (default: here). It writes only yokoten's",
-      'entries, and says what it wrote and how to undo it. With --undo it removes only',
-      'what it wrote, and leaves a setting you changed since.',
+      "yokoten's hooks in the project at [dir] (default: here). A person runs it at a",
+      'terminal: in a pipe it writes nothing. It writes only yokoten\'s entries, and says',
+      'what it wrote and how to undo it. With --undo it removes only what it wrote, and',
+      'leaves a setting you changed since.',
     ],
     options: [{ name: '--undo', text: 'remove only the entries yokoten trust wrote for this project' }],
     argument: 'dir',

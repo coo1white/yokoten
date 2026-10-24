@@ -18,7 +18,7 @@ import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
 import { type TrustChange, type TrustPlan } from './codex.ts';
-import { type Added, addHook, checkHooksFile, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
 import { readStop } from './claude-code.ts';
@@ -81,6 +81,9 @@ export const projectHooksState = (root: string, cli: string): { guard: HookState
   guard: hookState(...guardArgs(root, cli)),
   stop: hookState(...stopArgs(root, cli)),
 });
+
+/** Whether yokoten's guard hook is in the project's hook file (#661): the file alone is not enough. */
+export const hasProjectHook = (root: string): boolean => hasHook(projectHooks(root), 'PreToolUse', 'hook');
 
 // ---- Trust (#341) ----
 //
