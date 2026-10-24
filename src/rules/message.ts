@@ -133,9 +133,9 @@ export const RULES = {
     docs: guide('the-safeguard'),
   },
   'pipe-to-shell': {
-    rule: 'no piping a download into a shell or a program named by a variable',
-    why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops a pipeline that feeds a download into a shell, into `eval`, into a substitution that can run it, or into a program word that is not plain text, including a name that starts with `$`. A `$` argument of a plain program passes. Save the file first, read it, then run it',
+    rule: 'no running a download you have not read',
+    why: 'a download that a program runs as code does things nobody read, so the guard cannot check what it does',
+    check: 'the tool-call guard stops a download that a program would run: in a pipeline into a shell, `eval` or a program named by a variable or not by plain text; in a substitution or a process substitution given to a shell, `eval`, `source` or an interpreter (`bash -c "$(curl …)"`, `bash <(curl …)`); in a substitution where a command goes (`$(curl …)` or a backtick), which runs the download\'s answer as a command; in a here-string into a shell; piped into an interpreter that reads its program from input (`python3 -`, `node`, `perl`, `ruby`, `php`, `lua`, `Rscript -`); piped into `make -f -`, `make -f /dev/stdin` or `make -f <(…)`; and piped into any shell, including `ash`, `mksh`, `pdksh`, `yash`, `posh`, `oksh`, `rbash` and `toybox sh`. The guard matches option names the way git does, by a unique prefix. A `$` argument of a plain program passes. Save the file first, read it, then run it',
   },
   'gh-token': {
     rule: "an agent does not see or send gh's token",
