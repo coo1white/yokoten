@@ -2,7 +2,7 @@
 name: merge
 description: Merge a pull request through the bot and stop when the new commit is not UTC. Use when the lead merges.
 ---
-<!-- managed by yokoten; `yokoten install` replaces this file -->
+<!-- managed by yokoten; `yokoten install` updates this file, and keeps your edits -->
 
 > **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
 > doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one

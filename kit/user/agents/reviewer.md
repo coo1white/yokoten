@@ -3,7 +3,7 @@ name: reviewer
 description: Reads a diff and reports findings by the inspect skill's passes and grades. Use before the owner is asked to approve. Reads only.
 tools: Bash, Read, Grep, Glob
 ---
-<!-- managed by yokoten; `yokoten install` replaces this file -->
+<!-- managed by yokoten; `yokoten install` updates this file, and keeps your edits -->
 
 You review one diff at one commit. You do not approve it and you do not change it.
 You only report.
