@@ -10,6 +10,7 @@ import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
+import { allowedOutput, askedOutput, fromGuardInput, type GuardOutput, parseGuardInput, protocolRefusal, refusedOutput } from '../run/protocol.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
@@ -108,16 +109,23 @@ function editRepos(invocation: Invocation, action: Action, base: string, session
   const rootByFolder = new Map<string, string | null>([[base, session?.root ?? null]]);
   const repos = new Map<string, Repo | null>();
   // In the full hook, the session's root already has its rules.
-  if (session) repos.set(session.root, commandsOnly && existsSync(join(session.root, 'yokoten.json')) ? session : null);
+  if (session) repos.set(session.root, commandsOnly ? session : null);
   for (const path of action.paths) {
     let folder = dirname(resolve(base, path));
     while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
     if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder, invocation.env));
     const root = rootByFolder.get(folder);
     if (!root || repos.has(root)) continue;
-    repos.set(root, existsSync(join(root, 'yokoten.json')) ? { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) } : null);
+    repos.set(root, repoAt(invocation, root));
   }
-  return [...repos.values()].filter((repo) => repo !== null);
+  // A repo without yokoten.json still gets the safeguard (#816): the defaults, which stop
+  // the five protections from turning off. No init and no setting is needed.
+  return [...repos.values()].filter((repo): repo is Repo => repo !== null);
+}
+
+/** A repo's rules: its yokoten.json, or the defaults when it has none. */
+function repoAt(invocation: Invocation, root: string): Repo {
+  return { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) };
 }
 
 /**
@@ -499,9 +507,57 @@ export function askForHeavyJob(command: string, env: Env): Finding | null {
   };
 }
 
+/**
+ * `yokoten hook --protocol`: the guard protocol (#898). One fixed call on stdin, one fixed
+ * answer on stdout. A tool that yokoten has no adapter for adds this call itself, and its
+ * own plugin translates its tool call into `GuardInput`. The end of a turn is not in
+ * version 1.
+ *
+ * The answer is the truth: `allow` and `ask` exit 0, `refuse` exits 2. An input yokoten
+ * cannot read is refused, because the caller asked for the guard by name.
+ */
+async function runProtocol(invocation: Invocation, guard: Guard | undefined, commandsOnly: boolean): Promise<number> {
+  const { cwd, env: callEnv } = invocation;
+  const parsed = parseGuardInput(readInput(invocation.stdin));
+  const answer = async (output: GuardOutput): Promise<number> => {
+    printJson(invocation, output);
+    return output.decision === 'refuse' ? 2 : 0;
+  };
+  if (typeof parsed === 'string') return answer(protocolRefusal(parsed));
+  const { action, role: claimed, project } = fromGuardInput(parsed);
+  // The protocol names no runtime; the tool's own name, when it sends one, marks the line.
+  const vendor = parsed.action.tool === undefined ? 'protocol' : `protocol:${parsed.action.tool}`;
+  // The project is the session's folder. A call that names another folder judges that one.
+  const base = resolve(cwd, project);
+  const root = rootOf(base, callEnv);
+  const folders = [resolve(cwd, action.cwd ?? base), cwd];
+  const marked = workerRole(callEnv, folders);
+  const isWorker = claimed === 'worker' || action.worker || marked === 'mark';
+  const env = isWorker ? { ...callEnv, YOKOTEN_ROLE: 'worker' } : callEnv;
+  const config = loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr));
+  const repos = editRepos(invocation, action, action.cwd ?? root ?? base, root ? { root, config } : null, commandsOnly);
+  let found = await judgeWithDeadline(action, { root, config, env, cwd: base, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
+  // A worker by the mark hears why, and where the lead works (#555).
+  if (found && marked === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, callEnv))}` };
+  if (found) {
+    // One line per stop, on this computer only (#621). The protocol names no runtime.
+    logStop(env, {
+      vendor,
+      role: isWorker ? 'worker' : 'lead',
+      rule: found.id,
+      answer: found.id === 'unreadable-command' ? 'no answer' : 'refused',
+      command: action.command ?? action.commands?.[0],
+    });
+  }
+  noteToolCall(cwd, vendor, action, isWorker, found);
+  if (found) return answer(refusedOutput(found));
+  // A heavy job on a nearly full host drive asks first, and never refuses (#401).
+  const ask = action.command !== undefined ? askForHeavyJob(action.command, env) : null;
+  return answer(ask ? askedOutput(ask) : allowedOutput());
+}
+
 /** `guard`: the guard's worker, when bin/main.ts started it early (#408). */
-export function runHook(invocation: Invocation, guard?: Guard): number | Promise<number> {
-  const { cwd } = invocation;
+export function runHook(invocation: Invocation, guard?: Guard): number | Promise<number> {  const { cwd } = invocation;
   const options = parse('hook', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const json = options.flags.has('--json');
@@ -509,6 +565,13 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const agent = namedAgent ?? 'claude-code';
   const denialMode = options.values['--denial'];
   if (denialMode !== undefined && denialMode !== 'exit2') return usage(invocation, `unknown --denial ${denialMode}; use exit2`);
+  // The guard protocol (#898): one fixed call, one fixed answer, no runtime in it.
+  if (options.flags.has('--protocol')) {
+    if (namedAgent !== undefined || options.flags.has('--stop') || denialMode !== undefined) {
+      return usage(invocation, '--protocol is the whole call, so it takes no --agent, --stop or --denial');
+    }
+    return runProtocol(invocation, guard, options.flags.has('--commands-only'));
+  }
   if (options.flags.has('--stop')) {
     if (options.flags.has('--commands-only')) return usage(invocation, "--stop and --commands-only can't be used together");
     const readStop = stopReaderOf(agent);
@@ -568,7 +631,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       if (config.privacy.output === 'stop') found = privateOutput(printed, wrapped);
     }
     // A worker by the mark hears why, and where the lead works (#555).
-    if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    const markReason = found != null && role === 'mark' && WORKER_RULES.has(found.id) ? capital(markNote(folders, invocation.env)) : undefined;
+    if (found != null && markReason !== undefined) found = { ...found, fix: `${found.fix}. ${markReason}` };
     // The third same refusal becomes a stop message; any success starts the count again (#711).
     if (found) {
       const repeats = sessionKey === null ? null : bumpRepeat(env, sessionKey, found.id, shape);

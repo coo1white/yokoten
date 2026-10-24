@@ -23,7 +23,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findDeclarations, type Token, tokenize } from '../src/run/names.ts';
+import { findDeclarations, type Token, tokenize } from '../src/run/notes/names.ts';
 
 const DEFAULT_TEST_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'test');
 
@@ -247,7 +247,7 @@ function readImport(tokens: Located[], file: string): ImportName[] {
   return names;
 }
 
-// A module as the repo names it: `src/run/names.ts` from `../src/run/names.ts` in test/,
+// A module as the repo names it: `src/run/notes/names.ts` from `../src/run/notes/names.ts` in test/,
 // `scripts/board-sync.ts` from `../scripts/board-sync.ts`. Undefined, with the reason, for
 // an import this script cannot place: it never guesses.
 function canonicalModule(module: string, root: string): { module?: string; reason?: string } {
