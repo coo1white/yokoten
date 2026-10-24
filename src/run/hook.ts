@@ -12,6 +12,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
 import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards/index.ts';
+import { type LeaseMap, leaseFor } from '../rules/guards/lease.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import type { DeskAgent } from '../rules/pr.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
@@ -1174,6 +1175,95 @@ export function loadHookConfig(root: string | null, warn: (line: string) => void
 const sayIgnored = (ignored: IgnoredPart) =>
   ignored === 'file' ? 'yokoten.json was ignored, so the defaults apply' : `yokoten.json "${ignored}" was ignored, so its default applies`;
 
+// ---- File leases (#911) ----
+//
+// An open change that moves or deletes a file keeps a lease on it, and the guard stops
+// another change from editing that file. The map is built elsewhere (#909) and read here at
+// most once per guard call for each repo, cached by its time on disk, so the guard keeps its
+// budget (record 0013). No git process runs: the map's folder and the branch come from files.
+
+// These two mirror MAP_FILE and MAP_MAX_AGE_MS in src/commands/merge/conflicts/types.ts.
+// That file sits in the commands layer, above rules and run, so neither may import it
+// (record 0004). Keep each pair the same.
+const LEASE_MAP_FILE = 'yokoten/conflicts.json';
+const LEASE_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** The last map read, kept while its file keeps the same time and size. */
+interface LeaseMapCache {
+  file: string;
+  mtimeMs: number;
+  size: number;
+  /** Null when the file is not a map this reader knows. */
+  map: LeaseMap | null;
+  builtAt: number;
+}
+
+let leaseMapCache: LeaseMapCache | null = null;
+
+/**
+ * The conflict map beside `folder`, or null when it is missing, old, or not one this reader
+ * knows. An old map never blocks: it may name changes that already merged, and the
+ * session-start doctor says it is old. A builtAt the reader cannot parse is not trusted either.
+ */
+function leaseMapAt(folder: string, now: number): LeaseMap | null {
+  const common = commonGitDir(folder);
+  if (common === null) return null;
+  const file = join(common, LEASE_MAP_FILE);
+  let stats;
+  try {
+    stats = statSync(file);
+  } catch {
+    return null;
+  }
+  if (leaseMapCache === null || leaseMapCache.file !== file || leaseMapCache.mtimeMs !== stats.mtimeMs || leaseMapCache.size !== stats.size) {
+    leaseMapCache = { file, mtimeMs: stats.mtimeMs, size: stats.size, ...readLeaseMap(file) };
+  }
+  const { map, builtAt } = leaseMapCache;
+  if (map === null || !Number.isFinite(builtAt) || now - builtAt > LEASE_MAX_AGE_MS) return null;
+  return map;
+}
+
+/** The map in `file`, with the time it was built, or a null map when its shape is not one this reader knows. */
+function readLeaseMap(file: string): { map: LeaseMap | null; builtAt: number } {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return { map: null, builtAt: Number.NaN };
+  }
+  if (typeof value !== 'object' || value === null) return { map: null, builtAt: Number.NaN };
+  const map = value as { version?: unknown; builtAt?: unknown; changes?: unknown; leased?: unknown };
+  // A version this reader does not know is a missing map: a newer writer never blocks an edit.
+  if (map.version !== 1 || typeof map.builtAt !== 'string' || !Array.isArray(map.changes)) return { map: null, builtAt: Number.NaN };
+  if (typeof map.leased !== 'object' || map.leased === null || Array.isArray(map.leased)) return { map: null, builtAt: Number.NaN };
+  return { map: { changes: map.changes as LeaseMap['changes'], leased: map.leased as LeaseMap['leased'] }, builtAt: Date.parse(map.builtAt) };
+}
+
+/** The branch checked out at or above `folder`, read from its HEAD file; `''` when it is detached or cannot be read. */
+function leaseBranch(folder: string): string {
+  const link = gitLinkAbove(folder);
+  if (link === null || link.kind === 'broken') return '';
+  try {
+    const head = readFileSync(join(link.gitDir, 'HEAD'), 'utf8').trim();
+    return /^ref:[ \t]*refs\/heads\/(\S+)$/.exec(head)?.[1] ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The stop when an open change moving `path` is not the branch in this checkout (#911), or
+ * null. `now` and `branches` belong to one guard call, so one call reads each branch once.
+ */
+function leaseFinding(path: string, folder: string, now: number, branches: Map<string, string>): Finding | null {
+  let branch = branches.get(folder);
+  if (branch === undefined) branches.set(folder, (branch = leaseBranch(folder)));
+  const lease = leaseFor(path, branch, leaseMapAt(folder, now));
+  if (lease === null) return null;
+  const what = `${lease.label} is moving ${path}. An edit here now will conflict when it merges`;
+  return finding('file-lease', what, `work on something else until ${lease.label} merges, or ask the lead to put this task after it`);
+}
+
 /**
  * Why to stop the action (what, why, fix), or null. `root` is the session's repo root, or
  * null outside a repo. `commandsOnly` is the user-level hook: it runs in every repo, so it
@@ -1219,18 +1309,22 @@ export function judge(
     }
   }
   if (!ruled.length) return null;
-  const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
+  const reals = ruled.map((repo) => ({ config: repo.config, root: repo.root, real: real(repo.root) }));
+  // One map and one branch read for each repo a call touches, and one clock for its leases.
+  const branches = new Map<string, string>();
+  const now = Date.now();
   for (const p of action.paths) {
     const file = real(resolve(action.cwd ?? root ?? cwd, p));
-    let best: { rel: string; config: Config } | null = null;
+    let best: { rel: string; config: Config; root: string } | null = null;
     for (const repo of reals) {
       const rel = relative(repo.real, file);
       // A file outside the repo is not this repo's business.
       if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
-      if (!best || rel.length < best.rel.length) best = { rel, config: repo.config };
+      if (!best || rel.length < best.rel.length) best = { rel, config: repo.config, root: repo.root };
     }
     if (!best) continue;
-    const reason = checkEdit(best.rel.split(sep).join('/'), { config: best.config, env });
+    const rel = best.rel.split(sep).join('/');
+    const reason = checkEdit(rel, { config: best.config, env }) ?? leaseFinding(rel, best.root, now, branches);
     if (reason) return reason;
   }
   return null;

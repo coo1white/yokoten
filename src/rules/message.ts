@@ -196,6 +196,12 @@ export const RULES = {
     check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, `yokoten worker unmark`, and an edit inside a git folder, by real path. The same holds for the yokoten config folder (~/.config/yokoten), which keeps the worker list and the bot keys: for a worker, any program that does more than read is refused when it names a path that is, is in or holds that folder, by real path (a symlink, `~+` and globs such as `~/.c*/yokoten` count). A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
     docs: guide('managing-agents-like-a-team'),
   },
+  'file-lease': {
+    rule: 'the guard stops an edit to a file that an open change is moving or deleting (#911)',
+    why: 'two changes to a file that is being moved cannot both go in cleanly',
+    check: 'when an open change moves or deletes a file, the conflict map leases that path; the tool-call guard reads the map once per call, stops an edit to a leased path from another branch, and allows when the map is missing or old',
+    docs: guide('blocked-commands'),
+  },
   email: {
     rule: 'no personal email address in the repo (core rule 11)',
     why: 'an email address points at a person, and git keeps it after the file is gone',
