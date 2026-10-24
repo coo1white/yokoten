@@ -13,7 +13,7 @@ import { isSelf, withGitReads, workflowNotes } from '../init/index.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, releaseChannel, userAgentHooks } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, stageFileFor, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -213,6 +213,8 @@ export interface StepState {
  */
 export interface DoctorReport {
   version: string;
+  /** The release channel this machine runs: stable, beta or dev (#632). */
+  channel: string;
   ok: boolean;
   selfTest: { ok: boolean; failed: string[] };
   /** False outside a git repo: then there is no road to walk. */
@@ -280,7 +282,7 @@ function doctorRun(
     lines.push(`yokoten is BROKEN: ${failed.join(', ')} let a known-bad input through. Do not trust any check until this is fixed.`);
     findings.push(finding('self-test', `${failed.join(', ')} let a known-bad input through`, 'do not trust any check until this is fixed; run `yokoten install` again, or report it in an issue'));
   }
-  const base = { version: VERSION, selfTest: { ok: !failed.length, failed }, stages: STAGES };
+  const base = { version: VERSION, channel: releaseChannel(root, env), selfTest: { ok: !failed.length, failed }, stages: STAGES };
   if (!root) return { ok: !failed.length, lines, report: { ...base, ok: !failed.length, repo: false, stage: null, next: null, findings } };
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
@@ -348,7 +350,7 @@ function doctorRun(
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
 
-  lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
+  lines.push(`yokoten ${VERSION} (${base.channel}), self-test ${failed.length ? 'FAILED' : 'ok'}`);
   // Work only on this machine (#365): notes, never a failure, and read only. Read before the
   // road line, so the state file is found in the git folder it names (#453), as a session
   // start finds it, and a stage that jumped can say so next to the road (#514).

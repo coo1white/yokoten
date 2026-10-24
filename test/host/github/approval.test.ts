@@ -3,12 +3,14 @@
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { makeTempDir, said, serverGh } from '../../repo/helpers.ts';
 import { type Gh } from '../../../src/host/github/planning.ts';
 import { APPROVAL_GIT_TIMEOUT_MS, readApprovalState } from '../../../src/host/github/approval.ts';
+import { checkMergeApproval } from '../../../src/rules/pr.ts';
+import { finding } from '../../../src/rules/message.ts';
 
 // #612: the approval git fetch must not hang the bot. The git reads share the gh read
 // budget through one constant, which gitRead passes to every approval git command.
@@ -466,4 +468,90 @@ test('approval: a base commit that stays missing names the short sha (#670)', ()
     unsure: 'no CODEOWNERS file covers pull request 47, so no code owner can approve it',
   });
   assert.ok(!noneCalls.some((args) => args.some((arg) => arg.includes('/contents/'))));
+});
+
+// #699: an area lead approves with a review whose last line names the lead, its vendor
+// and model. The review records the commit. A hard-line file or a looser change still
+// asks the owner, and a lead of the writer's own vendor never counts.
+test('approval: an area lead approves in its area (#699)', () => {
+  const dir = makeTempDir('yokoten-');
+  const env = makeApprovalEnv(dir);
+  runGitOk(dir, env, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(dir, 'CODEOWNERS'), '/hard.txt @owner\n');
+  writeFileSync(join(dir, 'a.txt'), 'a\n');
+  writeFileSync(join(dir, 'hard.txt'), 'hard\n');
+  mkdirSync(join(dir, 'test'));
+  writeFileSync(join(dir, 'test', 'a.test.ts'), 'old\n');
+  runGitOk(dir, env, ['add', '.']);
+  runGitOk(dir, env, ['commit', '-qm', 'base']);
+  const base = runGitOk(dir, env, ['rev-parse', 'HEAD']).trim();
+  runGitOk(dir, env, ['checkout', '-qb', 'topic']);
+  writeFileSync(join(dir, 'a.txt'), 'b\n');
+  runGitOk(dir, env, ['commit', '-qam', 'change']);
+  const approved = runGitOk(dir, env, ['rev-parse', 'HEAD']).trim();
+  writeFileSync(join(dir, 'a.txt'), 'c\n');
+  runGitOk(dir, env, ['commit', '-qam', 'more']);
+  const head = runGitOk(dir, env, ['rev-parse', 'HEAD']).trim();
+  runGitOk(dir, env, ['checkout', '-q', base]);
+  const body = 'tier: A\nMade with worker Claude Code (Opus 5.5)\n';
+  const view = (sha: string) => ({ body, labels: [{ name: 'tier A' }], head: { sha, ref: 'topic' }, base: { sha: base, ref: 'main' } });
+  const review = (login: string, commit: string, at: string, text: string) => JSON.stringify({ login, assoc: 'MEMBER', state: 'APPROVED', commit, at, body: text });
+  const grok = (commit: string, at: string) => review('grok-lead', commit, at, 'LGTM\n\nApproved by area lead Grok (xAI, Grok 4.7)\n');
+  const claude = (commit: string, at: string) => review('claude-lead', commit, at, 'LGTM\n\nApproved by area lead Sonnet (Anthropic, Sonnet 5.5)\n');
+  const routes: Record<string, unknown> = {
+    'repos/me/repo/pulls/50': view(head),
+    'repos/me/repo/pulls/50/files': ['a.txt'],
+    'repos/me/repo/pulls/50/reviews': grok(head, '2026-10-23T11:00:00Z'),
+    'repos/me/repo/pulls/51': view(head),
+    'repos/me/repo/pulls/51/files': ['a.txt'],
+    'repos/me/repo/pulls/51/reviews': claude(head, '2026-10-23T11:00:00Z'),
+    'repos/me/repo/pulls/52': view(head),
+    'repos/me/repo/pulls/52/files': ['a.txt'],
+    'repos/me/repo/pulls/52/reviews': grok(approved, '2026-10-23T10:00:00Z'),
+    'repos/me/repo/pulls/53': view(head),
+    'repos/me/repo/pulls/53/files': ['hard.txt'],
+    'repos/me/repo/pulls/53/reviews': grok(head, '2026-10-23T11:00:00Z'),
+    'repos/me/repo/pulls/54': view(head),
+    'repos/me/repo/pulls/54/files': ['test/a.test.ts'],
+    'repos/me/repo/pulls/54/reviews': grok(head, '2026-10-23T11:00:00Z'),
+    'repos/me/repo/pulls/55': view(head),
+    'repos/me/repo/pulls/55/files': ['a.txt'],
+    'repos/me/repo/pulls/55/reviews': `${claude(head, '2026-10-23T11:00:00Z')}\n${grok(head, '2026-10-23T10:00:00Z')}`,
+  };
+  const { gh } = serverGh(routes);
+  // Another vendor's lead, on the head: may merge.
+  assert.deepEqual(readApprovalState(gh, dir, env, 50, 'me/repo'), {
+    tier: 'A',
+    head,
+    approved: null,
+    after: 0,
+    sameDiff: true,
+    lead: { lead: 'Grok', vendor: 'xAI', model: 'Grok 4.7', commit: head, after: 0, sameDiff: true },
+    writers: ['anthropic'],
+  });
+  // The same vendor's lead is read, and the rule refuses it.
+  const own = readApprovalState(gh, dir, env, 51, 'me/repo');
+  assert.ok(!('unsure' in own));
+  assert.deepEqual(checkMergeApproval(own), finding('pr-approve', 'the area lead is from Anthropic, the same vendor as the writer; another vendor\'s lead must approve', "ask an area lead of another vendor to approve the head commit"));
+  // An approval on an older commit is not fresh.
+  const stale = readApprovalState(gh, dir, env, 52, 'me/repo');
+  assert.ok(!('unsure' in stale));
+  assert.equal(stale.lead?.after, 1);
+  assert.equal(checkMergeApproval(stale)?.id, 'pr-approve');
+  // A hard-line file and a looser change keep the owner's approval.
+  const hard = readApprovalState(gh, dir, env, 53, 'me/repo');
+  assert.ok(!('unsure' in hard));
+  assert.equal(hard.ownerOnly, true);
+  assert.equal(hard.ownerWhy, 'a hard-line file (hard.txt)');
+  assert.equal(checkMergeApproval(hard)?.what, 'no owner Approve on this pull request');
+  const loose = readApprovalState(gh, dir, env, 54, 'me/repo');
+  assert.ok(!('unsure' in loose));
+  assert.equal(loose.ownerOnly, true);
+  assert.equal(loose.ownerWhy, 'a looser change (test/a.test.ts)');
+  assert.equal(checkMergeApproval(loose)?.what, 'no owner Approve on this pull request');
+  // A newer approval by the writer's own vendor does not hide another vendor's lead.
+  const both = readApprovalState(gh, dir, env, 55, 'me/repo');
+  assert.ok(!('unsure' in both));
+  assert.equal(both.lead?.vendor, 'xAI');
+  assert.equal(checkMergeApproval(both), null);
 });
