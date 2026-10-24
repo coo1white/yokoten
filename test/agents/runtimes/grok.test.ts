@@ -262,7 +262,7 @@ test('grok project hooks: init writes the guard and the stop check, keeps other 
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +grok-hook: \.grok\/hooks\/yokoten\.json is in place; trust not checked, no ~\/\.grok\n/);
   mkdirSync(join(sandbox.home, '.grok'));
   const trusted = await sandbox.call(['init']);
-  assert.match(trusted.stdout, /same the Grok CLI tool-call hook/);
+  assert.match(trusted.stdout, /kept the Grok CLI tool-call hook/);
   assert.match(trusted.stdout, /^Grok CLI runs the hooks in \.grok\/hooks\/yokoten\.json only after you trust this folder: run `grok` in this folder and type `\/hooks-trust`$/m);
   written.hooks.Stop[0].hooks[0].timeout = 5;
   sandbox.write('.grok/hooks/yokoten.json', JSON.stringify(written));
@@ -333,7 +333,7 @@ test('grok user hook: install writes the command guard in ~/.grok/hooks only whe
   assert.match(written.hooks.PreToolUse[0].hooks[0].command, /hook --agent grok --commands-only/);
   assert.equal(written.hooks.SessionStart, undefined, 'Grok shows a session-start hook only to the user');
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +grok-user-hook/);
-  assert.match((await sandbox.call(['install'])).stdout, /^same the Grok CLI command guard/m);
+  assert.match((await sandbox.call(['install'])).stdout, /^kept the Grok CLI command guard/m);
   const env = { HOME: sandbox.home };
   assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' }, 'another runtime path is out of date');
   assert.deepEqual(addUserHooks(env, '/elsewhere/bin/yokoten.ts', 'gone'), { guard: 'updated' });

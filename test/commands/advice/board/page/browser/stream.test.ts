@@ -12,7 +12,7 @@ import { loadUi, type PageData, type PageState, renderCenter } from '../../../..
 import { addStream, emptyStream, newStreamNode, renderStream } from '../../../../../../src/commands/advice/board/page/browser/stream.ts';
 import { finding, formatRefusal } from '../../../../../../src/rules/message.ts';
 import { makeRedactor } from '../../../../../../src/rules/privacy.ts';
-import { SECRET } from '../../../../../../src/rules/secrets.ts';
+import { SECRET } from '../../../../../../src/rules/privacy/secrets.ts';
 import { makeTempDir } from '../../../../../repo/helpers.ts';
 import { LANG_NAMES, WORDS } from '../../../../../../src/commands/advice/board/page/words.ts';
 import { EMPTY_DESK } from '../../../../../../src/commands/advice/board/feed/read/desk.ts';
@@ -60,7 +60,7 @@ Object.assign(globalThis, {
 });
 
 const agent: AgentView = { key: '~/w', name: 'w', nickname: '', isMain: false, vendor: vendorOf('claude'), model: '', effort: '', role: 'engineer', dot: 'working', task: '', title: 'the task', ref: null, doing: 'reading the issue', checks: '', age: '', updated: 'u1', started: '', branch: '' };
-const data: PageData = { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {} } };
+const data: PageData = { repo: '~/repo', repoName: 'repo', repoUrl: '', agents: [agent], needs: [], pulls: [], merged: [], worktrees: [], desk: EMPTY_DESK, updated: '', feeds: { '~/w': [{ kind: 'step', text: 'reading the issue', time: '2026-10-22T10:00:00Z' }] }, waiting: [], issues: [], runs: [], limits: { maxAgents: 3, byModel: {}, memoryFloorMb: 1024 } };
 
 function makeState(): PageState {
   const ui = loadUi(false);

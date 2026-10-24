@@ -13,9 +13,10 @@ import * as muse from '../agents/runtimes/muse.ts';
 import * as opencode from '../agents/runtimes/small/opencode.ts';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
-import { addWorkerPath, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
-import { type Finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
+import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
 import { checkChanged, readGit } from '../run/check.ts';
+import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
   type Action,
   bumpDoneTries,
@@ -84,6 +85,11 @@ const RELEASE_FIXES: Record<string, string> = {
   grok: releaseFix(approve('grok')),
   opencode: 'OpenCode is not known to pass YOKOTEN_RELEASE_APPROVAL to its plugin. If the owner asked for this, stop and tell them to release outside OpenCode; do not look for another way',
 };
+
+// The runtimes that can show a question before a call runs (#401). Claude Code's PreToolUse
+// hook has an `ask` decision; the others are not known to have one, so a heavy job there
+// gets the ask as a note to the agent.
+const ASKS: Record<string, (reason: string) => string> = { 'claude-code': claudeCode.formatAsk };
 
 // The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
 // team messages arrive there (#674). The others get them at the end of a turn (Stop).
@@ -442,16 +448,19 @@ function allowFailingStop(
 /**
  * The answer a refusal gets (#707). Only a hook installed for Claude Code (`--agent
  * claude-code`) answers with a deny in `hookSpecificOutput` on exit 0: an unnamed hook is
- * read by Copilot CLI too, so it keeps the exit-2 answer. A structured answer is safe only
- * as the whole of stdout: on exit 0 Claude Code reads any surrounding text as plain
- * output, which lets the call run. So a refusal beside other text falls back to exit 2.
+ * read by Copilot CLI too, so it keeps the exit-2 answer. Copilot's own user hook names
+ * `claude-code` for the input shape, so install also passes `--denial exit2` to keep the
+ * answer its reader expects. A structured answer is safe only as the whole of stdout: on
+ * exit 0 Claude Code reads any surrounding text as plain output, which lets the call run.
+ * So a refusal beside other text falls back to exit 2.
  */
 export function chooseDenial(
   agent: string,
   reason: string,
   env: Env,
-  { isNamed, isStdoutEmpty }: { isNamed: boolean; isStdoutEmpty: boolean },
+  { isNamed, isStdoutEmpty, isExit2 = false }: { isNamed: boolean; isStdoutEmpty: boolean; isExit2?: boolean },
 ): { stdout: string; exitCode: number } {
+  if (isExit2) return claudeCode.fallbackDenial(reason);
   const denial = isNamed && Object.hasOwn(DENIALS, agent)
     ? DENIALS[agent](reason, env)
     : agent === 'claude-code' ? claudeCode.fallbackDenial(reason) : { stdout: '', exitCode: 2 };
@@ -475,6 +484,25 @@ function answerBuffer(): { stream: Output; text: () => string } {
   return { stream, text: () => text };
 }
 
+/**
+ * The question before a heavy job when the kept host reading is low (#401): what runs,
+ * why a full drive can corrupt the repo, and the fix. Null when no fresh reading is kept,
+ * the drive has room, or the command is light. It reads one small file, never the drive.
+ */
+export function askForHeavyJob(command: string, env: Env): Finding | null {
+  const disk = readKeptHostDisk(env);
+  if (!disk || !isLowOnSpace(disk, env)) return null;
+  const job = findHeavyJob(command);
+  if (job === null) return null;
+  const when = new Date(disk.readAt).toISOString().slice(0, 16).replace('T', ' ');
+  return {
+    ...finding('disk-space', `\`${job}\` is a heavy job, and ${HOST_DRIVE} has ${formatSpace(disk)} (read ${when} UTC)`, `before this job, ${HOST_DISK_FIX}. Then run \`yokoten doctor\` to read the drive again`, {
+      why: 'a full drive can corrupt the repo: git can write empty objects, and a branch head can be lost',
+    }),
+    ask: true,
+  };
+}
+
 /** `guard`: the guard's worker, when bin/main.ts started it early (#408). */
 export function runHook(invocation: Invocation, guard?: Guard): number | Promise<number> {
   const { cwd } = invocation;
@@ -483,6 +511,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const json = options.flags.has('--json');
   const namedAgent = options.values['--agent'];
   const agent = namedAgent ?? 'claude-code';
+  const denialMode = options.values['--denial'];
+  if (denialMode !== undefined && denialMode !== 'exit2') return usage(invocation, `unknown --denial ${denialMode}; use exit2`);
   if (options.flags.has('--stop')) {
     if (options.flags.has('--commands-only')) return usage(invocation, "--stop and --commands-only can't be used together");
     if (!Object.hasOwn(STOP_READERS, agent)) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(STOP_READERS).join(', ')}`);
@@ -535,8 +565,16 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     }
     // A worker by the mark hears why, and where the lead works (#555).
     if (found && role === 'mark' && WORKER_RULES.has(found.id)) found = { ...found, fix: `${found.fix}. ${capital(markNote(folders, invocation.env))}` };
+    // A heavy job on a nearly full host drive asks first, and never refuses (#401).
+    const ask = !found && action.command !== undefined ? askForHeavyJob(action.command, env) : null;
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
-    if (json) printJson(answerInvocation, found ? { blocked: true, finding: found } : { blocked: false, toolCall: true });
+    if (json) printJson(answerInvocation, found ? { blocked: true, finding: found } : ask ? { blocked: false, toolCall: true, ask } : { blocked: false, toolCall: true });
+    if (!found && ask) {
+      const question = `yokoten: ${formatFinding(ask)}`;
+      if (!json && Object.hasOwn(ASKS, agent)) say(answerInvocation, ASKS[agent](question), answerInvocation.stdout);
+      else if (!json) say(answerInvocation, `${question}\n`, invocation.stderr);
+      return finish(0);
+    }
     if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
       // When the call names no other folder, the root above is this folder's: one git call, not two (#821).
@@ -554,7 +592,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // The --agent the hook was installed with decides the answer, never an environment
     // variable another host could inherit (#707). An unnamed hook may be read by another
     // host through the shared .claude/settings.json, so it keeps exit 2.
-    const denial = chooseDenial(agent, reason, invocation.env, { isNamed: namedAgent !== undefined, isStdoutEmpty: answer.text() === '' });
+    const denial = chooseDenial(agent, reason, invocation.env, { isNamed: namedAgent !== undefined, isStdoutEmpty: answer.text() === '', isExit2: denialMode === 'exit2' });
     if (!json && denial.stdout) say(answerInvocation, denial.stdout, answerInvocation.stdout);
     return finish(json ? 2 : denial.exitCode);
   });

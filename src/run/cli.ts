@@ -156,6 +156,8 @@ export interface Command {
   argument?: string;
   /** The positional arguments it takes, in order, when it takes more than one: an action, then its word (#447). */
   arguments?: string[];
+  /** It takes any number of positional arguments, in the order given: a merge train's queue (#320). */
+  many?: boolean;
   example: string;
 }
 
@@ -244,6 +246,20 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'borrowed',
+    summary: 'compare borrowed code with its upstream, and open issues when it moved',
+    usage: '[--dry-run] [--json]',
+    text: [
+      "Compares each file in src/borrowed/ with upstream's default branch, through gh.",
+      'It opens one issue per source that changed, and calls out a security fix.',
+    ],
+    options: [
+      { name: '--dry-run', text: 'show the report and the issues it would open, and write nothing' },
+      { name: '--json', text: 'the report as JSON on stdout' },
+    ],
+    example: 'yokoten borrowed --dry-run',
+  },
+  {
     name: 'redact',
     summary: 'command output with your name, emails, logins and private hosts hidden',
     usage: '',
@@ -315,10 +331,11 @@ export const COMMANDS: Command[] = [
   {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
-    usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
+    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>]',
     text: [
       'Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.',
       "With --agent claude-code, it answers as Claude Code's PreToolUse hook: a deny in JSON on stdout, exit 0. YOKOTEN_HOOK_DENIAL=exit2 keeps exit 2.",
+      'With --denial exit2, it keeps the reason on stderr and exit 2, for a host that reads the exit code alone.',
       'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.',
     ],
     options: [
@@ -326,6 +343,7 @@ export const COMMANDS: Command[] = [
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
+      { name: '--denial', value: 'mode', text: 'the answer a refusal gets: exit2 puts the reason on stderr and exits 2, for a host that ignores a JSON deny' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },
@@ -410,6 +428,25 @@ export const COMMANDS: Command[] = [
     ],
     options: [],
     example: 'yokoten bot -- gh pr create --fill',
+  },
+  {
+    name: 'train',
+    summary: 'merge an approved queue one pull request at a time, with a gate between each',
+    usage: '<pr>... [--wait <seconds>]',
+    text: [
+      'Merges each pull request in the order given, as the bot, and stops at the first one',
+      'that needs a person. Only the lead runs it.',
+      'Before the first merge it records every base branch, because GitHub forgets a base',
+      'when it deletes the branch. A pull request stacked on a squash-merged branch then',
+      'merges from the base it really shares with its old branch, not an older one.',
+      'A conflict that is only import lines is resolved by taking the union. Any other',
+      'conflict, a failing test or a missing approval stops the train.',
+      'Each merged tree runs the project\'s tests and `check` before it is pushed, and CI',
+      'must pass on the pushed merge before the squash.',
+    ],
+    options: [{ name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' }],
+    many: true,
+    example: 'yokoten train 1207 1209 1211',
   },
   {
     name: 'board',
