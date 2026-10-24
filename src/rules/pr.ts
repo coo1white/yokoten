@@ -482,9 +482,10 @@ export interface OwnerRule {
 export const isCodeOwnersHeader = (line: string): boolean => /^\^?(\[[^\]]*\]\s*)+(?:\s+\S.*)?$/.test(line);
 
 /**
- * The words of one CODEOWNERS line, with any comment removed. A `\` keeps the next
- * character in its word, so `docs/my\ file.md` is one pattern; `#` after a space starts
- * a comment.
+ * The words of one CODEOWNERS line, with any comment removed. A `\` before a space keeps
+ * the space in its word, so `docs/my\ file.md` is one pattern; `#` after a space starts a
+ * comment. Any other `\` stays in the word, because `compileCodeOwnersPattern` reads it
+ * as the literal next character, as GitHub does for `\*`.
  */
 export function codeOwnersWords(line: string): string[] {
   const words: string[] = [];
@@ -493,7 +494,10 @@ export function codeOwnersWords(line: string): string[] {
   for (let index = 0; index < line.length; index++) {
     const character = line[index] as string;
     if (character === '\\' && index + 1 < line.length) {
-      word += line[index + 1];
+      const next = line[index + 1] as string;
+      // A space is escaped here so the word does not end; the other escapes are kept
+      // for the pattern reader, which makes the next character literal.
+      word += /\s/.test(next) ? next : `\\${next}`;
       index += 1;
       started = true;
     } else if (/\s/.test(character)) {

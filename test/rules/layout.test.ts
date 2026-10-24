@@ -179,6 +179,14 @@ test('codeowners: a [class] that cannot compile is a stale line, not a crash (#6
   assert.equal(codeOwnersPatternMatches('src/[z-a].ts', 'src/[z-a].ts'), true);
 });
 
+test('codeowners: an escaped star matches no checkout file, so the line is stale (#790)', () => {
+  const found = checkCodeOwners(OWNED_FILES, '\\* @lead\n');
+  assert.equal(found.length, 1, 'the escaped star does not match every file');
+  assert.equal(found[0]?.id, 'stale-codeowners');
+  assert.deepEqual(checkCodeOwners(['*'], '\\* @lead\n'), [], 'a file called star is a match');
+  assert.equal(codeOwnersPatternMatches('\\*', 'src/a.ts'), false);
+});
+
 test('codeowners: an escaped space stays inside the pattern (#667)', () => {
   const files = [...OWNED_FILES, 'docs/my file.md'];
   assert.deepEqual(checkCodeOwners(files, 'docs/my\\ file.md @lead\n'), []);

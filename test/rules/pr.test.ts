@@ -372,6 +372,14 @@ test('CODEOWNERS: a section header, a [class] and an escaped space (#667)', () =
   assert.deepEqual(ownersOf(rules, 'D'), [], 'a section header with default owners is still no path');
 });
 
+test('CODEOWNERS: an escaped glob stays literal (#790)', () => {
+  const rules = parseCodeOwners('* @real\n\\* @other\n');
+  assert.deepEqual(ownersOf(rules, 'src/host/github/bot.ts'), ['@real'], 'an escaped star does not own every file');
+  assert.deepEqual(ownersOf(rules, 'README.md'), ['@real']);
+  assert.deepEqual(ownersOf(rules, '*'), ['@other'], 'it names the file called star');
+  assert.deepEqual(ownersOf(parseCodeOwners('\\? @one\n'), 'a/b.md'), [], 'an escaped question mark is literal too');
+});
+
 test('CODEOWNERS: an owned file needs tier A; the paths set the lowest tier', () => {
   const codeOwners = { text: '/kit/ @owner\n/AGENTS.md @owner\n', from: 'the base branch' as const };
   const pr = (tier: string, files: string[]) => ({ body: `tier: ${tier}\nCloses #1\n`, files });
