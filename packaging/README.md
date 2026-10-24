@@ -57,6 +57,6 @@ and checksum.
 
 ## Try it before a release
 
-`test/run/packaging.test.ts` covers the two files and the refusal of a bad version or
+`test/run/release/packaging.test.ts` covers the two files and the refusal of a bad version or
 checksum. On a Mac, `ruby -c packaging/out/homebrew-tap/Formula/yokoten.rb` checks the
 Ruby syntax. A real `brew install` and `scoop install` need a clean machine.
