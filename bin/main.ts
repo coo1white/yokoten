@@ -61,9 +61,9 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return Promise.all([guard, import('../src/commands/guard/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
     }
     case 'anchor':
-      return import('../src/commands/hook.ts').then((m) => m.runAnchor(invocation));
+      return import('../src/commands/guard/hook.ts').then((m) => m.runAnchor(invocation));
     case 'stops':
-      return import('../src/commands/hook.ts').then((m) => m.runStops(invocation));
+      return import('../src/commands/guard/hook.ts').then((m) => m.runStops(invocation));
     case 'worker':
       return import('../src/commands/guard/hook.ts').then((m) => m.runWorker(invocation));
     case 'desk':

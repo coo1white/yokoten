@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { releaseFix } from '../../rules/guards.ts';
+import { releaseFix } from '../../rules/guard/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
@@ -42,7 +42,7 @@ export const formatDenial = (reason: string): { stdout: string; exitCode: number
 /**
  * How a question reaches the person before the call runs (#401): PreToolUse's `ask`
  * decision, on exit 0. Claude Code shows the reason and runs the call only after a yes.
- * A runtime that has no such question gets the ask from commands/hook.ts as a note.
+ * A runtime that has no such question gets the ask from commands/guard/hook.ts as a note.
  */
 export const formatAsk = (reason: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } });
 
