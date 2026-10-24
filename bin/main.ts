@@ -58,6 +58,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
       return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
     }
+    case 'stops':
+      return import('../src/commands/hook.ts').then((m) => m.runStops(invocation));
     case 'worker':
       return import('../src/commands/hook.ts').then((m) => m.runWorker(invocation));
     case 'desk':
@@ -66,6 +68,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/advice/messages.ts').then((m) => m.runMsg(invocation));
     case 'check':
       return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
+    case 'mcp':
+      return import('../src/commands/advice/mcp.ts').then((m) => m.runMcp(invocation));
     case 'borrowed':
       return import('../src/commands/check.ts').then((m) => m.runBorrowed(invocation));
     case 'redact':

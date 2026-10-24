@@ -101,6 +101,23 @@ export function configFolder(env: Env): string | null {
   return home ? join(home, '.config', 'yokoten') : null;
 }
 
+/** The stop log's name, in yokoten's config folder (#621). */
+export const STOPS_FILE = 'stops.jsonl';
+/** The file that says the owner turned the stop log off (#621). */
+export const STOPS_OFF_FILE = 'stops-off';
+
+/** The stop log in yokoten's config folder, or null with no home folder. Nothing reads it from the project (#621). */
+export function stopsFile(env: Env): string | null {
+  const folder = configFolder(env);
+  return folder ? join(folder, STOPS_FILE) : null;
+}
+
+/** The file that marks the stop log off, or null with no home folder (#621). */
+export function stopsOffFile(env: Env): string | null {
+  const folder = configFolder(env);
+  return folder ? join(folder, STOPS_OFF_FILE) : null;
+}
+
 const CONFIG_FIX = "leave yokoten's config folder (~/.config/yokoten) as it is: only the lead changes the worker list and the bot's keys; if your task needs a change there, stop and tell the lead";
 const configFinding = (what: string) => finding('worker-mark', what, CONFIG_FIX);
 
