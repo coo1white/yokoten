@@ -7,8 +7,9 @@
 // says what it asks in plain words: the step names the idea, the adapter knows the host.
 //
 // The stage is worked out from what the project has, never saved: it is the stage of the
-// first step that is neither done nor "not now". The order is advice, not a gate: a later
-// step done early counts as done.
+// first step that is neither done, nor "not now", nor advice (`isAdvice`), so advice never
+// moves a project backwards (#479). The order is advice, not a gate: a later step done
+// early counts as done.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -195,6 +196,15 @@ const ciRuns = (ci: string, command: CommandTest) => {
   noteWork(ci.length);
   return command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
 };
+/** A bare `yokoten <sub>` command, as a fix text prints it, at the start of a `run:` command (#479). */
+const runsBare = (sub: string) => new RegExp(String.raw`^yokoten(?:@[\w.^~-]+)?[ \t]+${sub}\b`);
+/**
+ * Whether the workflows run a yokoten subcommand: by its path or a package runner
+ * (`ciRuns`), or bare, as the fix texts print it (`yokoten speed tests.tap`), in a `run:`
+ * step. A fix that names a command must make the step it fixes count (#479).
+ */
+const ciRunsSubcommand = (ci: string, sub: string) =>
+  ciRuns(ci, runs(sub)) || runLines(ci).flatMap(commands).some((command) => runsBare(sub).test(command));
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
 // The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).
@@ -821,7 +831,7 @@ export const ROAD: Step[] = [
     isAdvice: true,
     // The budget lives in CI: the tests job writes a TAP report and `yokoten speed` judges
     // it (#479). Without CI, the step is "not now" with the rest of them.
-    check: catchLongLines((root) => runs('speed').test(ciText(root))),
+    check: catchLongLines((root) => ciRunsSubcommand(ciText(root), 'speed')),
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not check how long the tests take',
     fix: (root) =>
@@ -830,7 +840,7 @@ export const ROAD: Step[] = [
         : 'add a step after the tests that runs `yokoten speed <tap report> --budget <seconds>`; Node\'s test runner writes one with `--test-reporter=tap`',
     byHand: 'CI says how long the tests took, and fails when they pass the budget you set',
     why: 'a slow suite teaches people to stop waiting for CI, and then nothing gets checked',
-    how: 'a workflow step runs `yokoten speed` with a budget, after a test run that wrote a TAP report; the tests job `yokoten init` writes does this for a `node --test` project',
+    how: 'a workflow step runs `yokoten speed` (by its path, with npx, or bare) with a budget, after a test run that wrote a TAP report; the tests job `yokoten init` writes does this for a `node --test` project',
     withoutCi: 'time the tests on your machine now and then, and compare',
   },
   {

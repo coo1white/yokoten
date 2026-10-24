@@ -181,7 +181,8 @@ export interface SpeedView {
 
 /**
  * The test time in plain words: the total against the budget, the slowest tests, the
- * files that take half of it, and the change since the last run when one is given.
+ * share of the run that the slowest files hold, and the change since the last run when one
+ * is given.
  * A run may take LOAD_ROOM more before it fails; the line says which side of the budget
  * it is on either way.
  */
@@ -209,8 +210,12 @@ export function speedView(report: SpeedReport, { budgetSeconds = SPEED_BUDGET, p
       if (covered >= known / 2) break;
     }
     const named = half.slice(0, NAMED);
-    const count = named.length === 1 ? '1 test file takes' : `${named.length} test files take`;
-    lines.push('', `${count} half of the time:`, ...named.map((file) => `- ${formatDuration(file.ms)}: ${file.path} (${file.count === 1 ? '1 test' : `${file.count} tests`})`));
+    // Only the slowest tests are matched to a file, so the sum is a share of the run, not
+    // half of it: say the share, which is always true (#479).
+    const shown = named.reduce((sum, file) => sum + file.ms, 0);
+    const share = report.ms > 0 ? Math.round((shown / report.ms) * 100) : 0;
+    const count = named.length === 1 ? '1 test file holds' : `${named.length} test files hold`;
+    lines.push('', `${count} ${share}% of the run:`, ...named.map((file) => `- ${formatDuration(file.ms)}: ${file.path} (${file.count === 1 ? '1 test' : `${file.count} tests`})`));
   }
   if (previous) {
     const change = report.ms - previous.ms;
@@ -230,7 +235,11 @@ function orderFiles(files: string[], slowFiles: string[]): string[] {
   return [...files].sort((left, right) => (order.get(left) ?? Number.MAX_SAFE_INTEGER) - (order.get(right) ?? Number.MAX_SAFE_INTEGER) || left.localeCompare(right));
 }
 
-/** Workflows that run the tests in one job, with no shard and no matrix. */
+/** A shard: a matrix key named `shard`, or a runner flag (`--test-shard`, `--shard`). */
+const SHARDS = /--(?:test-)?shard\b|^[ \t]*shard[ \t]*:/m;
+
+/** Workflows that run the tests in one job, with no shard: a matrix of operating systems
+ * runs the whole suite on each, so it is not a shard (#479). */
 export function workflowsWithoutShards(root: string): string[] {
   const dir = join(root, '.github', 'workflows');
   let names: string[];
@@ -248,7 +257,7 @@ export function workflowsWithoutShards(root: string): string[] {
         return false;
       }
       const runsTests = /^[ \t]*-?[ \t]*run:.*\b(?:test|pytest|vitest|jest|rspec|phpunit)\b/m.test(text);
-      return runsTests && !/matrix:/.test(text) && !/--test-shard/.test(text);
+      return runsTests && !SHARDS.test(text);
     })
     .map((name) => `.github/workflows/${name}`);
 }

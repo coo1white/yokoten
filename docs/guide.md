@@ -91,8 +91,8 @@ flowchart LR
 Agents add tests fast. A suite then gets slow, and a slow red run teaches people to stop
 waiting. `yokoten init` writes a tests job that runs the tests in three shards, with
 `fail-fast: false`. It then runs `yokoten speed`. The command prints the total, the
-slowest tests and the test files that take half of it. It fails when the run passes the
-budget by more than the room a busy runner needs.
+slowest tests, and the share of the run that the slowest test files hold. It fails when
+the run passes the budget by more than the room a busy runner needs.
 
 When the run is over, the command says what to change. The advice is grouped by cause:
 
@@ -924,7 +924,7 @@ It puts three safe defaults in `.github/` too:
 | `check --pr <number>` | The same check for one pull request, read through `gh`, for a repo without CI. See [A private repo without CI](#a-private-repo-without-ci) |
 | `check --issue` | In CI: the issue's title and labels. See [Issue titles](#issue-titles) |
 | `borrowed [--dry-run] [--json]` | Compares each file in `src/borrowed/` with upstream's default branch, through `gh`, and opens one issue per source that changed. A security fix is called out in the title. `--dry-run` shows the report and opens nothing; `--json` prints the report as data. See [Borrowed code](#borrowed-code) |
-| `speed [report] [--budget <seconds>]` | The test time against the budget: the total, the slowest tests and the test files that take half of it. It reads a TAP report from Node's test runner, or a folder with one per shard, and exits 1 when the run passes the budget plus the room a busy runner needs. Over the budget, it names what to change: shards with `fail-fast: false`, in-process calls, one shared fixture, or a timing test with room for noise. `yokoten init` writes the step into a new Node tests job. See [Keep CI fast](#keep-ci-fast) |
+| `speed [report] [--budget <seconds>]` | The test time against the budget: the total, the slowest tests and the share of the run that the slowest test files hold. It reads a TAP report from Node's test runner, or a folder with one per shard, and exits 1 when the run passes the budget plus the room a busy runner needs. Over the budget, it names what to change: shards with `fail-fast: false`, in-process calls, one shared fixture, or a timing test with room for noise. `yokoten init` writes the step into a new Node tests job. See [Keep CI fast](#keep-ci-fast) |
 | `redact` | Reads text on stdin and writes it with your details hidden: `<owner>`, `<email>`, `<host>`, `<mark>`. The tool-call guard sends risky commands through it. See [Privacy](#privacy) |
 | `marks allow <mark> --here` | Lets one of your private marks through in this repo only, with no yokoten.json. The allow is kept on this machine, never in the repo. `--remove` takes it back. See [Privacy](#privacy) |
 | `anchor [--json]` | Lists the anchors recorded in this checkout, newest first. A worker records one when its checks pass and its tree is clean. An anchor is a commit: go back with `git switch -c try-2 <commit>`, and nothing is reset or deleted. See [The stop check](#the-stop-check) |

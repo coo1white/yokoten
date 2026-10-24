@@ -685,6 +685,15 @@ test('road: the time budget step is done when CI runs yokoten speed (#479)', () 
   assert.equal(budget.stage, 2);
   writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: node .yokoten/bin/yokoten.ts speed tests.tap --budget 180\n');
   assert.equal(budget.check(dir, {}, undefined), true);
+  // The fix text names a bare command, and a package runner is the other common form;
+  // both must make the step count (#479).
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: npx yokoten speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), true);
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: yokoten speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), true);
+  // A name that only looks like the command is not one.
+  writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: echo yokoten speed tests.tap --budget 180\n');
+  assert.equal(budget.check(dir, {}, undefined), false);
   writeFileSync(join(workflows, 'yokoten.yml'), 'jobs:\n  tests:\n    steps:\n      - run: npm test\n');
   assert.equal(budget.check(dir, {}, undefined), false);
   assert.equal(budget.what(dir, {}, undefined), 'CI does not check how long the tests take');

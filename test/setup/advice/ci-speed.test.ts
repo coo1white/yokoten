@@ -54,7 +54,7 @@ test('speed: over the budget says by how much, and six equal files name three th
   const view = speedView(report, { budgetSeconds: 10, sources });
   assert.equal(view.isOver, true);
   assert.match(view.lines[0], /^The tests took 1 min, over the budget of 10 s by 50\.0 s, past the room a busy runner needs \(50%\)\.$/);
-  assert.ok(view.lines.includes('3 test files take half of the time:'));
+  assert.ok(view.lines.includes('3 test files hold 50% of the run:'));
   assert.ok(view.lines.includes('- 10.0 s: test/file-0.test.ts (1 test)'));
   assert.deepEqual(testsByFile(report.tests, sources).length, 6);
 });
@@ -94,6 +94,10 @@ test('speed: advice names the real test files and the workflow that holds one jo
 test('speed: a workflow with shards is left alone, and a fast project gets no advice (#479)', () => {
   const sharded = project({ '.github/workflows/ci.yml': 'jobs:\n  tests:\n    strategy:\n      matrix:\n        shard: [1, 2, 3]\n    steps:\n      - run: node --test --test-shard=${{ matrix.shard }}/3\n' });
   assert.deepEqual(workflowsWithoutShards(sharded), []);
+  // A matrix of operating systems runs the whole suite on each, so it is one test process
+  // per job, not a shard: it keeps the advice (#479).
+  const systems = project({ '.github/workflows/ci.yml': 'jobs:\n  tests:\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest]\n    runs-on: ${{ matrix.os }}\n    steps:\n      - run: npm test\n' });
+  assert.deepEqual(workflowsWithoutShards(systems), ['.github/workflows/ci.yml']);
   const named = project({ '.github/workflows/ci.yml': 'jobs:\n  tests:\n    steps:\n      - run: go test ./...\n' });
   assert.deepEqual(workflowsWithoutShards(named), ['.github/workflows/ci.yml']);
   const clean = project({ 'test/plain.test.ts': "test('is plain', () => { assert.equal(1, 1); });\n" });

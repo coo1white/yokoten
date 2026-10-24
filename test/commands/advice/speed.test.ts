@@ -18,7 +18,7 @@ test('speed: under the budget exits 0 and says so (#479)', async () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^The tests took 1 min, under the budget of 100 s\./);
   assert.match(result.stdout, /The slowest tests:\n- 40\.0 s: rounds each line/);
-  assert.match(result.stdout, /1 test file takes half of the time:[\s\S]*test\/cart\.test\.ts \(2 tests\)/);
+  assert.match(result.stdout, /1 test file holds 83% of the run:[\s\S]*test\/cart\.test\.ts \(2 tests\)/);
   assert.doesNotMatch(result.stdout, /What you can do:/, 'a fast run gets no advice');
 });
 
