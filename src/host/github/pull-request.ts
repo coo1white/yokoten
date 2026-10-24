@@ -9,7 +9,7 @@ import type { Env } from '../../rules/config.ts';
 import { CODEOWNERS_PLACES } from '../../rules/layout.ts';
 import { type Finding, finding, formatFinding, formatFindingMarks, place } from '../../rules/message.ts';
 import type { CodeOwners, PullRequest } from '../../rules/pr.ts';
-import { readGit } from '../../run/check.ts';
+import { readGit } from '../../run/check/inspect.ts';
 import { asText, type Gh, isObject, labelNames, repoOf, unread } from './planning.ts';
 
 // A pull request as GitHub Actions describes it: the event file of the run. The event

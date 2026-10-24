@@ -428,7 +428,7 @@ gh 读不到时，批准的人写成 unknown，命令仍然以 0 退出。
 版本 1。这是第一种样子，自己没有版本字段。
 
 - [src/rules/pr.ts](../../../src/rules/pr.ts) 和 [test/rules/pr.test.ts](../../../test/rules/pr.test.ts)。
-- [src/run/hook.ts](../../../src/run/hook.ts) 和 [test/run/check.test.ts](../../../test/run/check.test.ts)。
+- [src/run/hook.ts](../../../src/run/hook.ts) 和 [test/run/check/inspect.test.ts](../../../test/run/check/inspect.test.ts)。
 - [src/commands/check.ts](../../../src/commands/check.ts) 和 [test/commands/check.test.ts](../../../test/commands/check.test.ts)。
 
 ## 教训文件

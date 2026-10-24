@@ -11,7 +11,7 @@
 // label is never deleted or changed.
 
 import type { Env } from '../rules/config.ts';
-import { gitConfig } from '../run/check.ts';
+import { gitConfig } from '../run/check/inspect.ts';
 import {
   type Board,
   createBoard,

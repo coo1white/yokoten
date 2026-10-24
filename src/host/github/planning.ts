@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { homeOf } from '../../rules/privacy.ts';
-import type { BorrowedHost, UpstreamCommit } from '../../run/check.ts';
+import type { BorrowedHost, UpstreamCommit } from '../../run/check/inspect.ts';
 
 export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 export const asText = (value: unknown): string => (typeof value === 'string' ? value : '');

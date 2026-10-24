@@ -25,7 +25,7 @@ import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
-import { readGit } from '../../../run/check.ts';
+import { readGit } from '../../../run/check/inspect.ts';
 import { hookCliPath } from '../../../setup/init.ts';
 import { type MachineState, type ScheduleRoom, type ScheduleSettings, type ScheduleSummary, roomStateOf, SCHEDULE_DEFAULTS, takeStarts } from '../schedule.ts';
 import { planOf, roomOf } from './waiting.ts';

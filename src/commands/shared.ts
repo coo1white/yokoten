@@ -6,7 +6,7 @@ import { annotations, isGitHubActions, stepSummary } from '../host/github/index.
 import type { Env } from '../rules/config.ts';
 import { finding, type Finding, formatFinding, notRepoFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
-import { gitRoot } from '../run/check.ts';
+import { gitRoot } from '../run/check/inspect.ts';
 import { closestWord, findCommand, HELP_OPTIONS } from '../run/cli.ts';
 
 /** A stream a command writes to: the process's own, or a test's stand-in. A real stream has its `fd`. */

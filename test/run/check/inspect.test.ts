@@ -1,6 +1,6 @@
-// Tests for src/run/check.ts.
+// Tests for src/run/check/inspect.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -26,9 +26,9 @@ import {
   makeSandbox,
   makeTempDir,
   makeTranslatedRepo,
-} from '../repo/helpers.ts';
-import { DEFAULTS } from '../../src/rules/config.ts';
-import { useRealHome } from '../../src/rules/privacy.ts';
+} from '../../repo/helpers.ts';
+import { DEFAULTS } from '../../../src/rules/config.ts';
+import { useRealHome } from '../../../src/rules/privacy.ts';
 import {
   assumeEmptyFolder,
   batchBlobs,
@@ -55,7 +55,7 @@ import {
   watchBorrowed,
   syncPull,
   withGitReads,
-} from '../../src/run/check.ts';
+} from '../../../src/run/check/inspect.ts';
 
 // A merge leaves the index and MERGE_HEAD as the pre-merge-commit hook sees them (#246).
 function mergeSandbox() {

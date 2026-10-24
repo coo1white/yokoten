@@ -21,9 +21,8 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { type ActionsHealth, cutPoint, readActionsRuns, readHealthPullChecks, renderActionsHealth, summarizeActionsHealth } from '../../src/commands/check.ts';
-import { borrowedIssue, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
-import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
+import { type ActionsHealth, borrowedIssue, cutPoint, hasOpenIssue, prSyncEnv, pullLine, readActionsRuns, readHealthPullChecks, renderActionsHealth, summarizeActionsHealth } from '../../src/commands/check.ts';
+import { type BorrowedHost, watchBorrowed } from '../../src/run/check/inspect.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
 // On run, not call: one real child keeps the check entry point (exit code and output through the binary) tested (#475).
@@ -140,7 +139,9 @@ test('check --pr: CODEOWNERS comes from the base branch, so a pull request canno
   assert.equal(r.status, 1, r.stdout);
   assert.match(r.stderr, /this changes 1 file\(s\) that CODEOWNERS owns \(read from the base branch\): kit\/a\.md/);
   r = await sandbox.call(['check', '--pr'], { extra: event('A') });
-  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /moves a hard line: this CODEOWNERS file is a hard line/);
+  assert.doesNotMatch(r.stderr, /CODEOWNERS owns/);
 });
 
 test('check --pr: a large pull request gets a note, never a failure; lock files do not count (#57)', async () => {
@@ -443,24 +444,24 @@ test('check --pr: a Dependabot pull request passes with notes; the same body fro
   };
   const summary = join(sandbox.home, 'summary.md');
   let result = await sandbox.call(['check', '--pr'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]') } });
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /moves a hard line: a workflow file is a hard line/);
   assert.match(result.stdout, /check --pr: note: 9 pull request rule\(s\) Dependabot does not meet\n- body: the first line is not a tier\. .*Dependabot opened this pull request, so it is a note\./);
   assert.match(result.stdout, /\n- milestone: none set\./);
-  assert.match(result.stdout, /check --pr: ok\n$/);
   result = await sandbox.call(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]'), GITHUB_ACTIONS: 'true', GITHUB_STEP_SUMMARY: summary } });
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   const report = JSON.parse(result.stdout);
-  assert.deepEqual([report.ok, report.findings, report.notes.map((note: { id: string }) => note.id)], [true, [], ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-milestone', 'pr-labels', 'pr-labels']]);
+  assert.deepEqual([report.ok, report.findings.map((f: { id: string }) => f.id), report.notes.map((note: { id: string }) => note.id)], [false, ['rules-looser'], ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-milestone', 'pr-labels', 'pr-labels']]);
   assert.match(readFileSync(summary, 'utf8'), /#### Notes \(9\): these never fail the check\n[^]*\| \[pr-tier\]\(\S+\) \| body: the first line is not a tier \|/);
 
   // The same body from anyone else fails as before.
   result = await sandbox.call(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('someone') } });
   assert.equal(result.status, 1);
-  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-milestone', 'pr-labels', 'pr-labels']);
-  // A bad title from Dependabot still fails.
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-milestone', 'pr-labels', 'pr-labels', 'rules-looser']);
+  // A bad title from Dependabot still fails. The workflow bump is a hard line too.
   result = await sandbox.call(['check', '--pr', '--json'], { extra: { GITHUB_EVENT_PATH: event('dependabot[bot]', 'Bump the actions group with 1 update') } });
   assert.equal(result.status, 1);
-  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title']);
+  assert.deepEqual(JSON.parse(result.stdout).findings.map((f: { id: string }) => f.id), ['pr-title', 'rules-looser']);
 });
 
 /** The error code when this machine may not listen on 127.0.0.1 (a sandbox), else null. */
@@ -911,6 +912,40 @@ test('marks: the count names both files when the setting adds one (#656)', async
   assert.equal(counts.status, 0, counts.stderr);
   assert.match(counts.stdout, /^yokoten marks: 2 in ~\/\.config\/yokoten\/private-marks and the file YOKOTEN_PRIVATE_MARKS names \(the values are never shown\)$/m);
   assert.ok(!VALUES.test(counts.stdout + counts.stderr));
+});
+
+test('check --pr: a removed guard test fails; a docs-only change stays ok (#697)', async () => {
+  const sandbox = makeSandbox();
+  const guard = `export function checkCommand(command: string, _options: { env: Record<string, string>; cwd: string | null }): { id: string } | null {\n  if (command.includes('push --force')) return { id: 'force-push' };\n  return null;\n}\n`;
+  const rules = "export const RULES = {\n  'force-push': { rule: 'no force push', why: 'it drops commits', check: 'the guard' },\n};\n";
+  const spec = "import { test } from 'node:test';\nconst blocked = (command: string) => command;\ntest('force push is refused', () => {\n  blocked('git push --force');\n});\n";
+  sandbox.write('src/rules/guards.ts', guard);
+  sandbox.write('src/rules/message.ts', rules);
+  sandbox.write('test/rules/guards.test.ts', spec);
+  sandbox.write('README.md', 'One.\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const commit = (files: Record<string, string>) => {
+    for (const [path, text] of Object.entries(files)) sandbox.write(path, text);
+    sandbox.git('add', '-A');
+    sandbox.git('commit', '-qm', 'head');
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  const event = (head: string) => {
+    const file = join(sandbox.home, 'event.json');
+    const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nNo changelog: a test\nMade with worker (opus)\n';
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha: head } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  const docs = commit({ 'README.md': 'One.\nTwo.\n' });
+  let result = await sandbox.call(['check', '--pr'], { extra: event(docs) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(sandbox.git('reset', '--hard', base).status, 0);
+  const removed = commit({ 'test/rules/guards.test.ts': "import { test } from 'node:test';\ntest('empty', () => {});\n" });
+  result = await sandbox.call(['check', '--pr'], { extra: event(removed) });
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /test\/rules\/guards\.test\.ts:\d+: this change makes the rules looser: test "force push is refused" was removed/);
 });
 
 // ---- Actions health (#647) ----

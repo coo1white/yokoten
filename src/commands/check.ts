@@ -27,7 +27,8 @@ import { finding, type Finding, formatFinding, isWarningFinding } from '../rules
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, madeWithModelNote, parseMadeWith, parseProvenance, provenanceFindings, splitForDependabot } from '../rules/pr.ts';
 import { BOARD_AGENT_FILE, parseBoardAgent, readBoardWorktrees } from './advice/board/agents.ts';
 import { parseChange } from '../run/changelog.ts';
-import { borrowedFiles, type BorrowedChange, check, checkHistory, GitReadError, gitReadFinding, type GitRun, historyTimeZones, indexFiles, readGit, syncPull, timeZoneNote, unstageHint, verifyMerge, watchBorrowed } from '../run/check.ts';
+import { check, checkHistory, borrowedFiles, type BorrowedChange, GitReadError, gitReadFinding, type GitRun, historyTimeZones, indexFiles, readGit, syncPull, timeZoneNote, unstageHint, verifyMerge, watchBorrowed } from '../run/check/inspect.ts';
+import { ruleChange, ruleChangeFindings } from '../run/check/loosen.ts';
 import { readBranchDesks } from '../run/hook.ts';
 import { isCodeFile, nameNotes } from '../run/notes/names.ts';
 import { addedIgnores, type AllowEntry, hideHome, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
@@ -267,6 +268,14 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       problems = split.problems;
       notes.push(...split.notes);
       printNotes(split.notes, 'pull request rule(s) Dependabot does not meet');
+      // Record 0026: the machine says whether the rules got looser. A looser change or a
+      // hard line fails, for Dependabot too. A stricter change is a note.
+      const rules = ruleChange(root, pr.base, pr.head, env);
+      const found = ruleChangeFindings(rules);
+      if (rules.verdict === 'stricter-or-neutral') {
+        notes.push(...found);
+        printNotes(found, 'stricter rule(s)');
+      } else problems.push(...found);
     }
   } else {
     problems = mode === 'history' ? checkHistory(root, { config, env, notes }) : check(root, { config, env, staged: mode === 'staged', notes });

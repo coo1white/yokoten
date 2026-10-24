@@ -22,7 +22,7 @@
 // one marked line to the shell profile, and never edits the profile in a run with no terminal.
 
 import { execFileSync } from 'node:child_process';
-import { configEntries } from '../run/check.ts';
+import { configEntries } from '../run/check/inspect.ts';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { basename, delimiter, dirname, join, parse, relative, resolve, sep } from 'node:path';

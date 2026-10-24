@@ -11,7 +11,7 @@ import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, prints
 import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
 import { allowedOutput, askedOutput, fromGuardInput, type GuardOutput, parseGuardInput, protocolRefusal, refusedOutput } from '../run/protocol.ts';
-import { checkChanged, readGit } from '../run/check.ts';
+import { checkChanged, readGit } from '../run/check/inspect.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
   type Action,

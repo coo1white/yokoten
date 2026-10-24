@@ -428,7 +428,7 @@ How yokoten checks it. The Made-with check names writers and reviewers. `provena
 Version 1. This is the first form. It has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
-- [src/run/hook.ts](../src/run/hook.ts) and [test/run/check.test.ts](../test/run/check.test.ts).
+- [src/run/hook.ts](../src/run/hook.ts) and [test/run/check/inspect.test.ts](../test/run/check/inspect.test.ts).
 - [src/commands/check.ts](../src/commands/check.ts) and [test/commands/check.test.ts](../test/commands/check.test.ts).
 
 ## The lesson file
