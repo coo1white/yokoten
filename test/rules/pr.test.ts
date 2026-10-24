@@ -29,6 +29,7 @@ import {
   isChangeFile,
   largeDiff,
   longSentences,
+  madeWithModelNote,
   ownersOf,
   parseCodeOwners,
   noMilestoneFinding,
@@ -190,6 +191,31 @@ test('pull request body: the last line is `Made with <agent> (<model>)` (#570)',
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides it');
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- 🤖 Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides the emoji line');
   assert.deepEqual(bodies(`${goodPr().body}<!-- a note -->\n`), [], 'a trailing comment is set aside');
+});
+
+// #748: the `Made with` line names the model the worker ran. The worker's own checkout
+// filed that model in its status file; a harness's prompt can make the agent guess another.
+test('Made with: the worker model matches its status file, or a note says so (#748)', () => {
+  const body = (line: string) => `tier: B\nCloses #47\n\n## Why\nw\n\n## What changed\n- a\n\n## How tested\nthe tests pass\n\n${line}\n`;
+  const note = madeWithModelNote(body('Made with lead Codex (opus), worker (gpt-6.1-sol)'), 'deepseek-flash', '748-a-desk');
+  assert.equal(note?.id, 'pr-made-with');
+  assert.match(note?.what ?? '', /names worker gpt-6\.1-sol, but the status file of 748-a-desk says the worker ran deepseek-flash/);
+  assert.match(note?.fix ?? '', /name the model the worker ran \(deepseek-flash\)/);
+  // Positive controls: the worker's model, whatever its case or spacing, gives no note.
+  assert.equal(madeWithModelNote(body('Made with worker (deepseek-flash)'), 'deepseek-flash', 'b'), null, 'the short form');
+  assert.equal(madeWithModelNote(body('Made with worker DeepSeek (DeepSeek-Flash), reviewed by Grok (grok-5), lead Codex (gpt-6.1-sol)'), 'deepseek-flash', 'b'), null, 'the worker model matches, and case does not');
+  // A lead, a reviewer or another agent that names the status model does not hide a wrong worker model.
+  for (const line of [
+    'Made with worker Codex (opus), lead DeepSeek (deepseek-flash)',
+    'Made with worker Codex (opus), reviewed by DeepSeek (deepseek-flash)',
+    'Made with worker Codex (opus), DeepSeek (deepseek-flash)',
+  ]) assert.match(madeWithModelNote(body(line), 'deepseek-flash', 'b')?.what ?? '', /names worker opus, but/);
+  // A line with no worker role has no worker model to compare, even when the lead names it.
+  assert.equal(madeWithModelNote(body('Made with lead DeepSeek (deepseek-flash), Grok (grok-5)'), 'deepseek-flash', 'b'), null, 'no worker role');
+  // Nothing to compare, or no good line: no note.
+  assert.equal(madeWithModelNote(body('Made with worker (opus)'), '', 'b'), null, 'no status model');
+  assert.equal(madeWithModelNote(body('Made with worker (opus)'), '  ', 'b'), null, 'a blank status model');
+  assert.equal(madeWithModelNote('no Made with line', 'deepseek-flash', 'b'), null, 'no line');
 });
 
 // #673: the line may name the reviewers; the roles can be read back.
