@@ -221,6 +221,7 @@ agent 离开以后，它的列表也丢掉。
 - [src/agents/runtimes/muse.ts](../../../src/agents/runtimes/muse.ts) 和 [test/agents/runtimes/muse.test.ts](../../../test/agents/runtimes/muse.test.ts)。
 - [src/agents/runtimes/small/deepseek-harness.ts](../../../src/agents/runtimes/small/deepseek-harness.ts) 和 [test/agents/runtimes/small/deepseek-harness.test.ts](../../../test/agents/runtimes/small/deepseek-harness.test.ts)。
 - [src/agents/runtimes/grok.ts](../../../src/agents/runtimes/grok.ts) 和 [test/agents/runtimes/grok.test.ts](../../../test/agents/runtimes/grok.test.ts)。
+- [src/agents/runtimes/runtime.ts](../../../src/agents/runtimes/runtime.ts) 和 [test/agents/runtimes/runtime.test.ts](../../../test/agents/runtimes/runtime.test.ts)。
 - [src/agents/runtimes/small/opencode.ts](../../../src/agents/runtimes/small/opencode.ts) 和 [test/agents/runtimes/small/opencode.test.ts](../../../test/agents/runtimes/small/opencode.test.ts)。
 
 ## 状态文件
@@ -286,6 +287,7 @@ agent 离开以后，它的列表也丢掉。
 | `task` | agent | 文本 |
 | `worktree` | agent | 文本 |
 | `doing` | agent | 文本 |
+| `log` | agent | 文本。纯文本日志的绝对路径，必须在工位内或运行时的日志文件夹内。看板找不到会话日志时就读它。 |
 | `updated` | agent，还有停止 hook | 文本。hook 写成没有毫秒的 UTC 时间，例如 `2026-10-23T00:00:00Z`。 |
 | `started` | agent | 文本，格式和 `updated` 一样：这份工作开始的时间。没有就用文件创建的时间，再没有就用 `updated`。 |
 | `role` | agent | `lead`、`engineer`、`reviewer`、`verifier` 或 `helper`。别的词，包括 `worker`，都变成空。 |
@@ -383,7 +385,7 @@ Dependabot 开的 PR，这一行有问题只是提醒，不算失败。
 版本 1。这一行没有版本字段。
 
 - [src/rules/pr.ts](../../../src/rules/pr.ts) 和 [test/rules/pr.test.ts](../../../test/rules/pr.test.ts)。
-- [src/commands/bot.ts](../../../src/commands/bot.ts) 和 [test/commands/bot.test.ts](../../../test/commands/bot.test.ts)。
+- [src/commands/merge/bot.ts](../../../src/commands/merge/bot.ts) 和 [test/commands/merge/bot.test.ts](../../../test/commands/merge/bot.test.ts)。
 
 ## 来源
 
@@ -463,7 +465,7 @@ CI 里从基础分支读 CODEOWNERS。
 | `hidden` | 这些目录如果存在就藏起来：`/home`、`/root`、`/mnt`、`/media`、`/run`，再加上家目录和工位的上一级。在 `darwin` 上是 `/Users`、`/Volumes`，再加上家目录和上一级。 |
 | `locked` | `.git/config`、`.git/hooks` 和 `.git/yokoten-worker` 保持只读。在团队里，`.git/yokoten-desk.json` 也锁上。 |
 | `hosts` | 只能到 API 主机，而且要经过外面的代理。只接受 CONNECT。端口是 `443`，除非主机那一项自己写了端口。隧道最多 `64` 条。`10 minutes` 没有数据就关掉。代理不读隧道里的内容。 |
-| `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。 |
+| `env` | `YOKOTEN_ROLE` 是 `worker`。`TZ` 是 `UTC`。在团队里还会设置 `YOKOTEN_DESK` 和 `YOKOTEN_TEAM`。知道模型时，`YOKOTEN_MODEL` 写出模型。只有当厂商不是运行环境自己的厂商时，才设置 `YOKOTEN_VENDOR`，让 agent 知道自己实际是谁。 |
 | `command` | lead 传进来的那条命令。 |
 
 `/run` 要藏起来，因为那里的 socket 能在栅栏外面启动程序。

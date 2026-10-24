@@ -8,7 +8,7 @@ import { checkCommand, checkEdit } from '../../rules/guard/guards.ts';
 import { DEFAULTS } from '../../rules/config.ts';
 import { checkBuildOutput, checkLayout } from '../../rules/layout.ts';
 import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy.ts';
-import { SECRET_CONTROL } from '../../rules/secrets.ts';
+import { SECRET_CONTROL } from '../../rules/privacy/secrets.ts';
 import { judge } from '../../run/hook.ts';
 import { readToolCall, sandboxProblem as claudeSandboxProblem } from '../../agents/runtimes/claude-code.ts';
 import { addProjectPlugin } from '../../agents/runtimes/small/opencode.ts';

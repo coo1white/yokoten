@@ -4,6 +4,7 @@
 // ~/.config/yokoten/sessions/ (#405).
 
 import { readSync } from 'node:fs';
+import { identityLine } from '../../agents/desk/team/who.ts';
 import * as claudeCode from '../../agents/runtimes/claude-code.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import { ghIn } from '../../host/github/index.ts';
@@ -46,6 +47,10 @@ export function runDoctor(invocation: Invocation): number {
   if (root && session) noteSessionStart(cwd, env, agent, start?.model ?? '', start?.transcriptPath ?? '');
   // A compaction start repeats only what changed (#405); any other start says all.
   const lines = root && session && blocks && !options.flags.has('--json') ? blocksToSay(env, start, blocks).flat() : allLines;
+  // A desk that named a vendor other than the harness's (#748) speaks first: the agent
+  // learns who it is before the harness's prompt tells it about its own maker.
+  const identity = root && session && !options.flags.has('--json') ? identityLine(agent, env) : '';
+  if (identity) lines.unshift(identity);
   // A worker, by YOKOTEN_ROLE or by the mark on its worktree (#555), hears that the guard sees
   // it as one (#402), on every start, a compaction too: its role is safety, never news to
   // drop. The lead hears nothing.

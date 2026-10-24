@@ -220,6 +220,7 @@ Version 1. `Action` has no version field.
 - [src/agents/runtimes/muse.ts](../src/agents/runtimes/muse.ts) and [test/agents/runtimes/muse.test.ts](../test/agents/runtimes/muse.test.ts).
 - [src/agents/runtimes/small/deepseek-harness.ts](../src/agents/runtimes/small/deepseek-harness.ts) and [test/agents/runtimes/small/deepseek-harness.test.ts](../test/agents/runtimes/small/deepseek-harness.test.ts).
 - [src/agents/runtimes/grok.ts](../src/agents/runtimes/grok.ts) and [test/agents/runtimes/grok.test.ts](../test/agents/runtimes/grok.test.ts).
+- [src/agents/runtimes/runtime.ts](../src/agents/runtimes/runtime.ts) and [test/agents/runtimes/runtime.test.ts](../test/agents/runtimes/runtime.test.ts).
 - [src/agents/runtimes/small/opencode.ts](../src/agents/runtimes/small/opencode.ts) and [test/agents/runtimes/small/opencode.test.ts](../test/agents/runtimes/small/opencode.test.ts).
 
 ## The status file
@@ -285,6 +286,7 @@ The board skips a file that is not a JSON object.
 | `task` | the agent | text |
 | `worktree` | the agent | text |
 | `doing` | the agent | text |
+| `log` | the agent | text. An absolute path to a plain text log inside the worktree or a runtime's log folder. The board reads it when it finds no session log. |
 | `updated` | the agent, and the stop hook | text. The hook writes UTC time with no milliseconds, such as `2026-10-23T00:00:00Z`. |
 | `started` | the agent | text, the same form as `updated`: when this work started. The board falls back to the file's birth time, then to `updated`. |
 | `role` | the agent | `lead`, `engineer`, `reviewer`, `verifier` or `helper`. Any other word, including `worker`, becomes empty. |
@@ -382,7 +384,7 @@ How yokoten checks it. `parseMadeWith` reads the last line. `madeWithFindings` r
 Version 1. The line has no version field.
 
 - [src/rules/pr.ts](../src/rules/pr.ts) and [test/rules/pr.test.ts](../test/rules/pr.test.ts).
-- [src/commands/bot.ts](../src/commands/bot.ts) and [test/commands/bot.test.ts](../test/commands/bot.test.ts).
+- [src/commands/merge/bot.ts](../src/commands/merge/bot.ts) and [test/commands/merge/bot.test.ts](../test/commands/merge/bot.test.ts).
 
 ## Provenance
 
@@ -462,7 +464,7 @@ On a team, the team folder is read-only, and only that agent's outbox is writabl
 | `hidden` | When they exist: `/home`, `/root`, `/mnt`, `/media`, `/run`, plus home and the desk's parent. On `darwin`: `/Users`, `/Volumes`, plus home and the parent. |
 | `locked` | `.git/config`, `.git/hooks` and `.git/yokoten-worker` stay read-only. On a team, `.git/yokoten-desk.json` is locked too. |
 | `hosts` | API hosts only, through a proxy that runs outside. CONNECT only. Port `443`, unless the host entry names a port. At most `64` tunnels. A quiet tunnel closes after `10 minutes`. The proxy does not read the tunnel. |
-| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. |
+| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. When the model is known, `YOKOTEN_MODEL` names it. `YOKOTEN_VENDOR` is set only when its vendor is not the runtime's own, so the agent knows what it really is. |
 | `command` | The command the lead passed. |
 
 `/run` is hidden because sockets there can start programs outside the fence.

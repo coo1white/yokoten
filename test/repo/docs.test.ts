@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { longSentences } from '../../src/rules/pr.ts';
+import { parseSourceMarker } from '../../src/run/translations.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -117,6 +118,14 @@ test('docs: manifestos match the guide list of nine agents (#487)', () => {
     const text = readFileSync(join(ROOT, page.file), 'utf8');
     assert.deepEqual(phraseProblems(text, page.has, page.lacks), [], page.file);
   }
+});
+
+test('docs: every Japanese page names its English source (#121, #87)', () => {
+  // A page without the marker is invisible to the stale-translation check (#87), so a
+  // Japanese reader can be given an old page with no note.
+  const dir = join(ROOT, 'docs/i18n/ja');
+  const pages = readdirSync(dir).filter((name) => name.endsWith('.md'));
+  assert.deepEqual(pages.filter((name) => parseSourceMarker(readFileSync(join(dir, name), 'utf8')) === null), []);
 });
 
 const ENGLISH = 'docs/standard.md';
@@ -348,7 +357,7 @@ function collectWords(): string[] {
   const wanted = /const wanted = \[([\s\S]*?)\];/.exec(desk);
   if (!wanted) throw new Error('desk readable list changed');
   words.push(...quotedStrings(wanted[1]));
-  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,120}?TZ: '([^']+)'/.exec(desk);
+  const roleSet = /YOKOTEN_ROLE: '([^']+)'[\s\S]{0,300}?TZ: '([^']+)'/.exec(desk);
   if (!roleSet) throw new Error('desk role env changed');
   words.push('YOKOTEN_ROLE', roleSet[1], 'TZ', roleSet[2]);
   for (const match of desk.matchAll(/\b(YOKOTEN_[A-Z0-9_]+)\b/g)) words.push(match[1]);
@@ -409,8 +418,8 @@ function holderPaths(): string[] {
     'test/commands/advice/board/view.test.ts',
     'src/rules/pr.ts',
     'test/rules/pr.test.ts',
-    'src/commands/bot.ts',
-    'test/commands/bot.test.ts',
+    'src/commands/merge/bot.ts',
+    'test/commands/merge/bot.test.ts',
     'src/agents/desk/desk.ts',
     'test/agents/desk/desk.test.ts',
     'src/agents/desk/agent-env.ts',

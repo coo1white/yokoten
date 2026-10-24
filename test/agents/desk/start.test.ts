@@ -20,8 +20,10 @@ import { chooseBackend, signalEnd, startDesk } from '../../../src/agents/desk/st
 import { markWorktree } from '../../../src/commands/guard/hook.ts';
 import { CLI, makeTempDir } from '../../repo/helpers.ts';
 
-test('chooseBackend: native Windows is sent to WSL2, an unknown system is named', () => {
-  assert.match(chooseBackend('win32', {}) as string, /WSL2/);
+test('chooseBackend: native Windows is experimental and sent to WSL2, an unknown system is named', () => {
+  const windows = chooseBackend('win32', {}) as string;
+  assert.match(windows, /experimental/);
+  assert.match(windows, /WSL2/);
   assert.match(chooseBackend('aix', {}) as string, /not on aix/);
 });
 

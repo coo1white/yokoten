@@ -1,35 +1,30 @@
-# Only the paths where a mistake is hard to undo. A pull request that changes one of
-# them is tier A (record 0004): `check --pr` fails a lower tier, and the owner reviews it.
-# The owner is not asked to review the rest: it is tier B or C.
+# Tier A (records 0004 and 0037): only the paths where one change can turn the safeguard
+# off for good, publish, or reach a secret. A pull request that changes one of them is
+# tier A: `check --pr` fails a lower tier, and the owner reviews it. Everything else is
+# tier B or C: another vendor's agent reviews it, and the lead approves.
 
-# The rules agents work under, and the record of why.
+# The core rules, here and in every project.
 /AGENTS.md @coo1white
-/docs/records/ @coo1white
+/kit/project/AGENTS.md @coo1white
 
-# What every project gets on its next init or install.
-/kit/ @coo1white
+# Who reviews what.
+/.github/CODEOWNERS @coo1white
 
-# The rule code, and the code that runs it: the tool-call hook and the commit check.
-/src/rules/ @coo1white
-/src/run/hook.ts @coo1white
-/src/run/check.ts @coo1white
-/src/commands/check.ts @coo1white
-/src/commands/hook.ts @coo1white
+# CI that publishes, holds a secret, or has write permissions.
+/.github/workflows/release.yml @coo1white
+/.github/workflows/board.yml @coo1white
+/.github/workflows/outside-prs.yml @coo1white
 
-# The bot's token and the pull request reader.
-/src/host/github/ @coo1white
-/src/host/gh-commands.ts @coo1white
+# The bot's token, and the check that a tier A pull request has the owner's Approve.
+/src/host/github/bot.ts @coo1white
+/src/host/github/approval.ts @coo1white
 
-# Config that can turn a guard off: lead-only paths, privacy allow list, the git hook.
+# Config that can turn a guard off: lead-only paths, privacy allow list, the git hooks,
+# and the agent hooks that start the guard.
 /yokoten.json @coo1white
 /.githooks/ @coo1white
-/.claude/ @coo1white
-/.muse/ @coo1white
+/.claude/settings.json @coo1white
+/.muse/hooks.json @coo1white
 
-# CI, review owners, and dependency updates.
-/.github/workflows/ @coo1white
-/.github/CODEOWNERS @coo1white
-/.github/dependabot.yml @coo1white
-
-# The package: its name, bin, files and engines.
+# The package: its name, bin, files and engines, which every install trusts.
 /package.json @coo1white
