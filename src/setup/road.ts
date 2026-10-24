@@ -123,15 +123,17 @@ export { gitConfig };
 export { runsTests };
 
 
-const WORKFLOW_DIRS = ['.github/workflows', '.gitea/workflows'];
+const WORKFLOW_DIRS = ['.github/workflows'];
 /**
- * The workflow folders this project's code host reads. GitHub reads only
- * `.github/workflows`; Gitea reads both, because it also runs GitHub workflows (#849).
- * With no remote, or a host yokoten has no adapter for, yokoten can't tell and reads both.
+ * The workflow folders this project's code host reads. Gitea reads both, because it also
+ * runs GitHub workflows; every other host reads only `.github/workflows`, because a file
+ * in `.gitea/workflows` never runs on GitLab or on a host with no adapter (#849). A
+ * project that names Gitea in `yokoten.json` reads both before it has a remote.
  */
 const workflowDirs = (root: string, env: Env, config?: Config): string[] => {
   const host = hostOf(gitConfig(root, 'remote.origin.url', env), config?.host ?? 'auto');
-  return host.kind === 'github' ? ['.github/workflows'] : WORKFLOW_DIRS;
+  const isGitea = host.kind === 'gitea' || (host.kind === 'none' && config?.host === 'gitea');
+  return isGitea ? [...WORKFLOW_DIRS, '.gitea/workflows'] : WORKFLOW_DIRS;
 };
 // Read the folder directly: a check-then-read can race with a folder that goes away (#849).
 const ciFiles = (root: string, env: Env, config?: Config): string[] =>
@@ -820,7 +822,7 @@ export const ROAD: Step[] = [
     fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     byHand: 'your host\'s CI runs `yokoten check` on every push and on every pull request',
     why: 'a commit made with the hook off would reach main unchecked',
-    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows` on GitHub, and `.gitea/workflows` too on Gitea) runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
+    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows`, and `.gitea/workflows` too on Gitea) runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
     withoutCi: 'the commit hook runs `yokoten check` on each commit',
   },
@@ -900,7 +902,7 @@ export const ROAD: Step[] = [
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     byHand: 'before a pull request merges, its title has the commit form (`feat: ...`, `fix: ...`) and says what changed',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
-    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows` on GitHub, and `.gitea/workflows` too on Gitea) runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
+    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows`, and `.gitea/workflows` too on Gitea) runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
     withoutCi: 'run `yokoten check --pr <number>` before each merge',
   },

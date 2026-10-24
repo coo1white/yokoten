@@ -1,4 +1,6 @@
 Fixed
 
-On a GitHub repo, doctor reads only `.github/workflows`, so a `.gitea/workflows` file
-no longer makes the tests, CI or titles step look done (#849).
+The tests, CI and titles steps read `.gitea/workflows` on every host, so a workflow the
+host never runs made them look done: on GitHub, and on GitLab or a host with no adapter
+too. They now read the folder the host runs: only `.github/workflows`, and both folders
+on Gitea (#849).
