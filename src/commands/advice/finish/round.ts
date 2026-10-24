@@ -11,8 +11,8 @@
 // status file gets `state: done` with an `outcome`, so the board stops showing the run as
 // working. The way back is named in the report: the branch to switch to.
 
-import { existsSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { lstatSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { type Env, loadConfig } from '../../../rules/config.ts';
 import { type Finding } from '../../../rules/message.ts';
 import { hideHome } from '../../../rules/privacy.ts';
@@ -76,35 +76,52 @@ export const checkWork: FinishCheckWork = (top, env) => {
 
 const shortFinding = (finding: Finding): { id: string; file: string } => ({ id: finding.id, file: finding.file ?? '' });
 
+/** The status file on disk as its fields, or null when it is missing, refused or not an object. */
+function statusOnDisk(target: FinishTarget): Record<string, unknown> | null {
+  const text = readStatusText(join(target.checkout.top, AGENT_STATUS_FILE));
+  if (!text) return null;
+  try {
+    const status: unknown = JSON.parse(text);
+    if (status === null || typeof status !== 'object' || Array.isArray(status)) return null;
+    return status as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Why the status file on disk says the run must stay open, or '' when it may be finished.
+ * Why a status file's fields say the run must stay open, or '' when it may be finished.
  * A caller's older read never closes a run that has closed since, and a run that asks the
  * owner something is waiting, not gone (#601). The board keeps that question under
  * `blocked` or `question` until it is answered.
  */
-export function heldReason(target: FinishTarget): string {
-  const text = readStatusText(join(target.checkout.top, AGENT_STATUS_FILE));
-  if (!text) return '';
-  try {
-    const status = JSON.parse(text) as Record<string, unknown>;
-    if (status === null || typeof status !== 'object' || Array.isArray(status)) return '';
-    if (typeof status.outcome === 'object' && status.outcome !== null) return 'the status file already has an outcome';
-    if (status.state === 'done') return 'the status file already says done';
-    if (status.state === 'waiting') return 'the status file says waiting';
-    for (const key of ['blocked', 'question']) {
-      const value = status[key];
-      if (typeof value === 'string' && value.trim() !== '') return `the agent is waiting for an answer (${key})`;
-    }
-    return '';
-  } catch {
-    return '';
+function heldReasonIn(status: Record<string, unknown> | null): string {
+  if (!status) return '';
+  if (typeof status.outcome === 'object' && status.outcome !== null) return 'the status file already has an outcome';
+  if (status.state === 'done') return 'the status file already says done';
+  if (status.state === 'waiting') return 'the status file says waiting';
+  for (const key of ['blocked', 'question']) {
+    const value = status[key];
+    if (typeof value === 'string' && value.trim() !== '') return `the agent is waiting for an answer (${key})`;
   }
+  return '';
 }
 
-/** The time of a status file's beat, or null when it is missing or not a time. */
-export function beatOf(target: FinishTarget): number | null {
-  const beat = Date.parse(target.updated);
+/** One `updated` field as a beat, or null when it is not a time. */
+function beatTime(updated: unknown): number | null {
+  if (typeof updated !== 'string') return null;
+  const beat = Date.parse(updated);
   return Number.isFinite(beat) ? beat : null;
+}
+
+/** The beat a status file's fields hold, or null when they hold no readable time. */
+function beatIn(status: Record<string, unknown> | null): number | null {
+  return status ? beatTime(status.updated) : null;
+}
+
+/** The time of a target's filed beat, or null when it is missing or not a time. */
+export function beatOf(target: FinishTarget): number | null {
+  return beatTime(target.updated);
 }
 
 /** How many whole minutes since the agent last wrote, or 0 when the time is not known. */
@@ -114,11 +131,11 @@ export function quietMinutes(beat: number, now: number): number {
 
 /**
  * Whether the agent stopped beating (#761): it says it is working, its last beat is a real
- * time, and it is at least `goneMs` old. A beat in the future is still alive.
+ * time, and it is at least `goneMs` old. A beat in the future is still alive. `beat` is the
+ * file's beat when the caller reads it there; it defaults to the target's filed one.
  */
-export function isGone(target: FinishTarget, now: number, goneMs: number = GONE_MINUTES * 60_000): boolean {
+export function isGone(target: FinishTarget, now: number, goneMs: number = GONE_MINUTES * 60_000, beat: number | null = beatOf(target)): boolean {
   if (target.state !== 'working') return false;
-  const beat = beatOf(target);
   return beat !== null && beat <= now && now - beat >= goneMs;
 }
 
@@ -164,15 +181,25 @@ export function reportText(target: FinishTarget, result: FinishResult, now: Date
   return lines.join('\n');
 }
 
-/** Write the report, unless the agent wrote one. Never touch an existing report. */
-function writeReport(target: FinishTarget, result: FinishResult, now: Date, env: Env): 'written' | 'kept' | '' {
+/**
+ * Write the report, unless the agent wrote one. Never touch an existing report. A path
+ * something other than a file holds, or a write that fails, is `failed`: the run must not
+ * be closed without the report a person or an agent resumes from.
+ */
+function writeReport(target: FinishTarget, result: FinishResult, now: Date, env: Env): 'written' | 'kept' | 'failed' {
   const path = reportPath(target);
-  if (existsSync(path)) return 'kept';
+  try {
+    const info = lstatSync(path);
+    // A folder, a socket or a link to nowhere is not the agent's report we may keep.
+    return info.isFile() || info.isSymbolicLink() ? 'kept' : 'failed';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return 'failed';
+  }
   try {
     writeFileSync(path, reportText(target, result, now, env));
     return 'written';
   } catch {
-    return '';
+    return 'failed';
   }
 }
 
@@ -195,16 +222,31 @@ export function finishTarget(
     ({ kind, name: target.name, worktree: target.checkout.top, reason, report, check: work });
 
   if (target.state !== 'working') return result('skipped', `the agent says ${target.state || 'nothing'}`, { ok: true, findings: [], problem: '' });
-  const held = heldReason(target);
+  const disk = statusOnDisk(target);
+  const held = heldReasonIn(disk);
   if (held) return result('skipped', held, { ok: true, findings: [], problem: '' });
-  const beat = beatOf(target);
+  // The later of the filed and the on-disk beat is the run's last one: a caller's older
+  // snapshot never closes a run that has beaten since it was read, and a file that is gone
+  // or unreadable leaves the snapshot.
+  const filedBeat = beatOf(target);
+  const diskBeat = beatIn(disk);
+  const beat = diskBeat === null ? filedBeat : filedBeat === null ? diskBeat : Math.max(filedBeat, diskBeat);
   if (beat === null) return result('skipped', 'the status file has no readable time', { ok: true, findings: [], problem: '' });
-  if (!isGone(target, now.getTime(), goneMs)) return result('skipped', `it beat ${quietMinutes(beat, now.getTime())} minutes ago`, { ok: true, findings: [], problem: '' });
+  if (!isGone(target, now.getTime(), goneMs, beat)) return result('skipped', `it beat ${quietMinutes(beat, now.getTime())} minutes ago`, { ok: true, findings: [], problem: '' });
   const quiet = quietMinutes(beat, now.getTime());
   const work = checkWorkHere(target.checkout.top, env);
+  // The check takes time, and a live agent beats while it runs: read the file again and
+  // leave a run that came back, or one that started asking, alone.
+  const after = statusOnDisk(target);
+  const afterHeld = heldReasonIn(after);
+  if (afterHeld) return result('skipped', afterHeld, work);
+  const laterBeat = beatIn(after);
+  if (laterBeat !== null && laterBeat > beat) return result('skipped', 'it beat again during the check', work);
+  const filed = after && typeof after.updated === 'string' ? { ...target, updated: after.updated } : target;
   const reason = `no update for ${quiet} minutes`;
   if (isDryRun) return result('would-finish', reason, work);
-  const report = writeReport(target, result('finished', reason, work), now, env);
+  const report = writeReport(filed, result('finished', reason, work), now, env);
+  if (report === 'failed') return result('failed', `the report ${basename(reportPath(filed))} could not be written, so the run stays open`, work);
   const done = changeAgentStatus(target.checkout, {
     set: {
       state: 'done',

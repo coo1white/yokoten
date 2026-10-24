@@ -49,4 +49,17 @@ describe('yokoten finish', () => {
     assert.equal(bad.status, 1);
     assert.match(bad.stderr, /--after needs a whole number of minutes above 0/);
   });
+
+  it('refuses a worker, who does not close runs', async () => {
+    const sandbox = makeSandbox();
+    sandbox.write('.yokoten-agent.json', `${JSON.stringify({
+      name: 'worker-1',
+      state: 'working',
+      updated: '2026-10-23T00:00:00Z',
+    }, null, 2)}\n`);
+    const refused = await sandbox.call(['finish', '--after', '30', '--dry-run'], { extra: { YOKOTEN_ROLE: 'worker' } });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /a worker does not close runs/);
+    assert.equal((JSON.parse(readFileSync(join(sandbox.repo, '.yokoten-agent.json'), 'utf8')) as { state: string }).state, 'working');
+  });
 });

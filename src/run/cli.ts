@@ -535,7 +535,9 @@ export const COMMANDS: Command[] = [
       'never touched), and sets the status to done with outcome stopped.',
       'Nothing is reset, deleted or pushed: the branch and the worktree stay, and the',
       'report says how to go on. An agent that asks the owner something is waiting, not',
-      'gone. Only a status file with no update for 30 minutes counts as gone.',
+      'gone. Only a status file with no update for 30 minutes counts as gone. A worker',
+      'does not close runs; the lead does. A report that cannot be written leaves the',
+      'run open.',
     ],
     options: [
       { name: '--after', value: 'minutes', text: 'how long without an update counts as gone (default 30)' },

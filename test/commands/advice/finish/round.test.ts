@@ -114,6 +114,35 @@ describe('finishTarget', () => {
     }
   });
 
+  it('leaves a run that beat after the caller read it', () => {
+    const { target, top } = makeTarget({ updated: '2026-10-23T00:59:30Z' });
+    const result = finishTarget({ ...target, updated: '2026-10-23T00:00:00Z' }, { env: {}, now: NOW, checkWorkHere: () => OK });
+    assert.equal(result.kind, 'skipped', 'half a minute is not the half hour the caller remembered');
+    assert.match(result.reason, /beat 0 minutes ago/);
+    assert.equal(readStatus(top).state, 'working');
+  });
+
+  it('leaves a run that beats while the check runs', () => {
+    const { target, top } = makeTarget();
+    const cameBack = () => {
+      writeFileSync(join(top, '.yokoten-agent.json'), `${JSON.stringify({ ...readStatus(top), updated: '2026-10-23T00:59:40Z' }, null, 2)}\n`);
+      return OK;
+    };
+    const result = finishTarget(target, { env: {}, now: NOW, checkWorkHere: cameBack });
+    assert.equal(result.kind, 'skipped');
+    assert.match(result.reason, /beat again during the check/);
+    assert.equal(readStatus(top).state, 'working');
+  });
+
+  it('keeps the run open when the report cannot be written', () => {
+    const { target, top } = makeTarget();
+    mkdirSync(reportPath(target));
+    const result = finishTarget(target, { env: {}, now: NOW, checkWorkHere: () => OK });
+    assert.equal(result.kind, 'failed');
+    assert.match(result.reason, /REPORT-761\.md could not be written/);
+    assert.equal(readStatus(top).state, 'working', 'a run without its report is not closed');
+  });
+
   it('uses the issue in the branch, or a plain name without one', () => {
     assert.equal(issueOfBranch('761-finish-a-run'), '761');
     assert.equal(issueOfBranch('feat/no-issue'), '');

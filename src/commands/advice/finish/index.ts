@@ -1,11 +1,12 @@
 // `yokoten finish`: close a run whose agent stopped beating (#761).
 //
-// The controller itself is in src/run/finish.ts. This module finds the agents whose
-// status files this repo, its worktrees and its desks hold, and hands each one over.
+// The controller itself is in round.ts. This module finds the agents whose status files
+// this repo, its worktrees and its desks hold, and hands each one over.
 // It writes nothing itself: the dry run and the checks belong to the controller.
 
 import { readBoardAgents, readBoardWorktrees } from '../board/agents.ts';
 import { type FinishResult, finishTarget, GONE_MINUTES } from './round.ts';
+import { workerRole } from '../../../rules/guards.ts';
 import { findStatusCheckout } from '../../../run/hook.ts';
 import { type Invocation, parse, print, printJson, requireRoot, usage } from '../../shared.ts';
 
@@ -32,6 +33,14 @@ export function runFinish(invocation: Invocation): number {
   const options = parse('finish', invocation.args);
   if (typeof options === 'string') return usage(invocation, options);
   const json = options.flags.has('--json');
+  // Closing other sessions is the lead's call, as dispatch and the board are. The guard
+  // and the commit check read the same worker role (#555).
+  if (workerRole(invocation.env, [invocation.cwd])) {
+    const refusal = 'a worker does not close runs; the lead finishes a run its agent stopped';
+    if (json) printJson(invocation, { finish: [], ok: false, error: refusal });
+    else print(invocation, [`yokoten finish: ${refusal}`], invocation.stderr);
+    return 1;
+  }
   const root = requireRoot(invocation, invocation.cwd, json ? () => ({ finish: [], ok: false }) : undefined);
   if (!root) return 1;
   const asked = options.values['--after'];
