@@ -248,6 +248,17 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
   // They are unknown, so the step says "can't check", never "off".
   const security: Security = { secretScanning: null, pushProtection: null, privateReporting: null, dependabotAlerts: null };
 
+  // Gitea's tag protection has no bypass list for yokoten to read, and no `release`
+  // environment with a required reviewer. Both stay unknown, never "off" (#850).
+  const tagBypass: Unread = {
+    unread: 'this Gitea has no tag bypass list that yokoten can read',
+    fix: 'check by hand that your user, and no bot, may push a v* tag in the repo settings, then run doctor again',
+  };
+  const release: Unread = {
+    unread: 'this Gitea has no release environment that yokoten can read',
+    fix: 'approve each publish job by hand in the Gitea Actions log, then run doctor again',
+  };
+
   const methods: [string, boolean | null][] = [
     ['squash', asBoolean(info.allow_squash_merge)],
     ['merge', asBoolean(info.allow_merge_commit)],
@@ -266,6 +277,8 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
     deleteBranchOnMerge: asBoolean(info.delete_branch_after_merge),
     branch,
     tags,
+    tagBypass,
+    release,
     security,
     forgotten,
     planning,
