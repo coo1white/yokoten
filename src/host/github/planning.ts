@@ -27,11 +27,23 @@ export function repoPageOf(repo: string): string {
 
 export type Gh = (args: string[]) => string;
 
+/**
+ * The most gh may print before Node stops it (#916). One page of 100 Actions runs is
+ * about 1.4 MB, over Node's 1 MiB default, so both runners ask for room.
+ */
+export const GH_MAX_BUFFER = 16 * 1024 * 1024;
+
+/** True when gh printed more than `GH_MAX_BUFFER`, so Node stopped reading (#916). */
+export const isAnswerTooLarge = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOBUFS';
+
+/** What to say when gh's answer was too large to hold (#916). */
+export const ANSWER_TOO_LARGE = `the answer was larger than ${GH_MAX_BUFFER / (1024 * 1024)} MB`;
+
 /** Runs the real gh in `cwd`, with `env`. With `timeout` (ms), a call that takes longer is stopped and throws. */
 export const ghIn =
   (cwd: string, env: Env, timeout?: number): Gh =>
   (args) =>
-    execFileSync('gh', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+    execFileSync('gh', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout, maxBuffer: GH_MAX_BUFFER });
 
 /**
  * gh that may answer later, so a server keeps answering while GitHub is slow (#688). A
@@ -48,7 +60,7 @@ export const ghLaterIn =
   (cwd: string, env: Env, timeout?: number): GhLater =>
   (args, signal) =>
     new Promise((done, failed) => {
-      const child = execFile('gh', args, { cwd, env, encoding: 'utf8', timeout, signal, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const child = execFile('gh', args, { cwd, env, encoding: 'utf8', timeout, signal, maxBuffer: GH_MAX_BUFFER }, (err, stdout, stderr) => {
         if (err) failed(Object.assign(err, { stderr }));
         else done(stdout);
       });
@@ -64,6 +76,7 @@ export interface Unread {
 /** Why gh failed, in words a beginner can act on. */
 export function unread(err: unknown): Unread {
   if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { unread: 'gh is not installed', fix: 'get it from https://cli.github.com, then run `gh auth login`' };
+  if (isAnswerTooLarge(err)) return { unread: ANSWER_TOO_LARGE, fix: 'run the command again; if it repeats, report it' };
   if ((err as NodeJS.ErrnoException).code === 'ETIMEDOUT') return { unread: 'GitHub took too long to answer', fix: 'check the network, then run doctor again' };
   const said = String((err as { stderr?: string }).stderr || (err as Error).message);
   if (/HTTP 401|gh auth login|not logged in/i.test(said)) return { unread: 'gh is not signed in', fix: 'run `gh auth login`' };
