@@ -87,6 +87,11 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   // An edit also moves the tier label: the pull request's labels say which old one to remove.
   const wantedTier = labels?.edit?.tier ?? null;
   if (wantedTier !== null && !lookedUp) current = readPullRequestLabels(invocation, labels?.edit?.selector ?? null, labels?.repo ?? null, file, ghEnv);
+  // A read that failed leaves the old tier label where it is, so the note says so: two tier
+  // labels fail `check --pr`, and the caller can remove the old one itself (#422).
+  if (wantedTier !== null && current === null) {
+    print(invocation, [`yokoten bot: note: gh could not read this pull request's labels, so an older tier label may stay next to \`tier ${wantedTier}\`; remove it with --remove-label. \`check --pr\` refuses two tier labels`], invocation.stderr);
+  }
   const chosen = labels?.missing.length ? chooseLabels(invocation, labels, file, ghEnv) : [];
   const addLabel = labels?.edit ? '--add-label' : '--label';
   const adds = chosen.filter((name) => !current?.some((label) => label.toLowerCase() === name.toLowerCase()));

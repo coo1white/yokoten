@@ -308,11 +308,13 @@ test('bot: a pull request body CI would refuse is refused locally, with CI\'s me
     // #422, #512: a new pull request also gets the type and tier labels and its issue's milestone; nothing else changes.
     const labelled = (args: string[]) => (args[1] === 'create' && !args.includes('-R') ? [...args, '--label', 'feat', '--label', 'tier A', '--milestone', 'M0'] : args);
     assert.deepEqual(ran(), passes.map(([command, input]) => ({ args: labelled(command.slice(1)), input })));
-    // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked, with a note.
+    // A branch git can't fetch, or a pull request gh can't look up: the body alone is checked,
+    // with a note. The labels are unknown too, so the note says an older tier label may stay (#422).
+    const unreadTier = 'yokoten bot: note: gh could not read this pull request\'s labels, so an older tier label may stay next to `tier A`; remove it with --remove-label. `check --pr` refuses two tier labels\n';
     for (const [n, why] of [['6', "git can't compare origin/gone with origin/main"], ['7', 'gh could not say the branches of pull request `7`']]) {
       const r = await run(['gh', 'pr', 'edit', n, '--body', good]);
       assert.equal(r.status, 0, r.stderr);
-      assert.equal(r.stderr, `yokoten bot: note: ${why}, so the body was checked without the changed files; CI checks the rest\n`);
+      assert.equal(r.stderr, `yokoten bot: note: ${why}, so the body was checked without the changed files; CI checks the rest\n${unreadTier}`);
     }
     assert.equal(ran().length, passes.length + 2, 'both edits were sent');
   } finally {
@@ -465,22 +467,27 @@ test('bot: an edit adds its title type and moves the tier label (#422)', async (
   const bot = { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
   const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
   const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
+  const unread = 'yokoten bot: note: gh could not read this pull request\'s labels, so an older tier label may stay next to `tier B`; remove it with --remove-label. `check --pr` refuses two tier labels\n';
   const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n`;
   try {
-    const cases: [command: string[], stderr: string, args: string[]][] = [
+    const cases: [command: string[], stderr: string, args: string[], prep?: () => void][] = [
       // A new title adds its type, by the name the repo has.
       [['gh', 'pr', 'edit', '5', '-t', 'feat(host): a'], '', ['--add-label', 'feat']],
       // A new body moves the tier label from `tier A` to `tier B`.
       [['gh', 'pr', 'edit', '--body', body('B')], note, ['--add-label', 'tier B', '--remove-label', 'tier A']],
       // A tier label the caller gives is kept, and the old one still goes.
       [['gh', 'pr', 'edit', '--body', body('B'), '--add-label', 'tier B'], note, ['--remove-label', 'tier A']],
+      // gh can't say the labels: the new tier is still added, and the note says the old one may stay (#422).
+      [['gh', 'pr', 'edit', '--body', body('B')], note + unread, ['--add-label', 'tier B'], () => writeFileSync(pullLabels, '{}')],
     ];
-    for (const [command, stderr, args] of cases) {
+    for (const [command, stderr, args, prep] of cases) {
+      prep?.();
       const r = await run(command);
       assert.deepEqual([r.status, r.stderr], [0, stderr], command.join(' '));
       assert.deepEqual(lines(log).at(-1), { args: [...command.slice(1), ...args], input: '' }, command.join(' '));
     }
     assert.deepEqual(lines(views), [
+      ['pr', 'view', '--json', 'labels'],
       ['pr', 'view', '--json', 'labels'],
       ['pr', 'view', '--json', 'labels'],
     ]);
