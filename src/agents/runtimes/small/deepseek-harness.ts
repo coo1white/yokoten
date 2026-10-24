@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
-import { releaseFix } from '../../../rules/guards.ts';
+import { releaseFix } from '../../../rules/guards/index.ts';
 import { docsLink } from '../../../rules/message.ts';
 import { homeIn, homeOf } from '../../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
