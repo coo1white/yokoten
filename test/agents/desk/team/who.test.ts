@@ -9,8 +9,8 @@ import { test } from 'node:test';
 import { deliveryFor } from '../../../../src/agents/desk/team/deliver.ts';
 import { appendMessage, keepReadState } from '../../../../src/agents/desk/team/outbox.ts';
 import { DESK_FILE, LEAD, makeTeam, outboxOf, prepareDeskTeam } from '../../../../src/agents/desk/team/team.ts';
-import { deskReadState, isFenced, isLockedMount, leadCheckout, whoAmI } from '../../../../src/agents/desk/team/who.ts';
-import { fence, makeTeamFixture, makeTempDir, stopCheckoutWalk } from '../../../repo/helpers.ts';
+import { deskReadState, identityLine, isFenced, isLockedMount, leadCheckout, whoAmI } from '../../../../src/agents/desk/team/who.ts';
+import { fence, makeGitFolder, makeTeamFixture, makeTempDir, stopCheckoutWalk } from '../../../repo/helpers.ts';
 
 const locked = () => true;
 
@@ -59,7 +59,7 @@ test('whoAmI in a desk: a desk file that names another agent, or a desk the rost
   const { desk, team } = makeTeamFixture();
   prepareDeskTeam({ team, name: 'g1', runtime: 'grok', model: 'grok-4.7', desk });
   const other = join(desk, '..', 'c1');
-  mkdirSync(join(other, '.git'), { recursive: true });
+  makeGitFolder(other);
   prepareDeskTeam({ team, name: 'c1', runtime: 'codex', model: 'gpt-5.5', desk: other });
   // g1 rewrites its own desk file to say c1 (the fence would stop it; here the file is open).
   writeFileSync(join(desk, '.git', DESK_FILE), JSON.stringify({ name: 'c1' }));
@@ -93,7 +93,7 @@ test('leadCheckout: a checkout planted inside a desk is never the lead\'s, and t
   writeFileSync(victim, '{"keep":true}\n');
   const planted = join(desk, 'sub');
   const fakeTeam = join(desk, 'sub.team');
-  mkdirSync(join(planted, '.git'), { recursive: true });
+  makeGitFolder(planted);
   writeFileSync(join(planted, '.git', DESK_FILE), JSON.stringify({ team: fakeTeam, name: 'owner', readState: victim }));
   mkdirSync(join(fakeTeam, 'outbox'), { recursive: true });
   mkdirSync(join(fakeTeam, 'lead'), { recursive: true });
@@ -114,9 +114,9 @@ test('leadCheckout: a checkout planted inside a desk is never the lead\'s, and t
 test('leadCheckout: a desk with no team (only its state folder) still counts as a desk', () => {
   const projects = makeTempDir('noteam-');
   const desk = join(projects, 'd');
-  mkdirSync(join(desk, '.git'), { recursive: true });
+  makeGitFolder(desk);
   mkdirSync(`${desk}.state`);
-  mkdirSync(join(desk, 'sub', '.git'), { recursive: true });
+  makeGitFolder(join(desk, 'sub'));
   assert.match((leadCheckout(join(desk, 'sub'), {}) as { refuse: string }).refuse, /around this one, is a desk/);
 });
 
@@ -146,4 +146,21 @@ test('keepReadState: a read state that is a link is never followed', () => {
   // A delivery whose read state can't be saved is not given: it would come again on every call.
   assert.equal(deliveryFor(main, {}, null), '');
   assert.equal(readFileSync(victim, 'utf8'), '{"keep":true}\n');
+});
+
+// #748: a harness's prompt names its own maker. A model of another vendor hears who it is
+// first, so it does not sign its work with the harness's vendor.
+test('identityLine: another vendor than the harness names the agent first (#748)', () => {
+  const line = identityLine('codex', { YOKOTEN_MODEL: 'deepseek-flash', YOKOTEN_VENDOR: 'DeepSeek' });
+  assert.equal(line, 'yokoten: you are DeepSeek (deepseek-flash), served through codex; codex is your harness, and what it says about its own maker is the tool, not you.');
+});
+
+test('identityLine: the harness own vendor, no vendor, or no model says nothing, and a long name is cut (#748)', () => {
+  assert.equal(identityLine('codex', { YOKOTEN_MODEL: 'gpt-6.1-sol', YOKOTEN_VENDOR: 'OpenAI' }), '', 'Codex on its own vendor');
+  assert.equal(identityLine('claude-code', { YOKOTEN_MODEL: 'opus', YOKOTEN_VENDOR: 'Anthropic' }), '', 'Claude Code on its own vendor');
+  assert.equal(identityLine('codex', { YOKOTEN_MODEL: 'deepseek-flash' }), '', 'a model, but no vendor');
+  assert.equal(identityLine('codex', { YOKOTEN_VENDOR: 'DeepSeek' }), '', 'a vendor, but no model');
+  assert.equal(identityLine('codex', {}), '', 'a desk that named nothing');
+  const long = identityLine('codex', { YOKOTEN_MODEL: `deepseek  ${'x'.repeat(100)}`, YOKOTEN_VENDOR: '  DeepSeek  ' });
+  assert.equal(/^yokoten: you are DeepSeek \(([^)]*)\)/.exec(long)?.[1], `deepseek ${'x'.repeat(55)}`, 'one line, with the model cut to 64 characters');
 });
