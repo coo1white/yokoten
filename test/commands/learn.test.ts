@@ -11,6 +11,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import {
@@ -142,6 +143,22 @@ test('learn: --export writes one small file, and --import adds it as a draft for
   result = await sandbox.call(['learn', '--import', join(sandbox.home, 'missing.json')]);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /could not be read/);
+  // The incident line in lesson.ts must be there, and match the JSON field, the way export reads it.
+  const importedPack = JSON.parse(readFileSync(file, 'utf8')) as { id: string; incident: string; files: { path: string; text: string }[] };
+  const noUrl = join(sandbox.home, 'no-url.lesson.json');
+  writeFileSync(noUrl, JSON.stringify({ ...importedPack, files: importedPack.files.map((one) => (one.path === 'lesson.ts' ? { ...one, text: one.text.replace('// https://example.com/issues/12\n', '') } : one)) }));
+  result = await sandbox.call(['learn', '--import', noUrl, '--write']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /lesson\.ts does not name its incident/);
+  // A link where the lesson would go is refused before the write, so no text leaves the repo.
+  const outside = join(sandbox.home, 'outside-lesson');
+  mkdirSync(outside);
+  rmSync(join(sandbox.repo, 'lessons/incident-12'), { recursive: true, force: true });
+  symlinkSync(outside, join(sandbox.repo, 'lessons/incident-12'));
+  result = await sandbox.call(['learn', '--import', file, '--write']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /lessons\/incident-12 is a link: a lesson writes only inside its own folder/);
+  assert.deepEqual(readdirSync(outside), [], 'nothing was written through the link');
 });
 
 // #147, the whole loop: an incident becomes a lesson in a copy of yokoten, a person writes the

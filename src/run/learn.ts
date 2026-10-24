@@ -290,8 +290,30 @@ export function writeDraft(root: string, draft: Draft): { written: string[]; kep
   return writeLessonFiles(root, draft.files);
 }
 
-/** The files in the repo, adds only: one that is there is kept, so a review is never overwritten. */
+/** The first part of `relative` that is a symlink in `root`, a folder or the file itself; null when none is. */
+function findLessonLink(root: string, relative: string): string | null {
+  const parts = relative.split('/');
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const part = parts.slice(0, depth).join('/');
+    try {
+      if (lstatSync(join(root, part)).isSymbolicLink()) return part;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The files in the repo, adds only: one that is there is kept, so a review is never overwritten.
+ * Every path is checked for a link before the first write, so text from another project never
+ * lands outside `lessons/<id>/`.
+ */
 export function writeLessonFiles(root: string, files: DraftFile[]): { written: string[]; kept: string[] } {
+  for (const file of files) {
+    const link = findLessonLink(root, file.path);
+    if (link) throw new Error(`${link} is a link: a lesson writes only inside its own folder. Remove the link, then run the command again.`);
+  }
   const written: string[] = [];
   const kept: string[] = [];
   for (const file of files) {
@@ -420,6 +442,11 @@ export function importLesson(text: string, env: Env): { pack: LessonPack; files:
     const count = file.text.split('TODO(reviewer)').length - 1;
     if (count) problems.push(`${file.path} still has ${count} TODO(reviewer): a lesson travels with its check written`);
   }
+  // The incident is the `// https://...` line in `lesson.ts`, the same line export reads: a pack
+  // whose JSON says one thing and whose file names no incident would lose the story on the way in.
+  const source = readSourceUrl(files.find((file) => file.path === 'lesson.ts')?.text ?? '');
+  if (!source) problems.push('lesson.ts does not name its incident: put the issue URL on a line `// https://...` near the top');
+  else if (source !== incident) problems.push(`lesson.ts names incident ${source}, but the file says ${incident}: make them the same URL`);
   const marks = loadMarks(env);
   for (const file of files) for (const problem of scanText(file.text, { file: file.path, marks, env })) problems.push(formatFinding(problem));
   if (problems.length) return { problems };

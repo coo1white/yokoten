@@ -9,6 +9,7 @@ import {
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -485,6 +486,27 @@ test('learn: a lesson exports and imports as one small file; a TODO, a secret or
   assert.match(problemsOf({ ...good, files: good.files.map((file) => (file.path === 'lesson.test.ts' ? { ...file, text: `${file.text}// TODO(reviewer)\n` } : file)) }), /still has 1 TODO/);
   // A private detail is refused on the way in too, before it reaches lessons/.
   assert.match(problemsOf({ ...good, files: good.files.map((file) => (file.path === 'lesson.ts' ? { ...file, text: `${file.text}// ${secret}\n` } : file)) }), /a secret/);
+  // The incident lives on the `// https://...` line in lesson.ts, the line export reads: import
+  // checks the file itself, and both URLs must name the same incident.
+  const lessonWithoutUrl = (url: string) => good.files.map((file) => (file.path === 'lesson.ts' ? { ...file, text: file.text.replace('// https://example.com/issues/12\n', url) } : file));
+  assert.match(problemsOf({ ...good, files: lessonWithoutUrl('') }), /lesson\.ts does not name its incident/);
+  assert.match(problemsOf({ ...good, files: lessonWithoutUrl('// https://example.com/issues/9\n') }), /names incident https:\/\/example\.com\/issues\/9, but the file says https:\/\/example\.com\/issues\/12/);
+
+  // A link where the lesson would go is refused before the first write, so text from another
+  // project never lands outside lessons/<id>/.
+  const outside = makeTempDir('yokoten-outside-');
+  const linkedFolder = makeTempDir('yokoten-link-');
+  mkdirSync(join(linkedFolder, 'lessons'), { recursive: true });
+  symlinkSync(outside, join(linkedFolder, 'lessons/incident-12'));
+  assert.throws(() => writeLessonFiles(linkedFolder, imported.files), /lessons\/incident-12 is a link: a lesson writes only inside its own folder/);
+  assert.deepEqual(readdirSync(outside), [], 'nothing was written through the link');
+  // A link at the file itself, with no target yet: a write would create the target outside.
+  const linkedFile = makeTempDir('yokoten-link-file-');
+  mkdirSync(join(linkedFile, 'lessons/incident-12'), { recursive: true });
+  const target = join(linkedFile, 'outside-lesson.ts');
+  symlinkSync(target, join(linkedFile, 'lessons/incident-12/lesson.ts'));
+  assert.throws(() => writeLessonFiles(linkedFile, imported.files), /lessons\/incident-12\/lesson\.ts is a link/);
+  assert.ok(!existsSync(target), 'a link at the file itself is refused too');
 });
 
 test('lessons: doctor runs each lesson as a note; a broken lesson is a note for itself alone; not now skips one', () => {
