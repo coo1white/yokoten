@@ -1864,6 +1864,38 @@ function gitOptionIs(args: string[], name: string, value: string): boolean {
 }
 
 /**
+ * Whether `git clean` would only list what it means to remove. Git reads the words in order:
+ * `-e <pattern>` (or `-e<pattern>`, also at the end of a cluster such as `-fde`) takes the
+ * next word as a pattern, and the last of `--dry-run` and `--no-dry-run` decides. A value is
+ * never a flag, so `git clean -fd -e --dry-run` deletes (#847).
+ */
+function isCleanDryRun(args: string[]): boolean {
+  let isDryRun = false;
+  for (let at = 0; at < args.length; at++) {
+    const word = args[at];
+    if (word === '--') break;
+    if (word.startsWith('--')) {
+      if (isGitLongOption(word, '--no-dry-run')) isDryRun = false;
+      else if (isGitLongOption(word, '--dry-run')) isDryRun = true;
+      // `--exclude=<pattern>` carries its value; a bare `--exclude` takes the next word.
+      else if (isGitLongOption(word, '--exclude') && !word.includes('=')) at++;
+      continue;
+    }
+    if (!word.startsWith('-') || word === '-') continue;
+    const letters = word.slice(1);
+    for (const [index, flag] of [...letters].entries()) {
+      if (flag === 'e') {
+        // `-e<pattern>` carries its value; a bare `-e` ends the word and takes the next one.
+        if (index === letters.length - 1) at++;
+        break;
+      }
+      if (flag === 'n') isDryRun = true;
+    }
+  }
+  return isDryRun;
+}
+
+/**
  * Whether `path` is the folder the command runs in, or one that holds it: removing it removes
  * the checkout. `.` and `..` are read as the shell reads them, so `src/a/..` is `src`.
  */
@@ -1902,9 +1934,8 @@ function checkGitLoseWork(words: string[], cwd: string | null, env: Env): Findin
   const plain = plainArgs(args);
 
   // Untracked files have no other copy. A dry run removes nothing, so it passes.
-  if (sub === 'clean') {
-    const dryRun = args.some((arg) => /^-[A-Za-z]*n[A-Za-z]*$/.test(arg) || isGitLongOption(arg, '--dry-run'));
-    if (!dryRun) return finding('discard-work', '`git clean` deletes every file you have not committed, and no other copy of them exists', DISCARD_WORK_FIX);
+  if (sub === 'clean' && !isCleanDryRun(args)) {
+    return finding('discard-work', '`git clean` deletes every file you have not committed, and no other copy of them exists', DISCARD_WORK_FIX);
   }
 
   // A whole-tree checkout or restore throws away every uncommitted edit. `restore --staged`

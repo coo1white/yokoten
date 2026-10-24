@@ -3323,6 +3323,16 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
     stop('git push --del origin main', 'delete-default-branch');
     stop('git branch --del main', 'delete-default-branch');
     for (const command of ['git clean -fdx', 'git clean -fd', 'git checkout .', 'git checkout -- .', 'git checkout ./src/..', 'git restore .', 'git restore -SW .', 'git checkout -f main', 'git checkout ./src/../', 'git switch -f main', 'git stash clear', 'git stash drop']) stop(command, 'discard-work');
+    // A word that only looks like a dry run is not one: `-e` and `--exclude` take a pattern,
+    // and the last of `--dry-run` and `--no-dry-run` decides. Each of these deletes (#847).
+    for (const command of [
+      'git clean -fd -e --dry-run',
+      'git clean -fd --exclude --dry-run',
+      'git clean -fd -e -n',
+      'git clean -fd -e--dry-run',
+      'git clean -fde --dry-run',
+      'git clean -fnd --no-dry-run',
+    ]) stop(command, 'discard-work');
     for (const command of ['git gc --prune=now', 'git gc --prune now', 'git gc --prune=2.weeks.ago --prune=now', 'git gc --prune=all', 'git prune --expire=now', 'git prune --expire=all', 'git reflog expire --expire=now --all', 'git reflog delete HEAD@{0}', 'git filter-branch --force --all']) stop(command, 'erase-history');
     for (const command of [
       'git update-ref refs/heads/main HEAD~1',
@@ -3344,6 +3354,10 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
       'git push --delete origin feature',
       'git clean -n',
       'git clean -nd',
+      // A dry run stays a dry run whatever pattern it holds, as git reads it.
+      'git clean -nd -e --dry-run',
+      'git clean -n -e build',
+      'git clean -nd --exclude=--dry-run',
       'git checkout main',
       'git checkout ./src/a/..',
       'git checkout -b feature',
