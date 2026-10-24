@@ -132,6 +132,7 @@ export function killedLine(testName: string | undefined, command: string, timeou
 
 /**
  * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
+ * No shell, ever (#813): an argument is a value the test chose, never shell code.
  * A killed child is printed on stderr with the test that ran it.
  */
 export function runChild(command: string, args: string[], options: Pick<SpawnSyncOptionsWithStringEncoding, 'cwd' | 'env' | 'input' | 'timeout' | 'maxBuffer' | 'stdio'> = {}): SpawnSyncReturns<string> {
