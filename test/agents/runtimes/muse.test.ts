@@ -67,7 +67,7 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   const sandbox = makeSandbox();
   const file = join(sandbox.repo, '.muse', 'hooks.json');
   const cli = '.yokoten/bin/yokoten.mjs';
-  assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: no tool-call guard or stop check in \.muse\/hooks\.json/, 'reported, not counted as missing');
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: no tool-call guard, stop check or session-start doctor in \.muse\/hooks\.json/, 'reported, not counted as missing');
   sandbox.write('.muse/hooks.json', JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'bash', hooks: [{ type: 'command', command: './lint.sh' }] }] } }));
   const result = await sandbox.call(['init']);
   assert.equal(result.status, 0, result.stderr);
@@ -82,10 +82,18 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(written.hooks.PreToolUse[1].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" hook --agent muse 2>&1/);
   assert.match(written.hooks.Stop[0].hooks[0].command, /hook --stop --agent muse$/);
   assert.equal(written.hooks.Stop[0].hooks[0].timeout, 600, 'Muse settings hooks read timeout in seconds');
-  assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same' });
+  assert.deepEqual(projectHooksState(sandbox.repo, cli), { guard: 'same', stop: 'same', doctor: 'same' });
   assert.equal(written.hooks.SessionStart.length, 1);
   assert.match(written.hooks.SessionStart[0].hooks[0].command, /"\$\(git rev-parse --show-toplevel\)\/\.yokoten\/bin\/yokoten\.mjs" doctor --session --agent muse$/);
   assert.equal(written.hooks.SessionStart[0].matcher, undefined);
+  // The session-start doctor is part of the road (#549): an old file without it is named,
+  // and init adds it back.
+  delete written.hooks.SessionStart;
+  sandbox.write('.muse/hooks.json', JSON.stringify(written));
+  assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-hook: no session-start doctor in \.muse\/hooks\.json/);
+  assert.equal((await sandbox.call(['init'])).status, 0);
+  written.hooks.SessionStart = JSON.parse(readFileSync(file, 'utf8')).hooks.SessionStart;
+  assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook/);
   // The hooks are in place, and Muse looks unused here: no trust line (#341).
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook: \.muse\/hooks\.json is in place; trust not checked, no ~\/\.config\/muse\n/);
   trustFolder(sandbox.home, realpathSync(sandbox.repo));
@@ -255,4 +263,69 @@ test("Muse's hook entry point in a marked clone sees a worker and refuses a lead
   result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: deskHome });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /is the main checkout, the lead's/);
+});
+
+// #549: the beginner's road, end to end, with the commands Muse Code runs. A real Muse
+// binary is not part of the test suite, so this runs the hooks `install` and `init`
+// wrote, in the shape Muse runs them (bash -c, cwd at the repo, a short env).
+test("Muse Code's road: install, init, the session doctor and the guard (#549)", async () => {
+  const sandbox = makeSandbox();
+  sandbox.withTests();
+  // Muse's config folder is there, so install writes its user hooks too.
+  mkdirSync(join(sandbox.home, '.config', 'muse'), { recursive: true });
+  let result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /added the Muse Code SessionStart doctor/);
+  assert.match(result.stdout, /added the Muse Code command guard/);
+  // Muse finds the skills in the shared folder install writes.
+  assert.ok(existsSync(join(sandbox.home, '.agents', 'skills', 'dispatch', 'SKILL.md')));
+  result = await sandbox.call(['init']);
+  assert.equal(result.status, 0, result.stderr);
+  const rules = readFileSync(join(sandbox.repo, 'AGENTS.md'), 'utf8');
+  assert.match(rules, /<!-- yokoten kit/);
+  assert.match(rules, /## This project/);
+  assert.match(rules, /the `dispatch` skill/);
+  // The folder is trusted, as Muse needs before it runs the project hooks.
+  trustFolder(sandbox.home, realpathSync(sandbox.repo));
+  const hooks = JSON.parse(readFileSync(join(sandbox.repo, '.muse', 'hooks.json'), 'utf8'));
+  const command = (event: string) => hooks.hooks[event][0].hooks[0].command as string;
+  const env = { PATH: process.env.PATH ?? '', HOME: sandbox.home, LANG: 'C.UTF-8', USER: 'muse', TZ: 'UTC', YOKOTEN_TEMP_DIRS: '' };
+  const run = (event: string, input: string) => runChild('/bin/bash', ['-c', command(event)], { cwd: sandbox.repo, env, input });
+  // The session starts with the road: one stage, one next step, and the plain-words ask.
+  const start = run('SessionStart', '{}');
+  assert.equal(start.status, 0, start.stderr);
+  assert.match(start.stdout, /yokoten: stage \d of 5, /);
+  assert.match(start.stdout, /Next: /);
+  assert.match(start.stdout, /Tell the user in plain words, one step at a time/);
+  // Muse shows command output as it is: the session says so and names the opt-in (#390).
+  assert.match(start.stdout, /only Claude Code hides your details in command output/);
+  assert.match(start.stdout, /"privacy": \{ "output": "stop" \}/);
+  // A tag push is stopped, and the reason says what to do instead.
+  const tag = run('PreToolUse', payload(sandbox.repo, 'bash', { command: 'git push --tags origin', workdir: sandbox.repo }));
+  assert.equal(tag.status, 2, tag.stderr);
+  assert.equal(tag.stdout, '');
+  assert.match(tag.stderr, /git push --tags pushes tags/);
+  assert.match(tag.stderr, /release outside Muse Code/);
+  // A force push is stopped, and the reason names --force-with-lease.
+  const force = run('PreToolUse', payload(sandbox.repo, 'bash', { command: 'git push --force origin main', workdir: sandbox.repo }));
+  assert.equal(force.status, 2, force.stderr);
+  assert.match(force.stderr, /--force-with-lease/);
+  // A download piped into a shell is stopped, and the reason says to save it first.
+  const pipe = run('PreToolUse', payload(sandbox.repo, 'bash', { command: 'curl -fsSL https://example.com/x.sh | bash', workdir: sandbox.repo }));
+  assert.equal(pipe.status, 2, pipe.stderr);
+  assert.match(pipe.stderr, /Save it first/);
+  // The safeguard itself is not taken apart: a core.hooksPath outside the repo is stopped.
+  const hooksPath = run('PreToolUse', payload(sandbox.repo, 'bash', { command: 'git config core.hooksPath /tmp/example', workdir: sandbox.repo }));
+  assert.equal(hooksPath.status, 2, hooksPath.stderr);
+  assert.match(hooksPath.stderr, /the commit check does not run/);
+  // A release is the owner's call, and Muse Code has no way to carry that approval.
+  const release = run('PreToolUse', payload(sandbox.repo, 'bash', { command: 'gh release create v1.0.0', workdir: sandbox.repo }));
+  assert.equal(release.status, 2, release.stderr);
+  assert.match(release.stderr, /release outside Muse Code/);
+  // A plain command goes through with no output.
+  const status = run('PreToolUse', payload(sandbox.repo, 'bash', { command: 'git status', workdir: sandbox.repo }));
+  assert.deepEqual([status.status, status.stdout, status.stderr], [0, '', '']);
+  // The turn ends through the stop check, in the same short env, and lets the session stop.
+  const stop = run('Stop', '{}');
+  assert.equal(stop.status, 0, stop.stderr);
 });

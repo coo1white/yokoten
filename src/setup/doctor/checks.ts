@@ -133,7 +133,7 @@ export function openCodePluginNote(root: string, cli: string): Practice | null {
  */
 function museLine(root: string, env: Env): Practice[] {
   const states = muse.projectHooksState(root, hookCliPath(root));
-  if (states.guard === 'same' && states.stop === 'same' && muse.isGuardOff(root, env)) return [];
+  if (states.guard === 'same' && states.stop === 'same' && states.doctor === 'same' && muse.isGuardOff(root, env)) return [];
   // The trust note names the headless way too: `muse exec --trust-workspace` (#557).
   return [trustedHooksPractice('muse-hook', 'Muse Code', '.muse/hooks.json', states, () => muse.readTrust(root, env), muse.TRUST_FIX)];
 }
@@ -147,16 +147,35 @@ function antigravityPractice(state: HookState): Practice {
 }
 
 /**
- * An agent's tool-call guard and stop check in its own hooks file, which it runs only in a
- * folder the user trusts (Muse Code, Grok CLI): missing, out of date, a file init can't
- * edit, or a folder the agent does not trust.
+ * An agent's hooks in its own hooks file, which it runs only in a folder the user trusts
+ * (Muse Code, Grok CLI): the tool-call guard and stop check, and for Muse the session-start
+ * doctor. Missing, out of date, a file init can't edit, or a folder the agent does not trust.
  */
-function trustedHooksPractice(id: 'muse-hook' | 'grok-hook', agent: string, file: string, states: { guard: HookState; stop: HookState }, readTrust: () => FolderTrust, step: string): Practice {
-  const all = [states.guard, states.stop];
+function trustedHooksPractice(
+  id: 'muse-hook' | 'grok-hook',
+  agent: string,
+  file: string,
+  states: { guard: HookState; stop: HookState; doctor?: HookState },
+  readTrust: () => FolderTrust,
+  step: string,
+): Practice {
+  const hooks = [
+    ['tool-call guard', states.guard],
+    ['stop check', states.stop],
+    ...(states.doctor === undefined ? [] : [['session-start doctor', states.doctor] as const]),
+  ] as const;
+  const all = hooks.map(([, state]) => state);
   const problem = all.find((state) => typeof state === 'object');
   if (problem) return practice(id, id, false, problem.kind === 'json' ? `can't read ${file}` : `${file} has an unexpected shape`, 'make it valid JSON with a "hooks" object, then run `yokoten init`');
-  if (all.includes('updated')) return practice(id, id, false, `the hooks in ${file} are out of date`, '`yokoten init` updates them');
-  if (!all.every((state) => state === 'same')) return practice(id, id, false, `no tool-call guard or stop check in ${file}`, '`yokoten init` adds them');
+  const missing = hooks.filter(([, state]) => state !== 'same' && state !== 'updated').map(([name]) => name);
+  if (all.includes('updated')) {
+    if (missing.length) return practice(id, id, false, `the hooks in ${file} are out of date or missing`, '`yokoten init` adds and updates them');
+    return practice(id, id, false, `the hooks in ${file} are out of date`, '`yokoten init` updates them');
+  }
+  if (missing.length) {
+    const names = missing.length === 1 ? missing[0] : `${missing.slice(0, -1).join(', ')} or ${missing.at(-1)}`;
+    return practice(id, id, false, `no ${names} in ${file}`, missing.length === 1 ? '`yokoten init` adds it' : '`yokoten init` adds them');
+  }
   const trust = readTrust();
   return trustPractice(id, agent, file, trust, step) ?? unchecked(id, file, trust.store.slice(0, trust.store.lastIndexOf('/')));
 }
@@ -238,7 +257,7 @@ export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy":
 
 /** Whether this machine or project is set up for an agent other than Claude Code. */
 function usesOtherAgent(env: Env, root: string | null): boolean {
-  if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env) || opencode.hasUserDir(env)) return true;
+  if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env) || muse.hasUserDir(env) || opencode.hasUserDir(env)) return true;
   if (!root) return false;
   const cli = hookCliPath(root);
   return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || grok.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same' || opencode.usesOpenCode(root);

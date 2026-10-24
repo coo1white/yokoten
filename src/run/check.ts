@@ -249,6 +249,13 @@ const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * file untrusted, so none is returned and every staged file gets the role checks. A head
  * HEAD already leads to is a fast-forward, which git commits with one parent, not as a
  * merge, so it is dropped.
+ *
+ * A clean merge runs the commit check as pre-merge-commit, and git writes MERGE_HEAD after
+ * that hook, so the file is absent then. The `GITHEAD_<oid>` env values are not read: an
+ * agent can set them for an ordinary commit, and `git commit-tree` builds a parent that is
+ * not in the commit's history (#549). That needs the owner (record 0037). Until then a
+ * clean merge takes the way round that keeps MERGE_HEAD: `git merge --no-commit`, then
+ * `git commit`.
  */
 function mergeHeads(root: string, env: Env): string[] {
   // Where MERGE_HEAD is must be known (#403); only the file itself may be missing.
