@@ -90,10 +90,11 @@ export function hostRunRemoval(words: string[]): Finding | undefined {
 const SETTINGS_FIX = 'ask the owner, who changes repository and organization settings in the browser';
 const ORG = 'orgs/[^/]+';
 // `gh api graphql` sends one document, and a mutation reaches settings the REST routes below
-// do not name. The document starts with its operation, after whitespace and comment lines.
-// A GitHub Enterprise server serves the same call at `api/graphql`.
+// do not name. A document can hold fragments and a read before its mutation, so the keyword
+// is looked for anywhere in the code. A GitHub Enterprise server serves the same call at
+// `api/graphql`.
 const GRAPHQL_ROUTE = /^(?:api\/)?graphql$/i;
-const MUTATION = /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*mutation\b/i;
+const MUTATION = /\bmutation\b/i;
 // The first field of a mutation, after its optional name and variable declarations.
 const MUTATION_FIELD = /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*mutation\b(?:\s+[A-Za-z_]\w*)?(?:\s*\([^)]*\))?\s*\{\s*([A-Za-z_]\w*)/i;
 // A document the shell builds is not one the guard can read: a variable, a substitution or
@@ -118,6 +119,38 @@ const SETTINGS_ROUTES = [
   // are the owner's, and the bot has no write there.
   new RegExp(`^${ORG}(?:/.*)?$`, 'i'),
 ];
+
+/**
+ * The document with its comments and string literals blanked, so a keyword inside one is not
+ * read as an operation (#825). What is left is code.
+ */
+function documentCode(document: string): string {
+  let code = '';
+  let index = 0;
+  while (index < document.length) {
+    if (document.startsWith('"""', index)) {
+      const block = document.indexOf('"""', index + 3);
+      index = block === -1 ? document.length : block + 3;
+      code += ' ';
+      continue;
+    }
+    if (document[index] === '"') {
+      index++;
+      while (index < document.length && document[index] !== '"') index += document[index] === '\\' ? 2 : 1;
+      index++;
+      code += ' ';
+      continue;
+    }
+    if (document[index] === '#') {
+      while (index < document.length && document[index] !== '\n') index++;
+      code += '\n';
+      continue;
+    }
+    code += document[index];
+    index++;
+  }
+  return code;
+}
 
 /**
  * Whether a GraphQL mutation only adds a comment, the one write the bot needs. It must be one
@@ -183,7 +216,7 @@ function isGraphqlSettingsWrite(args: string[]): boolean {
     const document = equals === -1 ? value : value.slice(equals + 1);
     if (document.startsWith('@') || SHELL_DOCUMENT.test(document)) return true;
     hasDocument = true;
-    if (MUTATION.test(document) && !isCommentMutation(document)) return true;
+    if (MUTATION.test(documentCode(document)) && !isCommentMutation(document)) return true;
     index = field.next - 1;
   }
   return !hasDocument;

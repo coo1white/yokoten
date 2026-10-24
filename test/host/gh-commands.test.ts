@@ -151,6 +151,9 @@ test('repo settings: a graphql mutation is a settings write, a query passes (#82
     'gh api -X POST /api/graphql -f query=mutation { x }',
     'gh api -X POST https://api.github.com/graphql -f query=mutation { x }',
     'gh api graphql --raw-field query=mutation { changeVisibility(input: {}) { clientMutationId } }',
+    // A mutation is found wherever it sits: a fragment or a read before it changes nothing.
+    "gh api graphql -f query='fragment F on Repository { id } mutation { updateRepository(input: {visibility: PUBLIC}) { clientMutationId } }'",
+    "gh api graphql -f query='query Q { viewer { login } } mutation M { updateRepository(input: {visibility: PUBLIC}) { clientMutationId } }'",
     // The document gh would read, which the guard cannot.
     'gh api graphql -F query=@mutation.graphql',
     'gh api graphql --input mutation.json',
@@ -174,6 +177,9 @@ test('repo settings: a graphql mutation is a settings write, a query passes (#82
     'gh api -X POST graphql -f query={ viewer { login } }',
     // The word only inside a string, in an operation that reads.
     'gh api graphql -f query=query { search(query: "mutation") { issueCount } }',
+    // A comment that names a mutation, and a fragment with a read after it.
+    "gh api graphql -f query='# mutation { changeVisibility }\nquery { viewer { login } }'",
+    "gh api graphql -f query='fragment F on Repository { id } query Q { viewer { login } ...F }'",
     // A comment is the one mutation the bot needs, and text with a brace is still text.
     "gh api graphql -f query='mutation { addComment(input: {body: \"a } brace\"}) { clientMutationId } }'",
   ];
