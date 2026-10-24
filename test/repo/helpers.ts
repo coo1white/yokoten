@@ -40,8 +40,9 @@ import {
   readServer,
   type ServerSettings,
 } from '../../src/host/github/index.ts';
-import type { Env } from '../../src/rules/config.ts';
 import type { Fact } from '../../src/setup/advice/adopt.ts';
+import { DEFAULTS, type Env } from '../../src/rules/config.ts';
+import { checkCommand } from '../../src/rules/guards.ts';
 import {
   road,
   ROAD,
@@ -132,6 +133,17 @@ export function makeTempDir(prefix = 'yokoten-'): string {
   testFolders.at(-1)?.push(path);
   return path;
 }
+
+// A privacy check sandbox for a gh post: its own HOME, a marks file, and a folder for body
+// files. The samples are built from pieces so the repo passes its own check.
+export const postDir = makeTempDir('yokoten-posts-');
+export const postMarks = join(postDir, 'private-marks');
+writeFileSync(postMarks, '# my marks\nquietvale\n');
+export const postEnv: Env = { HOME: postDir, YOKOTEN_PRIVATE_MARKS: postMarks };
+export const email = `someone${'@'}personal-mail.com`;
+export const token = `ghp_${'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'}`;
+
+export const post = (command: string, config: typeof DEFAULTS = DEFAULTS) => checkCommand(command, { env: postEnv, config, cwd: postDir });
 
 /**
  * Stop a checkout walk at `folder` (#712). A `.git` file that is not a gitdir line
@@ -567,4 +579,7 @@ export function fence(team: string): () => void {
     for (const part of ['', 'agents', 'outbox', 'lead']) chmodSync(join(team, part), 0o755);
   };
 }
+
+/** A wide form of made-up text, for Unicode privacy tests. */
+export const WIDE = (text: string) => [...text].map((char) => String.fromCodePoint(char.codePointAt(0)! + 0xfee0)).join('');
 

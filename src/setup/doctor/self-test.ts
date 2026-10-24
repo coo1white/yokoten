@@ -7,7 +7,7 @@ import { dirname, join, parse } from 'node:path';
 import { checkCommand, checkEdit } from '../../rules/guards.ts';
 import { DEFAULTS } from '../../rules/config.ts';
 import { checkBuildOutput, checkCodeOwners, checkLayout } from '../../rules/layout.ts';
-import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy.ts';
+import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy/index.ts';
 import { SECRET_CONTROL } from '../../rules/privacy/secrets.ts';
 import { judge } from '../../run/hook.ts';
 import { readToolCall, sandboxProblem as claudeSandboxProblem } from '../../agents/runtimes/claude-code.ts';

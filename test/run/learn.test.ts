@@ -27,7 +27,7 @@ import { DEFAULTS } from '../../src/rules/config.ts';
 import {
   homeOf,
   marksFile,
-} from '../../src/rules/privacy.ts';
+} from '../../src/rules/privacy/index.ts';
 import { checkLayout } from '../../src/rules/layout.ts';
 import {
   countNotes,

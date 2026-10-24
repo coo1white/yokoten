@@ -1,7 +1,7 @@
 // `yokoten msg`: agents of every vendor message each other (#674). Files on this machine,
 // no server and no network. The rules are in src/agents/desk/team/.
 
-import { hideHome } from '../../rules/privacy.ts';
+import { hideHome } from '../../rules/privacy/index.ts';
 import { deliveryText, messageProblem, senderLine, wrapMessage } from '../../agents/desk/team/deliver.ts';
 import { appendMessage, changedSinceRead, keepReadState, loadReadState, outboxNames, readOutbox, sendProblem, unread } from '../../agents/desk/team/outbox.ts';
 import { LEAD, makeTeam, readRoster } from '../../agents/desk/team/team.ts';

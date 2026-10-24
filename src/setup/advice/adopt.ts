@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { place } from '../../rules/message.ts';
-import { loadMarks, scanText } from '../../rules/privacy.ts';
+import { loadMarks, scanText } from '../../rules/privacy/index.ts';
 import { chat, KEY_HINT, type LlamaConfig, llamaConfig, type Message } from '../../agents/llama.ts';
 import { findRulesGap } from '../init.ts';
 import { languagesWithTests, orList, testLanguages } from './test-commands.ts';

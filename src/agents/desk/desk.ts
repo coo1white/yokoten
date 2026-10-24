@@ -28,7 +28,7 @@ import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync
 import { delimiter, dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Env } from '../../rules/config.ts';
-import { homeIn } from '../../rules/privacy.ts';
+import { homeIn } from '../../rules/privacy/index.ts';
 import { DESK as CLAUDE_CODE } from '../runtimes/claude-code.ts';
 import { DESK as CODEX } from '../runtimes/codex.ts';
 import { DESK as GROK } from '../runtimes/grok.ts';

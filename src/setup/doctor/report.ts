@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, formatFinding } from '../../rules/message.ts';
-import { homeOf } from '../../rules/privacy.ts';
+import { homeOf } from '../../rules/privacy/index.ts';
 import { guardLine } from '../../host/light.ts';
 import { check } from '../../run/check.ts';
 import { countNotes, waitingLine } from '../../run/learn.ts';

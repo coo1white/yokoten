@@ -11,7 +11,7 @@ import {
   isFailingFinding,
   isWarningFinding,
 } from '../../../src/rules/message.ts';
-import { addedIgnores, loadIgnores, scanText } from '../../../src/rules/privacy.ts';
+import { addedIgnores, loadIgnores, scanText } from '../../../src/rules/privacy/index.ts';
 import { findEnvironmentValues, findLineIgnores, findSecretCandidates, findSecretHits, makeSecretHider, SECRET, SECRET_CONTROL } from '../../../src/rules/privacy/secrets.ts';
 import { assertLinear } from '../../../scripts/linear.ts';
 import { at, makeTempDir } from '../../repo/helpers.ts';

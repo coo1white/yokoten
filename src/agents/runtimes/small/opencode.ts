@@ -36,7 +36,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
-import { homeIn, homeOf } from '../../../rules/privacy.ts';
+import { homeIn, homeOf } from '../../../rules/privacy/index.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
 import type { Action } from '../../../run/hook.ts';
 import { GUARD_PROTOCOL_ID } from '../../../run/protocol.ts';

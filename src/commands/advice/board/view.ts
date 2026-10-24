@@ -5,7 +5,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { type BoardPull, type Gh, readBoardPulls, repoOf, repoPageOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
-import { hideHome } from '../../../rules/privacy.ts';
+import { hideHome } from '../../../rules/privacy/index.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import type { BoardIssue } from './controls.ts';
 import { ageText, BOARD_AGENT_FILE, type BoardAgent, type BoardRole, type BoardWorktree, type FoundAgent, readBoardAgents, readBoardSeats, readBoardWorktrees } from './agents.ts';

@@ -16,7 +16,7 @@
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { homeIn, homeOf } from '../rules/privacy.ts';
+import { homeIn, homeOf } from '../rules/privacy/index.ts';
 import { guardCommand } from '../run/cli.ts';
 import { type FolderTrust, folderKeys, isFolder } from './folder-trust.ts';
 import { type Added, addHook, checkHooksFile, type HookState, hookState, isObject, readSettings, removeHook } from './hooks-file.ts';

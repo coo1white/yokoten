@@ -18,7 +18,7 @@ import { matcher } from '../rules/config.ts';
 import { docsLink, type Finding, finding, noteWork, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
-import { homeOf } from '../rules/privacy.ts';
+import { homeOf } from '../rules/privacy/index.ts';
 import { hasPlugin, hasProjectHook, sandboxProblem as claudeSandboxProblem } from '../agents/runtimes/claude-code.ts';
 import { sandboxProblem as codexSandboxProblem } from '../agents/runtimes/codex.ts';
 import { sandboxProblem as geminiSandboxProblem } from '../agents/runtimes/gemini.ts';

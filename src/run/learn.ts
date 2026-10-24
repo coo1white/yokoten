@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding } from '../rules/message.ts';
-import { homeOf, loadMarks, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
+import { homeOf, loadMarks, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy/index.ts';
 
 /** An incident issue, as the code host gives it. */
 export interface Incident {

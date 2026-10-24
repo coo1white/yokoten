@@ -17,7 +17,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { basename, join } from 'node:path';
 import { ghIn, ghLaterIn, type GhLater, readBoardPullsLater, repoOf } from '../../../host/github/index.ts';
 import { type Env, loadConfig } from '../../../rules/config.ts';
-import { hideHome } from '../../../rules/privacy.ts';
+import { hideHome } from '../../../rules/privacy/index.ts';
 import { readOriginUrl } from '../../../setup/plan.ts';
 import { type Invocation, parse, print, requireRoot, usage } from '../../shared.ts';
 import { BOARD_READ_TIMEOUT_MS, readBoardWorktrees } from './agents.ts';

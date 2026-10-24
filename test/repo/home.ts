@@ -69,7 +69,7 @@ process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;
 
 // The commit check reads the password-database home when $HOME has no marks file (#739).
 // Point that read at nothing, after HOME is set, so no test opens the real marks file.
-const { useRealHome } = await import('../../src/rules/privacy.ts');
+const { useRealHome } = await import('../../src/rules/privacy/index.ts');
 useRealHome(() => '');
 
 // A child does not import this file: that would point its HOME at a new empty folder.

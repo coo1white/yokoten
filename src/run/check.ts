@@ -12,7 +12,7 @@ import { checkEdit, withWorkerMark } from '../rules/guards.ts';
 import { checkBuildOutput, checkCodeOwners, checkLayout, CODEOWNERS_PLACES, codeOwnersPath } from '../rules/layout.ts';
 import { type Finding, finding, isFailingFinding } from '../rules/message.ts';
 import { isChangeFile, longSentenceNote, longSentences } from '../rules/pr.ts';
-import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy.ts';
+import { autoLogins, loadIgnores, mapMarkKinds, notUtc, repoMarkKinds, scanText, TIME_ZONE_FIX } from '../rules/privacy/index.ts';
 import { parseChange, readChanges } from './changelog.ts';
 import { isShallowNote, translationNotes } from './notes/translations.ts';
 
