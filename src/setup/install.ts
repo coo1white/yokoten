@@ -248,7 +248,7 @@ const hasProfileLine = (profile: string): boolean => existsSync(profile) && read
 export type Ask = (question: string) => string | null;
 
 /** Whether an answer to a [Y/n] question is yes: Enter alone, y or yes. */
-const isYes = (answer: string | null): boolean => answer !== null && /^\s*(y|yes)?\s*$/i.test(answer);
+export const isYes = (answer: string | null): boolean => answer !== null && /^\s*(y|yes)?\s*$/i.test(answer);
 
 /**
  * Write the launcher and make sure the shell finds it. A file at that place without the

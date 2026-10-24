@@ -12,9 +12,9 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
-import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
+import { guardCommand, missingProjectRuntime, runs } from '../../run/cli.ts';
 import { type Action, isWorkerType } from '../../run/hook.ts';
-import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';
+import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
 import { readStop } from './claude-code.ts';
 import type { AgentAdapter } from './runtime.ts';
 import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
@@ -163,11 +163,18 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
 //   `trusted_hash`, the hash of the hook as Codex reads it. A changed hook has another hash.
 // config.toml is in `$CODEX_HOME`, or `~/.codex`.
 
-/** The one step that makes Codex run the project's hooks. */
-export const TRUST_STEP = 'run `codex` in this folder, trust it, then trust both yokoten hooks in `/hooks`';
+/**
+ * The one step that makes Codex run the project's hooks: `yokoten trust` writes the
+ * folder and each hook. Codex's own `/hooks` screen still trusts both, so it stays named.
+ */
+export const TRUST_STEP = `${TRUST_COMMAND} (Codex's \`/hooks\` screen does the same)`;
 
-/** What Codex's trust says, past the shared states: the project is trusted, the hooks are not. */
-export type CodexTrust = FolderTrust<'hooks untrusted' | 'hooks changed' | 'hooks off'>;
+/**
+ * What Codex's trust says, past the shared states: the project is trusted, the hooks are
+ * not. `hooks edited` is a hook that runs yokoten's guard but is not the command yokoten
+ * writes; trust must not trust that one, and `yokoten init` puts the command back.
+ */
+export type CodexTrust = FolderTrust<'hooks untrusted' | 'hooks changed' | 'hooks edited' | 'hooks off'>;
 
 /** One TOML key, bare or quoted, at the start of `text`: the key and the text after it. */
 function readTomlKey(text: string): [string, string] | null {
@@ -186,8 +193,8 @@ function readTomlKey(text: string): [string, string] | null {
   return literal ? [literal[1], rest.slice(literal[0].length)] : null;
 }
 
-/** A dotted TOML key (`a."b c".d`): its parts and the text after it. */
-function readTomlPath(text: string): [string[], string] | null {
+/** A dotted TOML key (`a."b c".d`): its parts and the text after it. Shared with the trust writer (#661). */
+export function readTomlPath(text: string): [string[], string] | null {
   const parts: string[] = [];
   let rest = text;
   for (;;) {
@@ -334,6 +341,48 @@ const TRUST_EVENTS = [
 ] as const;
 
 /**
+ * The entries a project hook may name: `isSelf` picks the repo's own bin, every other
+ * project the vendored copy, and `.ts` is what yokoten wrote before #408.
+ */
+const HOOK_ENTRIES = ['bin/yokoten.ts', 'bin/yokoten.mjs', '.yokoten/bin/yokoten.ts', '.yokoten/bin/yokoten.mjs'];
+
+/** The yokoten subcommand and flags a Codex hook runs, by event. */
+const HOOK_ARGS: ReadonlyMap<string, string> = new Map([
+  ['pre_tool_use', 'hook --agent codex'],
+  ['stop', 'hook --stop --agent codex'],
+]);
+
+/**
+ * The commands yokoten writes for one hook event, one per entry it may use (#661). Trust
+ * matches a handler against these exactly: a hook is yokoten's only when it *is* the guard
+ * yokoten writes, never when it merely mentions yokoten's flags. A repo can ship a hook of
+ * its own beside yokoten's, and `yokoten trust` must not trust that one.
+ */
+function yokotenHookCommands(event: string): string[] {
+  const args = HOOK_ARGS.get(event);
+  if (args === undefined) return [];
+  return HOOK_ENTRIES.map((cli) =>
+    guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, args, missingProjectRuntime(cli), event === 'pre_tool_use' ? { isToolCall: true } : {}),
+  );
+}
+
+/** Whether a hook handler is one yokoten writes for this event. */
+function isYokotenHook(event: string, handler: Record<string, unknown>): boolean {
+  return typeof handler.command === 'string' && yokotenHookCommands(event).includes(handler.command);
+}
+
+/**
+ * Whether a handler runs yokoten's hook for this event, even if its command is not
+ * exactly what yokoten writes now: a hook edited after trust, or one from an older
+ * yokoten. Doctor names it; trust never trusts it (#661).
+ */
+function isEditedYokotenHook(event: string, handler: Record<string, unknown>): boolean {
+  const args = HOOK_ARGS.get(event);
+  if (args === undefined || typeof handler.command !== 'string' || isYokotenHook(event, handler)) return false;
+  return runs(args).test(handler.command);
+}
+
+/**
  * The hash Codex trusts a command hook by (`hook_hash` in discovery.rs): sha256 of the
  * hook as Codex reads it, with the defaults filled in, as JSON with sorted keys. A field
  * Codex leaves out when empty is left out here too. Checked against a real config.toml
@@ -390,7 +439,8 @@ export function readModelIdentity(env: Env): { model: string; provider: string }
 
 /**
  * Whether Codex runs yokoten's hooks in the project at `root`, from its config.toml.
- * Read-only. Only hooks that run `--agent codex` count: those are the ones init writes.
+ * Read-only. Only the hook commands yokoten writes count: a hook that merely mentions
+ * yokoten's flags is not yokoten's.
  */
 export function readTrust(root: string, env: Env): CodexTrust {
   const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
@@ -424,7 +474,12 @@ export function readTrust(root: string, env: Env): CodexTrust {
     groups.forEach((group: unknown, groupIndex: number) => {
       if (!isObject(group) || !Array.isArray(group.hooks)) return;
       group.hooks.forEach((handler: unknown, handlerIndex: number) => {
-        if (!isObject(handler) || typeof handler.command !== 'string' || !handler.command.includes('--agent codex')) return;
+        if (!isObject(handler) || typeof handler.command !== 'string') return;
+        if (isEditedYokotenHook(event, handler)) {
+          states.push('hooks edited');
+          return;
+        }
+        if (!isYokotenHook(event, handler)) return;
         const saved = folderKeys(root)
           .map((folder) => tables.hookStates.get(`${join(folder, '.codex', 'hooks.json')}:${event}:${groupIndex}:${handlerIndex}`))
           .find((fields) => fields !== undefined);
@@ -435,7 +490,69 @@ export function readTrust(root: string, env: Env): CodexTrust {
     });
   }
   if (!states.length) return { state: 'hooks untrusted', store };
-  return { state: (['hooks off', 'hooks untrusted', 'hooks changed'] as const).find((state) => states.includes(state)) ?? 'trusted', store };
+  return { state: (['hooks edited', 'hooks off', 'hooks untrusted', 'hooks changed'] as const).find((state) => states.includes(state)) ?? 'trusted', store };
+}
+
+/**
+ * What yokoten must write into config.toml to trust the project and the hooks it wrote
+ * (#661). Only fields that differ are named, so a second run writes nothing. It never
+ * trusts a hook that is not the exact command yokoten writes: a hook edited after trust
+ * is reported instead (`changed`), for `yokoten init` to put back.
+ */
+export function trustProject(root: string, env: Env): TrustPlan {
+  const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
+  const user = homeOf(env);
+  const home = env.CODEX_HOME || (user ? join(user, '.codex') : '');
+  if (!home) return { state: 'no home', store, changes: [] };
+  const file = join(home, 'config.toml');
+  let text = '';
+  try {
+    if (existsSync(file)) text = readFileSync(file, 'utf8');
+  } catch {
+    return { state: 'unreadable', store, changes: [] };
+  }
+  const tables = readTrustTables(text);
+  const changes: TrustChange[] = [];
+  const change = (path: string[], key: string, value: string, before: string | null, kind?: 'boolean'): TrustChange => ({ agent: 'Codex', store, file, format: 'toml', path, key, value, before, ...(kind ? { kind } : {}) });
+  const folders = folderKeys(root);
+  let hooks: unknown = null;
+  try {
+    hooks = JSON.parse(readFileSync(projectHooks(root), 'utf8'));
+  } catch {
+    // no hooks file doctor can read: no yokoten hook for Codex to trust
+  }
+  const events = isObject(hooks) && isObject(hooks.hooks) ? hooks.hooks : {};
+  const edited = TRUST_EVENTS.some(([name, event]) => {
+    const groups = Array.isArray(events[name]) ? events[name] : [];
+    return groups.some((group: unknown) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((handler: unknown) => isObject(handler) && isEditedYokotenHook(event, handler)));
+  });
+  if (edited) return { state: 'changed', store, changes: [] };
+  const main = mainCheckout(root);
+  const keys = [...folders, ...(main ? folderKeys(main) : [])];
+  // Codex stops at the first folder key it finds, trusted or not.
+  const savedProject = keys.map((folder) => tables.projects.get(folder)).find((fields) => fields?.trust_level !== undefined);
+  if (savedProject?.trust_level !== 'trusted') {
+    const folder = folders.find((key) => tables.projects.has(key)) ?? folders[0];
+    const before = typeof savedProject?.trust_level === 'string' ? savedProject.trust_level : null;
+    changes.push(change(['projects', folder], 'trust_level', 'trusted', before));
+  }
+  for (const [name, event] of TRUST_EVENTS) {
+    const groups = Array.isArray(events[name]) ? events[name] : [];
+    groups.forEach((group: unknown, groupIndex: number) => {
+      if (!isObject(group) || !Array.isArray(group.hooks)) return;
+      group.hooks.forEach((handler: unknown, handlerIndex: number) => {
+        if (!isObject(handler) || !isYokotenHook(event, handler)) return;
+        const key = `${join(root, '.codex', 'hooks.json')}:${event}:${groupIndex}:${handlerIndex}`;
+        const saved = folders
+          .map((folder) => tables.hookStates.get(`${join(folder, '.codex', 'hooks.json')}:${event}:${groupIndex}:${handlerIndex}`))
+          .find((fields) => fields !== undefined);
+        if (saved?.enabled === false) changes.push(change(['hooks', 'state', key], 'enabled', 'true', 'false', 'boolean'));
+        const hash = hookHash(event, group.matcher, handler);
+        if (saved?.trusted_hash !== hash) changes.push(change(['hooks', 'state', key], 'trusted_hash', hash, typeof saved?.trusted_hash === 'string' ? saved.trusted_hash : null));
+      });
+    });
+  }
+  return { state: changes.length > 0 ? 'trusted' : 'same', store, changes };
 }
 
 // ---- The project's sandbox (#589) ----
@@ -1047,3 +1164,263 @@ export const ADAPTER: AgentAdapter = {
   desk: DESK,
   call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
 };
+
+// ---- Writing that trust (#661) ----
+//
+// `yokoten trust` writes each agent's trust store, and `yokoten trust --undo` puts back
+// exactly what it changed (record 0014). A write touches only the entries yokoten names
+// and keeps every other line. Codex and Grok keep trust in TOML, Muse Code and Copilot
+// CLI in JSON; this writer is shared by all four.
+
+/** How an agent's trust store is written: TOML (`config.toml`), or JSON (`trust.json`). */
+export type TrustFormat = 'toml' | 'json';
+
+/**
+ * One value yokoten writes into an agent's trust store. `path` names the table (TOML) or
+ * the objects (JSON) that hold it; `key` is the field inside. `before` is the value that was
+ * there, or null when the field was missing: that is what undo puts back.
+ */
+export interface TrustChange {
+  /** The agent's name for a report: Codex, Grok CLI, Muse Code, Copilot CLI. */
+  agent: string;
+  /** The store as the user would type it: `~/.codex/config.toml` or `$CODEX_HOME/...`. */
+  store: string;
+  /** The store's real path. */
+  file: string;
+  format: TrustFormat;
+  path: string[];
+  key: string;
+  /** What yokoten writes, as a string: `trusted`, `true`, a hash, a folder. */
+  value: string;
+  /** What was there before, or null when the key was missing. */
+  before: string | null;
+  /** A true/false value in TOML or JSON, or a list item in Copilot's `trustedFolders`. */
+  kind?: 'boolean' | 'list';
+}
+
+/** What one agent's trust store needs: entries to write, and what was there. */
+export interface TrustPlan {
+  /**
+   * `changed`: a hook yokoten wrote was edited, so writing trust would bless a command
+   * yokoten does not know. `yokoten init` puts the hook back; nothing is written here.
+   */
+  state: 'trusted' | 'same' | 'changed' | 'unreadable' | 'no home';
+  store: string;
+  changes: TrustChange[];
+  /** The shape of a missing store: Muse's schema version, or Copilot's list. */
+  seed?: unknown;
+}
+
+/** One table path as TOML writes it: a bare key when it can be, a quoted one otherwise. */
+const tomlKey = (part: string): string => (/^[A-Za-z0-9_-]+$/.test(part) ? part : JSON.stringify(part));
+
+/** A `[a."b"]` header line as its path, or null for any other line. */
+function trustHeaderPath(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('[') || trimmed.startsWith('[[')) return null;
+  const path = readTomlPath(trimmed.slice(1));
+  if (!path || !path[1].startsWith(']') || !/^\s*(#.*)?$/.test(path[1].slice(1))) return null;
+  return path[0];
+}
+
+/** Whether a header line names exactly `path`. */
+const isTrustTable = (line: string, path: readonly string[]): boolean => {
+  const found = trustHeaderPath(line);
+  return !!found && found.length === path.length && found.every((part, at) => part === path[at]);
+};
+
+/** The value of a field as a string, from parsed TOML: a string or a boolean. */
+function tomlValue(text: string, path: readonly string[], key: string): string | null {
+  const table = path.reduce<unknown>((at, part) => (isObject(at) ? at[part] : undefined), parseToml(text));
+  const value = isObject(table) ? table[key] : undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return String(value);
+  return null;
+}
+
+/** The lines of a file, and the newline it uses. */
+const splitLines = (text: string): { lines: string[]; newline: string } => ({ lines: text.split(/\r?\n/), newline: text.includes('\r\n') ? '\r\n' : '\n' });
+
+/** A field as TOML writes it: a boolean as it is, a string quoted as JSON, which TOML reads. */
+const tomlField = (key: string, value: string, isBoolean: boolean): string => `${key} = ${isBoolean ? value : JSON.stringify(value)}`;
+
+/**
+ * Set one field in a TOML file, or remove it when `value` is null. The table is added when
+ * it is missing; a dotted key is edited where it stands. When the value lives in a shape
+ * this writer does not edit (an inline table), the text comes back the same: never a
+ * second key, which TOML reads as an error.
+ */
+function setTomlField(text: string, path: readonly string[], key: string, value: string | null, kind?: 'boolean'): string {
+  const { lines, newline } = splitLines(text);
+  // A dotted key (`projects."/a".trust_level = "trusted"`) is one line: edit it where it is.
+  for (let at = 0; at < lines.length; at++) {
+    const found = readTomlPath(lines[at]);
+    if (!found) continue;
+    const isField = found[1].trimStart().startsWith('=') && found[0].length === path.length + 1 && path.every((part, index) => part === found[0][index]) && found[0].at(-1) === key;
+    if (!isField) continue;
+    if (value === null) lines.splice(at, 1);
+    else lines[at] = tomlField(found[0].map(tomlKey).join('.'), value, kind === 'boolean');
+    return lines.join(newline);
+  }
+  const start = lines.findIndex((line) => isTrustTable(line, path));
+  if (start < 0) {
+    if (value === null) return text;
+    while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+    if (lines.length > 0) lines.push('');
+    lines.push(`[${path.map(tomlKey).join('.')}]`, tomlField(key, value, kind === 'boolean'), '');
+    return lines.join(newline);
+  }
+  let end = lines.length;
+  for (let at = start + 1; at < lines.length; at++) {
+    if (trustHeaderPath(lines[at])) {
+      end = at;
+      break;
+    }
+  }
+  for (let at = start + 1; at < end; at++) {
+    const pair = readTomlPath(lines[at]);
+    if (!pair || pair[0].length !== 1 || pair[0][0] !== key || !pair[1].trimStart().startsWith('=')) continue;
+    if (value === null) {
+      lines.splice(at, 1);
+      // A table yokoten made for one value goes with it, so undo leaves no empty header.
+      let hasField = false;
+      for (let line = start + 1; line < end - 1; line++) {
+        const field = readTomlPath(lines[line]);
+        if (field && field[1].trimStart().startsWith('=')) hasField = true;
+      }
+      if (!hasField) {
+        lines.splice(start, 1);
+        if (lines[start] === '' && (start === 0 || lines[start - 1] === '')) lines.splice(start, 1);
+      }
+    } else lines[at] = tomlField(key, value, kind === 'boolean');
+    return lines.join(newline);
+  }
+  if (value === null) return text;
+  lines.splice(start + 1, 0, tomlField(key, value, kind === 'boolean'));
+  return lines.join(newline);
+}
+
+/**
+ * A JSON file as its leading comment lines and its data. Copilot CLI writes `//` comment
+ * lines before its JSON; they are kept exactly. A comment inside the JSON is not a shape
+ * this writer edits: null, and the caller leaves the file alone.
+ */
+function readJson(text: string): { prefix: string; data: unknown } | null {
+  const lines = text.split('\n');
+  let at = 0;
+  while (at < lines.length && (lines[at].trim() === '' || lines[at].trimStart().startsWith('//'))) at++;
+  const prefix = lines.slice(0, at).join('\n') + (at > 0 ? '\n' : '');
+  try {
+    const data = JSON.parse(lines.slice(at).join('\n'));
+    return isObject(data) ? { prefix, data } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The object at `path` in a JSON value, made as it goes when `make` is true. */
+function jsonObject(data: unknown, path: readonly string[], make: boolean): Record<string, unknown> | null {
+  let at = data;
+  for (const part of path) {
+    if (!isObject(at)) return null;
+    if (!isObject(at[part])) {
+      if (!make) return null;
+      at[part] = {};
+    }
+    at = at[part];
+  }
+  return isObject(at) ? at : null;
+}
+
+/** The value of a JSON field as a string, for a plain value. */
+function jsonValue(data: unknown, path: readonly string[], key: string): string | null {
+  const table = jsonObject(data, path, false);
+  const value = table ? table[key] : undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return String(value);
+  return null;
+}
+
+/** Set one field in JSON, add an item to a list, or remove it. False when the file's shape blocks it. */
+function setJsonField(data: Record<string, unknown>, change: TrustChange, isUndo: boolean): boolean {
+  const table = jsonObject(data, change.path, !isUndo);
+  if (!table) return false;
+  if (change.kind === 'list') {
+    const list = Array.isArray(table[change.key]) ? (table[change.key] as unknown[]).filter((item): item is string => typeof item === 'string') : undefined;
+    if (!list) return false;
+    if (isUndo && !list.includes(change.value)) return false;
+    table[change.key] = isUndo ? list.filter((item) => item !== change.value) : [...new Set([...list, change.value])];
+    return true;
+  }
+  if (isUndo) {
+    if (jsonValue(data, change.path, change.key) !== change.value) return false;
+    if (change.before === null) {
+      delete table[change.key];
+      // An object yokoten made for one value goes with it.
+      let parent = data;
+      for (const part of change.path.slice(0, -1)) parent = isObject(parent[part]) ? (parent[part] as Record<string, unknown>) : parent;
+      const last = change.path.at(-1);
+      if (last && parent !== data && isObject(parent[last]) && Object.keys(parent[last] as object).length === 0) delete parent[last];
+    } else table[change.key] = change.kind === 'boolean' ? change.before === 'true' : change.before;
+    return true;
+  }
+  table[change.key] = change.kind === 'boolean' ? change.value === 'true' : change.value;
+  return true;
+}
+
+/** Write the changes for one agent's store. 'kept' when the file holds the value in a shape yokoten won't edit. */
+export function writeTrust(plan: TrustPlan): 'written' | 'kept' | 'unreadable' {
+  const first = plan.changes[0];
+  if (!first) return 'kept';
+  const file = first.file;
+  let text = '';
+  if (existsSync(file)) {
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      return 'unreadable';
+    }
+  }
+  let written = false;
+  if (first.format === 'toml') {
+    for (const change of plan.changes) {
+      const before = text;
+      text = setTomlField(text, change.path, change.key, change.value, change.kind === 'boolean' ? 'boolean' : undefined);
+      if (text !== before) written = true;
+      else if (tomlValue(before, change.path, change.key) !== change.value) return 'kept';
+    }
+  } else {
+    const parsed = text === '' ? { prefix: '', data: plan.seed ?? {} } : readJson(text);
+    if (!parsed) return 'unreadable';
+    for (const change of plan.changes) if (setJsonField(parsed.data as Record<string, unknown>, change, false)) written = true;
+    if (!written) return 'kept';
+    text = `${parsed.prefix}${JSON.stringify(parsed.data, null, 2)}\n`;
+  }
+  if (!written) return 'kept';
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, text);
+  return 'written';
+}
+
+/** Put one entry back the way it was. 'kept' when the user changed it since, or the file is gone. */
+export function revertTrust(change: TrustChange): 'reverted' | 'kept' | 'unreadable' {
+  if (!existsSync(change.file)) return 'kept';
+  let text: string;
+  try {
+    text = readFileSync(change.file, 'utf8');
+  } catch {
+    return 'unreadable';
+  }
+  if (change.format === 'toml') {
+    if (tomlValue(text, change.path, change.key) !== change.value) return 'kept';
+    const next = setTomlField(text, change.path, change.key, change.before, change.kind === 'boolean' ? 'boolean' : undefined);
+    if (next === text) return 'kept';
+    writeFileSync(change.file, next);
+    return 'reverted';
+  }
+  const parsed = readJson(text);
+  if (!parsed) return 'unreadable';
+  if (!setJsonField(parsed.data as Record<string, unknown>, change, true)) return 'kept';
+  writeFileSync(change.file, `${parsed.prefix}${JSON.stringify(parsed.data, null, 2)}\n`);
+  return 'reverted';
+}
