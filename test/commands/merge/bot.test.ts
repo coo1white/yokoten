@@ -1622,6 +1622,20 @@ test('bot: a tag push and a mirror send the zoned commits they read (#789)', asy
   }
 });
 
+test('bot: a pattern refspec is read, not passed as no commits (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'loose', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    const glob = await push('origin', 'refs/heads/*:refs/heads/*');
+    assert.equal(glob.status, 1, 'a pattern that sends a zoned branch is refused');
+    assert.match(glob.stderr, /nothing was pushed/);
+    assert.equal(remoteRefs('--heads', 'loose'), '', 'the zoned branch was not pushed');
+  } finally {
+    done();
+  }
+});
+
 test('bot: a delete sends no commit, so a zoned one is not refused (#789)', async () => {
   const { sandbox, push, remoteRefs, done } = zonedOrigin();
   try {
