@@ -447,6 +447,53 @@ export function fakeMachine(free: number, more: Partial<MachineProbe> & { progra
   };
 }
 // The team of #674 (test/agents/desk/team/, test/commands/advice/messages.test.ts).
+/**
+ * A small MCP server for the mcp tests (#370). `clean` answers with portable tools and
+ * both result forms; `traps` writes a log line, a non-UTF-8 byte and CRLF endings, and
+ * lists tools with each schema, name, hint, count and output trap.
+ */
+export const MCP_SAMPLE_SERVER = `
+import { createInterface } from 'node:readline';
+
+const mode = process.argv[2] ?? 'clean';
+const end = mode === 'traps' ? '\\r\\n' : '\\n';
+const send = (message) => process.stdout.write(JSON.stringify(message) + end);
+const hints = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const output = { type: 'object', properties: { reply: { type: 'string' } }, required: ['reply'] };
+const plain = { type: 'object', properties: {} };
+
+const clean = [
+  { name: 'echo', description: 'Echo text back', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }, outputSchema: output, annotations: hints },
+  { name: 'status', description: 'Report status', inputSchema: plain, outputSchema: output, annotations: hints },
+];
+
+const traps = [
+  { name: 'bad_schema', description: 'One tool, every schema trap', inputSchema: { anyOf: [{ type: 'string' }, { type: 'number' }], properties: { 'session id': { type: ['string', 'null'] }, list: { type: 'array' }, ref: { $ref: '#/$defs/missing' } }, required: [] }, annotations: hints },
+  { name: 'no_hints', description: 'No annotations', inputSchema: plain },
+  { name: 'result_only', description: 'Only structuredContent', inputSchema: plain, outputSchema: output, annotations: hints },
+  { name: 'n'.repeat(65), description: 'A name over 64', inputSchema: plain, annotations: hints },
+];
+while (traps.length < 40) traps.push({ name: 'filler_' + traps.length, description: 'Filler', inputSchema: plain, annotations: hints });
+
+const tools = mode === 'traps' ? traps : clean;
+if (mode === 'traps') {
+  process.stdout.write('starting sample server\\n');
+  process.stdout.write(Buffer.from([0xff, 0x0a]));
+}
+
+const lines = createInterface({ input: process.stdin });
+lines.on('line', (line) => {
+  let request;
+  try { request = JSON.parse(line); } catch { return; }
+  if (request.method === 'initialize') send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'sample', version: '1' } } });
+  else if (request.method === 'tools/list') send({ jsonrpc: '2.0', id: request.id, result: { tools } });
+  else if (request.method === 'tools/call') {
+    const result = request.params.name === 'result_only' ? { structuredContent: { reply: 'ok' } } : { structuredContent: { reply: 'ok' }, content: [{ type: 'text', text: 'ok' }] };
+    send({ jsonrpc: '2.0', id: request.id, result });
+  }
+});
+`;
+
 /** A lead's checkout and a desk next to it, both with a `.git` folder git would use: no git process is needed. */
 export function makeTeamFixture() {
   // The real path: on macOS the temp folder is a link (/var to /private/var), and whoAmI answers with real paths.

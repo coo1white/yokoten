@@ -5,9 +5,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
+import type { AgentAdapter } from './runtime.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -41,7 +43,7 @@ export function readToolCall(input: unknown): Action {
  * host that inherits `CLAUDECODE` must not get an answer that treats exit 0 as a block.
  * `YOKOTEN_HOOK_DENIAL=exit2` is the way back to the older answer.
  */
-export const formatDenial = (reason: string, env: Env): { stdout: string; exitCode: number } =>
+export const formatDenial = (reason: string, env: Env = {}): { stdout: string; exitCode: number } =>
   env.YOKOTEN_HOOK_DENIAL === 'exit2'
     ? fallbackDenial(reason)
     : { stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }), exitCode: 0 };
@@ -384,4 +386,26 @@ export const DESK: RuntimeDesk = {
   starter: { '.claude.json': '{"hasCompletedOnboarding": true}\n' },
   stateEnv: (state) => ({ CLAUDE_CONFIG_DIR: state }),
   hosts: ['api.anthropic.com', 'platform.claude.com'],
+};
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'claude-code',
+  label: 'Claude Code',
+  projectHook: '`.claude/settings.json`: PreToolUse, Stop and SubagentStop',
+  userHook: '~/.claude/settings.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: true, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: true },
+  readToolCall,
+  readStop,
+  formatDenial,
+  formatAsk,
+  formatContext,
+  formatRewrite,
+  releaseFix: releaseFix(`${approve('claude')} (or your agent's command)`),
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
 };
