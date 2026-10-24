@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
 import { type Finding, finding, formatFinding } from '../rules/message.ts';
-import { homeOf, loadMarks, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
+import { homeOf, loadMarkKinds, type Mark, makeMarkMatcher, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
 
 /** An incident issue, as the code host gives it. */
 export interface Incident {
@@ -393,8 +393,8 @@ export function exportLesson(root: string, reference: string, env: Env): { pack:
   if (problems.length) return { problems };
   // The check is code from this project, so a private detail would travel with it. Refuse it
   // here, before anything leaves: the person can rewrite the lesson without it.
-  const marks = loadMarks(env);
-  const privateProblems = files.flatMap((file) => scanText(file.text, { file: `${found.folder}/${file.path}`, marks, env }));
+  const matcher = makeMarkMatcher(loadMarkKinds(env));
+  const privateProblems = files.flatMap((file) => scanText(file.text, { file: `${found.folder}/${file.path}`, matcher, env }));
   if (privateProblems.length) {
     return { problems: privateProblems.map((problem) => `${formatFinding(problem)} Remove it from the lesson before exporting it.`) };
   }
@@ -447,8 +447,8 @@ export function importLesson(text: string, env: Env): { pack: LessonPack; files:
   const source = readSourceUrl(files.find((file) => file.path === 'lesson.ts')?.text ?? '');
   if (!source) problems.push('lesson.ts does not name its incident: put the issue URL on a line `// https://...` near the top');
   else if (source !== incident) problems.push(`lesson.ts names incident ${source}, but the file says ${incident}: make them the same URL`);
-  const marks = loadMarks(env);
-  for (const file of files) for (const problem of scanText(file.text, { file: file.path, marks, env })) problems.push(formatFinding(problem));
+  const matcher = makeMarkMatcher(loadMarkKinds(env));
+  for (const file of files) for (const problem of scanText(file.text, { file: file.path, matcher, env })) problems.push(formatFinding(problem));
   if (problems.length) return { problems };
   const pack: LessonPack = { version: LESSON_PACK_VERSION, id, incident, files };
   return { pack, files: files.map((file) => ({ path: `${LESSONS_DIR}/${id}/${file.path}`, text: file.text })) };
@@ -749,7 +749,10 @@ export interface NotePlace {
   /** The owner's names and the private hosts, as `redact` hides them. */
   owners: string[];
   hosts: string[];
+  /** The marks as an old plain file stores them; `markKinds` carries a hashed file too (#665). */
   marks: string[];
+  /** The same marks with their file's salt, when the caller has it. */
+  markKinds?: Mark[];
   /** Where a relative path in the note starts: the folder the command runs in. */
   cwd: string;
 }
@@ -847,7 +850,8 @@ export function originParts(url: string): { owners: string[]; project: string | 
 export function makeNoteCleaner(place: NotePlace, env: Env): (text: string) => string {
   const home = homeOf(env);
   const projects = place.projects.flatMap(nameVariants);
-  const redact = makeRedactor({ marks: place.marks, owners: place.owners, hosts: place.hosts, projects }, { ...env, HOME: home ?? undefined });
+  const matcher = place.markKinds ? makeMarkMatcher(place.markKinds) : undefined;
+  const redact = makeRedactor({ marks: place.marks, matcher, owners: place.owners, hosts: place.hosts, projects }, { ...env, HOME: home ?? undefined });
   return (text) => redact(hidePaths(oneLine(text), place.root, home, place.cwd));
 }
 
@@ -866,7 +870,7 @@ export function redactNote(text: string, place: NotePlace, env: Env): { text: st
   ];
   if (secrets.length) return { problems: secrets };
   const out = makeNoteCleaner(place, env)(line);
-  const problems = scanText(out, { file: 'the note', marks: place.marks, env });
+  const problems = scanText(out, { file: 'the note', marks: place.marks, matcher: place.markKinds ? makeMarkMatcher(place.markKinds) : undefined, env });
   return problems.length ? { problems } : { text: out };
 }
 

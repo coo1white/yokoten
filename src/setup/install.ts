@@ -38,9 +38,9 @@ import * as grok from '../agents/runtimes/grok.ts';
 import * as muse from '../agents/runtimes/muse.ts';
 import * as opencode from '../agents/runtimes/small/opencode.ts';
 import { type Added, skippedBecause, UnreadableHooksFile } from '../agents/hooks-file.ts';
-import { copyRuntime, describeWrite, HOME_DIR, KIT, MANAGED, writeManaged, writeNew } from './files.ts';
+import { copyRuntime, describeWrite, HOME_DIR, KIT, MANAGED, writeManaged } from './files.ts';
 import { type Gh, readLocalLogins, readLogin } from '../host/github/index.ts';
-import { FOUND_HEADER, foundHeader, homeIn, loadMarkKinds, markLines, type Mark, homeOf, isDomainShaped, isEmailShaped, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, writtenMarksOnly, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
+import { FOUND_HEADER, foundHeader, hasMark, hasMarkValue, HASHED_MARKS_MARKER, hashMarkLine, hashMarkValue, homeIn, loadMarkKinds, markLines, markSieves, markWords, type Mark, homeOf, isDomainShaped, isEmailShaped, newMarkSalt, normalizeMark, OWN_HEADER, isPersonalEmail, loadMarks, marksFile, NO_HOME, parseMarkSource, STARTS_PREFIX, writtenMarksOnly, privateRemoteHosts, systemHome } from '../rules/privacy.ts';
 
 /**
  * Where yokoten keeps its runtime, its config and the private marks. With no absolute home
@@ -135,15 +135,6 @@ export function projectSkillDirs(root: string): string[] {
 
 /** The example install prints when it asks the owner to type a mark (#525). */
 const MARK_EXAMPLE = 'for example: your city, a company domain, a server name';
-
-export const MARKS_HEADER = `# yokoten private marks: words that must never be published.
-# One per line, matched without case. A name or a city (letters and spaces) is found as
-# whole words: a letter next to it hides it, a digit or _ - . / @ does not. yokoten adds
-# your git name, git email and forge login by itself; \`yokoten marks add\` adds your city,
-# domain, server names, other account names.
-# ${MARK_EXAMPLE}
-# This file stays on this machine; never commit it or paste it anywhere.
-`;
 
 /** The real path of a file, or null when it is not there. */
 const realPath = (file: string): string | null => {
@@ -385,10 +376,13 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     report.push(...openCodeHooks.lines);
   } else report.push(`skipped OpenCode: ${opencode.userPluginFile(env).replace(/\/plugins\/yokoten\.ts$/, '')} not found (run \`yokoten install\` again after installing OpenCode)`);
 
-  const marks = writeNew(target.marks, MARKS_HEADER, { mode: 0o600 });
+  // A fresh file holds a salt and no words: the plain header never goes to disk (#665).
+  const marks = existsSync(target.marks) ? 'kept' : (replaceMarkFile(target.marks, hashedMarksText(newMarkSalt(), [])), 'wrote');
   report.push(`${marks} ${target.marks}${marks === 'wrote' ? ' (`yokoten marks add` adds one of your own)' : ''}`);
   // The obvious marks come from the machine; the rest only the owner knows (#390).
   const found = machineMarks(env, { cwd, gh });
+  // Read before the move to hashes: an email the owner wrote by hand is still a word here.
+  const beforeMarks = existsSync(target.marks) ? readFileSync(target.marks, 'utf8') : '';
   report.push(
     ...trySafely('the marks from this machine', () => {
       const lines = filledLines(fillMarks(env, found), target.marks);
@@ -400,7 +394,7 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
       else if (missing.length) lines.push(`${offerMarkKinds(missing)}; ${OFFER_MARKS_FIX}`, MARK_EXAMPLE);
       return lines;
     }),
-    ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
+    ...trySafely('the git mailmap', () => [setUpMailmap(env, found, beforeMarks)]),
   );
   // Last, so the way to call `yokoten` is the line the user reads at the end.
   report.push(...trySafely('the launcher', () => setUpLauncher(env, target.runtime, homeIn(env), { ask, platform })));
@@ -811,40 +805,148 @@ function replaceFile(file: string, text: string): void {
   }
 }
 
+/** A header yokoten writes: never kept as an owner's comment when a file moves to hashes. */
+const isOurHeader = (line: string): boolean => line === FOUND_HEADER || line.startsWith(`${FOUND_HEADER}: `) || line === OWN_HEADER || line === HASHED_MARKS_MARKER;
+
+/** What a fresh hashed file says, under its salt and longest mark. */
+const HASHED_MARKS_HELP = [
+  '# The words are not stored: each line holds salted hashes of one mark, lowercased.',
+  '# yokoten hashes each word and short run of words in a change and compares. A mark is',
+  '# found inside a word too, in any case or Unicode form, and in a run of Chinese characters.',
+  '# yokoten adds your git name, git email and forge login by itself; `yokoten marks add`',
+  '# adds your city, domain, server names, other account names.',
+  '# The starts line is a cheap fingerprint of each mark\'s first word and whole run, so most',
+  '# words cost no hash at all; it reveals no word on its own.',
+];
+
+/**
+ * A whole hashed marks file. Each mark is a hash under the file's salt, grouped by the kind
+ * yokoten added, never by value. `longest` is the longest mark in words: how far the check reads.
+ * An owner's comment is kept only when it holds no mark, so the move to hashes copies no word.
+ */
+export function hashedMarksText(salt: string, marks: Mark[], comments: string[] = []): string {
+  const longest = Math.max(1, ...marks.map((mark) => markWords(mark.value).length));
+  const groups = new Map<string | null, string[]>();
+  const starts = new Set<string>();
+  const seen = new Set<string>();
+  for (const mark of marks) {
+    const words = normalizeMark(mark.value);
+    if (!words || seen.has(`${mark.kind ?? ''}\0${words}`)) continue;
+    seen.add(`${mark.kind ?? ''}\0${words}`);
+    const group = groups.get(mark.kind) ?? [];
+    group.push(hashMarkLine(salt, words));
+    for (const sieve of markSieves(salt, words)) starts.add(sieve);
+    groups.set(mark.kind, group);
+  }
+  const kept = comments.filter((line) => !isOurHeader(line) && !marks.some((mark) => hasMark(line, mark.value)));
+  const lines = [HASHED_MARKS_MARKER, `# salt: ${salt}`, `# longest: ${longest}`, `${STARTS_PREFIX} ${[...starts].join(' ')}`, ...HASHED_MARKS_HELP, ...kept];
+  for (const [kind, hashes] of groups) lines.push(kind === null ? OWN_HEADER : foundHeader(kind), ...hashes);
+  return `${lines.join('\n')}\n`;
+}
+
+/** Write a hashed marks file only after the temp file reads back as a whole hashed file. */
+function replaceMarkFile(file: string, text: string): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  let mode = 0o600;
+  try {
+    mode = statSync(file).mode & 0o777;
+  } catch {
+    // a new file: 600
+  }
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(temp, text, { mode });
+    // Read it back before the old file goes: a half write never replaces a good file.
+    parseMarkSource(readFileSync(temp, 'utf8'));
+    renameSync(temp, file);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+
+/**
+ * An old plain file as hashes, with the salt it gets now. A block under the old plain header
+ * is first split by kind (`migrateMarks`); the owner's comments stay. A file already hashed
+ * comes back unchanged, after its shape is checked.
+ */
+export function toHashedText(text: string, { logins, hosts }: { logins: string[]; hosts: string[] }): string {
+  // A hashed file is read as it is; a v1 one stops the check rather than hide a mark.
+  if (text.split(/\r?\n/).some((line) => line.trim().startsWith('# yokoten private marks: salted hashes'))) {
+    parseMarkSource(text);
+    return text;
+  }
+  const plain = migrateMarks(text, { logins, hosts }) ?? text;
+  const marks = markLines(plain).flatMap((mark) => (mark ? [mark] : []));
+  const comments = plain
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('#') && !isOurHeader(line));
+  return hashedMarksText(newMarkSalt(), marks, comments);
+}
+
+/** The longest mark in words, as a file may hold it after a new mark. */
+function longestWords(text: string, added: string[]): number {
+  const source = parseMarkSource(text);
+  return Math.max(source.longest, ...added.map((value) => markWords(value).length));
+}
+
+/** `text` with its longest-mark line set to `longest`, so a new multi-word mark is read whole. */
+function withLongest(text: string, longest: number): string {
+  return text.replace(/^# longest: \d+$/m, `# longest: ${longest}`);
+}
+
+/** `text` with the longest mark and the first-word sieve grown by the marks about to be added. */
+function withMarksMeta(text: string, salt: string, values: string[]): string {
+  const longest = longestWords(text, values);
+  const starts = new Set(values.flatMap((value) => markSieves(salt, normalizeMark(value))));
+  const out = withLongest(text, longest);
+  if (!starts.size) return out;
+  const existing = out.match(/^# starts:(.*)$/m);
+  if (existing) {
+    const all = new Set(existing[1].trim().split(/\s+/).filter(Boolean));
+    for (const hash of starts) all.add(hash);
+    return out.replace(/^# starts:.*$/m, `${STARTS_PREFIX} ${[...all].join(' ')}`);
+  }
+  return out.replace(/^(# longest: \d+)$/m, `$1\n${STARTS_PREFIX} ${[...starts].join(' ')}`);
+}
+
 /**
  * Add the machine's marks that the private-marks file lacks, at its end. It makes the file
- * (mode 600) when it is missing. A block under the old plain header is first split by kind
- * (`migrateMarks`), in one atomic write. Returns the kinds it added, never a value.
+ * (mode 600) when it is missing, and moves an old plain file to hashes first, in one atomic
+ * write. Returns the kinds it added, never a value.
  */
 export function fillMarks(env: Env, found: MachineMark[]): string[] {
   const file = marksFile(env);
   const logins = found.filter((mark) => mark.kind === 'forge login').map((mark) => mark.value);
-  if (existsSync(file)) {
-    const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
-    const migrated = migrateMarks(readFileSync(file, 'utf8'), { logins: [...readLocalLogins(env), ...logins], hosts });
-    if (migrated !== null) replaceFile(file, migrated);
-  }
+  const hosts = found.filter((mark) => mark.kind === 'private remote host').map((mark) => mark.value);
+  const existed = existsSync(file);
+  const before = existed ? readFileSync(file, 'utf8') : '';
+  // The plain file never stays: it becomes hashes before any mark is added.
+  const hashed = existed ? toHashedText(before, { logins: [...readLocalLogins(env), ...logins], hosts }) : '';
+  if (existed && hashed !== before) replaceMarkFile(file, hashed);
+  const salt = existed ? parseMarkSource(hashed).salt ?? newMarkSalt() : newMarkSalt();
   // Known from the file it writes, so a mark only in the setting's file still goes in (#656).
   const own = writtenMarksOnly(env);
   const known = new Set(loadMarks(own));
   const off = new Set(kindsTurnedOff(env));
   // A git name that is a login is covered by the login's mark (#410, #434): the one added now, or one the file has.
-  const loginSet = new Set([...(off.has('forge login') ? [] : logins.map((login) => login.toLowerCase())), ...loadMarkKinds(own).filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)]);
+  const loginSet = new Set([...(off.has('forge login') ? [] : logins.map((login) => hashMarkValue(salt, login))), ...loadMarkKinds(own).filter((mark) => mark.kind === 'forge login').map((mark) => mark.value)]);
   const added: MachineMark[] = [];
   for (const mark of found.filter((one) => !off.has(one.kind))) {
-    const key = mark.value.toLowerCase();
-    if (known.has(key)) continue;
-    if (mark.kind === 'git name' && (!isPersonName(mark.value) || loginSet.has(key))) continue;
-    known.add(key);
+    const hash = hashMarkValue(salt, mark.value);
+    if (known.has(hash)) continue;
+    if (mark.kind === 'git name' && (!isPersonName(mark.value) || loginSet.has(hash))) continue;
+    known.add(hash);
     added.push(mark);
   }
   if (!added.length) return [];
-  if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
-  const text = readFileSync(file, 'utf8');
+  const base = existed ? hashed : hashedMarksText(salt, []);
+  if (!existed) replaceMarkFile(file, base);
   // One header per kind, so the check knows a forge login from a mark the owner wrote (#410).
   const kinds = [...new Set(added.map((mark) => mark.kind))];
-  const blocks = kinds.map((kind) => `${foundHeader(kind)}\n${added.filter((mark) => mark.kind === kind).map((mark) => mark.value).join('\n')}\n`);
-  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${blocks.join('')}`);
+  const blocks = kinds.map((kind) => `${foundHeader(kind)}\n${added.filter((mark) => mark.kind === kind).map((mark) => hashMarkLine(salt, mark.value)).join('\n')}\n`);
+  const text = withMarksMeta(base, salt, added.map((mark) => mark.value));
+  replaceMarkFile(file, `${text.endsWith('\n') ? text : `${text}\n`}${blocks.join('')}`);
   return kinds;
 }
 
@@ -934,12 +1036,21 @@ export function setKindOff(env: Env, kind: string, isOff: boolean): void {
  */
 export function addOwnMark(env: Env, value: string): boolean {
   const file = marksFile(env);
-  if (loadMarks(writtenMarksOnly(env)).includes(value.toLowerCase())) return false;
-  if (!existsSync(file)) writeNew(file, MARKS_HEADER, { mode: 0o600 });
-  const text = readFileSync(file, 'utf8');
-  const last = text.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('#')).at(-1) ?? '';
+  const words = normalizeMark(value);
+  if (!words) return false;
+  const own = writtenMarksOnly(env);
+  if (!existsSync(file)) replaceMarkFile(file, hashedMarksText(newMarkSalt(), []));
+  const before = readFileSync(file, 'utf8');
+  const hashed = toHashedText(before, { logins: readLocalLogins(env), hosts: [] });
+  if (hashed !== before) replaceMarkFile(file, hashed);
+  const salt = parseMarkSource(hashed).salt;
+  if (!salt) throw new Error('the private-marks file is damaged');
+  const hash = hashMarkValue(salt, words);
+  if (loadMarks(own).includes(hash)) return false;
+  const last = hashed.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('#')).at(-1) ?? '';
   const isFound = last === FOUND_HEADER || last.startsWith(`${FOUND_HEADER}: `);
-  appendFileSync(file, `${text === '' || text.endsWith('\n') ? '' : '\n'}${isFound ? `${OWN_HEADER}\n` : ''}${value}\n`);
+  const text = withMarksMeta(hashed, salt, [words]);
+  replaceMarkFile(file, `${text.endsWith('\n') ? text : `${text}\n`}${isFound ? `${OWN_HEADER}\n` : ''}${hashMarkLine(salt, words)}\n`);
   return true;
 }
 
@@ -952,7 +1063,7 @@ export function removeMarks(env: Env, drop: (mark: Mark) => boolean): Mark[] {
   const file = marksFile(env);
   if (!existsSync(file)) return [];
   const before = readFileSync(file, 'utf8');
-  const text = migrateMarks(before, { logins: readLocalLogins(env), hosts: [] }) ?? before;
+  const text = toHashedText(before, { logins: readLocalLogins(env), hosts: [] });
   const lines = text.split('\n');
   const read = markLines(text);
   const removed: Mark[] = [];
@@ -963,7 +1074,7 @@ export function removeMarks(env: Env, drop: (mark: Mark) => boolean): Mark[] {
     return false;
   });
   if (!removed.length) {
-    if (text !== before) replaceFile(file, text);
+    if (text !== before) replaceMarkFile(file, text);
     return [];
   }
   // A header of yokoten's own with only blank lines or another comment after it is left empty: it goes too.
@@ -973,8 +1084,23 @@ export function removeMarks(env: Env, drop: (mark: Mark) => boolean): Mark[] {
     const next = kept.slice(index + 1).find((after) => after.trim() !== '');
     return next !== undefined && !next.trim().startsWith('#');
   });
-  replaceFile(file, out.join('\n'));
+  replaceMarkFile(file, out.join('\n'));
   return removed;
+}
+
+/**
+ * Take one typed mark out of the file, old plain file included: the file moves to hashes
+ * first, then the hash of the typed value is the line to drop. Returns the marks removed.
+ */
+export function removeValueMarks(env: Env, value: string): Mark[] {
+  const file = marksFile(env);
+  if (!existsSync(file)) return [];
+  const before = readFileSync(file, 'utf8');
+  const text = toHashedText(before, { logins: readLocalLogins(env), hosts: [] });
+  if (text !== before) replaceMarkFile(file, text);
+  const salt = parseMarkSource(text).salt;
+  const key = salt ? hashMarkValue(salt, value) : normalizeMark(value);
+  return removeMarks(env, (mark) => mark.value === key);
 }
 
 /** How many marks the file holds of each kind, the owner's as `by hand`. Never the values. */
@@ -990,6 +1116,8 @@ export function countMarkKinds(env: Env): Map<string, number> {
  * is not asked for: install adds the git name (#434). A guess from the shape, so doctor shows it as a note.
  */
 export function missingMarkKinds(marks: string[], found: MachineMark[]): string[] {
+  // A hashed mark has no shape left: this file cannot say whether the city or a domain is here.
+  if (marks.some((mark) => /^[0-9a-f]{64}$/.test(mark))) return [];
   const fromMachine = new Set(found.map((mark) => mark.value.toLowerCase()));
   const own = marks.filter((mark) => !fromMachine.has(mark) && !mark.includes('@'));
   const missing: string[] = [];
@@ -1014,14 +1142,24 @@ export function mailmapState(env: Env): 'ours' | 'other' | 'unset' {
  * Write yokoten's mailmap: one line per owner email (git user.email and the marks shaped
  * like an address), each shown as MAILMAP_OWNER. Then point git's global mailmap.file at
  * it, unless the user set another file: that one is theirs, so it stays and the line says so.
+ *
+ * A hashed mark cannot give its address back. `previous` is the marks text as it was before
+ * the move to hashes; its plain addresses are kept, and each is checked against the file
+ * with the salt. An address the owner adds only as a mark on a machine that already moved
+ * to hashes is not written: the hash keeps no way back to it.
  */
-export function setUpMailmap(env: Env, found: MachineMark[]): string {
-  const emails = [...new Set([...found.filter((mark) => mark.kind === 'git email').map((mark) => mark.value), ...loadMarks(env).filter((mark) => /^[^@\s]+@[^@\s]+$/.test(mark))].map((email) => email.toLowerCase()))];
+export function setUpMailmap(env: Env, found: MachineMark[], previous = ''): string {
+  const emails = new Map<string, string>();
+  for (const mark of found) if (mark.kind === 'git email') emails.set(mark.value.toLowerCase(), mark.value);
+  // An email the owner wrote by hand, in a plain file, or in the one that is moving to hashes now.
+  const plain = [...loadMarkKinds(env).filter((mark) => !mark.salt).map((mark) => mark.value), ...markLines(previous).flatMap((mark) => (mark ? [mark.value] : []))].filter(isEmailShaped);
+  for (const email of plain) if (!emails.has(email.toLowerCase()) && hasMarkValue(env, email)) emails.set(email.toLowerCase(), email);
+  const list = [...emails.values()];
   const file = join(paths(env).config, 'mailmap');
   // The file may hold lines the owner wrote: it only gets the lines it lacks.
   const before = existsSync(file) ? readFileSync(file, 'utf8') : null;
   const mapped = new Set([...(before ?? '').matchAll(/<([^<>\s]+)>\s*$/gm)].map((match) => match[1].toLowerCase()));
-  const missing = emails.filter((email) => !mapped.has(email));
+  const missing = list.filter((email) => !mapped.has(email.toLowerCase()));
   if (before === null) {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, '# yokoten: git prints the owner\'s emails as a placeholder. Kept outside every repo; never commit it.\n', { mode: 0o600 });

@@ -39,7 +39,7 @@ import {
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
 import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isMachineSetUp, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
-import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
+import { autoLogins, loadMarkKinds, makeMarkMatcher, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
   ['{ not json', (file) => `can't read ${file} ${JSON_FIX('install')}`],
@@ -711,22 +711,23 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   for (const value of ['Jane', 'personal-mail', 'private-host']) assert.ok(!(result.stdout + result.stderr).includes(value), 'install printed a value');
   assert.match(result.stdout, /^added your git name to the private marks \(not shown\)$/m);
   assert.match(result.stdout, /^added to ~\/\.config\/yokoten\/private-marks from this machine: git email, private remote host \(the values are not shown\)$/m);
-  assert.match(result.stdout, /^optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown$/m);
-  assert.match(result.stdout, /^for example: your city, a company domain, a server name$/m);
-  assert.match(result.stdout, /type one; it is not shown\nfor example: your city, a company domain, a server name\n/);
-  assert.match(readFileSync(marks, 'utf8'), /^# for example: your city, a company domain, a server name$/m);
+  // A hashed file has no shape left, so install no longer guesses which kinds are missing (#665).
+  assert.doesNotMatch(result.stdout, /optional: add your city/);
+  assert.match(readFileSync(marks, 'utf8'), /^# yokoten private marks: salted hashes, v2; the words are not stored$/m);
   assert.match(result.stdout, /^wrote ~\/\.config\/yokoten\/mailmap, and git log and git show now print your emails as a placeholder$/m);
-  assert.match(readFileSync(marks, 'utf8'), /# added by yokoten from this machine: git name\nJane Example\n# added by yokoten from this machine: git email\njane@personal-mail\.dev\n# added by yokoten from this machine: private remote host\nbuild\.private-host\.dev\n$/);
+  // The file holds hashes, never the values (#665).
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), /Jane Example|personal-mail|private-host/);
+  const stored = loadMarkKinds({ HOME: sandbox.home });
+  assert.deepEqual(stored.map((mark) => mark.kind), ['git name', 'git email', 'private remote host']);
   assert.equal(statSync(marks).mode & 0o777, 0o600);
   // git prints the placeholder at the source.
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '~/.config/yokoten/mailmap\n');
   assert.match(sandbox.git('log', '-1').stdout, /^Author: owner <owner@noreply\.invalid>$/m);
-  // A second run appends nothing. It still asks: the city and the domains are not in the file yet.
+  // A second run appends nothing.
   const before = readFileSync(marks, 'utf8');
   result = await sandbox.call(['install']);
   assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks$/m);
   assert.doesNotMatch(result.stdout, /already has what/, 'the file is named once');
-  assert.match(result.stdout, /^optional: add your city or your domains too; yokoten can't find them on its own; run `yokoten marks add` and type one; it is not shown\nfor example: your city, a company domain, a server name$/m);
   assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/mailmap: it already maps your emails$/m);
   assert.equal(readFileSync(marks, 'utf8'), before);
   // The user's own mailmap.file stays.
@@ -734,6 +735,19 @@ test("install: adds the machine's marks and a git mailmap, and never prints a va
   result = await sandbox.call(['install']);
   assert.match(result.stdout, /^kept your own git mailmap.file setting; add the lines of ~\/\.config\/yokoten\/mailmap to that file$/m);
   assert.equal(sandbox.git('config', '--global', '--get', 'mailmap.file').stdout, '/elsewhere/mailmap\n');
+});
+
+test('install: an email added only as a mark still reaches the mailmap (#665 review)', async () => {
+  const sandbox = makeSandbox();
+  const email = `jane${at}personal-mail.dev`;
+  const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  writeFileSync(marks, `# your own marks\n${email}\n`, { mode: 0o600 });
+  const result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  const mailmap = readFileSync(join(sandbox.home, '.config', 'yokoten', 'mailmap'), 'utf8');
+  assert.ok(mailmap.includes(`<${email}>`), 'the address the owner wrote as a mark is mapped');
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), /personal-mail/, 'the marks file holds a hash');
 });
 
 test('install: the mark example follows an empty file, and a later run that does not ask leaves it out (#525)', async () => {
@@ -745,9 +759,10 @@ test('install: the mark example follows an empty file, and a later run that does
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^~\/\.config\/yokoten\/private-marks has no marks yet; run `yokoten marks add` and type your name, your city or a domain; it is not shown\nfor example: your city, a company domain, a server name$/m);
   assert.equal(result.stdout.split('\n').filter((line) => line === example).length, 1);
-  assert.match(readFileSync(marks, 'utf8'), /^# for example: your city, a company domain, a server name$/m);
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), /mycity|example\.com/);
   // A city and a domain are the kinds install asked for. The next run does not ask.
-  writeFileSync(marks, `${readFileSync(marks, 'utf8')}mycity\nexample.com\n`);
+  addOwnMark({ HOME: sandbox.home }, 'mycity');
+  addOwnMark({ HOME: sandbox.home }, 'example.com');
   result = await sandbox.call(['install']);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /has no marks yet|optional: add /);
@@ -925,14 +940,49 @@ test('fillMarks: rewrites an old block in a fake home, by the gh login on file, 
   // Before the rewrite, the old block gives no login: a bare name is strict.
   assert.deepEqual(autoLogins(loadMarkKinds(env)), []);
   assert.deepEqual(fillMarks(env, []), []);
-  assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
+  const text = readFileSync(marks, 'utf8');
+  assert.doesNotMatch(text, /octo-jdoe|nas/, 'the plain words never reach the disk');
   assert.equal(statSync(marks).mode & 0o777, 0o600);
-  assert.deepEqual(autoLogins(loadMarkKinds(env)), ['octo-jdoe']);
+  assert.equal(autoLogins(loadMarkKinds(env)).length, 1, 'the old block is a forge login');
   assert.equal(countMarkKinds(env).get('by hand'), 1, 'the block yokoten could not tell is the owner\'s');
   assert.deepEqual(readdirSync(dirname(marks)), ['private-marks'], 'no temp file is left');
   // A second run changes nothing.
   fillMarks(env, []);
-  assert.equal(readFileSync(marks, 'utf8'), '# added by yokoten from this machine: forge login\nocto-jdoe\n# your own marks\nnas\n');
+  assert.equal(readFileSync(marks, 'utf8'), text);
+});
+
+test('fillMarks: a comment that holds a mark is not copied to the hashed file (#665 review)', () => {
+  const home = makeTempDir('yokoten-');
+  const env = { HOME: home };
+  const marks = join(home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  const secret = ['Quiet', 'Harbor'].join(' ');
+  writeFileSync(marks, `# my name is ${secret}\n# fleet notes\n${secret}\n`, { mode: 0o600 });
+  fillMarks(env, []);
+  const text = readFileSync(marks, 'utf8');
+  assert.doesNotMatch(text, /quiet|harbor/i, 'no comment copies a mark');
+  assert.match(text, /^# fleet notes$/m, 'a comment with no mark stays');
+});
+
+test('fillMarks: the old plain file moves to hashes once, with a multi-word mark, and the words leave the disk (#665)', () => {
+  const home = makeTempDir('yokoten-');
+  const env = { HOME: home };
+  const marks = join(home, '.config', 'yokoten', 'private-marks');
+  mkdirSync(dirname(marks), { recursive: true });
+  const secret = ['Quiet', 'Harbor'].join(' ');
+  writeFileSync(marks, `# mine\n${secret}\nsecondword\n`, { mode: 0o600 });
+  assert.deepEqual(fillMarks(env, []), []);
+  const text = readFileSync(marks, 'utf8');
+  assert.doesNotMatch(text, /quiet|harbor|secondword/i, 'the plain list is gone');
+  assert.match(text, /^# yokoten private marks: salted hashes, v2; the words are not stored$/m);
+  assert.match(text, /^# longest: 2$/m);
+  assert.deepEqual(countMarkKinds(env).get('by hand'), 2);
+  const matcher = makeMarkMatcher(loadMarkKinds(env));
+  assert.equal(matcher.find(secret.toUpperCase()).length, 1, 'the multi-word mark is caught in any case');
+  assert.equal(statSync(marks).mode & 0o777, 0o600);
+  // A second run leaves the hashed file alone.
+  fillMarks(env, []);
+  assert.equal(readFileSync(marks, 'utf8'), text);
 });
 
 // ---- The git name as a mark (#434) ----
@@ -940,10 +990,6 @@ test('fillMarks: rewrites an old block in a fake home, by the gh login on file, 
 // Samples are built from pieces, so this file passes its own privacy check.
 const SAMPLE_NAME = ['Ann', 'Sample'].join(' ');
 const SAMPLE_LOGIN = ['octo', 'sample'].join('-');
-const GIT_NAME_BLOCK = `# added by yokoten from this machine: git name\n${SAMPLE_NAME}\n`;
-
-/** How many lines of the text are `value`, case aside. */
-const linesOf = (text: string, value: string) => text.split('\n').filter((line) => line.trim().toLowerCase() === value.toLowerCase()).length;
 
 test('install: adds the git name as a mark of its own, never prints it, and not twice (#434)', async () => {
   const sandbox = makeSandbox();
@@ -955,14 +1001,14 @@ test('install: adds the git name as a mark of its own, never prints it, and not 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^added your git name to the private marks \(not shown\)$/m);
   assert.doesNotMatch(result.stdout, /add your real name/, 'no nudge to add the name by hand');
-  assert.match(readFileSync(marks, 'utf8'), new RegExp(`${GIT_NAME_BLOCK}$`));
-  assert.deepEqual(loadMarkKinds({ HOME: sandbox.home }).filter((mark) => mark.kind === 'git name').map((mark) => mark.value), [SAMPLE_NAME.toLowerCase()]);
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), new RegExp(SAMPLE_NAME, 'i'));
+  assert.equal(loadMarkKinds({ HOME: sandbox.home }).filter((mark) => mark.kind === 'git name').length, 1);
   // A second run adds nothing, and says so.
   result = await sandbox.call(['install']);
   said.push(result.stdout, result.stderr);
   assert.doesNotMatch(result.stdout, /added your git name/);
   assert.match(result.stdout, /^kept ~\/\.config\/yokoten\/private-marks$/m);
-  assert.equal(linesOf(readFileSync(marks, 'utf8'), SAMPLE_NAME), 1);
+  assert.equal(loadMarkKinds({ HOME: sandbox.home }).filter((mark) => mark.kind === 'git name').length, 1);
   assert.ok(!said.some((text) => /ann|sample/i.test(text)), 'no output holds the name');
 });
 
@@ -975,7 +1021,10 @@ test('install: a git name that equals the forge login is not added twice (#434)'
   const result = await sandbox.call(['install']);
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /added your git name/);
-  assert.equal(readFileSync(marks, 'utf8'), `# added by yokoten from this machine: forge login\n${SAMPLE_LOGIN}\n`);
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), new RegExp(SAMPLE_LOGIN, 'i'));
+  const stored = loadMarkKinds({ HOME: sandbox.home });
+  assert.equal(stored.filter((mark) => mark.kind === 'forge login').length, 1);
+  assert.equal(stored.filter((mark) => mark.kind === 'git name').length, 0, 'the login covers the name');
   assert.ok(!(result.stdout + result.stderr).toLowerCase().includes(SAMPLE_LOGIN));
 });
 
@@ -993,13 +1042,15 @@ test('fillMarks: the git name with no name set, one word, a shared name, a name 
   assert.deepEqual(fillMarks(env, placeholders.map((value) => ({ kind: 'git name' as const, value }))), []);
   // One word is a name too.
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Annsample' }]), ['git name']);
-  assert.equal(readFileSync(marks, 'utf8').endsWith('# added by yokoten from this machine: git name\nAnnsample\n'), true);
-  // A name the file has already, as the owner wrote it, is not added again.
-  writeFileSync(marks, `${readFileSync(marks, 'utf8')}# mine\n${SAMPLE_NAME.toLowerCase()}\n`);
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), /annsample/i);
+  assert.equal(loadMarkKinds(env).filter((mark) => mark.kind === 'git name').length, 1);
+  // A name the file has already, as the owner added it, is not added again.
+  addOwnMark(env, SAMPLE_NAME);
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: SAMPLE_NAME }]), []);
   // A login found in the same run covers a git name that equals it: the login's mark is added.
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: SAMPLE_LOGIN }, { kind: 'forge login', value: SAMPLE_LOGIN }]), ['forge login']);
-  assert.equal(linesOf(readFileSync(marks, 'utf8'), SAMPLE_LOGIN), 1);
+  assert.equal(loadMarkKinds(env).filter((mark) => mark.kind === 'forge login').length, 1);
+  assert.doesNotMatch(readFileSync(marks, 'utf8'), new RegExp(SAMPLE_LOGIN, 'i'));
   // The positive control: a new name is still added.
   assert.deepEqual(fillMarks(env, [{ kind: 'git name', value: 'Bo Example' }]), ['git name']);
 });
@@ -1031,7 +1082,8 @@ test('fillMarks and addOwnMark: a mark only in the setting\'s file still goes in
   assert.deepEqual(fillMarks(env, [{ kind: 'git email', value: `jane${at}personal-mail.dev` }]), ['git email']);
   assert.equal(addOwnMark(env, 'QuietHarbor'), true);
   const text = readFileSync(own, 'utf8');
-  assert.ok(text.includes(`jane${at}personal-mail.dev\n`) && text.endsWith('QuietHarbor\n'), 'both are in the default file');
+  assert.doesNotMatch(text, /personal-mail|quietharbor/i, 'both are in the default file as hashes');
+  assert.deepEqual(loadMarkKinds({ HOME: home }).map((mark) => mark.kind), ['git email', null], 'both are in the default file');
   assert.equal(addOwnMark(env, 'quietharbor'), false, 'once there, it is known');
   assert.equal(readFileSync(extra, 'utf8'), `jane${at}personal-mail.dev\nquietharbor\n`, 'the setting\'s file is never written');
 });

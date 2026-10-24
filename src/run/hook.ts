@@ -14,7 +14,7 @@ import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '.
 import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import type { DeskAgent } from '../rules/pr.ts';
-import { loadMarks, makeRedactor } from '../rules/privacy.ts';
+import { loadMarkKinds, makeMarkMatcher, makeRedactor } from '../rules/privacy.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
 
 // ---- The stop log (#621) ----
@@ -73,7 +73,7 @@ function maskedCommand(command: string, env: Env): string {
   const first = command.split(/\r?\n/, 1)[0].trim();
   let masked: string;
   try {
-    masked = makeRedactor({ marks: loadMarks(env) }, env)(first);
+    masked = makeRedactor({ matcher: makeMarkMatcher(loadMarkKinds(env)) }, env)(first);
   } catch {
     // An unreadable marks file must not stop the log; the secret patterns still run.
     masked = makeSecretHider()(first);

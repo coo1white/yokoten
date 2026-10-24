@@ -976,7 +976,8 @@ export async function runDesk(invocation: Invocation): Promise<number> {
       extraReadable: list('--read').map((path) => resolve(invocation.cwd, path)),
       extraHosts: list('--host'),
       runtimes: [installed.runtime],
-      marks: options.flags.has('--marks') ? installed.marks : undefined,
+      // The file holds salted hashes, so the desk may read it and run the check (#665).
+      marks: installed.marks,
       team: typeof main === 'string' && name !== null ? { folder: teamFolderFor(main), name } : undefined,
       markDesk: (desk) => markWorktree(invocation.cwd, desk, invocation.env),
     });
