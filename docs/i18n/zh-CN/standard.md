@@ -221,6 +221,7 @@ agent 离开以后，它的列表也丢掉。
 - [src/agents/runtimes/muse.ts](../../../src/agents/runtimes/muse.ts) 和 [test/agents/runtimes/muse.test.ts](../../../test/agents/runtimes/muse.test.ts)。
 - [src/agents/runtimes/small/deepseek-harness.ts](../../../src/agents/runtimes/small/deepseek-harness.ts) 和 [test/agents/runtimes/small/deepseek-harness.test.ts](../../../test/agents/runtimes/small/deepseek-harness.test.ts)。
 - [src/agents/runtimes/grok.ts](../../../src/agents/runtimes/grok.ts) 和 [test/agents/runtimes/grok.test.ts](../../../test/agents/runtimes/grok.test.ts)。
+- [src/agents/runtimes/runtime.ts](../../../src/agents/runtimes/runtime.ts) 和 [test/agents/runtimes/runtime.test.ts](../../../test/agents/runtimes/runtime.test.ts)。
 - [src/agents/runtimes/small/opencode.ts](../../../src/agents/runtimes/small/opencode.ts) 和 [test/agents/runtimes/small/opencode.test.ts](../../../test/agents/runtimes/small/opencode.test.ts)。
 
 ## 状态文件
