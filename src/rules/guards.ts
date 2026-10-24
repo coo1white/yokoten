@@ -53,6 +53,19 @@ export function stripWorktreeRoot(path: string): string {
 
 const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report what to change in it, or ask the lead to start you with YOKOTEN_LEAD_ONLY_OK=<path>';
 
+/**
+ * What an agent may not change in a repo without yokoten.json (record 0034): the CI that
+ * runs the checks, and the hooks that run them. `yokoten init` adds the project's own
+ * rules on top and lets the lead decide.
+ */
+export const SAFEGUARD_PATHS = ['.github/workflows/**', '.github/actions/**', '.githooks/**', '.husky/**'];
+// A folder whose removal takes a guarded file with it, or the guarded folder itself.
+const SAFEGUARD_FOLDERS = ['.github', '.github/workflows', '.github/actions', '.githooks', '.husky'];
+/** Whether `path` is a CI file or a hook, or the folder that holds one. */
+const isSafeguardPath = (path: string) => isLeadOnly(path.replace(/\/+$/, ''), SAFEGUARD_PATHS) || SAFEGUARD_FOLDERS.includes(path.replace(/\/+$/, ''));
+const SAFEGUARD_WHAT = "part of the safeguard: CI files and git hooks are the owner's";
+const SAFEGUARD_FIX = 'ask the owner to change it, or run `yokoten init` so the project\'s own rules decide; then carry on with the rest of the task';
+
 // ---- The worker mark (#555) ----
 //
 // Some runtimes pass their hooks only a few variables, so YOKOTEN_ROLE is lost (Muse Code).
@@ -1485,15 +1498,16 @@ export function isGranted(path: string, env: Env, foldsCase = FOLDS_CASE): boole
  * the hook applies to an edit (see `judge`): a worker's shell write is checked against the
  * same ones, and against a repo with a yokoten.json it finds above the file.
  */
-export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; repos?: RuledRepo[] }): Finding | null {
+export function checkCommand(command: string, options: { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; repos?: RuledRepo[]; safeguard?: boolean }): Finding | null {
   // The reader is not a full parser. Whatever goes wrong inside it, the command is refused,
   // never let through: an error here must not open the guard.
   const outerAnswers = gitAnswers;
   try {
     gitAnswers = outerAnswers ?? new Map();
     const isWorker = options.env.YOKOTEN_ROLE === 'worker';
-    // The file rules are looked up once per call, and only for a worker.
-    const rules = isWorker ? fileRules(options.repos ?? []) : undefined;
+    // The file rules are looked up once per call: for a worker, and for the safeguard that
+    // holds in a repo without yokoten.json.
+    const rules = isWorker || options.safeguard === true ? fileRules(options.repos ?? []) : undefined;
     return withBudget(command.length, () => checkEachCommand(command, { ...options, rules }));
   } catch {
     return finding('unreadable-command', 'yokoten could not read this command', 'split it into simpler commands, one per call');
@@ -1508,9 +1522,9 @@ type GuardConfig = Pick<Config, 'commands'> & Partial<Pick<Config, 'privacy' | '
 /** A repo whose file rules apply, by its root, with its yokoten.json "leadOnly". */
 export type RuledRepo = { root: string; leadOnly: string[] };
 
-type EachOptions = { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; rules?: FileRules };
+type EachOptions = { env: Env; config?: GuardConfig; cwd: string | null; titles?: boolean; rules?: FileRules; safeguard?: boolean };
 
-function checkEachCommand(command: string, { env, config, cwd, titles = false, rules }: EachOptions): Finding | null {
+function checkEachCommand(command: string, { env, config, cwd, titles = false, rules, safeguard = false }: EachOptions): Finding | null {
   const commands = commandWords(command);
   // Where a gh command reads a relative body file: the folder, followed through each cd.
   let postCwd = cwd;
@@ -1565,7 +1579,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       checkPublish(words, env) ??
       checkBlocked(words, config?.commands.block ?? {}) ??
       checkPosted(words, { env, config, cwd: postCwd, from, command, titles, files: { heredoc, mayWrite, saw, movesFolder } }) ??
-      (rules ? checkLeadOnlyWrites(words, { env, rules, folder: postCwd }) : null);
+      (rules ? checkFileWrites(words, { env, rules, folder: postCwd, safeguard }) : null);
     if (reason) return reason;
     later ??=
       checkGitConfigEnvironment(words) ??
@@ -4576,6 +4590,55 @@ function checkLeadOnlyWrites(words: string[], { env, rules, folder }: { env: Env
 }
 
 /**
+ * The file rules for one command's words: a worker hears its own rule first (#555), and
+ * where that rule has nothing to say the safeguard still holds (#815). A repo without
+ * yokoten.json has no lead-only list, so before this the worker's rule answered `null`
+ * and a shell write to CI or a hook passed. The edit tool already refused it
+ * (`checkSafeguardEdit`), so the shell and the edit tool now agree.
+ */
+function checkFileWrites(
+  words: string[],
+  { env, rules, folder, safeguard = false }: { env: Env; rules: FileRules; folder: string | null; safeguard?: boolean },
+): Finding | null {
+  const worker = env.YOKOTEN_ROLE === 'worker' ? checkLeadOnlyWrites(words, { env, rules, folder }) : null;
+  return worker ?? (safeguard ? checkSafeguardWrites(words, { env, rules, folder }) : null);
+}
+
+/**
+ * The safeguard writes (record 0034): in a repo without yokoten.json, no agent changes
+ * the CI or the git hooks. The lead decides after `yokoten init`, so this only answers
+ * for a repo with no project rules.
+ */
+function checkSafeguardWrites(words: string[], { env, rules, folder }: { env: Env; rules: FileRules; folder: string | null }): Finding | null {
+  for (const target of writeTargets(words, folder, rules.rootOf)) {
+    if (target.isUnread) continue;
+    const path = rules.safeguard(target, env);
+    if (path !== null) return finding('safeguard', `this command writes ${path}, which is ${SAFEGUARD_WHAT}`, SAFEGUARD_FIX);
+  }
+  for (const target of commitTargets(words, folder, rules.rootOf, env)) {
+    const path = rules.safeguard(target, env);
+    if (path !== null) return finding('safeguard', `this commit changes ${path}, which is ${SAFEGUARD_WHAT}`, `unstage it with \`git restore --staged ${path}\`, then ${SAFEGUARD_FIX}`);
+  }
+  return null;
+}
+
+/**
+ * An edit to a file in a repo without yokoten.json, checked by its full path (#815): the
+ * user-level hook sees edits in a repo that never ran `yokoten init`. Null when the file
+ * is in a yokoten repo, outside a repo, or is not CI or a hook.
+ */
+export function checkSafeguardEdit(file: string): Finding | null {
+  const full = realPath(file);
+  const root = gitRootAbove(dirname(full), new Map());
+  if (root === null || existsSync(join(root, 'yokoten.json'))) return null;
+  const rel = relative(realPath(root), full);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null;
+  const path = rel.split(sep).join('/');
+  if (!isSafeguardPath(path)) return null;
+  return finding('safeguard', `${path} is ${SAFEGUARD_WHAT}`, SAFEGUARD_FIX);
+}
+
+/**
  * The real path, through symlinks. git reports the repo root's real path, and a tool may
  * send a path through a symlink (on macOS, /var is /private/var). A file that does not
  * exist yet takes the real path of its nearest existing folder.
@@ -4595,6 +4658,8 @@ export function realPath(path: string): string {
  */
 type FileRules = {
   ruled: (target: WriteTarget, env: Env) => { path: string; leadOnly: string[] } | null;
+  /** The path when the target is CI or a hook in a repo without yokoten.json, else null. */
+  safeguard: (target: WriteTarget, env: Env) => string | null;
   rootOf: (folder: string) => string | null;
   isRuled: (folder: string) => boolean;
 };
@@ -4636,7 +4701,25 @@ function fileRules(repos: RuledRepo[]): FileRules {
   };
   // A folder is ruled when a file in it would be: `.git` stands for any file there.
   const isRuled = (folder: string) => ruled({ path: join(folder, '.git'), from: null }, {}) !== null;
-  return { ruled, rootOf, isRuled };
+  // The safeguard (record 0034): CI and the hooks, where no yokoten.json adds project rules.
+  // A file in a yokoten repo follows that repo's rules, as the lead's call.
+  const safeguard: FileRules['safeguard'] = ({ path, from }, env) => {
+    if (path === '' || path === '-') return null;
+    const expanded = /^~(?=\/|$)/.test(path) && env.HOME ? join(env.HOME, path.slice(1)) : path;
+    // A relative path from an unknown folder names no repo the guard can read.
+    if (from === null && !isAbsolute(expanded)) return null;
+    const full = realPath(resolve(from ?? '/', expanded));
+    realRepos ??= repos.map((repo) => ({ ...repo, root: realPath(repo.root) }));
+    for (const repo of realRepos) {
+      const inRepo = relative(repo.root, full);
+      if (inRepo !== '' && !inRepo.startsWith('..') && !isAbsolute(inRepo)) return null;
+    }
+    const root = rootOf(dirname(full));
+    if (root === null || existsSync(join(root, 'yokoten.json'))) return null;
+    const rel = relative(root, full).split(sep).join('/');
+    return isSafeguardPath(rel) ? rel : null;
+  };
+  return { ruled, safeguard, rootOf, isRuled };
 }
 
 // The nearest folder at or above `folder` with a `.git`. Each folder walked is kept, so a

@@ -11,7 +11,7 @@ import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkSafeguardEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import type { DeskAgent } from '../rules/pr.ts';
 import { loadMarks, makeRedactor } from '../rules/privacy.ts';
@@ -1204,7 +1204,7 @@ export function judge(
     const titles = !commandsOnly && root !== null && existsSync(join(root, 'yokoten.json'));
     const ruledRepos = ruled.map((repo) => ({ root: repo.root, leadOnly: repo.config.leadOnly }));
     for (const command of commands) {
-      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos });
+      const reason = checkCommand(command, { env, config, cwd: action.cwd ?? root ?? cwd, titles, repos: ruledRepos, safeguard: true });
       if (reason) return reason;
     }
   }
@@ -1218,19 +1218,28 @@ export function judge(
       if (reason) return reason;
     }
   }
-  if (!ruled.length) return null;
-  const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
-  for (const p of action.paths) {
-    const file = real(resolve(action.cwd ?? root ?? cwd, p));
-    let best: { rel: string; config: Config } | null = null;
-    for (const repo of reals) {
-      const rel = relative(repo.real, file);
-      // A file outside the repo is not this repo's business.
-      if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
-      if (!best || rel.length < best.rel.length) best = { rel, config: repo.config };
+  // The repos this edit may be in: a worker's rules answer first, then the safeguard.
+  if (ruled.length) {
+    const reals = ruled.map((repo) => ({ config: repo.config, real: real(repo.root) }));
+    for (const p of action.paths) {
+      const file = real(resolve(action.cwd ?? root ?? cwd, p));
+      let best: { rel: string; config: Config } | null = null;
+      for (const repo of reals) {
+        const rel = relative(repo.real, file);
+        // A file outside the repo is not this repo's business.
+        if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) continue;
+        if (!best || rel.length < best.rel.length) best = { rel, config: repo.config };
+      }
+      if (!best) continue;
+      const reason = checkEdit(best.rel.split(sep).join('/'), { config: best.config, env });
+      if (reason) return reason;
     }
-    if (!best) continue;
-    const reason = checkEdit(best.rel.split(sep).join('/'), { config: best.config, env });
+  }
+  // The safeguard holds in a repo that never ran `yokoten init` (record 0034): CI and the
+  // hooks are the owner's. It reads the file's own repo, so the user-level hook sees an
+  // edit in a worktree outside the session's folder too (#815).
+  for (const p of action.paths) {
+    const reason = checkSafeguardEdit(resolve(action.cwd ?? root ?? cwd, p));
     if (reason) return reason;
   }
   return null;

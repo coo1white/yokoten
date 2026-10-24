@@ -3,8 +3,8 @@
 // worktree's root, and leaves by removing it. The hooks write it for every vendor (#685).
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { type Env } from '../../../rules/config.ts';
 import { commonGitDir, DESK_LIST_FILE } from '../../../run/hook.ts';
 
@@ -131,12 +131,78 @@ export interface BoardWorktree {
   branch: string;
 }
 
-/** `git worktree list --porcelain -z` as worktrees, then the desks, or why git can't read them. */
+/** `git worktree list --porcelain -z` as worktrees, then the desks and Orca's worktrees, or why git can't read them. */
 export function readBoardWorktrees(root: string, env: Env): BoardWorktree[] | string {
   const trees = readGitWorktrees(root, env);
   if (typeof trees === 'string') return trees;
   const seen = new Set(trees.map((tree) => tree.path));
-  return [...trees, ...readBoardDesks(root).filter((desk) => !seen.has(desk.path))];
+  const extra: BoardWorktree[] = [];
+  for (const tree of [...readBoardDesks(root), ...readBoardOrca(root, env)]) {
+    if (seen.has(tree.path)) continue;
+    seen.add(tree.path);
+    extra.push(tree);
+  }
+  return [...trees, ...extra];
+}
+
+/** Orca's folder for this repo: ~/orca/workspaces/<repo>/<task>. */
+const ORCA_WORKSPACES = ['orca', 'workspaces'];
+
+/** The real path, or the path as given when it is gone. */
+function samePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The worktrees Orca makes for this repo (#815): one folder per task under
+ * `~/orca/workspaces/<repo>/<name>`, each a linked worktree whose `.git` file points back
+ * to this repo. A folder that is gone, is not a linked worktree, or belongs to another
+ * repo is skipped. The branch comes from the worktree's own HEAD, with no git process.
+ */
+export function readBoardOrca(root: string, env: Env): BoardWorktree[] {
+  const home = env.HOME;
+  const common = commonGitDir(root);
+  if (!home || !common) return [];
+  const folder = join(home, ...ORCA_WORKSPACES, basename(boardHome(root)));
+  let names: string[];
+  try {
+    names = readdirSync(folder);
+  } catch {
+    return [];
+  }
+  const main = samePath(common);
+  const trees: BoardWorktree[] = [];
+  for (const name of names) {
+    const path = join(folder, name);
+    let link: string;
+    try {
+      link = readFileSync(join(path, '.git'), 'utf8');
+    } catch {
+      continue;
+    }
+    const match = /^gitdir:\s*(.+)$/m.exec(link);
+    if (!match) continue;
+    const gitDir = resolve(path, match[1].trim());
+    let commonDir = gitDir;
+    try {
+      commonDir = resolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim());
+    } catch {
+      // No commondir: the git folder is the worktree's own.
+    }
+    if (samePath(commonDir) !== main) continue;
+    let head = '';
+    try {
+      head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim();
+    } catch {
+      // No HEAD to read: the branch stays blank.
+    }
+    trees.push({ path: samePath(path), branch: head.startsWith('ref: refs/heads/') ? head.slice('ref: refs/heads/'.length) : '' });
+  }
+  return trees.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 /**

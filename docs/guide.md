@@ -375,6 +375,26 @@ each agent's own trust store, read-only, and notes a folder it does not trust ye
 Doctor checks an agent only when its home folder is there (`~/.copilot`, `~/.codex`, `~/.config/muse`, `~/.grok`).
 When that folder has no store, or one doctor can't read, it says "can't check", never ok.
 
+### Under Orca
+
+[Orca](https://github.com/stablyai/orca) is a desktop agent IDE. yokoten works under it, not
+against it: Orca starts the agent, and yokoten is the rule layer under every call.
+
+Install yokoten once on the machine, as the Claude Code plugin (above) or with
+`npx yokoten install`. You do not need `yokoten init` in the project.
+
+Orca starts Claude Code in Bypass Permissions mode by default. That turns off Claude
+Code's own permission prompts, so the yokoten hook is the only check left. The hook still
+runs: Orca starts Claude Code, and Claude Code runs its user hooks in the worktree.
+
+A trial on native Windows (issue #815) used Orca 2026.10 and Claude Code 2.1.309. The
+guard refused a force push, a commit with `--no-verify`, a tag push and `rm -rf .git`. In
+a repo with no `yokoten.json`, a shell write to a CI file or a git hook is refused by the
+safeguard (record 0034). A read passes.
+
+Orca makes one worktree per task under `~/orca/workspaces/<repo>/<name>`. The board lists
+it with the repo's own worktrees: run `yokoten board`.
+
 A worker is a session with `YOKOTEN_ROLE=worker`. In Codex, a subagent whose
 `agent_type` names a worker is a worker too. Copilot CLI and Antigravity CLI name no
 subagent role in a hook call, nor does DeepSeek Harness: `YOKOTEN_ROLE` decides. Gemini CLI's strict environment
