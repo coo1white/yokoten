@@ -41,6 +41,10 @@ export interface ServerSettings {
   branch: BranchRules | Unread;
   /** A ruleset on v* tags limits creation, update and deletion. */
   tags: boolean | Unread;
+  /** Every v* tag ruleset that blocks creation: whether each names Repository admin, and whether one names a bot (an App). */
+  tagBypass: { admin: boolean; bot: boolean } | Unread;
+  /** The `release` environment: a required reviewer, a tag rule on v*, and whether a branch rule on v* is there instead. */
+  release: { reviewer: boolean; tagRule: boolean; branchRule: boolean } | Unread;
   security: Security;
   /** Branches with no open pull request, apart from the default branch. */
   forgotten: string[] | Unread;
@@ -53,7 +57,10 @@ export interface ServerSettings {
 }
 
 type Rule = { type?: string; parameters?: Record<string, unknown> };
-type Ruleset = { id?: number; target?: string; enforcement?: string; conditions?: { ref_name?: { include?: string[] } }; rules?: Rule[] };
+type Ruleset = { id?: number; target?: string; enforcement?: string; conditions?: { ref_name?: { include?: string[] } }; rules?: Rule[]; bypass_actors?: { actor_id?: number; actor_type?: string }[] };
+
+/** The id GitHub gives the built-in "Repository admin" role in a ruleset's bypass list (#537). */
+const REPOSITORY_ADMIN_ROLE_ID = 5;
 
 /** The server settings of `repo` ("owner/name"), or why gh can't read the repo at all. */
 export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
@@ -104,16 +111,56 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
     };
   });
 
-  const tags = attempt(() => {
+  const targetsV = (s: Ruleset) => (s.conditions?.ref_name?.include ?? []).some((p) => ['~ALL', 'refs/tags/v*', 'v*'].includes(p));
+  const tagRules = attempt(() => {
     const sets = api<Ruleset[]>(`repos/${repo}/rulesets?targets=tag&includes_parents=true&per_page=100`) ?? [];
     return sets
       .filter((s) => s.target === 'tag' && s.enforcement === 'active' && s.id !== undefined)
-      .map((s) => api<Ruleset>(`repos/${repo}/rulesets/${s.id}`))
-      .some((s) => {
-        const include = s.conditions?.ref_name?.include ?? [];
-        const types = new Set((s.rules ?? []).map((r) => r.type));
-        return include.some((p) => ['~ALL', 'refs/tags/v*', 'v*'].includes(p)) && ['creation', 'update', 'deletion'].every((t) => types.has(t));
-      });
+      .map((s) => api<Ruleset>(`repos/${repo}/rulesets/${s.id}`));
+  });
+  const tags = 'unread' in tagRules ? tagRules : tagRules.some((s) => {
+    const types = new Set((s.rules ?? []).map((r) => r.type));
+    return targetsV(s) && ['creation', 'update', 'deletion'].every((t) => types.has(t));
+  });
+  // The owner pushes a release tag through the bypass list; a bot on it can push one too.
+  // A bypass only helps on the ruleset that blocks the push: a bypass on another v* ruleset,
+  // with no creation rule, leaves the owner unable to push a tag (#537). Two v* rulesets can
+  // both block creation, and a push meets both, so one bypass is not enough: every such
+  // ruleset must name it (#850).
+  const blocksCreation = (s: Ruleset) => (s.rules ?? []).some((r) => r.type === 'creation');
+  const creationRulesets = 'unread' in tagRules ? [] : tagRules.filter((s) => targetsV(s) && blocksCreation(s));
+  const namesAdmin = (s: Ruleset) => (s.bypass_actors ?? []).some((a) => a.actor_type === 'RepositoryRole' && a.actor_id === REPOSITORY_ADMIN_ROLE_ID);
+  const namesBot = (s: Ruleset) => (s.bypass_actors ?? []).some((a) => a.actor_type === 'Integration');
+  const tagBypass = 'unread' in tagRules ? tagRules : {
+    // With no v* ruleset blocking creation, the tag is free to push and needs no bypass.
+    admin: creationRulesets.every(namesAdmin),
+    bot: creationRulesets.some(namesBot),
+  };
+
+  // The `release` environment. A missing environment answers 404: it then has neither piece.
+  type Environment = { protection_rules?: { type?: string; reviewers?: unknown[] }[] };
+  type DeploymentPolicy = { name?: string; type?: string };
+  const isNotFound = (err: unknown) => /HTTP 404/.test(String((err as { stderr?: string }).stderr || (err as Error).message));
+  const release = attempt(() => {
+    let environment: Environment;
+    try {
+      environment = api<Environment>(`repos/${repo}/environments/release`);
+    } catch (err) {
+      if (isNotFound(err)) return { reviewer: false, tagRule: false, branchRule: false };
+      throw err;
+    }
+    const reviewer = (environment.protection_rules ?? []).some((r) => r.type === 'required_reviewers' && (r.reviewers?.length ?? 0) > 0);
+    let policies: DeploymentPolicy[] = [];
+    try {
+      policies = api<{ branch_policies?: DeploymentPolicy[] }>(`repos/${repo}/environments/release/deployment-branch-policies`)?.branch_policies ?? [];
+    } catch (err) {
+      if (!isNotFound(err)) throw err;
+    }
+    return {
+      reviewer,
+      tagRule: policies.some((p) => p.type === 'tag' && p.name === 'v*'),
+      branchRule: policies.some((p) => p.type === 'branch' && p.name === 'v*'),
+    };
   });
 
   // security_and_analysis is sent only to an admin; without it, a switch is unknown.
@@ -150,7 +197,7 @@ export function readServer(gh: Gh, repo: string): ServerSettings | Unread {
 
   const org = info.owner?.type === 'Organization' ? (info.owner.login ?? repo.split('/')[0]) : info.owner?.type === 'User' ? null : undefined;
 
-  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, security, forgotten, planning, boards, ...(org === undefined ? {} : { org }) };
+  return { repo, defaultBranch, isPrivate: info.private ?? null, actionsCanApprove, mergeMethods, deleteBranchOnMerge: info.delete_branch_on_merge ?? null, branch, tags, tagBypass, release, security, forgotten, planning, boards, ...(org === undefined ? {} : { org }) };
 }
 
 // An incident issue for `yokoten learn` (#77), read through `gh issue view`, so it uses

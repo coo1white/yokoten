@@ -166,6 +166,12 @@ export const RULES = {
     check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
     docs: guide('what-it-doesnt-do'),
   },
+  'repeat-stop': {
+    rule: 'a session stops after the same step fails three times (#711)',
+    why: 'a loop does not find a way through, and every extra try costs the team time and money',
+    check: 'the tool-call guard counts, per session, the same refusal for the same command shape and the same failing command; at the third repeat it stops with a stop message; a call that succeeds resets the count. The worker stop check stops a task after its time limit',
+    docs: guide('the-core-rules'),
+  },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
     why: 'a fix task changes the code until the test passes, never the test',
@@ -645,6 +651,22 @@ export const RULES = {
     why: 'only the owner decides when to release, whatever an agent\'s token can do',
     check: `${SERVER_CHECK}: an active tag ruleset on v* with creation, update and deletion restricted`,
     docs: guide('the-core-rules'),
+  },
+  'tag-bypass': {
+    rule: 'each v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and names no bot (core rule 3)',
+    why: 'the owner must be able to push a release tag, and no agent must be able to',
+    check: `${SERVER_CHECK}: every active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and none names a GitHub App`,
+    docs: guide('the-core-rules'),
+  },
+  'release-reviewer': {
+    rule: 'the release environment asks for your approval before it deploys (core rule 3)',
+    why: 'without it, a publish job that a tag starts runs with no one approving it',
+    check: `${SERVER_CHECK}: the release environment has a required reviewer`,
+  },
+  'release-tag-rule': {
+    rule: 'the release environment deploys only from v* tags, and not from a branch named v*',
+    why: 'a branch rule named v* matches no tag, and with both rules a branch named v* can still publish',
+    check: `${SERVER_CHECK}: the release environment has a deployment rule of type tag named v*, and no branch rule named v*`,
   },
   'security-switches': {
     rule: 'secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on',

@@ -31,8 +31,14 @@ yokoten 在你已經在用的 agent 上面，再補三件事。hook、沙箱、�
 只需要 [Node](https://nodejs.org/) 22.23.4 以上（Node 24 要 24.22.1 以上，Node 26 要 26.12.1 以上）。其他不用裝。
 
 ```sh
-npx yokoten install      # 每台電腦一次
 cd your-project
+npx yokoten             # 一次就好：裝好 yokoten，加上規則，顯示下一步
+```
+
+這就是全部的開始。在任何專案裡再執行一次 `npx yokoten`，它只做還缺的部分。想一步一步來的話：
+
+```sh
+npx yokoten install      # 每台電腦一次
 npx yokoten init         # 每個專案一次
 npx yokoten doctor       # 你在第幾關，下一步做什麼
 ```

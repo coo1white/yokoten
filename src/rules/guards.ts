@@ -1596,6 +1596,41 @@ export function releaseFix(start?: string): string {
 }
 const release = (what: string) => finding('release', what, releaseFix());
 
+// `git tag` alone, `git tag -l` and `git tag --contains` only read. Deleting a local tag
+// (`-d`) and verifying one (`-v`) publish nothing. Every other `git tag` writes a tag,
+// which the owner alone creates (record 0028): `git push --follow-tags` would publish it.
+const TAG_READ_FLAGS = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify']);
+// These choose what a listing matches, so git stays in listing mode after one.
+const TAG_READ_OPTIONS = ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at'];
+// `--sort`, `--format` and `--column` only change how a listing prints. With a name,
+// git still creates the tag, so they must not mark the command as a read (#873).
+// `--sort` and `--format` take their value as the next word, or after `=`.
+const TAG_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--trailer', '--sort', '--format']);
+// A combined short flag keeps its letters: `git tag -ln v1` lists, because `-n` only shapes
+// the listing. A writing letter in the group (`-af`) still makes the command a write (#873).
+const TAG_SHORT_GROUP = /^-[a-zA-Z]{2,}$/;
+function isTagRead(arg: string): boolean {
+  if (TAG_READ_FLAGS.has(arg) || /^-n\d*$/.test(arg)) return true;
+  if (TAG_READ_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`))) return true;
+  return TAG_SHORT_GROUP.test(arg) && /[ldv]/.test(arg.slice(1)) && !/[asf]/.test(arg.slice(1));
+}
+const TAG_WRITE_OPTIONS = new Set(['--annotate', '--sign', '--force']);
+
+/** The name a `git tag` command creates, or null when its words name no tag. */
+function tagNameOf(args: string[]): string | null {
+  for (let index = 0; index < args.length; index++) {
+    if (TAG_VALUE_OPTIONS.has(args[index])) index++;
+    else if (!args[index].startsWith('-')) return args[index];
+  }
+  return null;
+}
+
+function createsTag(args: string[]): boolean {
+  if (args.some(isTagRead)) return false;
+  const isWriteFlag = args.some((arg) => TAG_WRITE_OPTIONS.has(arg) || /^-[a-zA-Z]*[asf]/.test(arg));
+  return tagNameOf(args) !== null || isWriteFlag;
+}
+
 const MOVERS = new Set(['cd', 'pushd', 'popd']);
 function movesRepo(words: string[]): boolean {
   // The options of an env or sudo are read once: an env word among them (`-/env`) would
@@ -1689,10 +1724,16 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const gone = pushed?.find((name) => isDefaultBranch(name, directory, env));
     if (gone !== undefined) return deleteBranchFinding(`\`git push\` deletes the default branch \`${gone}\` on the remote`);
   }
-  if (sub === 'tag') {
-    const tag = tagToCreate(withoutShellRedirects(words, argsAt));
-    if (tag !== null && !env.YOKOTEN_RELEASE_APPROVAL) {
-      return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${tag}\` themselves; do not look for another way`);
+  if (sub === 'tag' && !env.YOKOTEN_RELEASE_APPROVAL) {
+    const tagArgs = withoutShellRedirects(words, argsAt);
+    if (createsTag(tagArgs)) {
+      const tag = tagNameOf(tagArgs);
+      // Name the tag, as the branch's #828 message did; a form whose name the guard cannot
+      // read still refuses, with the whole command as the word it names (#873).
+      if (tag !== null) {
+        return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${tag}\` themselves, or start a new session with YOKOTEN_RELEASE_APPROVAL=1; do not look for another way`);
+      }
+      return release(`git tag ${tagArgs.join(' ')} creates a tag`);
     }
   }
   if (sub === 'reset' && args.some((arg) => isGitLongOption(arg, '--hard'))) {
@@ -2863,22 +2904,8 @@ function findDeletedRef(args: string[]): string | null {
 }
 
 /**
- * The tag a `git tag` command creates, or null when it only reads or deletes tags (#812).
- * The name is the first word that is not an option and not the value of one.
+ * The default branch: what refs/remotes/origin/HEAD names, else main and master.
  */
-function tagToCreate(args: string[]): string | null {
-  const reads = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify', '-n', '--column', '--sort', '--format', '--points-at', '--contains', '--merged', '--no-merged', '--omit-empty']);
-  const values = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user']);
-  for (let at = 0; at < args.length; at++) {
-    const word = args[at];
-    if (reads.has(word) || [...reads].some((read) => word.startsWith(`${read}=`))) return null;
-    if (values.has(word)) at++;
-    else if (!word.startsWith('-')) return word;
-  }
-  return null;
-}
-
-/** The default branch: what refs/remotes/origin/HEAD names, else main and master. */
 function readDefaultBranches(dir: string | null, env: Env): Set<string> {
   if (dir !== null) {
     const head = readGit(dir, ['symbolic-ref', 'refs/remotes/origin/HEAD'], env);
@@ -5925,6 +5952,15 @@ interface Group {
   reads: boolean;
 }
 
+// `%(refname)`, `%(refname:short)`: a git format atom, which git reads as the value of
+// `--format`. Only this shape is one word. A space, a `;` or a missing `)` means the `(` is a
+// subshell after all, and the words after it must be read as commands (#873).
+const GIT_FORMAT_ATOM = /^\*?[A-Za-z][A-Za-z0-9_.:*,=/@+-]*$/;
+function isGitFormatAtom(text: string, open: number): boolean {
+  const close = text.indexOf(')', open + 1);
+  return close !== -1 && GIT_FORMAT_ATOM.test(text.slice(open + 1, close));
+}
+
 // Reads commands from `start` until `closer` (`)` or a backtick) or the end, and adds them
 // to `out`. Returns the index after the closer, or -1 if a closer was wanted and not found.
 function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
@@ -6190,6 +6226,16 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
       index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
+    } else if (character === '(' && word.endsWith('%') && isGitFormatAtom(text, index)) {
+      // A git format such as `%(refname)` is one word, as the quote note above says: git
+      // reads it as the value of `--format`, and a shell refuses the unquoted form. Reading
+      // it whole keeps the tag name in the same command, so the release check sees it (#873).
+      // Only an atom is read whole. Anything else, such as `%(git push --tags)` or an
+      // unclosed `%(`, falls to the group arm below and still reads as the command it is.
+      const stop = text.indexOf(')', index + 1) + 1;
+      word += text.slice(index, stop);
+      inWord = true;
+      index = stop;
     } else if (character === '(' || (character === '{' && !inWord && /\s/.test(next ?? ''))) {
       // A subshell or a group cuts like a separator, and is open until its ) or }.
       endCommand();

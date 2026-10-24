@@ -524,8 +524,14 @@ Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，�
 用 Codex CLI、Gemini CLI，或者不想用插件，就这样装：
 
 ```sh
-npx yokoten install      # 这台电脑：技能、agent、hook
 cd your-project
+npx yokoten             # 一次就好：装好缺的东西，再看看走到哪一关
+```
+
+在任何项目里再运行一次，它只做还缺的部分。想一步一步来的话：
+
+```sh
+npx yokoten install      # 这台电脑：技能、agent、hook
 npx yokoten init         # 这个项目：只加文件，不覆盖
 npx yokoten doctor       # 看看走到哪一关，下一步做什么
 ```
@@ -628,8 +634,10 @@ jobs:
 
 `check --pr` 按核心规则第 8 条检查 PR。还没按这条规则走的仓库，可以先写 `pr-check: false`。
 Dependabot 开的 PR 只查标题，其他几条只提醒、不算失败，因为它的正文是 Dependabot 自己写的。
-kit 里 `init` 放的 workflow 暂时还是跑 `.yokoten/` 里的那份，等第一个正式版本发布以后再换成
-这个 action，这样就不会依赖 `@main`。
+kit 里 `init` 放的 `check` workflow 先跑项目里 `.yokoten/` 的那份：它和提交钩子用的是同一个
+yokoten，检查也一样。然后才跑这个 action，钉在第一个正式版本的 commit 上，这样改了 `.yokoten/`
+的 PR 也得过一份它改不了的检查；Dependabot 会把这个 pin 更新到新版本。kit 的 `pr` 和
+`issue` workflow 跑项目里 `.yokoten/` 的那份。
 
 ### 命令
 
@@ -717,12 +725,14 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `borrowed [--dry-run] [--json]` | 通过 `gh` 把 `src/borrowed/` 里的每个文件和上游默认分支对比，每个有变化的来源开一个 issue。安全修复会在标题里点出来。`--dry-run` 只显示报告，不开 issue；`--json` 以数据形式输出报告。见[借来的代码](#借来的代码) |
 | `marks allow <mark> --here` | 让词表里的一个词只在这个仓库放行，不需要 yokoten.json。放行记在这台电脑上，不写进仓库。`--remove` 撤回。见「隐私」 |
 | `redact` | 从标准输入读文字，把你的信息换成占位符再输出：`<owner>`、`<email>`、`<host>`、`<mark>`。命令守卫会让有风险的命令先过一遍它。见「隐私」 |
+| `anchor [--json]` | 列出这个检出里记录的锚点，最新的在前。worker 的检查通过、工作区干净时记录一个。锚点是一个提交：用 `git switch -c try-2 <commit>` 回去，什么都不会被重置或删除。见下面的「停止检查」 |
 | `changelog [--write]` | 列出 `changes/` 里的文件会往 `[Unreleased]` 下面加哪些条目。加上 `--write` 就真的写进 `CHANGELOG.md`，再删掉这些文件；发版前跑。见下面的「更新日志」 |
 | `mcp [dir] [--command "<command>"] [--json]` | 启动 `.mcp.json`、`.vscode/mcp.json` 或 `mcp.json` 里的每个 stdio 服务器，按各个客户端的要求检查它的工具：schema、名字、注解、数量、结果格式和多余的 stdout。`--command` 检查没有配置条目的服务器；`--json` 输出检查结果。Windows 的提醒不会让它失败。见英文指南的「Shipping an MCP server that works in every agent」 |
 | `learn <issue> [--write]` | 从一个事故 issue 起草一条检查，留给人来审。加上 `--write` 才把文件写进 `lessons/`。见下面的「从事故里学」 |
 | `learn --ship <id>` | 在 yokoten 里用：把审过的教训搬进 `kit/lessons/` 下的一个分组，以后用这份 yokoten 跑 `doctor`，每个项目都会查它。还有 `TODO(reviewer)` 没填，或者它的测试没过，就不让搬 |
 | `learn --upstream "<发生了什么>" [--area <name>] [--fix <idea>]` | 记下 yokoten 自己的一个毛病，项目和你本人的信息都先藏掉。`--list` 列出这些记录，`--done <id>` 删掉一条。见下面的「问题出在 yokoten 自己身上」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
+| `pr sync` | 每次合并之后，把每个打开的 PR 更新到它的基础分支：合并基础分支，只解决两种机械冲突（两边在同一处各加了一整块，或两边改了同一个 import 列表），每次合并（干净合并或解决冲突后）都先运行 typecheck 和改动文件对应的测试，然后以 bot 的身份推送。其他冲突会停下，并打印文件、冲突块和一份派活说明。每行报告会写明实际合并的基础分支；打开的 PR 列表最多 100 条，截断时会说明。它从不强制推送、从不 rebase，也不在 GitHub 上解决冲突。每次合并后都要跑。 |
 | `hook [--agent <name>] [--commands-only] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `stops [off \| on]` | 显示 `~/.config/yokoten/stops.jsonl` 这个拦截记录，以及 yokoten 还在不在写它。`off` 停止写入并删掉记录，`on` 重新开始。记录只留在这台电脑上。见[收尾检查](#收尾检查) |
