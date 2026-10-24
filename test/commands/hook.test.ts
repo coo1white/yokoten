@@ -1225,6 +1225,91 @@ test('session start: a lead registers its log path; a worker does not (#700)', a
   assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the path stays in the git folder');
 });
 
+// #621: a stop writes one line to the stop log on this computer, with the command masked.
+test('hook: a stop writes a masked line to the stop log (#621)', async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  // A fake token, built from pieces so this file passes the repo's own privacy check.
+  const token = ['gh', 'p_', 'a'.repeat(36)].join('');
+  const command = `GH_TOKEN=${token} git push --tags`;
+  const result = await sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  assert.equal(result.status, 2);
+  const text = readFileSync(log, 'utf8');
+  assert.ok(!text.includes(token), 'the token is not in the log');
+  const lines = text.trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [line] = lines;
+  assert.equal(line.vendor, 'claude-code');
+  assert.equal(line.role, 'lead');
+  assert.ok(line.rule);
+  assert.equal(line.answer, 'refused');
+  assert.match(line.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.match(line.command, /<secret>/);
+  assert.ok(!line.command.includes(token), 'the command holds no secret');
+  // An edit writes no path and no file text.
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# the private file text\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const edit = await sandbox.call(['hook'], {
+    input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Edit', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }),
+    extra: { YOKOTEN_ROLE: 'worker' },
+  });
+  assert.equal(edit.status, 2);
+  const second = JSON.parse(readFileSync(log, 'utf8').trim().split('\n')[1]);
+  assert.equal(second.rule, 'lead-only');
+  assert.equal(second.role, 'worker');
+  assert.equal(second.command, undefined, 'an edit writes no command or path');
+  assert.ok(!readFileSync(log, 'utf8').includes('the private file text'), 'no file text goes in the log');
+});
+
+// #621: the stop log says what the stop check did, including the let-through after the tries.
+test('hook --stop: refusals and the let-through are in the stop log (#621)', { skip: process.platform === 'win32' && 'the done-when command uses sh syntax' }, async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const event = JSON.stringify({ session_id: 'stop-621', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false });
+  const stop = () => sandbox.call(['hook', '--stop'], { input: event, extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'exit 1' } });
+  for (let tryNumber = 1; tryNumber <= 3; tryNumber += 1) assert.equal((await stop()).status, 2);
+  assert.equal((await stop()).status, 0, 'the next stop is let through');
+  const lines = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(lines.map((line) => line.answer), ['refused', 'refused', 'refused', 'allowed once']);
+  for (const line of lines) {
+    assert.equal(line.vendor, 'claude-code');
+    assert.equal(line.role, 'worker');
+    assert.equal(line.rule, 'done-when');
+    assert.equal(line.command, undefined);
+  }
+});
+
+// #621: `stops off` deletes the log and stops the writing; `on` starts it again.
+test('stops: off and on work, and the state says where the log is (#621)', async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  const off = join(sandbox.home, '.config', 'yokoten', 'stops-off');
+  const refused = () => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: 'git push --tags' } }) });
+  assert.equal((await refused()).status, 2);
+  assert.ok(existsSync(log));
+  let result = await sandbox.call(['stops', 'off']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(log), 'off deletes the log');
+  assert.ok(existsSync(off));
+  assert.equal((await refused()).status, 2, 'the guard still stops the call');
+  assert.ok(!existsSync(log), 'nothing is written while the log is off');
+  result = await sandbox.call(['stops', 'on']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(off));
+  assert.equal((await refused()).status, 2);
+  assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 1);
+  const state = await sandbox.call(['stops']);
+  assert.equal(state.status, 0, state.stderr);
+  assert.match(state.stdout, /stops\.jsonl/);
+  assert.match(state.stdout, /on:/);
+  assert.match(state.stdout, /Nothing is sent anywhere/);
+});
+
 // The guard read the session's root twice: once for the call, and once more for the team
 // messages an allowed Claude Code call carries (#821). One git call, not two.
 test('hook: an allowed call asks git for the root once (#821)', { skip: process.platform === 'win32' && 'the fake git is a node script with no .cmd shim' }, async () => {

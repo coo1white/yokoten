@@ -373,6 +373,18 @@ export const COMMANDS: Command[] = [
     example: 'yokoten anchor',
   },
   {
+    name: 'stops',
+    summary: 'the log of the guard stops on this computer, or turn it off and on',
+    usage: '[off | on]',
+    text: [
+      'Shows where the stop log is, and whether yokoten writes it. `off` stops the writing',
+      'and deletes the log; `on` starts it again. The log stays on this computer.',
+    ],
+    options: [],
+    arguments: ['action'],
+    example: 'yokoten stops off',
+  },
+  {
     name: 'worker',
     summary: "mark a worktree as a worker's, so the guard treats every agent there as a worker",
     usage: 'mark <dir> | unmark <dir> | env [runtime]',

@@ -47,6 +47,8 @@ import {
   shortenOutput,
   STATUS_TEXT_LIMIT,
   startGuard,
+  STOPS_MAX_BYTES,
+  trimStopsLog,
   wasRefusedRecently,
   windowsTreeKillArgs,
   writeAgentChecks,
@@ -810,4 +812,18 @@ setInterval(() => {}, 1000);
       }
     }
   }
+});
+
+// #621: the stop log is capped, and the oldest lines go first.
+test('stop log: the cap drops the oldest lines (#621)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  mkdirSync(dirname(file), { recursive: true });
+  const line = (n: number) => JSON.stringify({ time: '2026-10-23T00:00:00.000Z', vendor: 'codex', role: 'lead', rule: 'release', answer: 'refused', command: `echo ${n}` });
+  const lines = [0, 1, 2, 3, 4].map(line);
+  writeFileSync(file, lines.map((one) => `${one}\n`).join(''));
+  const cap = Buffer.byteLength(`${lines[3]}\n${lines[4]}\n`);
+  trimStopsLog(file, cap);
+  assert.deepEqual(readFileSync(file, 'utf8').trim().split('\n'), [lines[3], lines[4]]);
+  assert.equal(STOPS_MAX_BYTES, 5 * 1024 * 1024);
 });

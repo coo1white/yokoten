@@ -1,12 +1,13 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
 import { ADAPTERS, adapterFor, askOf, contextOf, denialOf, releaseFixOf, rewriteOf, stopReaderOf } from '../agents/runtimes/runtime.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
-import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, finding, formatFinding, notRepoFinding } from '../rules/message.ts';
+import { hideHome } from '../rules/privacy.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
@@ -32,6 +33,7 @@ import {
   guardDeadline,
   judgeWithDeadline,
   loadHookConfig,
+  logStop,
   noteRefused,
   readDoneWhen,
   type Repo,
@@ -42,6 +44,8 @@ import {
   sessionIdOf,
   startFields,
   STATUS_EVERY_MS,
+  stopsState,
+  type StopAnswer,
   type StopEvent,
   wasRefusedRecently,
   writeAgentChecks,
@@ -224,6 +228,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
     return 0;
   }
   if (!isWorker) {
+    logTurnStop(invocation, agent, false, findings, doneWhen, 'refused');
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
     print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return withMessages(invocation, 2, await takeMessages());
@@ -232,11 +237,19 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
   // lets the stop through. A runtime that never sets stop_hook_active cannot trap it.
   if (bumped === null) {
-    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
+    if (event.active || wasRefusedRecently(folder, key)) {
+      logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
+      return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
+    }
     noteRefused(folder, key);
+    logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
     return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
   }
-  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
+  if (bumped > DONE_TRY_LIMIT) {
+    logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
+    return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
+  }
+  logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
   return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
 }
 
@@ -359,6 +372,16 @@ function forgetDoneTries(env: Invocation['env'], key: string): void {
   } catch {
     // A count file that cannot be removed must not crash the hook.
   }
+}
+
+/** The rule a failing stop names first, for the log: a finding's id, or the task's done-when check. */
+function stopRule(findings: Finding[], doneWhen: { ok: boolean } | undefined): string {
+  return findings[0]?.id ?? (doneWhen?.ok === false ? 'done-when' : 'unknown');
+}
+
+/** Write one end-of-turn stop to the log (#621). The command is not logged: a turn names files, not a command. */
+function logTurnStop(invocation: Invocation, agent: string, isWorker: boolean, findings: Finding[], doneWhen: { ok: boolean } | undefined, answer: StopAnswer): void {
+  logStop(invocation.env, { vendor: agent, role: isWorker ? 'worker' : 'lead', rule: stopRule(findings, doneWhen), answer });
 }
 
 /** The lines that send a worker back, and, on the last refusal, what to tell the lead. */
@@ -492,7 +515,18 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     if (found) {
       const repeats = sessionKey === null ? null : bumpRepeat(env, sessionKey, found.id, shape);
       if (repeats !== null && repeats >= REPEAT_STOP_LIMIT) found = repeatStopFinding();
-    } else if (sessionKey !== null) clearRepeats(env, sessionKey);
+      // One line per stop, on this computer only (#621).
+      logStop(env, {
+        vendor: agent,
+        role: role !== null || action.worker ? 'worker' : 'lead',
+        rule: found.id,
+        // A guard that could not read the call has no rule answer; it still refuses the call.
+        answer: found.id === 'unreadable-command' ? 'no answer' : 'refused',
+        command: action.command ?? action.commands?.[0],
+      });
+    } else if (sessionKey !== null) {
+      clearRepeats(env, sessionKey);
+    }
     // A heavy job on a nearly full host drive asks first, and never refuses (#401).
     const ask = !found && action.command !== undefined ? askForHeavyJob(action.command, env) : null;
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
@@ -527,6 +561,57 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
 // The rules that apply to a worker only: a refusal by one of them names the mark, when the role came from it.
 const WORKER_RULES = new Set(['lead-only', 'worker-push', 'worker-mark']);
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * `yokoten stops`: the stop log's state, and the way back. `off` stops the writing and
+ * deletes the log; `on` starts it again. The log stays in the user's config folder, never
+ * in the project (#621).
+ */
+export function runStops(invocation: Invocation): number {
+  const options = parse('stops', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const [action] = options.positional;
+  const { env } = invocation;
+  const file = stopsFile(env);
+  const offFile = stopsOffFile(env);
+  if (!file || !offFile) {
+    say(invocation, "yokoten stops: no home folder, so there is no stop log to manage. Set HOME to your home folder's full path.\n", invocation.stderr);
+    return 1;
+  }
+  if (action === undefined) {
+    const state = stopsState(env);
+    print(invocation, [
+      `the stop log is ${state.isOff ? 'off' : 'on'}: ${hideHome(state.file ?? file, env)}`,
+      state.isOff ? 'yokoten writes no line while it is off.' : `${state.count} stop(s), ${state.bytes} byte(s)`,
+      'It stays on this computer. Nothing is sent anywhere.',
+      '`yokoten stops off` stops the writing and deletes the log.',
+    ]);
+    return 0;
+  }
+  if (action === 'off') {
+    try {
+      mkdirSync(dirname(offFile), { recursive: true });
+      writeFileSync(offFile, 'off\n');
+      rmSync(file, { force: true });
+    } catch (err) {
+      say(invocation, `yokoten stops: the log cannot be turned off: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+      return 1;
+    }
+    print(invocation, ['the stop log is off, and its file is deleted. `yokoten stops on` starts it again.']);
+    return 0;
+  }
+  if (action === 'on') {
+    try {
+      rmSync(offFile, { force: true });
+    } catch (err) {
+      say(invocation, `yokoten stops: the log cannot be turned on: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+      return 1;
+    }
+    print(invocation, [`the stop log is on: ${hideHome(file, env)}`]);
+    return 0;
+  }
+  return usage(invocation, `unknown action "${action}"; use off or on`);
+}
 
 /**
  * `worker mark <dir>`: mark the worktree at <dir> as a worker's (#555). The guard then

@@ -60,6 +60,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     }
     case 'anchor':
       return import('../src/commands/hook.ts').then((m) => m.runAnchor(invocation));
+    case 'stops':
+      return import('../src/commands/hook.ts').then((m) => m.runStops(invocation));
     case 'worker':
       return import('../src/commands/hook.ts').then((m) => m.runWorker(invocation));
     case 'desk':

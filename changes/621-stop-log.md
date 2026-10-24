@@ -1,0 +1,3 @@
+Added
+
+yokoten keeps a stop log on this computer. Each time the tool-call guard stops a call, or the stop check sends an agent back, it writes one line to `~/.config/yokoten/stops.jsonl`: the time in UTC, the agent's runtime, its role, the rule, and the answer (`refused`, `allowed once` or `no answer`). A command is written only after the privacy filter has masked it, and only its first line; an edit writes no path and no file text. The log stays on this computer, and nothing is sent anywhere. It holds at most 5 MB, oldest lines first. The new `yokoten stops` command shows it; `yokoten stops off` stops the writing and deletes the log, and `yokoten stops on` starts it again. `yokoten uninstall` removes the log too (#621).
