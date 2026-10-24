@@ -11,7 +11,8 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import { checkAnchors } from '../host/sigstore/anchor.ts';
@@ -29,6 +30,7 @@ import { readBranchDesks } from '../run/hook.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, hideHome, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
+import { readOriginUrl } from '../setup/plan.ts';
 import { bullets, type Invocation, parse, print, printJson, readInput, requireRoot, say, showOnPullRequest, usage } from './shared.ts';
 
 /** How long `check --pr <number>` waits for gh. */
@@ -193,11 +195,18 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       const printNotes = (found: Finding[], label: string) => {
         if (found.length && !json) print(invocation, [`${name}: note: ${found.length} ${label}`, ...bullets(found.slice(0, 10)), ...(found.length > 10 ? [`- and ${found.length - 10} more`] : [])]);
       };
-      // Plain English (record 0005): long sentences in changed Markdown are notes, never failures.
+      // One diff with renames found, so a moved file is not noted as all new. Fixed
+      // prefixes and plain paths, whatever the user's git settings say.
+      const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
+      const added = pr.files.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
+      // Plain English (record 0005): a long sentence on a line the pull request adds is a
+      // note, never a failure. Old lines are left alone, as with names: a small change in a
+      // long page must not bury the check's problems under notes about text it did not write.
       const long: Finding[] = [];
       for (const file of pr.files.filter((p) => /\.md$/i.test(p))) {
         const text = readAtHead(file);
-        if (text !== null) for (const s of longSentences(text)) long.push(longSentenceNote(file, s));
+        const lines = added.get(file) ?? new Set<number>();
+        if (text !== null) for (const s of longSentences(text)) if (lines.has(s.line)) long.push(longSentenceNote(file, s));
       }
       notes.push(...long);
       printNotes(long, 'long sentence(s)');
@@ -205,10 +214,6 @@ async function runMode(invocation: Invocation, mode: string, root: string, confi
       // are notes too. Old lines are left alone, so a project is not noted all at once.
       const names: Finding[] = [];
       const codeFiles = pr.files.filter(isCodeFile);
-      // One diff with renames found, so a moved file is not noted as all new. Fixed
-      // prefixes and plain paths, whatever the user's git settings say.
-      const diffArgs = ['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', `${pr.base}...${pr.head}`];
-      const added = pr.files.length ? addedLinesByFile(readGit(root, diffArgs, { env }).toString('utf8')) : new Map<string, Set<number>>();
       for (const file of codeFiles) {
         const text = added.has(file) ? readAtHead(file) : null;
         if (text !== null) names.push(...nameNotes(file, text, added.get(file) ?? new Set()));
@@ -768,6 +773,491 @@ function save(file: string, entries: AllowEntry[], skipOwnName?: false): void {
   } finally {
     rmSync(temporary, { force: true });
   }
+}
+
+// ---- Actions health (#647) ----
+//
+// `yokoten ci-health` reads the last 200 Actions runs and the checks of the open pull
+// requests through gh, then writes one Markdown report to one issue, `CI health`, which
+// it creates and pins on the first run. A scheduled workflow updates it in place. The
+// report says what is red and why: a failed run on main, a failed or cancelled check on
+// an open pull request, a slow workflow, a long wait, or a workflow and branch that both
+// passed and failed in the window. The branch a merge lands on is the repo's default.
+
+/** How long one gh read may take before the command stops waiting. */
+const CI_HEALTH_TIMEOUT = 30000;
+/** The title of the one issue the report lives in. The report body starts with its marker. */
+const CI_HEALTH_ISSUE = 'CI health';
+/** How many runs one report reads: two pages of 100. */
+const CI_HEALTH_RUNS = 200;
+
+/** The conclusions that mean a run failed. A cancelled run is counted apart: it is not a failure. */
+const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
+/** The conclusions that keep a check green. A cancelled check is not here: it shows as a red x. */
+const PASSING_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
+/** The conclusions of a completed run. */
+const COMPLETED_STATUS = 'completed';
+
+/** One Actions run, as the report needs it. Times are GitHub's own ISO stamps. */
+export interface HealthRun {
+  id: number;
+  workflow: string;
+  event: string;
+  branch: string;
+  status: string;
+  conclusion: string;
+  createdAt: string;
+  startedAt: string;
+  updatedAt: string;
+  url: string;
+}
+
+/** One workflow over the window: how often it ran, failed, was cancelled, and how long it took and waited. */
+export interface WorkflowHealth {
+  workflow: string;
+  runs: number;
+  failed: number;
+  cancelled: number;
+  /** Middle run time in milliseconds, or null when no run gave both stamps. */
+  medianRunTime: number | null;
+  /** Middle wait before the run started, in milliseconds, or null. */
+  medianWaitTime: number | null;
+}
+
+/** One failed or cancelled check on an open pull request. */
+export interface PullCheckProblem {
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  check: string;
+  conclusion: string;
+}
+
+/** A workflow and branch that both passed and failed in the window: a sign of flakiness or of work in progress. */
+export interface UnstableWorkflow {
+  workflow: string;
+  branch: string;
+  passes: number;
+  failures: number;
+}
+
+/** Everything the report shows. */
+export interface ActionsHealth {
+  /** The branch a merge lands on: `main` unless the repo says otherwise. */
+  defaultBranch: string;
+  runs: HealthRun[];
+  workflows: WorkflowHealth[];
+  mainFailures: HealthRun[];
+  mainCancelled: HealthRun[];
+  pullProblems: PullCheckProblem[];
+  slowest: HealthRun[];
+  unstable: UnstableWorkflow[];
+}
+
+/** The repo's default branch, or `main` when gh can't say. */
+export function readDefaultBranch(gh: Gh, repo: string): string {
+  try {
+    return gh(['repo', 'view', repo, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name']).trim() || 'main';
+  } catch {
+    return 'main';
+  }
+}
+
+/** One row of the Actions run list as a run, or null when it has no usable id. */
+function parseHealthRun(value: unknown): HealthRun | null {
+  if (!isObject(value) || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || value.id <= 0) return null;
+  return {
+    id: value.id,
+    workflow: asText(value.name),
+    event: asText(value.event),
+    branch: asText(value.head_branch),
+    status: asText(value.status),
+    conclusion: asText(value.conclusion),
+    createdAt: asText(value.created_at),
+    startedAt: asText(value.run_started_at),
+    updatedAt: asText(value.updated_at),
+    url: asText(value.html_url),
+  };
+}
+
+/** Why a gh read failed, in words a beginner can act on. */
+function healthReadFailed(err: unknown, what: string): string {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'gh is not installed: get it from https://cli.github.com, then run `gh auth login`';
+  const said = String((err as { stderr?: string }).stderr || '')
+    .split('\n')[0]
+    .trim();
+  return `gh can't read the ${what}${said ? ` (${said})` : ''}: run \`gh auth login\`, and check the repo`;
+}
+
+/** The last `max` Actions runs of `repo`, newest first, or why gh can't read them. */
+export function readActionsRuns(gh: Gh, repo: string, max: number = CI_HEALTH_RUNS): HealthRun[] | string {
+  const pages = Math.ceil(max / 100);
+  const runs: HealthRun[] = [];
+  try {
+    for (let page = 1; page <= pages; page++) {
+      const raw: unknown = JSON.parse(gh(['api', `repos/${repo}/actions/runs?per_page=100&page=${page}`]));
+      if (!isObject(raw) || !Array.isArray(raw.workflow_runs)) return 'gh gave no Actions run list: run it again';
+      for (const row of raw.workflow_runs) {
+        const run = parseHealthRun(row);
+        if (run) runs.push(run);
+      }
+      if (raw.workflow_runs.length < 100) break;
+    }
+  } catch (err) {
+    return healthReadFailed(err, 'Actions runs');
+  }
+  runs.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return runs.slice(0, max);
+}
+
+/** One check's time: completedAt, startedAt, or createdAt when it has neither. NaN when no stamp parses. */
+function checkTime(entry: Record<string, unknown>): number {
+  for (const key of ['completedAt', 'startedAt', 'createdAt']) {
+    const time = Date.parse(asText(entry[key]));
+    if (!Number.isNaN(time)) return time;
+  }
+  return NaN;
+}
+
+/**
+ * The latest run of each check on one pull request. A later green run clears an old red
+ * one. A check with no name stands alone. A dateless run never beats a dated one.
+ */
+function latestChecks(entries: unknown[]): Record<string, unknown>[] {
+  const byName = new Map<string, Record<string, unknown>>();
+  const nameless: Record<string, unknown>[] = [];
+  for (const entry of entries) {
+    if (!isObject(entry)) continue;
+    const name = asText(entry.name) || asText(entry.context);
+    if (!name) {
+      nameless.push(entry);
+      continue;
+    }
+    const seen = byName.get(name);
+    if (seen === undefined) {
+      byName.set(name, entry);
+      continue;
+    }
+    const seenTime = checkTime(seen);
+    const entryTime = checkTime(entry);
+    if (Number.isNaN(entryTime)) continue;
+    if (Number.isNaN(seenTime) || entryTime > seenTime) byName.set(name, entry);
+  }
+  return [...byName.values(), ...nameless];
+}
+
+/** A check's conclusion: a check run's conclusion, or a commit status's state. Lower case, or ''. */
+const checkConclusion = (entry: Record<string, unknown>): string => (asText(entry.conclusion) || asText(entry.state)).toLowerCase();
+
+/** True when a check is done. A commit status says PENDING until it is not. */
+const checkIsDone = (entry: Record<string, unknown>): boolean => asText(entry.status) === 'COMPLETED' || (asText(entry.state) !== '' && asText(entry.state) !== 'PENDING');
+
+/** The failed or cancelled checks of the open pull requests, or why gh can't read them. */
+export function readHealthPullChecks(gh: Gh, repo: string): PullCheckProblem[] | string {
+  const query = ['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', 'number,title,url,isDraft,statusCheckRollup'];
+  let rows: unknown;
+  try {
+    rows = JSON.parse(gh(query));
+  } catch (err) {
+    return healthReadFailed(err, 'open pull requests');
+  }
+  if (!Array.isArray(rows)) return 'gh gave no pull request list: run it again';
+  const problems: PullCheckProblem[] = [];
+  for (const row of rows) {
+    if (!isObject(row) || typeof row.number !== 'number' || !Number.isSafeInteger(row.number)) continue;
+    const rollup = Array.isArray(row.statusCheckRollup) ? row.statusCheckRollup : [];
+    for (const entry of latestChecks(rollup)) {
+      if (!checkIsDone(entry)) continue;
+      const conclusion = checkConclusion(entry);
+      if (PASSING_CONCLUSIONS.has(conclusion)) continue;
+      const check = asText(entry.name) || asText(entry.context) || 'check';
+      problems.push({
+        number: row.number,
+        title: asText(row.title),
+        url: asText(row.url),
+        isDraft: row.isDraft === true,
+        check,
+        conclusion: conclusion || 'no conclusion',
+      });
+    }
+  }
+  return problems;
+}
+
+/** The time between two stamps in milliseconds, or NaN when one does not parse. */
+function timeBetween(from: string, to: string): number {
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  return Number.isNaN(start) || Number.isNaN(end) ? NaN : end - start;
+}
+
+/** The middle of a list of numbers, rounded, or null when it is empty. */
+function medianNumber(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+}
+
+/** The workflows over the window, the ones with the most failed or cancelled runs first. */
+function summarizeWorkflows(runs: HealthRun[]): WorkflowHealth[] {
+  const groups = new Map<string, HealthRun[]>();
+  for (const run of runs) {
+    if (!run.workflow) continue;
+    const group = groups.get(run.workflow);
+    if (group) group.push(run);
+    else groups.set(run.workflow, [run]);
+  }
+  const health = [...groups].map(([workflow, rows]) => {
+    const completed = rows.filter((run) => run.status === COMPLETED_STATUS);
+    return {
+      workflow,
+      runs: rows.length,
+      failed: rows.filter((run) => FAILED_CONCLUSIONS.has(run.conclusion)).length,
+      cancelled: rows.filter((run) => run.conclusion === 'cancelled').length,
+      medianRunTime: medianNumber(completed.map((run) => timeBetween(run.startedAt, run.updatedAt)).filter(Number.isFinite)),
+      medianWaitTime: medianNumber(completed.map((run) => timeBetween(run.createdAt, run.startedAt)).filter(Number.isFinite)),
+    };
+  });
+  return health.sort((a, b) => b.failed + b.cancelled - (a.failed + a.cancelled) || b.runs - a.runs || a.workflow.localeCompare(b.workflow));
+}
+
+/** The workflow and branch pairs that both passed and failed in the window, the most failures first. */
+function findUnstable(runs: HealthRun[]): UnstableWorkflow[] {
+  const groups = new Map<string, UnstableWorkflow>();
+  for (const run of runs) {
+    if (run.status !== COMPLETED_STATUS || !run.branch) continue;
+    const passed = run.conclusion === 'success';
+    const failed = FAILED_CONCLUSIONS.has(run.conclusion);
+    if (!passed && !failed) continue;
+    const key = `${run.workflow}\n${run.branch}`;
+    const seen = groups.get(key);
+    if (seen) {
+      if (passed) seen.passes++;
+      else seen.failures++;
+    } else groups.set(key, { workflow: run.workflow, branch: run.branch, passes: passed ? 1 : 0, failures: failed ? 1 : 0 });
+  }
+  return [...groups.values()]
+    .filter((group) => group.passes > 0 && group.failures > 0)
+    .sort((a, b) => b.failures - a.failures || b.passes - a.passes)
+    .slice(0, 5);
+}
+
+/** What the runs and pull request checks add up to. */
+export function summarizeActionsHealth(runs: HealthRun[], pullProblems: PullCheckProblem[], defaultBranch = 'main'): ActionsHealth {
+  const completed = runs.filter((run) => run.status === COMPLETED_STATUS && Number.isFinite(timeBetween(run.startedAt, run.updatedAt)));
+  return {
+    defaultBranch,
+    runs,
+    workflows: summarizeWorkflows(runs),
+    mainFailures: runs.filter((run) => run.branch === defaultBranch && FAILED_CONCLUSIONS.has(run.conclusion)),
+    mainCancelled: runs.filter((run) => run.branch === defaultBranch && run.conclusion === 'cancelled'),
+    pullProblems,
+    slowest: [...completed].sort((a, b) => timeBetween(b.startedAt, b.updatedAt) - timeBetween(a.startedAt, a.updatedAt)).slice(0, 5),
+    unstable: findUnstable(runs),
+  };
+}
+
+/** A time in minutes, or seconds below one minute. */
+function minutesText(milliseconds: number | null): string {
+  if (milliseconds === null) return '—';
+  return milliseconds < 60000 ? `${Math.round(milliseconds / 1000)} s` : `${(milliseconds / 60000).toFixed(1)} min`;
+}
+
+/** An ISO stamp as `YYYY-MM-DD HH:MM UTC`. A stamp that does not parse comes through as it is. */
+function utcText(stamp: string): string {
+  const time = Date.parse(stamp);
+  return Number.isNaN(time) ? stamp : `${new Date(time).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+}
+
+/**
+ * A table cell: no pipe, one line. The text comes from GitHub, so the work stays linear:
+ * each line is trimmed and joined, and no pattern scans a whitespace run twice.
+ * A backslash is escaped first, or `a\|b` would close the cell.
+ */
+const cellText = (text: string): string =>
+  text
+    .replace(/[\\|]/g, '\\$&')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+
+/** The run as one line: workflow, event, branch, conclusion, time, link. */
+function runLine(run: HealthRun): string {
+  const where = run.branch ? ` on \`${run.branch}\`` : '';
+  const link = run.url ? ` — <${run.url}>` : '';
+  return `- \`${run.workflow}\` (${run.event})${where}: **${run.conclusion}** at ${utcText(run.updatedAt)}${link}`;
+}
+
+/** The Markdown body of the `CI health` issue. */
+export function renderActionsHealth(health: ActionsHealth, { repo, now }: { repo: string; now: Date }): string {
+  const { runs, mainFailures, mainCancelled, pullProblems } = health;
+  const main = health.defaultBranch;
+  const problems = mainFailures.length + mainCancelled.length + pullProblems.length;
+  const lines = [
+    '<!-- yokoten:ci-health -->',
+    '',
+    '# CI health',
+    '',
+    `_Updated ${utcText(now.toISOString())}. Reads the last ${runs.length} Actions runs of \`${repo}\` and the checks of its open pull requests. This issue is updated in place; pin it to keep it in view._`,
+    '',
+  ];
+  if (!runs.length) {
+    lines.push('No Actions runs in this window. Check that CI is on for this repo.');
+    return `${lines.join('\n')}\n`;
+  }
+  const oldest = runs.reduce((earliest, run) => (Date.parse(run.createdAt) < Date.parse(earliest.createdAt) ? run : earliest), runs[0]);
+  lines.push(`Window: ${utcText(oldest.createdAt)} to ${utcText(now.toISOString())}. Newest run first.`, '');
+  lines.push(
+    problems
+      ? `**${problems} problem${problems === 1 ? ' needs' : 's need'} a look:** ${mainFailures.length} failed on \`${main}\`, ${mainCancelled.length} cancelled on \`${main}\`, ${pullProblems.length} failed or cancelled on open pull requests.`
+      : `**No failed or cancelled run on \`${main}\`, and no failed or cancelled check on an open pull request.**`,
+    '',
+  );
+
+  lines.push('## Main', '');
+  if (!mainFailures.length && !mainCancelled.length) lines.push(`No failed or cancelled run on \`${main}\` in this window.`);
+  else for (const run of [...mainFailures, ...mainCancelled]) lines.push(runLine(run));
+  lines.push('');
+
+  lines.push('## Open pull requests', '');
+  if (!pullProblems.length) lines.push('Every check on every open pull request passed, or is still running.');
+  else {
+    lines.push('| Pull request | Check | Result |', '| --- | --- | --- |');
+    for (const problem of pullProblems) {
+      const pr = `[#${problem.number} ${cellText(problem.title)}](${problem.url || '#'})${problem.isDraft ? ' (draft)' : ''}`;
+      lines.push(`| ${pr} | ${cellText(problem.check)} | ${cellText(problem.conclusion)} |`);
+    }
+  }
+  lines.push('');
+
+  lines.push('## Workflows', '');
+  const shown = health.workflows.slice(0, 12);
+  if (!shown.length) lines.push('No workflow gave its name in the window.');
+  else {
+    lines.push('| Workflow | Runs | Failed | Cancelled | Median run | Median wait |', '| --- | ---: | ---: | ---: | ---: | ---: |');
+    for (const workflow of shown) {
+      lines.push(
+        `| ${cellText(workflow.workflow)} | ${workflow.runs} | ${workflow.failed} | ${workflow.cancelled} | ${minutesText(workflow.medianRunTime)} | ${minutesText(workflow.medianWaitTime)} |`,
+      );
+    }
+    if (health.workflows.length > shown.length) lines.push('', `${health.workflows.length - shown.length} more workflow(s) ran in this window.`);
+  }
+  lines.push('', '_Wait is the time a run spent queued before it started._', '');
+
+  lines.push('## Slowest runs', '');
+  if (!health.slowest.length) lines.push('No completed run gave a time.');
+  else for (const run of health.slowest) lines.push(`- ${minutesText(timeBetween(run.startedAt, run.updatedAt))}: \`${run.workflow}\`${run.branch ? ` on \`${run.branch}\`` : ''}${run.url ? ` — <${run.url}>` : ''}`);
+  lines.push('');
+
+  lines.push('## What passed and failed on one branch', '');
+  if (!health.unstable.length) lines.push('None: every workflow and branch either always passed or never did in this window.');
+  else for (const group of health.unstable) lines.push(`- \`${group.workflow}\` on \`${group.branch}\`: ${group.passes} passed, ${group.failures} failed`);
+  lines.push('');
+
+  lines.push('## What this counts', '');
+  lines.push(
+    '- A run that is still queued or running is not a problem yet; only its latest check counts.',
+    '- A cancelled run is listed apart from a failure. It still shows as a red x, so it is worth removing at its cause.',
+    '- A rerun that passes clears an old failure on the same check name.',
+    '- The window is the last 200 runs GitHub returned, newest first, not a fixed clock.',
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** One posted report: the issue, whether this run made it, and whether it could be pinned. */
+export interface PostedHealth {
+  number: number;
+  created: boolean;
+  pinned: boolean;
+}
+
+/** The number of the open `CI health` issue, 0 when there is none, or why gh can't read the list. */
+function findHealthIssue(gh: Gh, repo: string): number | string {
+  try {
+    const rows: unknown = JSON.parse(gh(['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--search', `"${CI_HEALTH_ISSUE}" in:title`, '--json', 'number,title']));
+    if (!Array.isArray(rows)) return 'gh gave no issue list: run it again';
+    for (const row of rows) if (isObject(row) && asText(row.title) === CI_HEALTH_ISSUE && typeof row.number === 'number') return row.number;
+    return 0;
+  } catch (err) {
+    return healthReadFailed(err, 'issue list');
+  }
+}
+
+/** Create or update the one report issue, through a temporary body file, then pin it. */
+export function postHealthIssue(gh: Gh, repo: string, body: string): PostedHealth | string {
+  const found = findHealthIssue(gh, repo);
+  if (typeof found === 'string') return found;
+  const dir = mkdtempSync(join(tmpdir(), 'yokoten-ci-health-'));
+  const file = join(dir, 'body.md');
+  try {
+    writeFileSync(file, body, { mode: 0o600 });
+    let number = found;
+    let created = false;
+    if (number) gh(['issue', 'edit', String(number), '--repo', repo, '--body-file', file]);
+    else {
+      const url = gh(['issue', 'create', '--repo', repo, '--title', CI_HEALTH_ISSUE, '--body-file', file]).trim();
+      const match = url.match(/\/(\d+)\/?$/);
+      if (!match) return `gh made an issue but gave no number (${url}): run the command again`;
+      number = Number(match[1]);
+      created = true;
+    }
+    let pinned = false;
+    try {
+      gh(['issue', 'pin', String(number), '--repo', repo]);
+      pinned = true;
+    } catch {
+      // An older gh has no `issue pin`, or the token may not pin: the report still stands.
+    }
+    return { number, created, pinned };
+  } catch (err) {
+    return healthReadFailed(err, 'report issue');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** `yokoten ci-health`: read Actions health, and post it to one pinned issue or print it. */
+export function runCiHealth(invocation: Invocation): number {
+  const options = parse('ci-health', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const root = requireRoot(invocation, invocation.cwd);
+  if (!root) return 1;
+  const { env } = invocation;
+  const stated = options.values['--repo'] || env.GITHUB_REPOSITORY || '';
+  const repo = stated || repoOf(readOriginUrl(root, env)) || '';
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+    print(invocation, ['yokoten ci-health: no GitHub repo. Pass --repo owner/name, set GITHUB_REPOSITORY, or add an origin remote.'], invocation.stderr);
+    return 1;
+  }
+  const gh = ghIn(root, env, CI_HEALTH_TIMEOUT);
+  const defaultBranch = readDefaultBranch(gh, repo);
+  const runs = readActionsRuns(gh, repo);
+  if (typeof runs === 'string') {
+    print(invocation, [`yokoten ci-health: ${runs}`], invocation.stderr);
+    return 1;
+  }
+  const pulls = readHealthPullChecks(gh, repo);
+  const health = summarizeActionsHealth(runs, typeof pulls === 'string' ? [] : pulls, defaultBranch);
+  let body = renderActionsHealth(health, { repo, now: new Date() });
+  if (typeof pulls === 'string') body += `\n> The open pull request checks were not read: ${pulls}\n`;
+  const problems = health.mainFailures.length + health.mainCancelled.length + health.pullProblems.length;
+  if (options.flags.has('--dry-run')) {
+    print(invocation, body.split('\n'));
+    return 0;
+  }
+  const posted = postHealthIssue(gh, repo, body);
+  if (typeof posted === 'string') {
+    print(invocation, [`yokoten ci-health: ${posted}`], invocation.stderr);
+    return 1;
+  }
+  print(invocation, [
+    `yokoten ci-health: ${posted.created ? 'opened' : 'updated'} issue #${posted.number} in ${repo}${posted.pinned ? '' : ' (not pinned: pin it once by hand)'}`,
+    `${problems} problem(s) in the last ${runs.length} runs.`,
+  ]);
+  return 0;
 }
 
 // ---- Borrowed code (record 0024) ----

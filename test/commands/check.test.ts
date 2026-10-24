@@ -21,7 +21,8 @@ import {
   makeSandbox,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
-import { borrowedIssue, cutPoint, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
+import { type ActionsHealth, cutPoint, readActionsRuns, readHealthPullChecks, renderActionsHealth, summarizeActionsHealth } from '../../src/commands/check.ts';
+import { borrowedIssue, hasOpenIssue, prSyncEnv, pullLine } from '../../src/commands/check.ts';
 import { type BorrowedHost, watchBorrowed } from '../../src/run/check.ts';
 import { wrapForRedact } from '../../src/rules/guards.ts';
 
@@ -55,6 +56,37 @@ test('check --pr: reads the CI event, lists the changed files from git, notes lo
   result = sandbox.run(['check', '--pr']);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /no pull request in this run/);
+});
+
+test('check --pr: a long sentence is noted only on a line the pull request adds (#647)', async () => {
+  const sandbox = makeSandbox();
+  const oldSentence = `${Array.from({ length: 30 }, (_, i) => `w${i}`).join(' ')}.\n`;
+  // A different long sentence, so git cannot match it to the old one and call it unchanged.
+  const newSentence = `${Array.from({ length: 30 }, (_, i) => `v${i}`).join(' ')}.\n`;
+  sandbox.write('README.md', `Short.\n${oldSentence}`);
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const head = (firstLine: string, extra = '') => {
+    sandbox.write('README.md', `${firstLine}\n${oldSentence}${extra}`);
+    sandbox.git('add', '.');
+    sandbox.git('commit', '-qm', 'head');
+    return sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  };
+  const event = (sha: string) => {
+    const file = join(sandbox.home, 'event.json');
+    const body = 'tier: B\nCloses #1\n## Why\nx\n## What changed\nx\n## How tested\nx\nMade with worker (opus)\n';
+    writeFileSync(file, JSON.stringify({ pull_request: { title: 'feat: a', body, labels: [{ name: 'feat' }, { name: 'tier B' }], milestone: { title: 'M0' }, base: { sha: base }, head: { sha } } }));
+    return { GITHUB_EVENT_PATH: file };
+  };
+  // The old long sentence is on a line this commit does not touch: no note.
+  let result = await sandbox.call(['check', '--pr'], { extra: event(head('Shorter.')) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /long sentence/);
+  // A second long sentence on the line this commit adds is noted, and the old one still is not.
+  result = await sandbox.call(['check', '--pr'], { extra: event(head('Shorter.', newSentence)) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /note: 1 long sentence\(s\)\n- README\.md:3: a sentence of 30 words/);
 });
 
 test('check --pr: a change file counts as the changelog entry, and its form is checked (#132)', async () => {
@@ -216,8 +248,7 @@ test('check --issue: an issue needs the type and tier labels its repo has (#544)
   const labelsFile = join(sandbox.home, 'labels.json');
   writeFileSync(
     join(bin, 'gh'),
-    // The file has no extension, so Node 26 runs it as an ES module: `require` is not there.
-    `#!/usr/bin/env node\nconst fs = process.getBuiltinModule("node:fs");\nif (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\nprocess.exit(1);\n`,
+    `#!/usr/bin/env node\n// A dynamic import works whether Node loads this file as CommonJS or as an ES module.\nimport('node:fs').then((fs) => {\n  if (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\n  process.exit(1);\n});\n`,
     { mode: 0o755 },
   );
   const extra = { PATH: `${bin}:${process.env.PATH}` };
@@ -881,6 +912,201 @@ test('marks: the count names both files when the setting adds one (#656)', async
   assert.match(counts.stdout, /^yokoten marks: 2 in ~\/\.config\/yokoten\/private-marks and the file YOKOTEN_PRIVATE_MARKS names \(the values are never shown\)$/m);
   assert.ok(!VALUES.test(counts.stdout + counts.stderr));
 });
+
+// ---- Actions health (#647) ----
+
+/**
+ * A gh first on PATH that answers only the listed calls, one line each, and fails the rest.
+ * The stub is fixed text: its answers and its log path arrive in the environment, as data (#368).
+ */
+function healthGh(sandbox: ReturnType<typeof makeSandbox>, answers: Record<string, string>): Record<string, string> {
+  const bin = join(sandbox.home, 'bin');
+  const answersFile = join(sandbox.home, 'gh-answers.json');
+  const log = join(sandbox.home, 'gh.log');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(answersFile, JSON.stringify(answers));
+  writeFileSync(
+    join(bin, 'gh'),
+    `#!/usr/bin/env node
+// A dynamic import works whether Node loads this file as CommonJS or as an ES module.
+import('node:fs').then(({ appendFileSync, readFileSync }) => {
+  const call = process.argv.slice(2).join(' ');
+  appendFileSync(process.env.YOKOTEN_HEALTH_GH_LOG, call + '\\n');
+  const answers = JSON.parse(readFileSync(process.env.YOKOTEN_HEALTH_GH_ANSWERS, 'utf8'));
+  const key = Object.keys(answers).find((one) => call === one || call.startsWith(one + ' '));
+  if (key === undefined) process.exit(1);
+  console.log(answers[key]);
+});
+`,
+    { mode: 0o755 },
+  );
+  return { PATH: `${bin}:${process.env.PATH}`, YOKOTEN_HEALTH_GH_ANSWERS: answersFile, YOKOTEN_HEALTH_GH_LOG: log };
+}
+
+const healthCalls = (sandbox: ReturnType<typeof makeSandbox>): string[] => {
+  const log = join(sandbox.home, 'gh.log');
+  return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+};
+
+const healthRun = (over: Record<string, unknown>) => ({
+  id: 1,
+  name: 'yokoten',
+  event: 'push',
+  head_branch: 'main',
+  status: 'completed',
+  conclusion: 'success',
+  created_at: '2026-10-22T10:00:00Z',
+  run_started_at: '2026-10-22T10:01:00Z',
+  updated_at: '2026-10-22T10:04:00Z',
+  html_url: 'https://example.com/run/1',
+  ...over,
+});
+
+// #647: a failed run on main, a cancelled one, a failed check on a draft pull request,
+// a slow workflow, a long queue wait, and one branch that both passed and failed.
+test('ci-health: reads runs and pull request checks, then says what is red', () => {
+  const gh = (args: string[]) => {
+    if (args[0] === 'repo') return 'main\n';
+    if (args[0] === 'api') {
+      return JSON.stringify({
+        workflow_runs: [
+          healthRun({ id: 1, conclusion: 'failure', updated_at: '2026-10-22T10:10:00Z' }),
+          healthRun({ id: 2, name: 'board', event: 'issues', conclusion: 'cancelled', created_at: '2026-10-22T10:05:00Z', run_started_at: '2026-10-22T10:06:00Z', updated_at: '2026-10-22T10:07:00Z' }),
+          healthRun({ id: 3, event: 'pull_request', head_branch: 'fix/x', created_at: '2026-10-22T10:11:00Z', run_started_at: '2026-10-22T10:11:30Z', updated_at: '2026-10-22T10:13:00Z' }),
+          healthRun({ id: 4, event: 'pull_request', head_branch: 'fix/x', conclusion: 'failure', created_at: '2026-10-22T10:14:00Z', run_started_at: '2026-10-22T10:14:10Z', updated_at: '2026-10-22T10:15:00Z' }),
+          healthRun({ id: 5, name: 'pr', event: 'pull_request', head_branch: 'fix/x', conclusion: 'failure', created_at: '2026-10-22T10:16:00Z', run_started_at: '2026-10-22T10:16:30Z', updated_at: '2026-10-22T10:17:00Z' }),
+        ],
+      });
+    }
+    return JSON.stringify([
+      {
+        number: 646,
+        title: 'drafts first',
+        url: 'https://example.com/pull/646',
+        isDraft: true,
+        statusCheckRollup: [
+          { name: 'yokoten', status: 'COMPLETED', conclusion: 'CANCELLED' },
+          { name: 'old run', status: 'COMPLETED', conclusion: 'FAILURE', completedAt: '2026-10-22T09:00:00Z' },
+          { name: 'old run', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: '2026-10-22T10:00:00Z' },
+        ],
+      },
+    ]);
+  };
+  const runs = readActionsRuns(gh, 'octo/demo');
+  assert.ok(Array.isArray(runs), JSON.stringify(runs));
+  assert.deepEqual(runs.map((run) => run.id), [5, 4, 3, 2, 1], 'newest first');
+  const pulls = readHealthPullChecks(gh, 'octo/demo');
+  assert.ok(Array.isArray(pulls), JSON.stringify(pulls));
+  assert.deepEqual(pulls, [{ number: 646, title: 'drafts first', url: 'https://example.com/pull/646', isDraft: true, check: 'yokoten', conclusion: 'cancelled' }], 'a later green run clears the old failure');
+
+  const health = summarizeActionsHealth(runs, pulls);
+  assert.equal(health.defaultBranch, 'main');
+  assert.equal(health.mainFailures.length, 1, 'the failed push to main');
+  assert.equal(health.mainCancelled.length, 1, 'the cancelled issue run stays apart from a failure');
+  assert.equal(health.slowest[0].id, 1, '10 minutes is the slowest run');
+  assert.deepEqual(health.unstable, [{ workflow: 'yokoten', branch: 'fix/x', passes: 1, failures: 1 }]);
+  const board = health.workflows.find((workflow) => workflow.workflow === 'board');
+  assert.deepEqual(board, { workflow: 'board', runs: 1, failed: 0, cancelled: 1, medianRunTime: 60000, medianWaitTime: 60000 });
+
+  const body = renderActionsHealth(health, { repo: 'octo/demo', now: new Date('2026-10-22T12:00:00Z') });
+  assert.match(body, /^<!-- yokoten:ci-health -->/);
+  assert.match(body, /3 problems need a look/);
+  assert.match(body, /\[#646 drafts first\]\(https:\/\/example\.com\/pull\/646\) \(draft\) \| yokoten \| cancelled/);
+  assert.match(body, /`board` \(issues\) on `main`: \*\*cancelled\*\*/);
+  assert.match(body, /Median wait/);
+  assert.match(body, /`yokoten` on `fix\/x`: 1 passed, 1 failed/);
+});
+
+test('ci-health --dry-run: prints the report and touches no issue', async () => {
+  const sandbox = makeSandbox();
+  const extra = healthGh(sandbox, {
+    'repo view octo/demo --json defaultBranchRef --jq .defaultBranchRef.name': 'main',
+    'api repos/octo/demo/actions/runs?per_page=100&page=1': JSON.stringify({ workflow_runs: [healthRun({ id: 1, conclusion: 'failure' })] }),
+    'pr list --repo octo/demo --state open --limit 100 --json number,title,url,isDraft,statusCheckRollup': JSON.stringify([]),
+  });
+  const result = await sandbox.call(['ci-health', '--dry-run'], { extra: { ...extra, GITHUB_REPOSITORY: 'octo/demo' } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /# CI/);
+  assert.match(result.stdout, /\*\*failure\*\*/);
+  assert.deepEqual(healthCalls(sandbox), [
+    'repo view octo/demo --json defaultBranchRef --jq .defaultBranchRef.name',
+    'api repos/octo/demo/actions/runs?per_page=100&page=1',
+    'pr list --repo octo/demo --state open --limit 100 --json number,title,url,isDraft,statusCheckRollup',
+  ], 'a dry run reads, and writes no issue');
+});
+
+test('ci-health: opens and pins the one report issue, then edits it in place', async () => {
+  const sandbox = makeSandbox();
+  const runs = JSON.stringify({ workflow_runs: [healthRun({ id: 1 })] });
+  const pulls = JSON.stringify([]);
+  const extra = healthGh(sandbox, {
+    'api repos/octo/demo/actions/runs?per_page=100&page=1': runs,
+    'pr list --repo octo/demo --state open --limit 100 --json number,title,url,isDraft,statusCheckRollup': pulls,
+    'issue list --repo octo/demo --state open --limit 100 --search "CI health" in:title --json number,title': JSON.stringify([]),
+    'issue create --repo octo/demo --title CI health --body-file': 'https://github.com/octo/demo/issues/12',
+    'issue pin 12 --repo octo/demo': '',
+  });
+  let result = await sandbox.call(['ci-health', '--repo', 'octo/demo'], { extra });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /opened issue #12 in octo\/demo/);
+  assert.match(result.stdout, /0 problem\(s\)/);
+  assert.ok(healthCalls(sandbox).some((call) => call.startsWith('issue create')), 'an issue was made');
+  assert.ok(healthCalls(sandbox).some((call) => call.startsWith('issue pin 12')), 'and pinned');
+
+  rmSync(join(sandbox.home, 'gh.log'), { force: true });
+  const edit = healthGh(sandbox, {
+    'api repos/octo/demo/actions/runs?per_page=100&page=1': runs,
+    'pr list --repo octo/demo --state open --limit 100 --json number,title,url,isDraft,statusCheckRollup': pulls,
+    'issue list --repo octo/demo --state open --limit 100 --search "CI health" in:title --json number,title': JSON.stringify([{ number: 12, title: 'CI health' }]),
+    'issue edit 12 --repo octo/demo --body-file': '',
+    'issue pin 12 --repo octo/demo': '',
+  });
+  result = await sandbox.call(['ci-health', '--repo', 'octo/demo'], { extra: edit });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /updated issue #12 in octo\/demo/);
+  assert.ok(!healthCalls(sandbox).some((call) => call.startsWith('issue create')), 'the second run edits, never makes a second issue');
+});
+
+// #647: a title from GitHub can hold a pipe and lines; the table stays one row per check.
+test('ci-health: a title with a pipe and lines becomes one table cell', () => {
+  const run = {
+    id: 1,
+    workflow: 'ci',
+    event: 'push',
+    branch: 'main',
+    status: 'completed',
+    conclusion: 'success',
+    createdAt: '2026-10-22T10:00:00Z',
+    startedAt: '2026-10-22T10:00:00Z',
+    updatedAt: '2026-10-22T10:01:00Z',
+    url: '',
+  };
+  const health = summarizeActionsHealth([run], [{ number: 7, title: 'a | b\nnext', url: '', isDraft: false, check: 'ci', conclusion: 'failure' }]);
+  const body = renderActionsHealth(health, { repo: 'octo/demo', now: new Date('2026-10-22T12:00:00Z') });
+  assert.match(body, /^\| \[#7 a \\\| b next\]\(#\) \| ci \| failure \|$/m);
+});
+
+// #647: a backslash is escaped before the pipe it could pair with, so the cell keeps it.
+test('ci-health: a backslash before a pipe stays inside the table cell', () => {
+  const run = {
+    id: 1,
+    workflow: 'ci',
+    event: 'push',
+    branch: 'main',
+    status: 'completed',
+    conclusion: 'success',
+    createdAt: '2026-10-22T10:00:00Z',
+    startedAt: '2026-10-22T10:00:00Z',
+    updatedAt: '2026-10-22T10:01:00Z',
+    url: '',
+  };
+  const health = summarizeActionsHealth([run], [{ number: 8, title: String.raw`a \| b`, url: '', isDraft: false, check: 'ci', conclusion: 'failure' }]);
+  const body = renderActionsHealth(health, { repo: 'octo/demo', now: new Date('2026-10-22T12:00:00Z') });
+  assert.equal(body.split('\n').find((line) => line.startsWith('| [#8 ')), String.raw`| [#8 a \\\| b](#) | ci | failure |`);
+});
+
+/** The exported shape, so a field rename is a type error in the tests too. */
+export type HealthShape = ActionsHealth;
 
 // #756: `yokoten provenance <ref>` reads a squashed commit's message and the host's
 // Approve, in plain text and with --json.
