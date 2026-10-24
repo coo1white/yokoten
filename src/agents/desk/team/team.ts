@@ -123,8 +123,8 @@ export const rosterOf = (team: string, name: string): string => join(team, 'agen
 /** The team folder for the project whose main checkout is `main`. */
 export const teamFolderFor = (main: string): string => join(dirname(main), `${basename(main)}.team`);
 
-/** The vendor of an agent: by its model's name first (DeepSeek runs through Codex), then by its runtime. */
-export function vendorOf(runtime: string, model: string): string {
+/** The vendor of an agent: by its model's name first (DeepSeek runs through Codex), then its provider, then its runtime. */
+export function vendorOf(runtime: string, model: string, provider = ''): string {
   const byModel: [RegExp, string][] = [
     [/^deepseek/i, 'DeepSeek'],
     [/^claude|^opus|^sonnet|^haiku/i, 'Anthropic'],
@@ -133,7 +133,7 @@ export function vendorOf(runtime: string, model: string): string {
     [/^gpt|^o\d|^codex/i, 'OpenAI'],
     [/^gemini/i, 'Google'],
   ];
-  for (const [pattern, vendor] of byModel) if (pattern.test(model)) return vendor;
+  for (const name of [model, provider]) for (const [pattern, vendor] of byModel) if (pattern.test(name)) return vendor;
   const byRuntime: Record<string, string> = { 'claude-code': 'Anthropic', codex: 'OpenAI', grok: 'xAI', muse: 'Meta', gemini: 'Google' };
   return Object.hasOwn(byRuntime, runtime) ? byRuntime[runtime] : 'unknown vendor';
 }

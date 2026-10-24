@@ -1,19 +1,13 @@
 // `yokoten hook`: the tool-call guard, and with --stop the end-of-turn check.
 
-import { existsSync, lstatSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import * as antigravity from '../agents/runtimes/small/antigravity.ts';
-import * as claudeCode from '../agents/runtimes/claude-code.ts';
-import * as codex from '../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../agents/runtimes/small/deepseek-harness.ts';
-import * as gemini from '../agents/runtimes/gemini.ts';
-import * as grok from '../agents/runtimes/grok.ts';
-import * as muse from '../agents/runtimes/muse.ts';
-import * as opencode from '../agents/runtimes/small/opencode.ts';
 import type { DropReason, SortedEnv } from '../agents/desk/agent-env.ts';
+import { ADAPTERS, adapterFor, askOf, contextOf, denialOf, releaseFixOf, rewriteOf, stopReaderOf } from '../agents/runtimes/runtime.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
-import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, releaseFix, removeWorkerPath, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
+import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, finding, formatFinding, notRepoFinding } from '../rules/message.ts';
+import { hideHome } from '../rules/privacy.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {
@@ -35,12 +29,15 @@ import {
   guardDeadline,
   judgeWithDeadline,
   loadHookConfig,
+  logStop,
   noteRefused,
   readDoneWhen,
   type Repo,
   runDoneWhen,
   startFields,
   STATUS_EVERY_MS,
+  stopsState,
+  type StopAnswer,
   type StopEvent,
   wasRefusedRecently,
   writeAgentChecks,
@@ -48,54 +45,10 @@ import {
 import { bullets, type Invocation, parse, print, printJson, readInput, rootOf, say, usage } from './shared.ts';
 
 // Each runtime sends its tool call in its own shape; its adapter turns it into an Action.
-export const READERS: Record<string, (input: unknown) => Action> = {
-  'claude-code': claudeCode.readToolCall,
-  codex: codex.readToolCall,
-  gemini: gemini.readToolCall,
-  antigravity: antigravity.readToolCall,
-  muse: muse.readToolCall,
-  'deepseek-harness': deepseekHarness.readToolCall,
-  grok: grok.readToolCall,
-  opencode: opencode.readToolCall,
-};
-
-// What a runtime reads on stdout when a call is refused, and the exit code it wants. The
-// others take the reason on stderr and exit 2, with nothing on stdout. Muse Code takes
-// either; stderr and exit 2 is the simpler one, and the model sees the same reason. Grok CLI
-// shows the model only stderr's first line, so it gets the whole reason on stdout too.
-const DENIALS: Record<string, (reason: string) => { stdout: string; exitCode: number }> = {
-  'claude-code': claudeCode.formatDenial,
-  antigravity: antigravity.formatDenial,
-  grok: grok.formatDenial,
-  // OpenCode's plugin throws the reason from stderr. Stdout stays empty.
-  opencode: opencode.formatDenial,
-};
-
-// How the owner approves a release in each runtime (#350): the command that starts it with
-// YOKOTEN_RELEASE_APPROVAL=1. Copilot CLI sends Claude Code's shape, so the claude-code
-// reader can't tell them apart. Muse Code passes a hook only a short list of variables;
-// it is not known to pass the approval, so the owner releases outside it.
-// Gemini CLI drops the variable only when its strict environment sanitization is on.
-const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
-const RELEASE_FIXES: Record<string, string> = {
-  'claude-code': releaseFix(`${approve('claude')} (or your agent's command)`),
-  codex: releaseFix(approve('codex')),
-  gemini: releaseFix(`${approve('gemini')} (if its strict environment sanitization is on, the variable is dropped: the owner releases outside Gemini CLI)`),
-  antigravity: releaseFix(approve('agy')),
-  muse: 'Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables. If the owner asked for this, stop and tell them to release outside Muse Code; do not look for another way',
-  'deepseek-harness': releaseFix(approve('dsh tui --patch .dsh/yokoten.patch.yml')),
-  grok: releaseFix(approve('grok')),
-  opencode: 'OpenCode is not known to pass YOKOTEN_RELEASE_APPROVAL to its plugin. If the owner asked for this, stop and tell them to release outside OpenCode; do not look for another way',
-};
-
-// The runtimes that can show a question before a call runs (#401). Claude Code's PreToolUse
-// hook has an `ask` decision; the others are not known to have one, so a heavy job there
-// gets the ask as a note to the agent.
-const ASKS: Record<string, (reason: string) => string> = { 'claude-code': claudeCode.formatAsk };
-
-// The runtimes whose allowed PreToolUse call can add text to the agent's context: unread
-// team messages arrive there (#674). The others get them at the end of a turn (Stop).
-const CONTEXTS: Record<string, (text: string) => string> = { 'claude-code': claudeCode.formatContext, grok: grok.formatContext };
+// The table below asks the adapters' contract (#395), never a runtime's name.
+export const READERS: Record<string, (input: unknown) => Action> = Object.fromEntries(
+  Object.values(ADAPTERS).map((adapter) => [adapter.name, adapter.readToolCall]),
+);
 
 /** The unread team messages for the agent in `folder`, wrapped as data; '' when none (#674). */
 const teamMessages = async (folder: string, env: Env, root: string | null): Promise<string> => {
@@ -103,15 +56,9 @@ const teamMessages = async (folder: string, env: Env, root: string | null): Prom
   return deliveryFor(folder, env, root);
 };
 
-// The runtimes whose hook can change a command before it runs (#390). In the others the
-// command runs as it is, unless yokoten.json "privacy.output" is "stop": then it is refused,
-// with the wrapped command as the fix. Codex, Gemini CLI, Antigravity CLI, Muse Code and
-// DeepSeek Harness are not known to take a changed command from a hook. Grok CLI takes
-// `updatedInput`, as Claude Code does.
-const REWRITES: Record<string, typeof claudeCode.formatRewrite> = {
-  'claude-code': claudeCode.formatRewrite,
-  grok: grok.formatRewrite,
-};
+// A runtime whose hook can change a command before it runs (#390) says so in its adapter.
+// The others run the command as it is, unless yokoten.json "privacy.output" is "stop":
+// then the core refuses it, with the wrapped command as the fix.
 
 /**
  * How the wrapped command runs `yokoten redact`: the node that runs this hook and this
@@ -138,15 +85,7 @@ export function redactCommand(node: string, cli: string, home: string | undefine
   return `${quoted(node)} ${quoted(cli)} redact`;
 }
 
-// Each runtime's event for the end of a turn: Claude Code's Stop and SubagentStop, Codex's,
-// Muse Code's and Grok CLI's Stop, Gemini CLI's AfterAgent (#211, #614).
-const STOP_READERS: Record<string, typeof claudeCode.readStop> = {
-  'claude-code': claudeCode.readStop,
-  codex: codex.readStop,
-  gemini: gemini.readStop,
-  muse: muse.readStop,
-  grok: grok.readStop,
-};
+// Each runtime's event for the end of a turn is in its adapter (#211, #614).
 
 /**
  * The yokoten repos (those with a `yokoten.json`) an edit's files are in, past the
@@ -193,7 +132,7 @@ function repoAt(invocation: Invocation, root: string): Repo {
  * A subagent is a worker only by its own type. On any error the turn ends too, with one
  * line on stderr: a broken check must not trap a session.
  */
-async function stopHook(invocation: Invocation, json: boolean, read: typeof claudeCode.readStop, agent: string): Promise<number> {
+async function stopHook(invocation: Invocation, json: boolean, read: (input: unknown) => StopEvent | null, agent: string): Promise<number> {
   const { env } = invocation;
   let event: StopEvent | null;
   try {
@@ -281,6 +220,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
     return 0;
   }
   if (!isWorker) {
+    logTurnStop(invocation, agent, false, findings, doneWhen, 'refused');
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
     print(invocation, [`yokoten: ${findings.length} problem(s) in the changed files. Fix them before you end the turn:`, ...bullets(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return withMessages(invocation, 2, await takeMessages());
@@ -289,11 +229,19 @@ async function stopHook(invocation: Invocation, json: boolean, read: typeof clau
   // No saved count: stop_hook_active, or a refusal of this worker in the last 5 minutes,
   // lets the stop through. A runtime that never sets stop_hook_active cannot trap it.
   if (bumped === null) {
-    if (event.active || wasRefusedRecently(folder, key)) return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
+    if (event.active || wasRefusedRecently(folder, key)) {
+      logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
+      return allowFailingStop(invocation, json, findings, notes, doneWhen, DONE_TRY_LIMIT, env, key, folder, agent);
+    }
     noteRefused(folder, key);
+    logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
     return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
   }
-  if (bumped > DONE_TRY_LIMIT) return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
+  if (bumped > DONE_TRY_LIMIT) {
+    logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
+    return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
+  }
+  logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
   return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
 }
 
@@ -400,6 +348,16 @@ function forgetDoneTries(env: Invocation['env'], key: string): void {
   }
 }
 
+/** The rule a failing stop names first, for the log: a finding's id, or the task's done-when check. */
+function stopRule(findings: Finding[], doneWhen: { ok: boolean } | undefined): string {
+  return findings[0]?.id ?? (doneWhen?.ok === false ? 'done-when' : 'unknown');
+}
+
+/** Write one end-of-turn stop to the log (#621). The command is not logged: a turn names files, not a command. */
+function logTurnStop(invocation: Invocation, agent: string, isWorker: boolean, findings: Finding[], doneWhen: { ok: boolean } | undefined, answer: StopAnswer): void {
+  logStop(invocation.env, { vendor: agent, role: isWorker ? 'worker' : 'lead', rule: stopRule(findings, doneWhen), answer });
+}
+
 /** The lines that send a worker back, and, on the last refusal, what to tell the lead. */
 function refuseFailingStop(
   invocation: Invocation,
@@ -476,8 +434,9 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const agent = options.values['--agent'] ?? 'claude-code';
   if (options.flags.has('--stop')) {
     if (options.flags.has('--commands-only')) return usage(invocation, "--stop and --commands-only can't be used together");
-    if (!Object.hasOwn(STOP_READERS, agent)) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(STOP_READERS).join(', ')}`);
-    return stopHook(invocation, json, STOP_READERS[agent], agent);
+    const readStop = stopReaderOf(agent);
+    if (!readStop) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.values(ADAPTERS).filter((adapter) => adapter.readStop !== undefined).map((adapter) => adapter.name).join(', ')}`);
+    return stopHook(invocation, json, readStop, agent);
   }
   const read = Object.hasOwn(READERS, agent) ? READERS[agent] : undefined;
   if (!read) return usage(invocation, `unknown --agent ${agent}; use one of: ${Object.keys(READERS).join(', ')}`);
@@ -503,15 +462,17 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
   return judged.then((judgedFinding) => {
     // The guard names no agent; the hook knows which one it runs for.
-    let found = judgedFinding?.id === 'release' && Object.hasOwn(RELEASE_FIXES, agent) ? { ...judgedFinding, fix: RELEASE_FIXES[agent] } : judgedFinding;
+    const fix = releaseFixOf(agent);
+    let found = judgedFinding?.id === 'release' && fix !== undefined ? { ...judgedFinding, fix } : judgedFinding;
     // A command that may print the owner's details runs through `yokoten redact` (#390).
     const printed = !found && action.command !== undefined ? printsAccount(action.command) : null;
     if (printed && action.command !== undefined) {
       const wrapped = wrapForRedact(hardenRead(action.command), redactCommand(process.execPath, invocation.script, env.HOME));
-      if (Object.hasOwn(REWRITES, agent)) {
+      const rewritten = rewriteOf(agent, input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`);
+      if (rewritten !== null) {
         if (json) printJson(invocation, { blocked: false, toolCall: true, rewritten: wrapped });
         // Written as it is: hiding the home folder would change the command.
-        else invocation.stdout.write(REWRITES[agent](input, wrapped, `yokoten: ${printed}, so its output goes through yokoten redact`));
+        else invocation.stdout.write(rewritten);
         noteToolCall(cwd, agent, action, role !== null || action.worker, null);
         return 0;
       }
@@ -520,27 +481,39 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     // A worker by the mark hears why, and where the lead works (#555).
     const markReason = found != null && role === 'mark' && WORKER_RULES.has(found.id) ? capital(markNote(folders, invocation.env)) : undefined;
     if (found != null && markReason !== undefined) found = { ...found, fix: `${found.fix}. ${markReason}` };
+    if (found) {
+      logStop(env, {
+        vendor: agent,
+        role: role !== null || action.worker ? 'worker' : 'lead',
+        rule: found.id,
+        // A guard that could not read the call has no rule answer; it still refuses the call.
+        answer: found.id === 'unreadable-command' ? 'no answer' : 'refused',
+        command: action.command ?? action.commands?.[0],
+      });
+    }
     // A heavy job on a nearly full host drive asks first, and never refuses (#401).
     const ask = !found && action.command !== undefined ? askForHeavyJob(action.command, env) : null;
     noteToolCall(cwd, agent, action, role !== null || action.worker, found);
     if (json) printJson(invocation, found ? { blocked: true, finding: found } : ask ? { blocked: false, toolCall: true, ask } : { blocked: false, toolCall: true });
     if (!found && ask) {
       const question = `yokoten: ${formatFinding(ask)}`;
-      if (!json && Object.hasOwn(ASKS, agent)) say(invocation, ASKS[agent](question), invocation.stdout);
+      const asked = askOf(agent);
+      if (!json && asked !== null) say(invocation, asked(question), invocation.stdout);
       else if (!json) say(invocation, `${question}\n`, invocation.stderr);
       return 0;
     }
-    if (!found && !json && Object.hasOwn(CONTEXTS, agent)) {
+    if (!found && !json && adapterFor(agent)?.formatContext !== undefined) {
       // The session's own folder, never the call's: a folder a desk agent wrote can't name the lead's team.
       // When the call names no other folder, the root above is this folder's: one git call, not two (#821).
       const sessionRoot = resolve(cwd, action.cwd ?? '.') === resolve(cwd) ? root : rootOf(cwd, env);
       return teamMessages(cwd, env, sessionRoot).then((messages) => {
-        if (messages) say(invocation, CONTEXTS[agent](messages), invocation.stdout);
+        const text = messages ? contextOf(agent, messages) : null;
+        if (text) say(invocation, text, invocation.stdout);
         return 0;
       });
     }
     if (!found) return 0;
-    // The runtimes read the reason from stderr when the hook exits 2; some read stdout (DENIALS).
+    // The runtimes read the reason from stderr when the hook exits 2; some read stdout.
     // Every refusal uses the same five lines, whatever the runtime and whether the repo ran init.
     const reason = formatRefusal(found, {
       lang: refusalLanguage(invocation.env),
@@ -550,7 +523,7 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
       workerNote: markReason,
     });
     say(invocation, `${reason}\n`, invocation.stderr);
-    const denial = Object.hasOwn(DENIALS, agent) ? DENIALS[agent](reason) : { stdout: '', exitCode: 2 };
+    const denial = denialOf(agent, reason);
     if (!json && denial.stdout) say(invocation, denial.stdout, invocation.stdout);
     return json ? 2 : denial.exitCode;
   });
@@ -559,6 +532,57 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
 // The rules that apply to a worker only: a refusal by one of them names the mark, when the role came from it.
 const WORKER_RULES = new Set(['lead-only', 'worker-push', 'worker-mark']);
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * `yokoten stops`: the stop log's state, and the way back. `off` stops the writing and
+ * deletes the log; `on` starts it again. The log stays in the user's config folder, never
+ * in the project (#621).
+ */
+export function runStops(invocation: Invocation): number {
+  const options = parse('stops', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const [action] = options.positional;
+  const { env } = invocation;
+  const file = stopsFile(env);
+  const offFile = stopsOffFile(env);
+  if (!file || !offFile) {
+    say(invocation, "yokoten stops: no home folder, so there is no stop log to manage. Set HOME to your home folder's full path.\n", invocation.stderr);
+    return 1;
+  }
+  if (action === undefined) {
+    const state = stopsState(env);
+    print(invocation, [
+      `the stop log is ${state.isOff ? 'off' : 'on'}: ${hideHome(state.file ?? file, env)}`,
+      state.isOff ? 'yokoten writes no line while it is off.' : `${state.count} stop(s), ${state.bytes} byte(s)`,
+      'It stays on this computer. Nothing is sent anywhere.',
+      '`yokoten stops off` stops the writing and deletes the log.',
+    ]);
+    return 0;
+  }
+  if (action === 'off') {
+    try {
+      mkdirSync(dirname(offFile), { recursive: true });
+      writeFileSync(offFile, 'off\n');
+      rmSync(file, { force: true });
+    } catch (err) {
+      say(invocation, `yokoten stops: the log cannot be turned off: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+      return 1;
+    }
+    print(invocation, ['the stop log is off, and its file is deleted. `yokoten stops on` starts it again.']);
+    return 0;
+  }
+  if (action === 'on') {
+    try {
+      rmSync(offFile, { force: true });
+    } catch (err) {
+      say(invocation, `yokoten stops: the log cannot be turned on: ${((err as Error).message ?? String(err)).split('\n')[0]}\n`, invocation.stderr);
+      return 1;
+    }
+    print(invocation, [`the stop log is on: ${hideHome(file, env)}`]);
+    return 0;
+  }
+  return usage(invocation, `unknown action "${action}"; use off or on`);
+}
 
 /**
  * `worker mark <dir>`: mark the worktree at <dir> as a worker's (#555). The guard then

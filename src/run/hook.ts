@@ -6,13 +6,14 @@
 
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import module from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '../rules/config.ts';
-import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real } from '../rules/guards.ts';
+import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
 import { type Finding, finding, place } from '../rules/message.ts';
+import { loadMarks, makeRedactor } from '../rules/privacy.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
 
 /** The start of a docs link, so a refusal shows a short path instead of the whole URL. */
@@ -349,6 +350,179 @@ export function formatRefusal(finding: Finding, context: RefusalContext = {}): s
     `${labels.run}${plain(ways.run)}`,
     `(rule ${finding.id}${docs === undefined ? '' : ` \u00b7 more: ${docs}`})`,
   ].join('\n');
+}
+
+// ---- The stop log (#621) ----
+//
+// One JSON line per stop, in yokoten's config folder (~/.config/yokoten/stops.jsonl).
+// The log stays on this computer: nothing in yokoten sends it anywhere. `yokoten stops
+// off` stops the writing and deletes it. The command is written after the privacy filter
+// has masked it, and only its first line: a heredoc body is file content, never a command
+// to keep. An edit writes no path and no file text.
+
+/** What the stop check or the tool-call guard answered. */
+export type StopAnswer = 'refused' | 'allowed once' | 'no answer';
+
+/** The most the stop log may hold, in bytes. Oldest lines go first (#621). */
+export const STOPS_MAX_BYTES = 5 * 1024 * 1024;
+
+/** The longest vendor, rule or answer text kept in one line. */
+const STOP_TEXT_LIMIT = 200;
+/** The longest command kept in one line, after masking. */
+const STOP_COMMAND_LIMIT = 2000;
+
+/** One line of the stop log. */
+export interface StopLine {
+  /** When the stop happened, in UTC. */
+  time: string;
+  /** The runtime that sent the call, such as `claude-code` or `codex`. */
+  vendor: string;
+  role: 'lead' | 'worker';
+  /** The finding's id, or `done-when` for a failing task check with no finding. */
+  rule: string;
+  answer: StopAnswer;
+  /** The command's first line, masked. Left out for an edit and for a turn stop. */
+  command?: string;
+}
+
+/** What the guard or the stop check tells the log about one stop. */
+export interface StopToLog {
+  vendor: string;
+  role: 'lead' | 'worker';
+  rule: string;
+  answer: StopAnswer;
+  command?: string;
+}
+
+/** Whether the owner turned the stop log off (#621). */
+export function isStopsOff(env: Env): boolean {
+  const file = stopsOffFile(env);
+  return file !== null && existsSync(file);
+}
+
+/** One line of text, with no line break, cut to `limit`. */
+const oneLineText = (text: string, limit: number): string => text.replace(/\s+/g, ' ').trim().slice(0, limit);
+
+/** A command's first line with the owner's details masked; at most STOP_COMMAND_LIMIT characters. */
+function maskedCommand(command: string, env: Env): string {
+  const first = command.split(/\r?\n/, 1)[0].trim();
+  let masked: string;
+  try {
+    masked = makeRedactor({ marks: loadMarks(env) }, env)(first);
+  } catch {
+    // An unreadable marks file must not stop the log; the secret patterns still run.
+    masked = makeSecretHider()(first);
+    for (const value of findEnvironmentValues(env)) masked = masked.replaceAll(value, SECRET);
+  }
+  return masked.length > STOP_COMMAND_LIMIT ? `${masked.slice(0, STOP_COMMAND_LIMIT)}…` : masked;
+}
+
+/**
+ * Write one stop to the log, unless the owner turned it off. A log that cannot be written
+ * never stops the agent or the guard.
+ */
+export function logStop(env: Env, stop: StopToLog): void {
+  try {
+    if (isStopsOff(env)) return;
+    const file = stopsFile(env);
+    if (!file) return;
+    const command = stop.command === undefined ? undefined : maskedCommand(stop.command, env);
+    const line: StopLine = {
+      time: new Date().toISOString(),
+      vendor: oneLineText(stop.vendor, STOP_TEXT_LIMIT) || 'unknown',
+      role: stop.role,
+      rule: oneLineText(stop.rule, STOP_TEXT_LIMIT) || 'unknown',
+      answer: stop.answer,
+      ...(command ? { command } : {}),
+    };
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, `${JSON.stringify(line)}\n`);
+    trimStopsLog(file);
+  } catch {
+    // Logging is a help, never a lock: a full disk or a read-only home must not stop work.
+  }
+}
+
+/**
+ * Drop the oldest lines until the file fits `maxBytes` (#621). A malformed line counts as
+ * a line and goes first with the other old ones. The test passes a small cap.
+ */
+export function trimStopsLog(file: string, maxBytes: number = STOPS_MAX_BYTES): void {
+  try {
+    if (statSync(file).size <= maxBytes) return;
+  } catch {
+    return;
+  }
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return;
+  }
+  const lines = text.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  let size = Buffer.byteLength(text);
+  let first = 0;
+  while (first < lines.length - 1 && size > maxBytes) {
+    size -= Buffer.byteLength(lines[first]) + 1;
+    first += 1;
+  }
+  try {
+    writeFileSync(file, lines.length ? `${lines.slice(first).join('\n')}\n` : '');
+  } catch {
+    // The next stop tries again.
+  }
+}
+
+/** Whether a value read from the log is one line of it. */
+function isStopLine(value: unknown): value is StopLine {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const fields = value as Record<string, unknown>;
+  return (
+    typeof fields.time === 'string' &&
+    typeof fields.vendor === 'string' &&
+    (fields.role === 'lead' || fields.role === 'worker') &&
+    typeof fields.rule === 'string' &&
+    (fields.answer === 'refused' || fields.answer === 'allowed once' || fields.answer === 'no answer') &&
+    (fields.command === undefined || typeof fields.command === 'string')
+  );
+}
+
+/** Every good line of the stop log, oldest first. The board's table and `yokoten stops` read it (#621). */
+export function readStops(env: Env): StopLine[] {
+  const file = stopsFile(env);
+  if (!file) return [];
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  const lines: StopLine[] = [];
+  for (const raw of text.split('\n')) {
+    if (!raw.trim()) continue;
+    try {
+      const value: unknown = JSON.parse(raw);
+      if (isStopLine(value)) lines.push(value);
+    } catch {
+      // A line cut short by a crash is skipped; the rest still counts.
+    }
+  }
+  return lines;
+}
+
+/** Whether the log is off, where it is, and how much it holds: for `yokoten stops`. */
+export function stopsState(env: Env): { file: string | null; isOff: boolean; count: number; bytes: number } {
+  const file = stopsFile(env);
+  let bytes = 0;
+  if (file) {
+    try {
+      bytes = statSync(file).size;
+    } catch {
+      bytes = 0;
+    }
+  }
+  return { file, isOff: isStopsOff(env), count: readStops(env).length, bytes };
 }
 
 /** What an agent is about to do, in no runtime's terms. */
