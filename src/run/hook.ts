@@ -582,23 +582,371 @@ export function doneWhenShell(): string {
   return process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
 }
 
-/** Arguments for `taskkill` that stop `pid` and the programs it started, while that shell is still alive. */
+/** Arguments for `taskkill` that stop `pid` and the programs it started, while that process is still alive. */
 export function windowsTreeKillArgs(pid: number): string[] {
   return ['/F', '/T', '/PID', String(pid)];
 }
 
 /**
- * Stop `pid` and the programs it started: the process group on POSIX, the tree on Windows.
- * On POSIX the group remains after the shell exits, so a kill then still stops what it
- * left behind (#641). On Windows, `taskkill /T` finds the tree only while the shell is
- * still running. `spawnSync`'s timeout kills `cmd.exe` first, and the tree would stay (#614).
+ * The done-when command, as `cmd.exe` runs it after `/d /s /c`, passed to the Windows job
+ * host in the environment and removed before `cmd.exe` starts, so the command does not see
+ * its own text there (#735).
+ */
+const DONE_COMMAND_ENV = 'YOKOTEN_DONE_COMMAND';
+
+/**
+ * The command text that follows `/d /s /c`. `/s` makes `cmd.exe` drop one pair of outer
+ * quotes, so a command that starts with a quote gets a pair of ours; any other command
+ * keeps its own text, and its quotes are never read as ours (#735).
+ */
+export function windowsCommandTail(command: string): string {
+  return command.trimStart().startsWith('"') ? `"${command}"` : command;
+}
+
+/**
+ * PowerShell that puts `cmd.exe` in a job and closes the job when `cmd.exe` exits.
+ * `taskkill /T` finds a tree only while its root is still running, and the root is already
+ * gone by the time a passing check returns (#735). The job holds the tree. No native module:
+ * Windows PowerShell compiles this once per check. If PowerShell is missing, blocked, or
+ * cannot start the job, the check runs `cmd.exe` the old way and says on stderr when the job
+ * was the reason. A program it left behind can then keep running.
+ */
+const WINDOWS_JOB_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$WarningPreference = 'SilentlyContinue'
+$command = [string]$env:${DONE_COMMAND_ENV}
+Remove-Item Env:\\${DONE_COMMAND_ENV} -ErrorAction SilentlyContinue
+$comspec = [string]$env:ComSpec
+if (-not $comspec) { $comspec = 'cmd.exe' }
+$csharp = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public class YokotenJob {
+  const uint CREATE_SUSPENDED = 4;
+  const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+  const int JobObjectExtendedLimitInformation = 9;
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool SetInformationJobObject(IntPtr job, int kind, IntPtr info, uint length);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool TerminateJobObject(IntPtr job, uint code);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CreateProcess(string app, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern uint ResumeThread(IntPtr thread);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool TerminateProcess(IntPtr process, uint code);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool CloseHandle(IntPtr handle);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern IntPtr GetStdHandle(int kind);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+    public long PerProcessUserTimeLimit;
+    public long PerJobUserTimeLimit;
+    public uint LimitFlags;
+    public UIntPtr MinimumWorkingSetSize;
+    public UIntPtr MaximumWorkingSetSize;
+    public uint ActiveProcessLimit;
+    public UIntPtr Affinity;
+    public uint PriorityClass;
+    public uint SchedulingClass;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct IO_COUNTERS {
+    public ulong ReadOperationCount;
+    public ulong WriteOperationCount;
+    public ulong OtherOperationCount;
+    public ulong ReadTransferCount;
+    public ulong WriteTransferCount;
+    public ulong OtherTransferCount;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+    public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+    public IO_COUNTERS IoInfo;
+    public UIntPtr ProcessMemoryLimit;
+    public UIntPtr JobMemoryLimit;
+    public UIntPtr PeakProcessMemoryUsed;
+    public UIntPtr PeakJobMemoryUsed;
+  }
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct STARTUPINFO {
+    public int cb;
+    public IntPtr reserved;
+    public IntPtr desktop;
+    public IntPtr title;
+    public int x;
+    public int y;
+    public int xSize;
+    public int ySize;
+    public int xCountChars;
+    public int yCountChars;
+    public int fillAttribute;
+    public int flags;
+    public short showWindow;
+    public short reserved2Length;
+    public IntPtr reserved2;
+    public IntPtr stdInput;
+    public IntPtr stdOutput;
+    public IntPtr stdError;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct PROCESS_INFORMATION {
+    public IntPtr process;
+    public IntPtr thread;
+    public int processId;
+    public int threadId;
+  }
+
+  static void MakeInheritable(IntPtr handle) {
+    if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return;
+    SetHandleInformation(handle, 1, 1);
+  }
+
+  static bool TryKillOnClose(IntPtr job) {
+    JOBOBJECT_BASIC_LIMIT_INFORMATION basic = new JOBOBJECT_BASIC_LIMIT_INFORMATION();
+    basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+    info.BasicLimitInformation = basic;
+    int length = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+    IntPtr ptr = Marshal.AllocHGlobal(length);
+    try {
+      Marshal.StructureToPtr(info, ptr, false);
+      return SetInformationJobObject(job, JobObjectExtendedLimitInformation, ptr, (uint)length);
+    } finally {
+      Marshal.FreeHGlobal(ptr);
+    }
+  }
+
+  // Runs the command line in tail in a job, and stops the whole job once cmd.exe exits.
+  // A failed job is not guessed at: the caller runs the check without one and says so (#735).
+  public static int Run(string comspec, string tail) {
+    IntPtr job = CreateJobObject(IntPtr.Zero, null);
+    if (job == IntPtr.Zero) throw new InvalidOperationException("job");
+    bool ready;
+    try { ready = TryKillOnClose(job); }
+    catch { ready = false; }
+    if (!ready) {
+      CloseHandle(job);
+      throw new InvalidOperationException("job");
+    }
+    STARTUPINFO startup = new STARTUPINFO();
+    startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+    startup.flags = 0x101;
+    startup.showWindow = 0;
+    startup.stdInput = GetStdHandle(-10);
+    startup.stdOutput = GetStdHandle(-11);
+    startup.stdError = GetStdHandle(-12);
+    MakeInheritable(startup.stdInput);
+    MakeInheritable(startup.stdOutput);
+    MakeInheritable(startup.stdError);
+    int capacity = (tail == null ? 0 : tail.Length) + (comspec == null ? 0 : comspec.Length) + 32;
+    StringBuilder line = new StringBuilder(capacity);
+    line.Append('"').Append(comspec).Append("\\" /d /s /c ").Append(tail);
+    PROCESS_INFORMATION info;
+    bool created = CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED, IntPtr.Zero, null, ref startup, out info);
+    if (!created) {
+      // A bad standard handle fails the start. Try again with the parent's own handles.
+      startup.flags = 1;
+      startup.stdInput = IntPtr.Zero;
+      startup.stdOutput = IntPtr.Zero;
+      startup.stdError = IntPtr.Zero;
+      created = CreateProcess(null, line, IntPtr.Zero, IntPtr.Zero, true, CREATE_SUSPENDED, IntPtr.Zero, null, ref startup, out info);
+    }
+    if (!created) {
+      CloseHandle(job);
+      throw new InvalidOperationException("create");
+    }
+    if (!AssignProcessToJobObject(job, info.process)) {
+      // A parent job that takes no nested job cannot hold this tree. Stop the suspended
+      // start, and let the caller run the check without a job instead of claiming one.
+      TerminateProcess(info.process, 1);
+      CloseHandle(info.thread);
+      CloseHandle(info.process);
+      CloseHandle(job);
+      throw new InvalidOperationException("job");
+    }
+    try {
+      if (ResumeThread(info.thread) == uint.MaxValue) throw new InvalidOperationException("resume");
+      WaitForSingleObject(info.process, uint.MaxValue);
+      uint code;
+      if (!GetExitCodeProcess(info.process, out code)) code = 1;
+      TerminateJobObject(job, 1);
+      return unchecked((int)code);
+    } catch {
+      // The start never ran the command, so the caller can still run it another way.
+      TerminateProcess(info.process, 1);
+      throw;
+    } finally {
+      CloseHandle(info.thread);
+      CloseHandle(info.process);
+      CloseHandle(job);
+    }
+  }
+}
+'@
+try {
+  Add-Type -TypeDefinition $csharp -Language CSharp
+  $codeExit = [YokotenJob]::Run($comspec, $command)
+  exit $codeExit
+} catch {
+  if ($_.Exception.InnerException -and $_.Exception.InnerException.Message -eq 'job') {
+    [Console]::Error.WriteLine('yokoten: the check could not be held in a job, so a program it leaves running may keep running')
+  }
+  $start = New-Object System.Diagnostics.ProcessStartInfo
+  $start.FileName = $comspec
+  $start.Arguments = '/d /s /c ' + $command
+  $start.UseShellExecute = $false
+  $run = [System.Diagnostics.Process]::Start($start)
+  $run.WaitForExit()
+  exit $run.ExitCode
+}
+`;
+
+/** Arguments that run the job host: Windows PowerShell, with the script encoded so quotes stay intact. */
+export function windowsJobArgs(): string[] {
+  const encoded = Buffer.from(WINDOWS_JOB_SCRIPT, 'utf16le').toString('base64');
+  return ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded];
+}
+
+/**
+ * The Windows PowerShell program under `systemRoot`, or null when that file is not there.
+ * A missing file must not become a failed check: the caller runs `cmd.exe` instead (#735).
+ */
+export function windowsPowerShellPath(systemRoot: string | undefined): string | null {
+  if (!systemRoot) return null;
+  const path = join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return existsSync(path) ? path : null;
+}
+
+/** `powershell.exe` when this is Windows and that file is there. Null means the caller runs `cmd.exe`. */
+function windowsPowerShell(env: Env): string | null {
+  if (process.platform !== 'win32') return null;
+  return windowsPowerShellPath(env.SystemRoot);
+}
+
+/** True when spawning PowerShell failed because the program is missing or blocked (#735). */
+export function powerShellBlocked(code: string | undefined): boolean {
+  return code === 'ENOENT' || code === 'EACCES';
+}
+
+/** The session id from one `/proc` stat line, or null when the line is not a stat. */
+export function sessionFromStat(text: string): number | null {
+  const end = text.lastIndexOf(')');
+  if (end < 0 || end + 2 >= text.length) return null;
+  const session = Number(text.slice(end + 2).split(' ')[3]);
+  return Number.isInteger(session) && session > 0 ? session : null;
+}
+
+/** Pids in `text` from `ps -o pid=,sess=` whose session is `session`. */
+export function pidsFromSessionTable(text: string, session: number): number[] {
+  const found: number[] = [];
+  for (const line of text.split('\n')) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 2) continue;
+    const pid = Number(parts[0]);
+    const sid = Number(parts[1]);
+    if (Number.isInteger(pid) && pid > 0 && sid === session) found.push(pid);
+  }
+  return found;
+}
+
+function ownSessionId(): number | null {
+  try {
+    return sessionFromStat(readFileSync('/proc/self/stat', 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function pidsFromProc(session: number): number[] {
+  const found: number[] = [];
+  let names: string[];
+  try {
+    names = readdirSync('/proc');
+  } catch {
+    return found;
+  }
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      if (sessionFromStat(readFileSync(join('/proc', name, 'stat'), 'utf8')) === session) found.push(Number(name));
+    } catch {
+      // The process exited while it was listed.
+    }
+  }
+  return found;
+}
+
+function pidsWithSession(session: number): number[] {
+  if (existsSync('/proc/self/stat')) return pidsFromProc(session);
+  const listed = spawnSync('ps', ['-ax', '-o', 'pid=,sess='], { encoding: 'utf8', windowsHide: true });
+  return listed.status === 0 && typeof listed.stdout === 'string' ? pidsFromSessionTable(listed.stdout, session) : [];
+}
+
+/**
+ * Stop processes whose session is `session`. A new process group stays in the session, so
+ * killing the group alone misses it. `setsid` starts a new session, so it is not here (#735).
+ * The id is the shell's pid, because the shell was started as a session leader. If that
+ * start failed, the id is not a session and this stops nothing.
+ */
+function killSessionMembers(session: number): void {
+  if (session <= 1) return;
+  const own = ownSessionId();
+  if (own !== null && session === own) return;
+  for (const member of pidsWithSession(session)) {
+    if (member <= 1 || member === process.pid || member === process.ppid) continue;
+    try {
+      process.kill(member, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+/**
+ * Stop `pid` and the programs it started: the process group and the session on POSIX,
+ * the tree on Windows. On POSIX the group remains after the shell exits, so a kill then
+ * still stops what it left behind (#641). A new process group in that session is stopped
+ * too. A new session, such as `setsid`, is not (#735). On Windows the job host closes the
+ * tree; `taskkill /T` also runs while the host is alive, which is the timeout path (#614).
  */
 function killCommandTree(pid: number): void {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', windowsTreeKillArgs(pid), { stdio: 'ignore', windowsHide: true });
+    return;
+  }
   try {
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', windowsTreeKillArgs(pid), { stdio: 'ignore', windowsHide: true });
-      return;
-    }
     process.kill(-pid, 'SIGKILL');
   } catch {
     try {
@@ -607,6 +955,40 @@ function killCommandTree(pid: number): void {
       // The process is already gone.
     }
   }
+  killSessionMembers(pid);
+}
+
+/**
+ * Start the done-when command. `powerShell` puts `cmd.exe` in a job. Null starts the
+ * platform shell: a new session on POSIX, `cmd.exe` on Windows. Both Windows paths build
+ * the command line with `windowsCommandTail`, so a quote is the command's own (#735).
+ */
+function spawnDoneWhen(command: string, cwd: string, env: Record<string, string>, powerShell: string | null): ChildProcess {
+  if (powerShell) {
+    return spawn(powerShell, windowsJobArgs(), {
+      cwd,
+      env: { ...env, [DONE_COMMAND_ENV]: windowsCommandTail(command) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+  if (process.platform === 'win32') {
+    return spawn(doneWhenShell(), ['/d', '/s', '/c', windowsCommandTail(command)], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+    });
+  }
+  return spawn(command, {
+    shell: doneWhenShell(),
+    cwd,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+    windowsHide: true,
+  });
 }
 
 /** The path of the refusal marker for `key`, in the checkout's git folder, or null when there is none. */
@@ -1050,12 +1432,14 @@ export function shortenOutput(text: string, env: Env = {}): string {
  * short, with secrets hidden, for the worker to read.
  *
  * The command is started with `spawn`, and a timer in this process stops it. That timer
- * runs while the shell is still alive. On Windows it calls `taskkill /F /T /PID` then.
- * `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree would stay (#614).
- * When the shell exits, programs still in its group are stopped the same way. The check
- * ends on the shell's own result. A short wait collects the last output, then the pipes
- * are dropped. A program that left the group is not stopped, and it cannot hold the
- * check open. The result is given once.
+ * runs while the shell is still alive. On Windows it calls `taskkill /F /T /PID` on the
+ * job host then. `spawnSync`'s timeout would have killed `cmd.exe` first, and the tree
+ * would stay (#614). When the shell exits, programs still in its group or its session are
+ * stopped the same way. On Windows the job host has already closed the job, which stops
+ * programs `cmd.exe` left behind (#735). A program that has already started its own session
+ * is not stopped, and it cannot hold the check open. The check ends on the shell's own result.
+ * `powerShellHost`, when set, is tried first. A missing or blocked program runs the platform shell.
+ * A short wait collects the last output, then the pipes are dropped. The result is given once.
  */
 export function runDoneWhen(
   command: string,
@@ -1063,9 +1447,12 @@ export function runDoneWhen(
   env: Env,
   timeoutMs: number = DONE_WHEN_MS,
   killTree: (pid: number) => void = killCommandTree,
+  powerShellHost?: string,
 ): Promise<{ ok: boolean; output: string }> {
   const childEnv: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) if (value !== undefined) childEnv[name] = value;
+  // The hook passes no host. A test points it at a program that is not there (#735).
+  const host = powerShellHost ?? windowsPowerShell(env);
   return new Promise((resolvePromise) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1079,16 +1466,9 @@ export function runDoneWhen(
     };
     let child: ChildProcess;
     try {
-      // A new process group on POSIX, so a timeout or a normal exit can stop what the shell started.
-      // Windows stays in this process's tree: `taskkill /T` follows the parent, not a group.
-      child = spawn(command, {
-        shell: doneWhenShell(),
-        cwd,
-        env: childEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-      });
+      // A new session on POSIX, so a timeout or a normal exit can stop what the shell started.
+      // On Windows the host puts cmd.exe in a job, so the tree still exists after cmd.exe exits.
+      child = spawnDoneWhen(command, cwd, childEnv, host);
     } catch (error) {
       finish({ ok: false, output: shortenOutput((error as Error).message.split('\n')[0], env) });
       return;
@@ -1105,52 +1485,76 @@ export function runDoneWhen(
       if (code === 0) return { ok: true, output: body };
       return { ok: false, output: body || `the check exited ${code}` };
     };
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout = take(stdout, chunk);
-    });
-    child.stderr?.on('data', (chunk: string) => {
-      stderr = take(stderr, chunk);
-    });
     // Drop our end of the pipes. A grandchild that left the group can hold the other end.
-    const dropPipes = () => {
-      child.stdout?.destroy();
-      child.stderr?.destroy();
+    const dropPipes = (proc: ChildProcess) => {
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
     };
     timer = setTimeout(() => {
       timedOut = true;
       try {
         if (child.pid) killTree(child.pid);
-        dropPipes();
+        dropPipes(child);
       } catch {
         // The tree kill can throw. The check still ends below.
       } finally {
         finish(resultFor(null, null));
       }
     }, timeoutMs);
-    child.once('error', (error) => finish({ ok: false, output: shortenOutput(error.message.split('\n')[0], env) }));
-    child.once('exit', (code, signal) => {
-      if (settled || timedOut) return;
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-      // The shell has exited. Stop programs still in its group. A program that
-      // called setsid is in another group, so this does not reach it (#641).
-      try {
-        if (child.pid) killTree(child.pid);
-      } catch {
-        // The tree kill can throw. The check still ends on the shell's status.
-      }
-      if (settled) return;
-      grace = setTimeout(() => {
-        try {
-          dropPipes();
-        } finally {
-          finish(resultFor(code, signal));
+    // `generation` drops events from a PowerShell that failed to start, after the shell takes over.
+    let generation = 0;
+    const watchChild = (proc: ChildProcess, fromPowerShell: boolean) => {
+      const generationHere = ++generation;
+      const isCurrent = () => generationHere === generation && !settled;
+      proc.stdout?.setEncoding('utf8');
+      proc.stderr?.setEncoding('utf8');
+      proc.stdout?.on('data', (chunk: string) => {
+        if (isCurrent()) stdout = take(stdout, chunk);
+      });
+      proc.stderr?.on('data', (chunk: string) => {
+        if (isCurrent()) stderr = take(stderr, chunk);
+      });
+      proc.once('error', (error) => {
+        if (!isCurrent()) return;
+        const code = (error as NodeJS.ErrnoException).code;
+        // The file was there at the stat, then missing or blocked. Run cmd.exe the old way (#735).
+        if (fromPowerShell && powerShellBlocked(code)) {
+          try {
+            child = spawnDoneWhen(command, cwd, childEnv, null);
+          } catch (spawnError) {
+            finish({ ok: false, output: shortenOutput((spawnError as Error).message.split('\n')[0], env) });
+            return;
+          }
+          watchChild(child, false);
+          return;
         }
-      }, CLOSE_GRACE_MS);
-    });
-    child.once('close', (status, signal) => finish(resultFor(status, signal)));
+        finish({ ok: false, output: shortenOutput(error.message.split('\n')[0], env) });
+      });
+      proc.once('exit', (code, signal) => {
+        if (!isCurrent() || timedOut) return;
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        // The shell has exited. Stop programs still in its group or its session.
+        // A program that called setsid is in another session, so this does not reach it (#735).
+        try {
+          if (proc.pid) killTree(proc.pid);
+        } catch {
+          // The tree kill can throw. The check still ends on the shell's status.
+        }
+        if (settled) return;
+        grace = setTimeout(() => {
+          try {
+            dropPipes(proc);
+          } finally {
+            finish(resultFor(code, signal));
+          }
+        }, CLOSE_GRACE_MS);
+      });
+      proc.once('close', (status, signal) => {
+        if (isCurrent()) finish(resultFor(status, signal));
+      });
+    };
+    watchChild(child, host !== null);
   });
 }
 

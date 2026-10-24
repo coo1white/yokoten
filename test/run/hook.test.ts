@@ -38,18 +38,24 @@ import {
   isWorkerType,
   judge,
   noteRefused,
+  pidsFromSessionTable,
   readDoneWhen,
   readStatusResult,
   readStatusText,
   readStopFields,
   refusedMarkerPath,
   runDoneWhen,
+  sessionFromStat,
   shortenOutput,
   STATUS_TEXT_LIMIT,
   startGuard,
   STOPS_MAX_BYTES,
   trimStopsLog,
   wasRefusedRecently,
+  powerShellBlocked,
+  windowsCommandTail,
+  windowsJobArgs,
+  windowsPowerShellPath,
   windowsTreeKillArgs,
   writeAgentChecks,
 } from '../../src/run/hook.ts';
@@ -608,6 +614,83 @@ test('done-when: Windows tree kill uses taskkill /F /T while the shell can still
   assert.deepEqual(windowsTreeKillArgs(4242), ['/F', '/T', '/PID', '4242']);
 });
 
+// The job host is what holds the tree after cmd.exe exits. The script is checked here;
+// Windows runs the behaviour test below (#735).
+test('done-when: Windows starts cmd.exe in a job that closes with the shell (#735)', () => {
+  const args = windowsJobArgs();
+  const encoded = args.at(-1) ?? '';
+  const script = Buffer.from(encoded, 'base64').toString('utf16le');
+  assert.equal(args.includes('-EncodedCommand'), true);
+  assert.match(script, /TerminateJobObject/);
+  // A job that was not made, or that will not take the process, is not pretended: the
+  // suspended start is stopped, and the check runs without a job (#735).
+  assert.match(script, /if \(!AssignProcessToJobObject\(job, info\.process\)\)/);
+  assert.match(script, /return SetInformationJobObject/);
+  assert.match(script, /if \(!ready\)/);
+  assert.match(script, /TerminateProcess\(info\.process, 1\)/);
+  assert.match(script, /could not be held in a job/);
+  assert.match(script, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000/);
+  assert.match(script, /CREATE_SUSPENDED = 4/);
+  assert.match(script, /YOKOTEN_DONE_COMMAND/);
+  assert.match(script, /Remove-Item Env:\\YOKOTEN_DONE_COMMAND/);
+  assert.match(script, /\/d \/s \/c/);
+});
+
+// `cmd.exe /d /s /c` with /s drops one pair of outer quotes. So the tail gets a pair of
+// ours only when the command starts with a quote; a quote inside the command is the
+// command's own, and the command still reaches cmd as one command (#735).
+test('done-when: a Windows command keeps its own quotes in the tail after /c (#735)', () => {
+  assert.equal(windowsCommandTail('node --test'), 'node --test');
+  assert.equal(windowsCommandTail('node -e "console.log(1)"'), 'node -e "console.log(1)"');
+  assert.equal(windowsCommandTail('echo "a & b"'), 'echo "a & b"', 'no outer pair, so no quote of ours to lose');
+  assert.equal(windowsCommandTail('"C:\\Program Files\\node.exe" --test'), '"\"C:\\Program Files\\node.exe" --test"');
+  assert.equal(windowsCommandTail(' "C:\\Program Files\\node.exe" --test'), '" "C:\\Program Files\\node.exe" --test"');
+});
+
+test('windowsPowerShellPath: only the real program, and a blocked start is ENOENT or EACCES (#735)', () => {
+  const sandbox = makeSandbox();
+  assert.equal(windowsPowerShellPath(undefined), null);
+  assert.equal(windowsPowerShellPath(sandbox.repo), null, 'no powershell.exe under this root');
+  const program = join(sandbox.repo, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  mkdirSync(dirname(program), { recursive: true });
+  writeFileSync(program, '');
+  assert.equal(windowsPowerShellPath(sandbox.repo), program);
+  assert.equal(powerShellBlocked('ENOENT'), true);
+  assert.equal(powerShellBlocked('EACCES'), true);
+  assert.equal(powerShellBlocked('EPERM'), false, 'any other spawn error still fails the check');
+  assert.equal(powerShellBlocked(undefined), false);
+});
+
+// The host is named, then missing or mode 0. The check must run in the shell, not fail closed (#735).
+test('done-when: a missing or blocked PowerShell still runs the check (#735)', { skip: process.platform === 'win32' && 'the stand-in host is spawned, then the POSIX shell runs the check', timeout: 8000 }, async () => {
+  const sandbox = makeSandbox();
+  const missing = join(sandbox.repo, 'missing-powershell.exe');
+  const passed = await runDoneWhen('echo fell-back-735', sandbox.repo, sandbox.env, 5000, undefined, missing);
+  assert.equal(passed.ok, true, passed.output);
+  assert.match(passed.output, /fell-back-735/);
+  const failed = await runDoneWhen('echo bad-735 >&2; exit 3', sandbox.repo, sandbox.env, 5000, undefined, missing);
+  assert.equal(failed.ok, false);
+  assert.match(failed.output, /bad-735/);
+  const blocked = join(sandbox.repo, 'blocked-powershell.exe');
+  writeFileSync(blocked, '');
+  chmodSync(blocked, 0);
+  const blockedRun = await runDoneWhen('echo blocked-735', sandbox.repo, sandbox.env, 5000, undefined, blocked);
+  assert.equal(blockedRun.ok, true, blockedRun.output);
+  assert.match(blockedRun.output, /blocked-735/);
+});
+
+test('sessionFromStat: the session is the field after the command name (#735)', () => {
+  assert.equal(sessionFromStat('12 (bash) S 1 12 34 0'), 34);
+  assert.equal(sessionFromStat('5 (a ) b) S 1 5 9 0'), 9, 'the command name may contain parentheses');
+  assert.equal(sessionFromStat('nope'), null);
+  assert.equal(sessionFromStat('1 (x) S 0 1 0 0'), null, 'session 0 is not a session to kill');
+  assert.deepEqual(pidsFromSessionTable('  4  9\n10 9\n11 3\nbad\n', 9), [4, 10]);
+  if (existsSync('/proc/self/stat')) {
+    const listed = runChild('ps', ['-o', 'sess=', '-p', String(process.pid)]);
+    assert.equal(sessionFromStat(readFileSync('/proc/self/stat', 'utf8')), Number(String(listed.stdout).trim()));
+  }
+});
+
 // The timer must see a live shell. spawnSync's timeout would have killed it first (#614).
 test('done-when: a timeout kills the tree while the shell is still running (#614)', { skip: process.platform === 'win32' && 'the stand-in kill uses a POSIX process group' }, async () => {
   const sandbox = makeSandbox();
@@ -671,6 +754,33 @@ test('done-when: a passing check stops a background writer (#641)', { skip: proc
   assert.equal(/ran too long/.test(result.output), false);
   assert.equal(existsSync(started), true, 'the writer started');
   await delay(800);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
+// set -m puts the writer in its own process group, still in the shell's session (#735).
+test('done-when: a passing check stops a new process group in the same session (#735)', { skip: process.platform === 'darwin' ? 'macOS ps has no session id, so a new group in the session is not found there (#735)' : (process.platform === 'win32' || runChild('bash', ['-c', 'echo ok']).status !== 0) && 'bash is missing', timeout: 8000 }, async () => {
+  const sandbox = makeSandbox();
+  const started = join(sandbox.repo, 'group-started');
+  const late = join(sandbox.repo, 'group-late');
+  const inner = `set -m; (trap "" HUP; touch ${JSON.stringify(started)}; sleep 1; touch ${JSON.stringify(late)}) & while [ ! -f ${JSON.stringify(started)} ]; do :; done; exit 0`;
+  const command = `bash -c '${inner.replaceAll("'", `'\\''`)}'`;
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 5000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  assert.equal(existsSync(started), true, 'the writer started');
+  await delay(1500);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
+// start /b leaves cmd.exe, so taskkill /T on that pid finds nothing. The job must stop the writer (#735).
+test('done-when: a passing check stops a background writer on Windows (#735)', { skip: process.platform !== 'win32' && 'Windows holds the tree in a job', timeout: 30000 }, async () => {
+  const sandbox = makeSandbox();
+  const late = join(sandbox.repo, 'late.txt');
+  const command = 'start "" /b cmd /c "ping -n 2 127.0.0.1 >nul & echo late>late.txt" & exit /b 0';
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 20000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  await delay(2500);
   assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
 });
 
