@@ -1,6 +1,6 @@
-// Tests for src/commands/bot.ts.
+// Tests for src/commands/merge/bot.ts.
 
-import '../repo/home.ts';
+import '../../repo/home.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
@@ -24,8 +24,8 @@ import {
   CLI,
   makeSandbox,
   runChild,
-} from '../repo/helpers.ts';
-import { invoke } from '../repo/invoke.ts';
+} from '../../repo/helpers.ts';
+import { invoke } from '../../repo/invoke.ts';
 
 // #117: the bot checks a title before it sends anything, by the rules CI uses. A fake gh
 // and a local API server stand in for GitHub; the real ones are never reached.
