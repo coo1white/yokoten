@@ -23,6 +23,7 @@ import { test } from 'node:test';
 import {
   CLI,
   makeSandbox,
+  runChild,
 } from '../../repo/helpers.ts';
 import { invoke } from '../../repo/invoke.ts';
 
@@ -1559,5 +1560,230 @@ test('bot: an empty body passes, from --body or --body-file (#609)', async () =>
     assert.deepEqual(ran().at(-1), { args: ['pr', 'comment', '5', '--body-file', bodyFile], input: '' });
   } finally {
     server.close();
+  }
+});
+
+// #789: the commit hook never runs in a clone with no core.hooksPath, so the bot holds
+// the line. A +0700 author or committer time is refused and nothing is pushed. UTC passes,
+// including a UTC commit on top of a zoned commit the remote already has.
+test('bot: a push of a +0700 commit is refused and nothing is pushed; a UTC branch is pushed (#789)', async () => {
+  const sandbox = makeSandbox();
+  const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+  mkdirSync(origin, { recursive: true });
+  sandbox.git('init', '-q', '--bare', origin);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.git('commit', '--allow-empty', '-qm', 'base');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('checkout', '-qb', 'zoned');
+  sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned');
+  // This desk cannot listen on a port. The bot and this test share a process, so fetch
+  // stands in for GitHub and nothing is bound.
+  const requests: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url, init) => {
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    const body = (init?.method ?? 'GET') === 'GET' ? { id: 77 } : { token: 'ghs_test' };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    const key = join(sandbox.home, 'bot.pem');
+    writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+    const extra = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: 'http://127.0.0.1' };
+    const push = (branch: string) => sandbox.call(['bot', '--', 'git', 'push', '-u', 'origin', branch], { extra });
+    const remoteTip = (branch: string) => sandbox.git('rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`).stdout.trim();
+    const refused = await push('zoned');
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /nothing was pushed/);
+    assert.match(refused.stderr, /TZ=UTC git commit --amend --date=/);
+    assert.match(refused.stderr, /rebase that re-dates/);
+    assert.doesNotMatch(refused.stderr, /\+0700/, 'the offset is never printed');
+    assert.equal(remoteTip('zoned'), '', 'the zoned branch was not pushed');
+    assert.notDeepEqual(requests, [], 'the token is minted first, so the remote can be asked what it has');
+    sandbox.git('checkout', '-qb', 'clean', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc');
+    const passed = await push('clean');
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.equal(remoteTip('clean'), sandbox.git('rev-parse', 'clean').stdout.trim(), 'the UTC branch was pushed');
+    sandbox.git('push', '-q', 'origin', 'zoned');
+    sandbox.git('checkout', '-q', 'zoned');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc on top');
+    const onTop = await push('zoned');
+    assert.equal(onTop.status, 0, onTop.stderr);
+    assert.equal(remoteTip('zoned'), sandbox.git('rev-parse', 'zoned').stdout.trim(), 'a UTC commit on top of an old zoned commit is pushed');
+    const committer = runChild('git', ['commit', '--allow-empty', '-qm', 'committer zone'], { cwd: sandbox.repo, env: { ...sandbox.env, GIT_COMMITTER_DATE: '2026-10-23T12:00:00+0700' } });
+    assert.equal(committer.status, 0, committer.stderr);
+    const tipBefore = remoteTip('zoned');
+    const committerPush = await push('zoned');
+    assert.equal(committerPush.status, 1, committerPush.stderr);
+    assert.match(committerPush.stderr, /nothing was pushed/);
+    assert.doesNotMatch(committerPush.stderr, /\+0700/);
+    assert.equal(remoteTip('zoned'), tipBefore, 'a committer time that is not UTC is not pushed');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// #789: the check reads the commits this push sends, not the whole local branch. A first
+// push of a branch cut from history the remote already has is not refused for an old zoned
+// ancestor. A tag and a mirror are read as git sends them, and a delete sends no commit.
+//
+// A sandbox whose origin already carries a +0700 commit on main, and a token that is only
+// asked for when a push gets past the time check. This desk cannot listen on a port, so
+// fetch stands in for GitHub; nothing is bound.
+function zonedOrigin() {
+  const sandbox = makeSandbox();
+  const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+  mkdirSync(origin, { recursive: true });
+  sandbox.git('init', '-q', '--bare', origin);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.git('commit', '--allow-empty', '-qm', 'base');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned on main');
+  sandbox.git('push', '-q', 'origin', 'main');
+  const realFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (async (url, init) => {
+    requests.push(`${init?.method ?? 'GET'} ${url}`);
+    return new Response(JSON.stringify((init?.method ?? 'GET') === 'GET' ? { id: 77 } : { token: 'ghs_test' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  const key = join(sandbox.home, 'bot.pem');
+  writeFileSync(key, generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString());
+  const extra = { YOKOTEN_BOT_APP_ID: '1', YOKOTEN_BOT_KEY: key, YOKOTEN_GITHUB_API: 'http://127.0.0.1' };
+  const push = (...args: string[]) => sandbox.call(['bot', '--', 'git', 'push', ...args], { extra });
+  const remoteRefs = (kind: string, ref: string) => sandbox.git('ls-remote', kind, 'origin', ref).stdout.trim().split('\t')[0] ?? '';
+  const done = () => {
+    globalThis.fetch = realFetch;
+  };
+  return { sandbox, push, remoteRefs, requests, done };
+}
+
+test('bot: a first push is not refused for a zoned ancestor the remote already has (#789)', async () => {
+  const { sandbox, push, remoteRefs, requests, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'fresh', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc on fresh');
+    const fresh = await push('-u', 'origin', 'fresh');
+    assert.equal(fresh.status, 0, fresh.stderr);
+    assert.equal(remoteRefs('--heads', 'fresh'), sandbox.git('rev-parse', 'fresh').stdout.trim(), 'a new branch on a zoned ancestor is pushed');
+    assert.notDeepEqual(requests, [], 'the bot asked for a token and ran the push');
+  } finally {
+    done();
+  }
+});
+
+test('bot: a tag push and a mirror send the zoned commits they read (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    // The zoned commit is kept alive only by the tag, so refs/heads alone do not see it.
+    sandbox.git('checkout', '-qb', 'tagged', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned under a tag');
+    sandbox.git('tag', 'v-zoned');
+    sandbox.git('checkout', '-q', 'main');
+    sandbox.git('branch', '-D', 'tagged');
+    const tags = await push('origin', '--tags');
+    assert.equal(tags.status, 1, 'a tag that sends a zoned commit is refused');
+    assert.match(tags.stderr, /nothing was pushed/);
+    assert.doesNotMatch(tags.stderr, /\+0700/, 'the offset is never printed');
+    assert.equal(remoteRefs('--tags', 'v-zoned'), '', 'no tag was pushed');
+    const mirror = await push('--mirror', 'origin');
+    assert.equal(mirror.status, 1, 'a mirror that sends a zoned tag is refused');
+    assert.match(mirror.stderr, /nothing was pushed/);
+    assert.equal(remoteRefs('--tags', 'v-zoned'), '', 'a mirror sent no tag');
+  } finally {
+    done();
+  }
+});
+
+test('bot: a pattern refspec is read, not passed as no commits (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'loose', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    const glob = await push('origin', 'refs/heads/*:refs/heads/*');
+    assert.equal(glob.status, 1, 'a pattern that sends a zoned branch is refused');
+    assert.match(glob.stderr, /nothing was pushed/);
+    assert.equal(remoteRefs('--heads', 'loose'), '', 'the zoned branch was not pushed');
+  } finally {
+    done();
+  }
+});
+
+test('bot: a delete sends no commit, so a zoned one is not refused (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'stale', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'stale on the remote');
+    sandbox.git('push', '-q', 'origin', 'stale');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    const deleted = await push('--delete', 'origin', 'stale');
+    assert.equal(deleted.status, 0, deleted.stderr);
+    assert.equal(remoteRefs('--heads', 'stale'), '', 'the delete went through');
+  } finally {
+    done();
+  }
+});
+
+// #789: the base is what the remote reports. `refs/remotes/<remote>/<branch>` is a local
+// ref, so an agent can point it at the tip it is about to push and hide a zoned commit.
+test('bot: a tracking ref written by hand cannot hide a zoned commit (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'zoned', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    sandbox.git('update-ref', 'refs/remotes/origin/zoned', 'zoned');
+    const sent = await push('origin', 'zoned');
+    assert.equal(sent.status, 1, sent.stderr);
+    assert.match(sent.stderr, /nothing was pushed/);
+    assert.doesNotMatch(sent.stderr, /\+0700/, 'the offset is never printed');
+    assert.equal(remoteRefs('--heads', 'zoned'), '', 'the zoned branch was not pushed');
+  } finally {
+    done();
+  }
+});
+
+// #789: `git push origin :branch` is a delete. It sends no commit, so a zoned commit in
+// the checkout is not its business, and it is not read as a push of the current branch.
+test('bot: a colon delete sends no commit, so a zoned checkout does not block it (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'clean', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc and on the remote');
+    sandbox.git('push', '-q', 'origin', 'clean');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    const deleted = await push('origin', ':clean');
+    assert.equal(deleted.status, 0, deleted.stderr);
+    assert.equal(remoteRefs('--heads', 'clean'), '', 'the delete went through');
+  } finally {
+    done();
+  }
+});
+
+// #789: the first word of a push is the remote, and that may be a path or a URL. It was
+// read as a refspec, so `git log` was asked to read the path as a revision.
+test('bot: a push to a path or a URL is read, not refused (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+    sandbox.git('checkout', '-qb', 'clean', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc');
+    const byPath = await push(origin, 'clean');
+    assert.equal(byPath.status, 0, byPath.stderr);
+    assert.equal(remoteRefs('--heads', 'clean'), sandbox.git('rev-parse', 'clean').stdout.trim(), 'a push to a path sent the branch');
+    sandbox.git('checkout', '-qb', 'zoned', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned');
+    const byUrl = await push(`file://${origin}`, 'zoned');
+    assert.equal(byUrl.status, 1, byUrl.stderr);
+    assert.match(byUrl.stderr, /nothing was pushed/);
+    assert.equal(remoteRefs('--heads', 'zoned'), '', 'a push to a URL is checked too');
+    // `--repo` names the destination when no word does.
+    sandbox.git('checkout', '-q', 'clean');
+    const byOption = await push(`--repo=${origin}`);
+    assert.equal(byOption.status, 0, byOption.stderr);
+    // A remote the desk can't read is not guessed at: the push stops, and says why.
+    const missing = await push(join(sandbox.home, 'no-such-remote.git'), 'clean');
+    assert.equal(missing.status, 1, missing.stderr);
+    assert.match(missing.stderr, /can't read what the remote already has/);
+  } finally {
+    done();
   }
 });

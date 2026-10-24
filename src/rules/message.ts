@@ -84,7 +84,7 @@ export const RULES = {
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
     why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
-    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c` and `--config-env`. It stops GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and a shell write to .git/config, .git/hooks or .githooks (a redirect, cp, mv, tee, sed -i, rm, chmod, ln, install, truncate); reading them passes. The commit-check step looks at the setting',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c` and `--config-env`. It stops GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and a shell write to .git/config, .git/hooks or .githooks (a redirect, cp, mv, tee, sed -i, rm, chmod, ln, install, truncate); reading them passes. The commit-check step looks at the setting. Doctor names a desk or a worktree whose core.hooksPath is unset',
     docs: guide('the-core-rules'),
   },
   alias: {
@@ -217,7 +217,7 @@ export const RULES = {
   'time-zone': {
     rule: 'commit times are UTC (core rule 12)',
     why: 'a time zone narrows down where you live',
-    check: 'the commit check reads the next commit\'s author and committer time; `check --history` counts older commits, as a note',
+    check: 'the commit check reads the next commit\'s author and committer time; `check --history` counts older commits, as a note; `yokoten bot -- git push` reads both times on every commit the push sends and refuses one that is not UTC',
     docs: guide('privacy'),
   },
   layout: {

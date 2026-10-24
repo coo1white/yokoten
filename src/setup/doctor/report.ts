@@ -7,13 +7,13 @@ import { check } from '../../run/check.ts';
 import { countNotes, waitingLine } from '../../run/learn.ts';
 import { type Gh, readServer, type ServerSettings, type Unread } from '../../host/github/index.ts';
 import { type Host, hostOf, isNoAdapter, noAdapter } from '../../host/hosts.ts';
-import { readUnsaved, unsavedNotes } from '../advice/unsaved.ts';
+import { readUnsaved, showPath, unsavedNotes } from '../advice/unsaved.ts';
 import { VERSION } from '../files.ts';
 import { isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, releaseChannel, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, hookPlaces, launcherCheck, machineChecks, mergeTimeZones, missingHookFindings, museClaudeRules, pluginAgeCheck, privacyNotes, releaseChannel, userAgentHooks } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, stageFileFor, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -87,8 +87,16 @@ export function noCiNote(notNow: Record<string, string>, stage: number | null, s
   return finding('no-ci', NO_CI_GAPS, stage === null || stage >= 5 ? `${byHand}; when the repo goes public, ${end}` : byHand);
 }
 
-/** At most this many notes about unsaved work in a session; full doctor lists them all. */
-const SESSION_UNSAVED_LIMIT = 3;
+/** At most this many notes of one kind in a session; full doctor lists them all (#365, #789). */
+const SESSION_NOTE_LIMIT = 3;
+
+/** The first notes, then how many were left out, in the words a session uses. */
+function cappedSessionLines(notes: Finding[]): string[] {
+  const more = notes.length - SESSION_NOTE_LIMIT;
+  const lines = notes.slice(0, SESSION_NOTE_LIMIT).map((note) => `yokoten: ${stepText(note)}.`);
+  if (more > 0) lines.push(`yokoten: ${more} more like this; \`yokoten doctor\` lists them all.`);
+  return lines;
+}
 
 /** What the agent does with the unsaved-work lines. */
 export const UNSAVED_OFFER = 'Tell the user what is only on this machine, and offer to run the command that saves it.';
@@ -103,17 +111,15 @@ export const STOPPED_EARLY = 'yokoten: doctor stopped early; `yokoten doctor` li
  * What a session hears about work only on this machine (#365): only what is at risk, a
  * few lines at most, read within the time budget. `clock` is for a test.
  */
-export function sessionUnsaved(root: string, env: Env, clock?: () => number): { lines: string[]; notes: Finding[]; commonDir: string | null } {
+export function sessionUnsaved(root: string, env: Env, clock?: () => number): { lines: string[]; notes: Finding[]; commonDir: string | null; worktrees: string[] } {
   const facts = readUnsaved(root, { env, budget: { ms: SESSION_UNSAVED_BUDGET, ...(clock ? { clock } : {}) } });
   // The git folder it read on the way, so the session's lesson note asks git no more (#339).
   const commonDir = facts?.commonDir || null;
   const notes = facts ? unsavedNotes(facts, { home: env.HOME, session: true }) : [];
+  const worktrees = facts?.worktrees.map((worktree) => worktree.path) ?? [];
   const stopped = facts?.isPartial ? [STOPPED_EARLY] : [];
-  if (!notes.length) return { lines: stopped, notes, commonDir };
-  const more = notes.length - SESSION_UNSAVED_LIMIT;
-  const lines = notes.slice(0, SESSION_UNSAVED_LIMIT).map((f) => `yokoten: ${stepText(f)}.`);
-  if (more > 0) lines.push(`yokoten: ${more} more like this; \`yokoten doctor\` lists them all.`);
-  return { lines: [...lines, ...stopped, UNSAVED_OFFER], notes, commonDir };
+  if (!notes.length) return { lines: stopped, notes, commonDir, worktrees };
+  return { lines: [...cappedSessionLines(notes), ...stopped, UNSAVED_OFFER], notes, commonDir, worktrees };
 }
 
 // A compaction start (#405). The agent keeps a summary of what it heard, so hearing the
@@ -303,6 +309,9 @@ function doctorRun(
   const next = where.next ? stepFinding(where.next, root, env, { server, config, elsewhere }) : null;
   const core = coreRulesCheck(root);
   const isCoreBehind = core?.mark === 'MISSING';
+  // A desk or a linked worktree with no core.hooksPath skips the commit check (#789).
+  // Paths come from the worktree list the unsaved-work read already ran.
+  const hookNotesFor = (worktreePaths: string[]): Finding[] => missingHookFindings(hookPlaces(root, env, worktreePaths), (path) => showPath(path, root, env.HOME));
 
   // A session reads files only, never the network, so it starts fast and works offline.
   if (session) {
@@ -330,7 +339,10 @@ function doctorRun(
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
     const unsaved = sessionUnsaved(root, env);
+    const hookNotes = hookNotesFor(unsaved.worktrees);
     if (unsaved.lines.length) blocks.push(unsaved.lines);
+    const hookLines = cappedSessionLines(hookNotes);
+    if (hookLines.length) blocks.push(hookLines);
     // A lesson the kit learned reaches the project here: the session hears it (#120).
     if (core && isCoreBehind) {
       blocks.push([`yokoten: ${formatFinding(core.finding)}`]);
@@ -345,7 +357,7 @@ function doctorRun(
     const stateFile = unsaved.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
-    const notes = [...unsaved.notes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
+    const notes = [...unsaved.notes, ...hookNotes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
     const ok = !failed.length && !isCoreBehind;
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
@@ -417,6 +429,9 @@ function doctorRun(
     lines.push(`  note    time-zone: ${stepText(zones)}`);
     notes.push(zones);
   }
+  // A desk or a linked worktree with no core.hooksPath skips the commit check (#789).
+  // Paths come from the unsaved-work read above, which already ran.
+  const hookNotes = hookNotesFor(unsaved?.worktrees.map((worktree) => worktree.path) ?? []);
   const noCi = noCiNote(config.notNow, where.stage, server);
   if (noCi) {
     lines.push(`  note    no-ci: ${stepText(noCi)}`);
@@ -459,6 +474,9 @@ function doctorRun(
   // check's own notes (#228), such as an unknown yokoten.json key or a translation behind: worded as check words them, and never a failure.
   for (const n of checkNotes) lines.push(`  note    ${formatFinding(n).replaceAll('\n', '\n        ')}`);
   notes.push(...checkNotes);
+  // A desk or a linked worktree with no commit hook (#789). Not unsaved work: the clone is there, the check is not.
+  for (const note of hookNotes) lines.push(`  note    ${note.id}: ${stepText(note)}`);
+  notes.push(...hookNotes);
   const unsavedFound = unsaved ? unsavedNotes(unsaved, { home: env.HOME }) : [];
   lines.push('unsaved work (only on this machine):');
   if (!unsaved) lines.push("  note    can't read this repo with git, so doctor can't tell what is only here");

@@ -7,8 +7,190 @@ import { join, resolve } from 'node:path';
 import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../../host/github/index.ts';
 import { DEFAULTS, type Env, loadConfig } from '../../rules/config.ts';
 import { finding, type Finding } from '../../rules/message.ts';
+import { notUtc } from '../../rules/privacy.ts';
 import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkMergeApproval, checkIssueLabels, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone, readLabelTier } from '../../rules/pr.ts';
 import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from '../shared.ts';
+
+// ---- Commit times on the way out (#789) ----
+//
+// The commit hook is the only other line that checks the zone, and a plain clone has
+// no core.hooksPath, so the hook never runs. The bot is the one path every push takes.
+
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--config-env', '--exec-path', '--git-dir', '--work-tree', '--namespace', '--super-prefix']);
+const PUSH_VALUE_OPTIONS = new Set(['--repo', '--receive-pack', '--exec', '-o', '--push-option', '--recurse-submodules']);
+
+/** Where a `git push` runs, and the words after `push`, or null when this is not one. `'elsewhere'` when `--git-dir` or `--work-tree` hides the repo. */
+function pushTarget(command: string[], cwd: string): { dir: string; args: string[] } | 'elsewhere' | null {
+  if (!/(^|[/\\])git(\.exe)?$/.test(command[0] ?? '')) return null;
+  let dir = cwd;
+  let index = 1;
+  while (index < command.length && command[index].startsWith('-') && command[index] !== '--') {
+    const word = command[index];
+    if (/^--(git-dir|work-tree)(=|$)/.test(word)) return 'elsewhere';
+    if (word === '-C') {
+      dir = resolve(dir, command[index + 1] ?? '');
+      index += 2;
+      continue;
+    }
+    const name = word.split('=')[0];
+    index += !word.includes('=') && GIT_VALUE_OPTIONS.has(name) ? 2 : 1;
+  }
+  if (command[index] !== 'push') return null;
+  return { dir, args: command.slice(index + 1) };
+}
+
+/** What git printed, or null when it failed. The text is never shown: it can hold a path. */
+function gitText(dir: string, env: Env, args: string[]): string | null {
+  const result = spawnSync('git', args, { cwd: dir, env, encoding: 'utf8', maxBuffer: 1 << 24 });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout;
+}
+
+/**
+ * The commits a push sends: the revisions to read, and the commits the remote already
+ * has. The base is what the remote reports, never a tracking ref: `refs/remotes/...` is a
+ * local ref, and the agent can point it at the tip it is about to push (#789).
+ */
+interface PushSpec {
+  local: string[];
+  base: string[];
+}
+
+/** What stopped the check before it could read a commit: what happened, and its fix. */
+interface PushProblem {
+  what: string;
+  fix: string;
+}
+
+/** The refs the remote reports, by name, or what went wrong. It asks; it never pushes. */
+function remoteRefs(dir: string, env: Env, remote: string): Map<string, string> | PushProblem {
+  const text = gitText(dir, env, ['ls-remote', remote]);
+  if (text === null) {
+    return { what: "git can't read what the remote already has, so nothing was pushed", fix: 'check the remote name and that this desk can reach it, then push again' };
+  }
+  const refs = new Map<string, string>();
+  for (const line of text.split('\n')) {
+    const [sha, name] = line.split('\t');
+    if (sha && name && /^[0-9a-f]{40,64}$/.test(sha)) refs.set(name, sha);
+  }
+  return refs;
+}
+
+/** The revisions a push sends, with the commits the remote already has. A delete sends no commit. */
+function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | PushProblem {
+  const words: string[] = [];
+  const flags = new Set<string>();
+  let repoOption: string | null = null;
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index];
+    if (word === '--') {
+      words.push(...args.slice(index + 1));
+      break;
+    }
+    if (!word.startsWith('-')) {
+      words.push(word);
+      continue;
+    }
+    const name = word.split('=')[0];
+    flags.add(name);
+    // `--repo <repository>` names the destination when no word does.
+    if (name === '--repo') repoOption = word.includes('=') ? word.slice(word.indexOf('=') + 1) : args[index + 1] ?? null;
+    if (!word.includes('=') && PUSH_VALUE_OPTIONS.has(name)) index += 1;
+  }
+  // A delete sends no commit, so there is no time to check.
+  if (flags.has('--delete') || flags.has('-d')) return [];
+  // The first word that is not an option is the remote, the way git reads it: a name, a
+  // path or a URL. Only the words after it are refspecs. `--repo` names it when no word
+  // does; a word wins over the option, as git says.
+  let remote = 'origin';
+  let refspecs = words;
+  let named = false;
+  if (words.length) {
+    remote = words[0];
+    refspecs = words.slice(1);
+    named = true;
+  } else if (repoOption !== null) {
+    remote = repoOption;
+    named = true;
+  }
+  // Each spec: the local revisions to read, and the ref whose remote value is the base.
+  const pending: { local: string[]; dest: string | null }[] = [];
+  if (flags.has('--mirror')) pending.push({ local: ['--all'], dest: null });
+  if (flags.has('--all')) pending.push({ local: ['--branches'], dest: null });
+  if (flags.has('--tags')) pending.push({ local: ['--tags'], dest: null });
+  // `--follow-tags` sends only tags that point into the refs already read, so it adds no commit.
+  for (const spec of refspecs) {
+    const text = spec.startsWith('+') ? spec.slice(1) : spec;
+    const colon = text.indexOf(':');
+    const source = colon === -1 ? text : text.slice(0, colon);
+    const dest = colon === -1 ? text : text.slice(colon + 1);
+    // `git push origin :branch` deletes that branch: a delete sends no commit.
+    if (!source) continue;
+    // A refspec may name a pattern (`refs/heads/*:refs/heads/*`), which git expands and
+    // `git log` does not, so the pattern goes in as `--glob`.
+    pending.push({ local: [/[*?[]/.test(source) ? `--glob=${source}` : source], dest: dest || source });
+  }
+  if (!pending.length) {
+    // Every refspec named a delete, so this push sends no commit of its own.
+    if (refspecs.length) return [];
+    // A bare `git push` sends the current branch, to its upstream when it has one.
+    const current = gitText(dir, env, ['symbolic-ref', '--quiet', '--short', 'HEAD'])?.trim();
+    if (!current) return [];
+    let dest = current;
+    if (!named) {
+      const upstream = gitText(dir, env, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])?.trim();
+      const slash = upstream ? upstream.indexOf('/') : -1;
+      if (upstream && slash > 0) {
+        remote = upstream.slice(0, slash);
+        dest = upstream.slice(slash + 1);
+      }
+    }
+    pending.push({ local: [current], dest });
+  }
+  // A remote with a `pushurl` is pushed there, so the question goes there too.
+  const pushUrl = gitText(dir, env, ['remote', 'get-url', '--push', remote])?.trim();
+  const refs = remoteRefs(dir, env, pushUrl || remote);
+  if (!(refs instanceof Map)) return refs;
+  const known = [...new Set(refs.values())];
+  return pending.map(({ local, dest }) => {
+    // A ref the remote has: its value there is the base. A ref it does not have: every ref
+    // it reports is history this push does not send, so a new branch is not read again.
+    const names = dest === null ? [] : dest.startsWith('refs/') ? [dest] : [`refs/heads/${dest}`, `refs/tags/${dest}`];
+    const base = names.map((name) => refs.get(name)).filter((sha): sha is string => sha !== undefined);
+    return { local, base: base.length ? base : known };
+  });
+}
+
+const ZONE_FIX = 're-date in UTC, then push again: `TZ=UTC git commit --amend --date=<date>` for the latest commit, or a rebase that re-dates each older commit in UTC';
+
+/**
+ * A push whose author or committer time is not UTC (#789), or null when this is not a
+ * push or every commit it sends is UTC. The offset is never printed.
+ */
+function zonedPushFinding(cwd: string, env: Env, command: string[]): Finding | null {
+  const target = pushTarget(command, cwd);
+  if (target === null) return null;
+  if (target === 'elsewhere') {
+    return finding('git-read', "this push points git at another folder, so the time check can't see the commits", 'run the push in the repo, with no --git-dir and no --work-tree');
+  }
+  const specs = specsForPush(target.dir, env, target.args);
+  if (!Array.isArray(specs)) return finding('git-read', specs.what, specs.fix);
+  let count = 0;
+  for (const spec of specs) {
+    // The base goes in on standard input: a repo can have more refs than a command line holds.
+    const input = spec.base.map((sha) => `^${sha}\n`).join('');
+    const result = spawnSync('git', ['--no-replace-objects', 'log', '--format=%ad %cd', '--date=format:%z', ...spec.local, '--stdin'], { cwd: target.dir, env, encoding: 'utf8', maxBuffer: 1 << 24, input });
+    if (result.error || result.status !== 0) {
+      return finding('git-read', "git can't list the commits this push sends, so nothing was pushed", 'check the branch name and that git runs, then push again');
+    }
+    for (const line of result.stdout.split('\n')) {
+      if (line && line.split(/\s+/).some((zone) => notUtc(` ${zone}`))) count += 1;
+    }
+  }
+  if (count === 0) return null;
+  const what = count === 1 ? 'a commit this push sends records a time zone other than UTC' : `${count} commits this push sends record a time zone other than UTC`;
+  return finding('time-zone', what, ZONE_FIX);
+}
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const { env, cwd } = invocation;
@@ -60,6 +242,14 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
     return 1;
   }
   const token = await installationToken(config, repo);
+  const runEnv = botEnv(env, token);
+  // Before the push (#789): a commit time that is not UTC never leaves. The base is what
+  // the remote reports, so it is asked with the bot's own credential.
+  const zoned = zonedPushFinding(cwd, runEnv, command);
+  if (zoned) {
+    print(invocation, ['yokoten bot: 1 problem(s); nothing was pushed. Fix it and run the push again:', ...bullets([zoned])], invocation.stderr);
+    return 1;
+  }
   const [file, ...given] = command;
   const ghEnv = botEnv(env, token);
   // A new pull request with no milestone takes its linked issue's (#512): one `gh issue view`.

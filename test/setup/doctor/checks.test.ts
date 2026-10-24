@@ -481,3 +481,27 @@ test('doctor: with the launcher off the PATH, every command in the text is `npx 
   const viaNpx = doctor(root, { env: { HOME: bare, npm_command: 'exec', PATH: env.PATH, YOKOTEN_TEMP_DIRS: '' }, config: DEFAULTS, gh: () => { throw new Error('no network'); } });
   assert.match(viaNpx.lines.join('\n'), /`npx yokoten init`/);
 });
+
+// #789: a plain clone has no core.hooksPath, so the commit check never runs. Doctor names
+// that desk, and a linked worktree of a repo that has none. One that has the setting is quiet.
+test('doctor: a desk or worktree with no core.hooksPath is a finding (#789)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.git('commit', '--allow-empty', '-qm', 'base');
+  const desk = join(sandbox.home, 'desk');
+  const worktree = join(sandbox.home, 'wt');
+  sandbox.git('clone', '-q', sandbox.repo, desk);
+  sandbox.git('worktree', 'add', '-q', '-b', 'side', worktree);
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-desks'), `${desk}\n`);
+  const said = async () => (await sandbox.call(['doctor'])).stdout;
+  const first = await said();
+  assert.match(first, /hooks-path: desk ~\/desk has no core\.hooksPath/);
+  assert.match(first, /hooks-path: worktree ~\/wt has no core\.hooksPath/);
+  const session = await sandbox.call(['doctor', '--session']);
+  assert.match(session.stdout, /desk ~\/desk has no core\.hooksPath/);
+  sandbox.git('config', 'core.hooksPath', '.githooks');
+  const second = await said();
+  assert.match(second, /hooks-path: desk ~\/desk has no core\.hooksPath/);
+  assert.doesNotMatch(second, /worktree ~\/wt has no core\.hooksPath/);
+  execFileSync('git', ['config', 'core.hooksPath', '.githooks'], { cwd: desk, env: sandbox.env });
+  assert.doesNotMatch(await said(), /has no core\.hooksPath/);
+});
