@@ -45,6 +45,16 @@ test('start: outside a git repo it writes nothing and names git first (#548)', a
   assert.deepEqual(existsSync(join(outside, 'AGENTS.md')), false);
 });
 
+test('start: with no full home path it says so plainly and writes nothing (#548)', async () => {
+  const sandbox = makeSandbox();
+  // A relative HOME is the case install already answers with a normal failure: bare `yokoten` must too.
+  const result = await sandbox.call([], { extra: { HOME: 'relative-home' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^yokoten finds no home folder \(HOME is empty or not a full path\), so it has no place outside the repo\. Set HOME to your home folder's full path and run `yokoten` again\.$/m);
+  assert.doesNotMatch(result.stderr, /undefined/, 'no command has no name, never "undefined"');
+  assert.deepEqual([existsSync(join(sandbox.repo, 'AGENTS.md')), existsSync(join(sandbox.repo, 'yokoten.json'))], [false, false], 'nothing was written');
+});
+
 test('start: help still prints the command list (#548)', async () => {
   const sandbox = makeSandbox();
   const result = await sandbox.call(['--help']);

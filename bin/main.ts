@@ -127,13 +127,17 @@ function dispatch(invocation: Invocation): number | Promise<number> {
   return 0;
 }
 
+/** Where an error line starts: the command, or `yokoten` alone when there is none (#548). */
+export const errorLabel = (command: string | undefined): string => `yokoten${command ? ` ${command}` : ''}`;
+
 /** Run one command line, and give its exit code. Exit 1, not 2, on an error: a broken guard should be seen, not block every tool call. */
 export function main(invocation: Invocation): Promise<number> {
   return Promise.resolve(invocation)
     .then(dispatch)
     .catch((err: Error) => {
       printJsonError(invocation, String(err?.message ?? err).split('\n')[0]);
-      say(invocation, `yokoten ${invocation.command}: ${err.message}\n`, invocation.stderr);
+      // No command (the one-command start, #548) has no name to print: never "yokoten undefined".
+      say(invocation, `${errorLabel(invocation.command)}: ${err.message}\n`, invocation.stderr);
       return 1;
     });
 }

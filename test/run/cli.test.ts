@@ -18,6 +18,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { errorLabel } from '../../bin/main.ts';
 import {
   at,
   CLI,
@@ -727,4 +728,9 @@ test('sandbox: call runs a command in this process with the same result as run (
     const same = await sandbox.call(words);
     assert.deepEqual({ status: same.status, stdout: same.stdout, stderr: same.stderr }, { status: child.status, stdout: child.stdout, stderr: child.stderr }, `yokoten ${words.join(' ')}`);
   }
+});
+
+test('main: an error names its command, and bare yokoten when there is none (#548)', () => {
+  assert.equal(errorLabel(undefined), 'yokoten', 'the one-command start has no name: never "undefined"');
+  assert.equal(errorLabel('doctor'), 'yokoten doctor');
 });

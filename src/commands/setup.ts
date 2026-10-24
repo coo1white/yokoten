@@ -4,6 +4,7 @@ import { existsSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ghIn } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
+import { homeOf, NO_HOME } from '../rules/privacy.ts';
 import { formatFinding } from '../rules/message.ts';
 import { init, updateCoreRules } from '../setup/init.ts';
 import { type Ask, install, isMachineSetUp, uninstall } from '../setup/install.ts';
@@ -29,21 +30,28 @@ export async function runStart(invocation: Invocation): Promise<number> {
     ], invocation.stderr);
     return 1;
   }
-  let didSetUp = false;
+  // No home folder means no place to install into (#548). Say it the way install does,
+  // instead of letting a path throw: a beginner reads one plain line, not a stack trace.
+  if (!homeOf(env)) {
+    print(invocation, [`${NO_HOME}. Set HOME to your home folder's full path and run \`yokoten\` again.`], invocation.stderr);
+    return 1;
+  }
+  // Each step that ran reports whether it is done: an install that failed is not "Setup is done" (#548).
+  const stepResults: boolean[] = [];
   if (!isMachineSetUp(env)) {
     print(invocation, ['yokoten is not installed on this machine yet: installing it once for every project.']);
     const done = install(env, { cwd, gh: ghIn(cwd, env, 3000), ask: askWhenTerminal(invocation) });
     print(invocation, done.lines);
-    didSetUp = true;
+    stepResults.push(done.ok);
   }
   if (!hasProjectRules(root)) {
     print(invocation, ['This project has no yokoten rules yet: adding them now, and never overwriting a file of yours.']);
     const done = init(root, env, undefined, { ask: askWhenTerminal(invocation) });
     print(invocation, done.lines);
-    didSetUp = true;
+    stepResults.push(done.ok);
   }
   // After two reports, a reader needs to know that the road below is the point of it all.
-  if (didSetUp) print(invocation, ['Setup is done. Here is where this project is now:']);
+  if (stepResults.length && stepResults.every((isOk) => isOk)) print(invocation, ['Setup is done. Here is where this project is now:']);
   return (await import('./advice/doctor.ts')).runDoctor(invocation);
 }
 
