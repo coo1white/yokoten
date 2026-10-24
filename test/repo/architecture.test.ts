@@ -223,6 +223,87 @@ test('code is .ts only: no .js, .mjs, .cjs or .tsx under bin, src or test (#43)'
   assert.deepEqual(strayCode(files), [], 'write it as .ts: Node runs it with no build');
 });
 
+// ---- A module stays under 500 lines (#624) ----
+const MODULE_CAP = 500;
+const MODULE_ALLOWANCE: Record<string, number> = {
+  'src/agents/runtimes/codex.ts': 1049,
+  'src/commands/advice/board/controls.ts': 652,
+  'src/commands/advice/board/feed/read/logs.ts': 537,
+  'src/commands/advice/mcp.ts': 537,
+  'src/commands/check.ts': 853,
+  'src/commands/hook.ts': 874,
+  'src/commands/merge/bot.ts': 750,
+  'src/commands/merge/train.ts': 615,
+  'src/rules/guards.ts': 6490,
+  'src/rules/message.ts': 834,
+  'src/rules/pr.ts': 1079,
+  'src/rules/privacy.ts': 1745,
+  'src/run/check.ts': 1337,
+  'src/run/cli.ts': 605,
+  'src/run/hook.ts': 1281,
+  'src/run/learn.ts': 782,
+  'src/setup/advice/test-commands.ts': 710,
+  'src/setup/advice/unsaved.ts': 722,
+  'src/setup/doctor/checks.ts': 517,
+  'src/setup/doctor/report.ts': 522,
+  'src/setup/init.ts': 1735,
+  'src/setup/install.ts': 1049,
+  'src/setup/road.ts': 1157,
+};
+const MODULE_FIX = 'split it by topic into a folder of the same name';
+
+/** The lines in `text`, including a final line with no newline. */
+const countLines = (text: string): number => text === '' ? 0 : text.split(/\r?\n/).length - (text.endsWith('\n') ? 1 : 0);
+
+/** What is wrong with the module sizes in `files` (module path to source). */
+function moduleProblems(files: Record<string, string>, allowance = MODULE_ALLOWANCE): string[] {
+  const problems: string[] = [];
+  for (const [path, text] of Object.entries(files)) {
+    const lines = countLines(text);
+    const allowed = allowance[path];
+    if (allowed !== undefined && lines <= MODULE_CAP) {
+      problems.push(`${path} has ${lines} lines, under its allowance of ${allowed} and at or under the cap of ${MODULE_CAP}: take it off MODULE_ALLOWANCE`);
+    } else if (lines > (allowed ?? MODULE_CAP)) {
+      const limit = allowed === undefined ? `the cap of ${MODULE_CAP}` : `its allowance of ${allowed}`;
+      problems.push(`${path} has ${lines} lines, over ${limit}: ${MODULE_FIX}`);
+    } else if (allowed !== undefined && lines < allowed) {
+      problems.push(`${path} has ${lines} lines, under its allowance of ${allowed}: lower it in MODULE_ALLOWANCE to ${lines}`);
+    }
+  }
+  for (const path of Object.keys(allowance)) if (!(path in files)) problems.push(`MODULE_ALLOWANCE names ${path}, which is not a module`);
+  return problems;
+}
+
+test('modules: a 501-line module fails, a 500-line one passes, and an allowance only goes down (#624)', () => {
+  const moduleText = (lines: number) => Array.from({ length: lines }, (_, index) => `// ${index}`).join('\n');
+  assert.deepEqual(moduleProblems({ 'src/a.ts': moduleText(MODULE_CAP) }, {}), []);
+  assert.deepEqual(moduleProblems({ 'src/a.ts': moduleText(MODULE_CAP + 1) }, {}), [
+    `src/a.ts has ${MODULE_CAP + 1} lines, over the cap of ${MODULE_CAP}: ${MODULE_FIX}`,
+  ]);
+  const allowance = { 'src/a.ts': 600, 'src/gone.ts': 550 };
+  assert.deepEqual(moduleProblems({ 'src/a.ts': moduleText(600) }, { 'src/a.ts': allowance['src/a.ts'] }), []);
+  assert.deepEqual(moduleProblems({ 'src/a.ts': moduleText(601) }, { 'src/a.ts': allowance['src/a.ts'] }), [
+    `src/a.ts has 601 lines, over its allowance of 600: ${MODULE_FIX}`,
+  ]);
+  assert.deepEqual(moduleProblems({ 'src/a.ts': moduleText(501) }, { 'src/a.ts': allowance['src/a.ts'] }), [
+    'src/a.ts has 501 lines, under its allowance of 600: lower it in MODULE_ALLOWANCE to 501',
+  ]);
+  assert.deepEqual(moduleProblems({ 'src/a.ts': moduleText(499) }, allowance), [
+    'src/a.ts has 499 lines, under its allowance of 600 and at or under the cap of 500: take it off MODULE_ALLOWANCE',
+    'MODULE_ALLOWANCE names src/gone.ts, which is not a module',
+  ]);
+});
+
+test('modules: each src/ and bin/ .ts file is at most MODULE_CAP, or its allowance (#624)', () => {
+  const paths = [
+    ...filesUnder(SRC).map((path) => `src/${path}`),
+    ...filesUnder(join(ROOT, 'bin')).map((path) => `bin/${path}`),
+  ].filter((path) => path.endsWith('.ts'));
+  assert.ok(paths.includes('bin/main.ts'), 'bin/main.ts is not found; the scan is broken');
+  const files = Object.fromEntries(paths.map((path) => [path, readFileSync(join(ROOT, path), 'utf8')]));
+  assert.deepEqual(moduleProblems(files), []);
+});
+
 // #400: a test made its folder with a bare mkdtempSync and never removed it; one machine
 // held 4,000 of them. makeTempDir (test/repo/helpers.ts) removes each one when its test
 // ends. A line that starts with a quote is text a test writes out, not code that runs here.
