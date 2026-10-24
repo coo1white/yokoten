@@ -75,6 +75,12 @@ export const RULES = {
     check: 'the tool-call guard stops `git push --force`, `-f` and a `+ref`; `--force-with-lease` passes; a branch ruleset on the server is the lock',
     docs: guide('the-core-rules'),
   },
+  'hard-reset': {
+    rule: 'no hard reset: it throws away work (record 0034)',
+    why: 'a hard reset drops every change you have not committed, and git cannot bring it back',
+    check: 'the tool-call guard stops `git reset --hard`, and reads a shortened option as git does (`--har` means `--hard`); `git reset` without `--hard` and `git revert` pass',
+    docs: guide('the-safeguard'),
+  },
   'skip-check': {
     rule: 'never skip the commit check (core rule 6)',
     why: 'the commit check is the inspection step, and a skipped check makes a broken commit look reviewed',
@@ -100,7 +106,31 @@ export const RULES = {
   'delete-default-branch': {
     rule: 'no deleting the default branch',
     why: 'the default branch holds the work every branch builds on, so deleting it throws that work away',
-    check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
+    check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; git reads a shortened long option too (`--del` means `--delete`); delete only the branch you mean',
+  },
+  'delete-checkout': {
+    rule: 'no deleting the whole checkout, or the folder that holds it (record 0034)',
+    why: 'the checkout holds every file and every commit, and deleting it leaves no copy anywhere',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on `.`, `..`, or a path that ends at one of them; delete only the files you mean',
+    docs: guide('the-safeguard'),
+  },
+  'discard-work': {
+    rule: 'no throwing away work that exists in one place only (record 0034)',
+    why: 'untracked files, uncommitted edits and a saved stash have no other copy, so git cannot bring them back',
+    check: 'the tool-call guard stops `git clean` (except `-n` or `--dry-run`), `git checkout .` and `git restore .` of the whole tree, a forced checkout or switch (`-f`, `--force`, `--discard-changes`), and `git stash clear` or `git stash drop`; `git restore --staged` or `-S` alone passes',
+    docs: guide('the-safeguard'),
+  },
+  'erase-history': {
+    rule: 'no erasing the history at once (record 0034)',
+    why: 'unreachable commits and the reflog are the usual way back after a mistake, and erasing them takes that way back away',
+    check: 'the tool-call guard stops `git gc --prune=now` or `--prune=all`, `git prune --expire=now` or `--expire=all`, `git reflog expire`, `git reflog delete`, `git filter-branch` and `git filter-repo`; git reads a repeated option by its last value, so `--prune=2.weeks.ago --prune=now` counts as `now`',
+    docs: guide('the-safeguard'),
+  },
+  'move-default-branch': {
+    rule: 'no moving the default branch backwards (record 0034)',
+    why: 'the default branch holds the work every branch builds on, so moving it back loses those commits',
+    check: 'the tool-call guard stops `git update-ref` of the default branch (a read with `--verify` or `--list` passes), `git branch -f` on it, and `git checkout -B` or `git switch -C` on it',
+    docs: guide('the-safeguard'),
   },
   'pipe-to-shell': {
     rule: 'no piping a download into a shell or a program named by a variable',
