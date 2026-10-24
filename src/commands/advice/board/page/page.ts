@@ -1,25 +1,29 @@
 // The board page (#603): HTML, CSS and the Lucide icons the page uses, with the script from
-// script.ts. One file, nothing loaded from outside, so the board works offline and its
-// content policy can forbid everything else. Lucide icons: ISC license, Lucide Contributors.
-// The GitHub mark: Octicons, MIT license, GitHub, Inc.
+// script.ts. The page is one file. The install manifest is same-origin, so nothing comes
+// from another host, and the content policy can forbid everything else. Lucide icons:
+// ISC license, Lucide Contributors. The GitHub mark: Octicons, MIT license, GitHub, Inc.
 
 import { BOARD_AGENT_FILE } from '../agents.ts';
-import { PAGE_FUNCTIONS } from './script.ts';
+import { COLUMN_FUNCTIONS } from './browser/column.ts';
+import { DESK_FUNCTIONS } from './browser/desk.ts';
+import { PAGE_FUNCTIONS } from './browser/script.ts';
+import { STREAM_FUNCTIONS } from './browser/stream.ts';
+import { USAGE_FUNCTIONS } from './browser/usage.ts';
 import { LANG_NAMES, WORDS } from './words.ts';
 
 /** How often the page asks for new data, in seconds. */
 export const BOARD_REFRESH_SECONDS = 15;
 
 const STYLE = `
-:root{color-scheme:light;--bg:#fff;--fg:#0a0a0a;--card:#fff;--muted:#f5f5f5;--mut-fg:#6b6b6b;--accent:#f0f0f0;--border:#e5e5e5;--ring:#a1a1a1;--side:#fafafa;--side-accent:#efefef;--panel:#fafafa;
+:root{color-scheme:light;--bg:#fff;--fg:#0a0a0a;--card:#fff;--muted:#f5f5f5;--mut-fg:#6b6b6b;--accent:#f0f0f0;--border:#e5e5e5;--ring:#a1a1a1;--side:#fafafa;--side-accent:#efefef;--panel:#fafafa;--track:#ececec;
 --brand:#b4532a;--ok:#16a34a;--wait:#b45309;--bad:#dc2626;--merged:#8250df;--open:#1a7f37;--radius:10px;
 --mono:ui-monospace,'SF Mono',SFMono-Regular,'Cascadia Code',Menlo,Consolas,'Liberation Mono',monospace}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}}
-:root[data-theme=dark]{color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--track:#2a2a2a;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#0a0a0a;--fg:#fafafa;--card:#171717;--muted:#262626;--mut-fg:#a1a1a1;--accent:#2a2a2a;--border:rgb(255 255 255/.09);--ring:#737373;--side:#141414;--side-accent:#232323;--panel:#111;--track:#2a2a2a;--brand:#ec8f6c;--ok:#3fb950;--wait:#e3a33b;--bad:#ff6568;--merged:#a371f7;--open:#3fb950}
 :root{--wait-bg:color-mix(in srgb,var(--wait) 11%,var(--bg));--bad-bg:color-mix(in srgb,var(--bad) 8%,var(--bg))}
 *{box-sizing:border-box}
 ::selection{background:color-mix(in srgb,var(--brand) 28%,transparent)}
-#pinned,#agents,#right,.feed{scrollbar-width:thin;scrollbar-color:var(--muted) transparent}
+#pinned,#agents,.feed,.needs-panel{scrollbar-width:thin;scrollbar-color:var(--muted) transparent}
 html,body{margin:0}
 :lang(ja){word-break:auto-phrase}
 body{font:13px/1.45 ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans','PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--fg);-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
@@ -46,17 +50,27 @@ svg.i.s{width:14px;height:14px}
 .tool:hover,.tool[aria-expanded=true]{background:var(--accent);color:var(--fg)}
 .tool svg.gh{fill:currentColor;stroke:none}
 .tool[hidden]{display:none}
+.badge{min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--muted);color:var(--mut-fg);font-size:10px;font-weight:600;display:inline-grid;place-items:center}
+.badge.on{background:var(--wait);color:#fff}
+@keyframes need-pulse{0%{transform:scale(1)}40%{transform:scale(1.35)}100%{transform:scale(1)}}
+.badge.pulse{animation:need-pulse .7s ease-out 1}
+.needs-panel{width:min(360px,calc(100vw - 16px));max-height:min(420px,70dvh);overflow:auto}
+.phone-desk{display:none}
+.need-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;padding:8px 10px;border-radius:8px}
+.need-item:hover,.need-item:focus-visible{background:var(--accent)}
+.need-item .ttl{white-space:normal}
+.need-item .meta{color:var(--mut-fg);font-size:12px}
+.need-item .go{margin:2px 0 0;color:var(--brand);font-weight:600;font-size:12px}
 .menu-wrap{position:relative}
 .menu{position:absolute;right:0;top:calc(100% + 6px);z-index:10;min-width:176px;padding:4px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card);box-shadow:0 8px 24px rgb(0 0 0/.16)}
 .menu[hidden]{display:none}
 .mi{display:flex;align-items:center;gap:8px;width:100%;height:36px;padding:0 10px;border-radius:7px;text-align:left;font-size:13px}
 .mi:hover,.mi:focus-visible{background:var(--accent);outline:0}
 .mi[aria-checked=true]{color:var(--brand);font-weight:600}
-.main{display:grid;grid-template-columns:312px minmax(0,1fr) 360px;grid-template-rows:auto minmax(0,1fr);grid-template-areas:"pinned center right" "agents center right";min-height:0}
+.main{display:grid;grid-template-columns:312px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"pinned center" "agents center";min-height:0}
 #pinned{grid-area:pinned;background:var(--side);border-right:1px solid var(--border);padding:8px 8px 0;max-height:55vh;overflow:auto}
 #agents{grid-area:agents;background:var(--side);border-right:1px solid var(--border);padding:0 8px 16px;overflow:auto}
 #center{grid-area:center;display:flex;flex-direction:column;min-width:0;min-height:0}
-#right{grid-area:right;border-left:1px solid var(--border);background:var(--panel);overflow:auto;padding:4px 12px 16px}
 .center-in{display:flex;flex-direction:column;min-height:0;flex:1}
 .sh{display:flex;align-items:center;gap:6px;margin:14px 6px 6px;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--mut-fg)}
 .sh.lead-h{margin-top:6px}
@@ -70,6 +84,18 @@ h2.sh{line-height:inherit}
 .sh .sum{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:400;font-size:11px}
 .sh .act,.act{margin-left:auto;font-family:inherit;text-transform:none;letter-spacing:0;font-weight:500;font-size:11px;color:var(--mut-fg);padding:1px 6px;border-radius:5px;cursor:pointer}
 .act:hover{background:var(--accent);color:var(--fg)}
+.usage{padding:10px 6px 4px;margin-top:10px;border-top:1px solid var(--border)}
+.usage .ubar{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 6px}
+.usage .ub{height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--mut-fg)}
+.usage .ub.on{background:var(--accent);color:var(--fg);border-color:var(--ring)}
+.usage .urow,.usage .utotal{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;padding:5px 2px;border-top:1px solid var(--border);font-size:12px}
+.usage .urow:first-of-type{border-top:0}
+.usage .uwho{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.usage .umodel{flex-basis:100%;color:var(--mut-fg);font-size:11px}
+.usage .utok{flex-basis:100%;color:var(--mut-fg);font-size:11px}
+.usage .ucost{margin-left:auto;font-weight:500}
+.usage .ucost.partial{color:var(--wait)}
+.usage .utotal{font-weight:600}
 .row{display:block;width:100%;text-align:left;padding:8px 8px 9px 10px;border-radius:8px;position:relative;margin-bottom:2px}
 .row:hover{background:var(--side-accent)}
 .row[aria-current=true]{background:var(--side-accent);box-shadow:inset 0 0 0 1px var(--border)}
@@ -125,6 +151,26 @@ h2.sh{line-height:inherit}
 .grp>svg{transition:transform .15s}
 .grp.open>svg{transform:rotate(90deg)}
 .grp-body{margin-left:14px;border-left:1px solid var(--border);padding-left:6px}
+.chat{max-width:820px;width:100%;margin:0 auto;min-width:0}
+.chat .msg{margin:14px 0;font-size:15px;line-height:1.55;overflow-wrap:anywhere}
+.chat .msg p{margin:0 0 10px;white-space:pre-wrap}
+.chat .msg .tm{float:right;margin:2px 0 0 12px;font-size:11px;color:var(--mut-fg)}
+.chat .think{margin:8px 0 12px;color:var(--mut-fg);font-size:13px;font-style:italic;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat .step{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;margin:1px 0;min-width:0;color:var(--mut-fg);font-size:13px;line-height:1.4}
+.chat .step .sd{width:7px;height:7px;border-radius:50%;background:var(--mut-fg);flex:none;align-self:center}
+.chat .step.bad .sd{background:var(--bad)}
+.chat .step b{color:var(--fg);font-weight:600}
+.chat .step code,.chat .step>span{min-width:0;overflow-wrap:anywhere}
+.chat .step code{font-family:var(--mono);font-size:12px}
+.chat .step-out{margin:0 0 6px 16px;color:var(--mut-fg);font-size:12px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
+.chat .step-out summary{cursor:pointer;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat .step-more{margin:2px 0 8px 16px}
+.chat .step-more>summary{cursor:pointer;color:var(--mut-fg);font-size:12px}
+.chat .full{display:block;margin:4px 0;padding:8px 10px;border-radius:6px;background:var(--muted);color:var(--fg);font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;max-width:100%}
+.chat .gstop{margin:10px 0;padding:8px 12px;border-radius:8px;background:var(--bad-bg);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--bad) 30%,transparent);color:var(--bad);font-size:13px;overflow-wrap:anywhere}
+.chat .gstop .ah{display:flex;gap:6px;align-items:center}
+.vm.live{animation:breath 2s ease-in-out infinite}
+@keyframes breath{0%,100%{opacity:1}50%{opacity:.35}}
 .ask{margin:14px 8px 4px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius);padding:12px 14px}
 .ask .ah{display:flex;gap:8px;align-items:center;color:var(--wait)}
 .ask h2{margin:0;font-size:14px;font-weight:600;color:var(--fg)}
@@ -159,19 +205,53 @@ h2.sh{line-height:inherit}
 .toast{position:fixed;left:10px;bottom:38px;width:292px;max-width:calc(100vw - 20px);justify-content:space-between;background:var(--fg);color:var(--bg);padding:8px 12px;border-radius:8px;font-size:12px;display:flex;gap:12px;align-items:center;box-shadow:0 4px 16px rgb(0 0 0/.25)}
 .toast[hidden]{display:none}
 .toast button{font-weight:600;text-decoration:underline}
-@media (prefers-reduced-motion:reduce){.sh .f>svg:first-child,.grp>svg{transition:none}}
+.lead-desk{border:1px solid var(--border);background:var(--card);border-radius:8px;padding:8px 10px 10px;margin:0 0 8px}
+.lead-desk h3{margin:8px 0 2px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut-fg)}
+.lead-desk h3:first-child{margin-top:0}
+.lead-desk .now{display:block;width:100%;text-align:left;font-weight:500;margin:0}
+.lead-desk .now[aria-current=true]{color:var(--fg)}
+.lead-desk .decision{margin:0 0 8px}
+.lead-desk .ask-line,.lead-desk .rec,.lead-desk .rest{margin:0}
+.lead-desk .rec,.lead-desk .rest{color:var(--mut-fg);font-size:12px;margin-top:2px}
+.lead-desk .rest{white-space:pre-wrap}
+.lead-desk .answers{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 0}
+.lead-desk .ans{display:inline-flex;align-items:center;height:22px;padding:0 8px;border:1px solid var(--border);border-radius:999px;background:var(--muted);font-size:12px}
+.lead-desk .reply{display:block;width:100%;text-align:left;font-size:12px;color:var(--fg)}
+.queue{border:1px solid var(--border);background:var(--card);border-radius:8px;padding:8px 10px 10px;margin:12px 20px 0}
+.queue h3{margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mut-fg)}
+.queue h3 .n{margin-left:6px;color:var(--fg)}
+.queue .q-row{margin:2px 0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.queue .q-row .num{color:var(--mut-fg)}
+.queue .q-cycle{margin:4px 0;font-size:12px;color:var(--bad)}
+.queue .q-start{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}
+.queue .q-start select,.queue .q-start input{max-width:190px}
+.gantt{display:flex;flex-direction:column;gap:8px;padding:12px 20px 24px;overflow:auto}
+.gantt .scale{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mut-fg)}
+.gantt-row{display:grid;grid-template-columns:minmax(0,34%) minmax(0,1fr);gap:8px;align-items:center}
+.gantt-name{min-width:0}
+.gantt-name .ttl{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt-name .waits{display:block;font-size:11px;color:var(--mut-fg)}
+.gantt-row.critical .ttl{font-weight:700}
+.gantt-track{position:relative;height:16px;border-radius:8px;background:var(--track)}
+.gantt-bar{position:absolute;top:3px;height:10px;border-radius:5px;min-width:4px}
+.gantt-bar.live{animation:desk-breathe 2.4s ease-in-out infinite}
+@keyframes desk-breathe{0%,100%{opacity:1}50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.sh .f>svg:first-child,.grp>svg{transition:none}.vm.live{animation:none}.badge.pulse{animation:none}.gantt-bar.live{animation:none}}
 @media (max-width:1100px){
 .app{height:auto;min-height:100vh;grid-template-rows:48px auto 28px}
-.main{grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto auto 1fr;grid-template-areas:"pinned center" "agents center" "right center"}
+.main{grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"pinned center" "agents center"}
 #pinned,#agents{max-height:none;overflow:visible}
-#right{border-left:0;border-right:1px solid var(--border);background:var(--side);padding-top:0}
 #center{position:sticky;top:0;height:100vh;height:100dvh;align-self:start}
 }
 @media (max-width:700px){
 .app{grid-template-rows:52px auto auto;align-content:start}
-.main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;align-content:start;grid-template-areas:"pinned" "center" "agents" "right"}
-#pinned,#agents,#right{border-right:0}
-#pinned .lead-h,#pinned .lead-row{display:none}
+.main{grid-template-columns:minmax(0,1fr);grid-template-rows:auto;align-content:start;grid-template-areas:"center" "agents"}
+#pinned{display:none}
+.phone-desk{display:block;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+#agents{border-right:0}
+.gantt{padding:8px}
+.gantt-row{grid-template-columns:minmax(0,1fr)}
+.lead-desk .ans{min-height:40px;padding:0 12px}
 #center{min-height:0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
 .ch{padding:12px 14px}.feed{padding:10px 8px 16px}.ro{margin:0 12px 12px}
 .bar{height:auto;flex-wrap:wrap;padding:6px 12px;white-space:normal}
@@ -183,6 +263,7 @@ h2.sh{line-height:inherit}
 .tool{height:40px;min-width:40px}
 #lang-name,.logo .word,.pill .live-word{display:none}
 .top{gap:6px;padding:0 6px 0 12px}
+.needs-panel{position:fixed;left:8px;right:8px;top:60px;width:auto;max-height:min(70dvh,420px)}
 #center{position:static;height:auto}
 }
 `;
@@ -214,14 +295,37 @@ const GITHUB = '<symbol id="i-github" viewBox="0 0 16 16"><path d="M8 0c4.42 0 8
 /** The yokoten mark: the C road with its station. */
 const LOGO = '<svg width="20" height="20" viewBox="0 0 512 512" aria-hidden="true"><rect width="512" height="512" rx="112" fill="#0d1117"/><g fill="none" stroke="#eef2fb" stroke-width="44" stroke-linecap="round"><path d="M150 120 C 160 210, 205 255, 262 268"/><path d="M356 112 C 360 220, 300 300, 160 410"/></g><circle cx="268" cy="272" r="40" fill="#ec8f6c"/></svg>';
 
+/** The same mark, as the installed window's icon. Nothing in it loads from outside. */
+const BOARD_MARK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0d1117"/><g fill="none" stroke="#eef2fb" stroke-width="44" stroke-linecap="round"><path d="M150 120 C 160 210, 205 255, 262 268"/><path d="M356 112 C 360 220, 300 300, 160 410"/></g><circle cx="268" cy="272" r="40" fill="#ec8f6c"/></svg>';
+
+/**
+ * The manifest Chrome and Edge read, so the board can install as its own window.
+ * The colours are the page's: white behind it, the brand on the title bar.
+ */
+export function boardManifest(): string {
+  const icon = `data:image/svg+xml,${encodeURIComponent(BOARD_MARK)}`;
+  return JSON.stringify({
+    name: 'yokoten board',
+    short_name: 'yokoten',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    background_color: '#ffffff',
+    theme_color: '#b4532a',
+    icons: [
+      { src: icon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+      { src: icon, sizes: '512x512', type: 'image/svg+xml', purpose: 'any' },
+    ],
+  });
+}
+
 /** The page's script: its settings, the functions from script.ts, then the start. */
 export function boardScript(): string {
-  const settings = { token: '', refreshMs: BOARD_REFRESH_SECONDS * 1000, agentFile: BOARD_AGENT_FILE, words: WORDS, langNames: LANG_NAMES, data: null, ui: null, live: 'loading', isMenuOpen: false, toast: null, toastTimer: 0, readAt: 0 };
+  const settings = { refreshMs: BOARD_REFRESH_SECONDS * 1000, agentFile: BOARD_AGENT_FILE, words: WORDS, langNames: LANG_NAMES, data: null, ui: null, live: 'loading', isMenuOpen: false, toast: null, toastTimer: 0, readAt: 0 };
   return [
     '"use strict";',
-    ...PAGE_FUNCTIONS.map(String),
+    ...[...PAGE_FUNCTIONS, ...COLUMN_FUNCTIONS, ...STREAM_FUNCTIONS, ...DESK_FUNCTIONS, ...USAGE_FUNCTIONS].map(String),
     `const state = ${JSON.stringify(settings).replace(/</g, '\\u003c')};`,
-    "state.token = new URLSearchParams(location.search).get('t') || '';",
     'startPage(state);',
   ].join('\n');
 }
@@ -235,13 +339,16 @@ export function boardPage(nonce: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#b4532a" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>yokoten board</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <div class="app">
-<header class="top"><span class="logo">${LOGO}<span class="word">yokoten</span></span><span class="crumb">/</span><span id="repo"></span><span class="sp"></span><span class="pill off" id="live" role="status"><span class="live"></span><span id="live-text">Loading</span></span><span class="tools"><span class="menu-wrap"><button class="tool" id="lang" aria-haspopup="menu" aria-expanded="false" aria-controls="lang-menu" aria-label="Language"><svg class="i s" aria-hidden="true"><use href="#i-globe"/></svg><span id="lang-name">English</span><svg class="i s" aria-hidden="true"><use href="#i-down"/></svg></button><div class="menu" id="lang-menu" role="menu" aria-label="Language" hidden></div></span><a class="tool icon" id="github" target="_blank" rel="noopener noreferrer" aria-label="Open the repo on GitHub" hidden><svg class="i gh" aria-hidden="true"><use href="#i-github"/></svg></a><button class="tool icon" id="theme" aria-label="Switch light and dark"><svg class="i" aria-hidden="true"><use href="#i-sun"/></svg></button></span></header>
-<main class="main"><nav id="pinned" aria-label="Lead and what needs you"></nav><nav id="agents" aria-label="Agents"></nav><section id="center" aria-label="The picked agent"></section><aside id="right" aria-label="Pull requests"></aside></main>
+<header class="top"><span class="logo">${LOGO}<span class="word">yokoten</span></span><span class="crumb">/</span><span id="repo"></span><span class="sp"></span><span class="pill off" id="live" role="status"><span class="live"></span><span id="live-text">Loading</span></span><span class="menu-wrap"><button class="tool" id="needs" aria-haspopup="dialog" aria-expanded="false" aria-controls="needs-menu" aria-label="Needs you"><svg class="i s" aria-hidden="true"><use href="#i-bell"/></svg><span class="badge" id="needs-count">0</span></button><div class="menu needs-panel" id="needs-menu" role="dialog" aria-label="Needs you" hidden></div></span><span class="tools"><span class="menu-wrap"><button class="tool" id="lang" aria-haspopup="menu" aria-expanded="false" aria-controls="lang-menu" aria-label="Language"><svg class="i s" aria-hidden="true"><use href="#i-globe"/></svg><span id="lang-name">English</span><svg class="i s" aria-hidden="true"><use href="#i-down"/></svg></button><div class="menu" id="lang-menu" role="menu" aria-label="Language" hidden></div></span><a class="tool icon" id="github" target="_blank" rel="noopener noreferrer" aria-label="Open the repo on GitHub" hidden><svg class="i gh" aria-hidden="true"><use href="#i-github"/></svg></a><button class="tool icon" id="theme" aria-label="Switch light and dark"><svg class="i" aria-hidden="true"><use href="#i-sun"/></svg></button></span></header>
+<main class="main"><nav id="pinned" aria-label="Lead"></nav><nav id="agents" aria-label="Agents"></nav><section id="center" aria-label="The picked agent"></section></main>
 <footer class="bar" id="bar"></footer>
 </div>
 <div class="toast" id="toast" role="status" hidden></div>

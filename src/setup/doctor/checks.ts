@@ -6,20 +6,21 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
-import { homeIn, homeOf, loadMarks, machineAllowed, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
-import * as antigravity from '../../agents/runtimes/antigravity.ts';
+import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
+import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
 import { hasPlugin, hasProjectHook, hasSessionDoctor, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as copilot from '../../agents/copilot.ts';
-import * as dsh from '../../agents/runtimes/deepseek-harness.ts';
+import * as dsh from '../../agents/runtimes/small/deepseek-harness.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import * as grok from '../../agents/runtimes/grok.ts';
 import * as muse from '../../agents/runtimes/muse.ts';
+import * as opencode from '../../agents/runtimes/small/opencode.ts';
 import type { FolderTrust } from '../../agents/folder-trust.ts';
 import { commentedFile, HAND_ADD, handAddJson, type HookState, mergeHandAdds } from '../../agents/hooks-file.ts';
 import { runtimeVersion, VERSION } from '../files.ts';
 import { compareVersions, hookCliPath, isSelf, readCoreRules, summarizeUpdate } from '../init.ts';
-import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
+import { EMPTY_MARKS_FIX, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, OFFER_MARKS_FIX, offerMarkKinds, launcherFile, PROFILE_LINE, installedPieces, installedSkillDirs, projectSkillDirs, isOnPath, launcherDir, machineMarks, mailmapState, MAILMAP_SETTING, missingMarkKinds, paths, USER_CLI, USER_MISSING } from '../install.ts';
 
 export interface Practice {
   name: string;
@@ -85,6 +86,7 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
   const geminiState = geminiGuard && geminiStop ? null : gemini.projectHooksState(root, hookCliPath(root));
   // Copilot CLI reads Claude Code's hooks: the road checks the file, this line only the trust,
   // and only when Copilot looks used here.
+  const openCode = openCodePluginNote(root, hookCliPath(root));
   const copilotTrust = copilot.readTrust(root, env);
   const copilotLine =
     copilotTrust.state === 'no home'
@@ -104,7 +106,25 @@ export function agentHooks(root: string, env: Env, platform: string = process.pl
     ...museLine(root, env),
     trustedHooksPractice('grok-hook', 'Grok CLI', grok.HOOKS_FILE, grok.projectHooksState(root, hookCliPath(root)), () => grok.readTrust(root, env), grok.TRUST_STEP),
     platform === 'win32' ? practice('deepseek-harness-hook', 'deepseek-harness-hook', false, dsh.WINDOWS_GAP, 'nothing to do yet: issue #332 adds a PowerShell guard') : dshPractice(dsh.projectHooksState(root, hookCliPath(root)), dsh.profilesWithBridge(env)),
+    ...(openCode ? [openCode] : []),
   ];
+}
+
+/**
+ * OpenCode's plugin, only when the project looks set up for OpenCode and the plugin is
+ * not the one `init` writes. A project with no OpenCode file stays quiet.
+ */
+export function openCodePluginNote(root: string, cli: string): Practice | null {
+  if (!opencode.usesOpenCode(root)) return null;
+  const state = opencode.projectPluginState(root, cli);
+  const file = opencode.PLUGIN_FILE;
+  if (state === 'same') return null;
+  if (typeof state === 'object') {
+    const hint = state.kind === 'shape' ? state.hint : 'the plugin file should be readable text';
+    return practice('opencode-hook', 'opencode-hook', false, `${file} has an unexpected shape`, `${hint}; fix it, then run \`yokoten init\``);
+  }
+  if (state === 'updated') return practice('opencode-hook', 'opencode-hook', false, `the tool-call plugin in ${file} is out of date`, '`yokoten init` updates it');
+  return practice('opencode-hook', 'opencode-hook', false, 'OpenCode is set up here, but the yokoten plugin is not in .opencode/plugins/', '`yokoten init` adds it');
 }
 
 /**
@@ -218,10 +238,10 @@ export const OUTPUT_STOP = 'to stop those commands there instead, set "privacy":
 
 /** Whether this machine or project is set up for an agent other than Claude Code. */
 function usesOtherAgent(env: Env, root: string | null): boolean {
-  if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env)) return true;
+  if (codex.hasUserDir(env) || gemini.hasUserDir(env) || grok.hasUserDir(env) || opencode.hasUserDir(env)) return true;
   if (!root) return false;
   const cli = hookCliPath(root);
-  return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || grok.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same';
+  return codex.hasProjectHook(root) || gemini.hasProjectHook(root) || antigravity.projectHookState(root, cli) === 'same' || muse.projectHooksState(root, cli).guard === 'same' || grok.projectHooksState(root, cli).guard === 'same' || dsh.projectHooksState(root, cli).guard === 'same' || opencode.usesOpenCode(root);
 }
 
 /** True when this session's environment says it is inside a desk. The desk sets both names. */
@@ -254,7 +274,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   const notes: Practice[] = [];
   if (output !== 'stop' && usesOtherAgent(env, root)) notes.push(practice('private-output', 'private-output', false, UNFILTERED, OUTPUT_STOP));
   const mailmap = mailmapState(env);
-  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', 'run `yokoten install`; it sets a git mailmap outside every repo'));
+  if (mailmap === 'unset') notes.push(practice('mailmap', 'mailmap', false, 'git log and git show print your name and email as they are', `run \`yokoten install\`; it writes ${MAILMAP_SETTING} and sets \`git config --global mailmap.file ${MAILMAP_SETTING}\`, so git prints a private address in place of your email`));
   if (mailmap === 'other') notes.push(practice('mailmap', 'mailmap', false, `git uses your own mailmap file, not ${MAILMAP_SETTING}`, `add the lines of ${MAILMAP_SETTING} to your file`));
   let marks: string[] = [];
   try {
@@ -283,7 +303,7 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
  * yokoten there.
  */
 export function userAgentHooks(env: Env): Practice[] {
-  const report = (id: 'codex-user-hook' | 'gemini-user-hook' | 'grok-user-hook' | 'muse-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
+  const report = (id: 'antigravity-user-hook' | 'codex-user-hook' | 'copilot-user-hook' | 'gemini-user-hook' | 'grok-user-hook' | 'muse-user-hook' | 'opencode-user-hook', hooks: { doctor?: HookState; guard: HookState }, file: string): Practice => {
     // Grok CLI has no session-start doctor: it shows that output only to the user.
     const named = [...(hooks.doctor === undefined ? [] : [['session-start doctor', hooks.doctor] as const]), ['command guard', hooks.guard] as const];
     const missing = named.filter(([, state]) => state === 'added').map(([name]) => name);
@@ -299,10 +319,13 @@ export function userAgentHooks(env: Env): Practice[] {
     return practice(id, id, !missing.length, `${missing.map((name) => `no ${name}`).join(' and ')} in ${file}`, `\`yokoten install\` adds ${them(missing)}`);
   };
   const checks: Practice[] = [];
+  if (antigravity.hasUserDir(env)) checks.push(report('antigravity-user-hook', antigravity.userHooksState(env, USER_CLI, USER_MISSING), antigravity.userHooksFile(env)));
   if (codex.hasUserDir(env)) checks.push(report('codex-user-hook', codex.userHooksState(env, USER_CLI, USER_MISSING), '~/.codex/hooks.json'));
+  if (copilot.hasUserDir(env)) checks.push(report('copilot-user-hook', copilot.userHooksState(env, USER_CLI, USER_MISSING), copilot.userHooksFile(env)));
   if (gemini.hasUserDir(env)) checks.push(report('gemini-user-hook', gemini.userHooksState(env, USER_CLI, USER_MISSING), '~/.gemini/settings.json'));
   if (grok.hasUserDir(env)) checks.push(report('grok-user-hook', grok.userHooksState(env, USER_CLI, USER_MISSING), grok.userHooksFile(env)));
   if (muse.hasUserDir(env)) checks.push(report('muse-user-hook', muse.userHooksState(env, USER_CLI, USER_MISSING), muse.userSettingsFile(env)));
+  if (opencode.hasUserDir(env)) checks.push(report('opencode-user-hook', { guard: opencode.userPluginState(env, USER_CLI, USER_MISSING) }, opencode.userPluginFile(env)));
   return checks;
 }
 
@@ -324,7 +347,7 @@ export function coreRulesCheck(root: string): { mark: 'ok' | 'MISSING' | 'note';
 }
 
 /** The one command that updates the plugin, from a shell. */
-export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`, then restart Claude Code';
+export const PLUGIN_UPDATE = '`claude plugin update yokoten@yokoten`; the next tool call runs the updated guard; a session which still has the old hook command needs one restart';
 
 /** The default branch refs doctor compares against, the first one present wins. Local only, no fetch. */
 const DEFAULT_BRANCH_REFS = ['refs/remotes/origin/HEAD', 'refs/remotes/origin/main', 'refs/heads/main'];
@@ -342,6 +365,45 @@ function readDefaultBranch(root: string, env: Env): string | null {
     }
   }
   return null;
+}
+
+/** How many commits on the default branch doctor reads for its time zone count (#760). */
+export const HISTORY_DEPTH = 200;
+
+/** The default branch as a person names it, in the order doctor reads it: `origin/HEAD`, else `origin/main`, else `main`. */
+const DEFAULT_BRANCH_NAMES = ['origin/HEAD', 'origin/main', 'main'];
+
+/**
+ * The revision arguments for the last `HISTORY_DEPTH` commits on each default-branch name.
+ * `--ignore-missing` drops a ref that is not here, and a `~` depth past a short history.
+ * One `git log` takes them all, so doctor starts one git process, not two (#453).
+ */
+function historyWindow(): string[] {
+  return [...DEFAULT_BRANCH_NAMES, '--not', ...DEFAULT_BRANCH_NAMES.map((name) => `${name}~${HISTORY_DEPTH}`)];
+}
+
+/**
+ * A note when a merge commit among the last `HISTORY_DEPTH` commits on the default branch
+ * carries an author or committer time zone other than UTC (#760). One `git log` reads them
+ * all, against the same refs and window the note prints, so the count and the command agree
+ * (#775). The zone is never printed, and neither is a name or email. Null when every merge is
+ * UTC, or git can't answer.
+ */
+export function mergeTimeZones(root: string, env: Env): Finding | null {
+  let text = '';
+  try {
+    text = execFileSync('git', ['log', '--first-parent', '--merges', '--ignore-missing', '--format=%H%x00%ad|%cd', '--date=format:%z', ...historyWindow()], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, maxBuffer: 1 << 26 }).trim();
+  } catch {
+    return null;
+  }
+  const count = text.split('\n').filter((line) => {
+    if (line === '') return false;
+    const [, zones = ''] = line.split('\0');
+    const [author = '', committer = ''] = zones.split('|');
+    return notUtc(` ${author}`) || notUtc(` ${committer}`);
+  }).length;
+  if (!count) return null;
+  return finding('time-zone', `${count} merge commit(s) among the last ${HISTORY_DEPTH} commits on the default branch carry an author or committer time zone other than UTC`, `see them with \`git log --first-parent --merges --ignore-missing --date=format:%z --format='%h %ad %cd' ${historyWindow().join(' ')}\`; each line ends with its zone, and +0000 is UTC; leave history as it is, and merge through the bot so new merges stay UTC`);
 }
 
 /** Whether `older` is in the history of `newer` in `root`. False when git doesn't know `older`. */
@@ -377,17 +439,40 @@ export function pluginAgeCheck(root: string | null, env: Env): Finding | null {
 }
 
 /**
- * A note when the plugin is on and install's pieces are here too (#300): then the guard
- * and the session doctor run twice, and every skill shows up twice. It names what to
- * remove, and the one command that does it.
+ * A note when the plugin is on and install's pieces, or a skills-only copy, are here too
+ * (#300, #540): then the guard and the session doctor run twice, and every skill shows up
+ * twice. It names what to remove, and the one command that does it.
  */
-export function doubleInstallCheck(env: Env): Finding | null {
+export function doubleInstallCheck(root: string | null, env: Env): Finding | null {
   if (!hasPlugin(env)) return null;
   const pieces = installedPieces(env);
-  if (!pieces.length) return null;
-  return finding('machine-runtime', `the yokoten plugin is on, and \`yokoten install\` put these here too: ${pieces.join('; ')}`, 'remove them with `yokoten uninstall`; the plugin brings its own', {
-    why: 'with both, the guard and the session doctor run twice and every skill shows up twice',
-  });
+  const homeSkills = installedSkillDirs(env);
+  const projectSkills = root ? projectSkillDirs(root) : [];
+  if (!pieces.length && !projectSkills.length) return null;
+  // A skills-only copy has no hooks and no runtime, so only the skills show up twice.
+  const skillsOnly = !pieces.some((piece) => !piece.startsWith('the skills in'));
+  const projectList = projectSkills.map((dir) => `\`${dir}\``).join(' and ');
+  // One fix per place: uninstall takes the home copy back, and each project skill folder goes.
+  const fixes: string[] = [];
+  if (homeSkills.length) fixes.push('remove the home copy with `yokoten uninstall`');
+  if (projectSkills.length) fixes.push(`delete ${projectList}`);
+  if (!fixes.length) fixes.push('remove the copy with `yokoten uninstall`');
+  const said: string[] = [];
+  if (pieces.length) {
+    said.push(skillsOnly
+      ? `a skills-only copy is here too: the skills in ${homeSkills.join(' and ')}`
+      : `\`yokoten install\` put these here too: ${pieces.join('; ')}`);
+  }
+  // `npx skills add` put this copy here, not install, so install gets no credit for it.
+  if (projectSkills.length) said.push(`\`npx skills add\` put a copy in this project too: ${projectList}`);
+  const what = `the yokoten plugin is on, and ${said.join('; ')}`;
+  const installsHooks = pieces.some((piece) => piece.startsWith('the SessionStart') || piece.startsWith('the agents'));
+  const why = installsHooks
+    ? 'with both, the guard and the session doctor run twice and every skill shows up twice'
+    : homeSkills.length || projectSkills.length
+      ? 'the plugin brings the same skills, so every skill shows up twice'
+      : 'the plugin brings its own runtime, so it is here twice';
+  return finding('machine-runtime', what, `${fixes.join(' and ')}; the plugin brings its own`, { why });
 }
 
 /**

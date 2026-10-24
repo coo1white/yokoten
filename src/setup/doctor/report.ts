@@ -13,8 +13,8 @@ import { isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
-import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, STATE_FILE } from './lessons.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, userAgentHooks } from './checks.ts';
+import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, stageFileFor, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
 
@@ -25,6 +25,7 @@ const OWNER_STEPS = ['the bot: a GitHub App (or collaborator) with write access;
 const BY_HAND = [
   'main: a ruleset with pull request required, the CI check required, code owner review, no force push, no deletion; squash merge only, delete branch on merge',
   'tags: a ruleset on v* so only you create, move or delete a release tag',
+  'release: in Settings, Environments, create release, add yourself as a required reviewer, and add a Tag rule named v*',
   'security: in Settings, Advanced Security, turn on private vulnerability reporting, secret scanning with push protection, and Dependabot alerts',
 ];
 
@@ -50,7 +51,7 @@ export const SERVER_TIMEOUT_MS = 3000;
 
 /** Why the server can't be read in a repo with no origin remote; the road shows it once (#502). */
 const NO_REMOTE = 'there is no origin remote yet';
-const NO_REMOTE_FIX = 'run `git remote add origin <url>` with the url of the repo on your code host, then run `yokoten doctor` again';
+const NO_REMOTE_FIX = 'make the repo on your code host, add it as origin with `git remote add origin <url>`, and push; then run `yokoten doctor` again';
 
 /** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
 function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
@@ -123,6 +124,8 @@ export function sessionUnsaved(root: string, env: Env, clock?: () => number): { 
 export interface SessionStart {
   sessionId: string;
   source: string;
+  /** The model the session runs, when the runtime says (#685), else ''. */
+  model?: string;
 }
 
 /** A session's file is removed after this many days. */
@@ -248,6 +251,24 @@ function rewordStrings<T>(value: T, reword: (text: string) => string): T {
   return value;
 }
 
+/**
+ * Why one stage that a jump passed does not hold the road back: what its steps are, by mark
+ * (#514). A step already done and a step yokoten can't check yet get their own words, so the
+ * line says which reason applies instead of joining both with "or".
+ */
+function stageJumpText(marks: Mark[]): string {
+  const countOf = (mark: Mark) => marks.filter((each) => each === mark).length;
+  const done = countOf('done');
+  if (done === marks.length) return 'its steps were already in place';
+  const unchecked = countOf("can't check");
+  const later = countOf('not now');
+  const parts: string[] = [];
+  if (done) parts.push(`${done} of its steps ${done === 1 ? 'was' : 'were'} already in place`);
+  if (unchecked) parts.push(`${unchecked} can't be checked yet`);
+  if (later) parts.push(`${later} ${later === 1 ? 'is' : 'are'} marked not now`);
+  return parts.join(', ').replace(/, ([^,]*)$/, ' and $1');
+}
+
 function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
@@ -302,7 +323,7 @@ function doctorRun(
     // This note only. The other privacy notes stay out of a session (#681).
     const claudeRules = museClaudeRules(env, root);
     if (claudeRules) blocks.push([`yokoten: ${formatFinding(claudeRules.finding)}`]);
-    const double = hasHome ? doubleInstallCheck(env) : null;
+    const double = hasHome ? doubleInstallCheck(root, env) : null;
     if (double) blocks.push([`yokoten: ${formatFinding(double)}`]);
     // A full disk stops every session unseen (record 0012): statfs and one small file, no child process.
     for (const c of diskSpaceChecks(root, env, probe, true).filter((check) => !check.ok)) blocks.push([`yokoten: ${formatFinding(c.finding)}`]);
@@ -328,7 +349,29 @@ function doctorRun(
   }
 
   lines.push(`yokoten ${VERSION}, self-test ${failed.length ? 'FAILED' : 'ok'}`);
+  // Work only on this machine (#365): notes, never a failure, and read only. Read before the
+  // road line, so the state file is found in the git folder it names (#453), as a session
+  // start finds it, and a stage that jumped can say so next to the road (#514).
+  const unsaved = readUnsaved(root, { env });
+  // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
+  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
+  const state = readState(stateFile);
+  // The road's stage has its own file, next to the lessons state (#514). A broken or missing
+  // file has no stage: the first run has nothing to compare with.
+  const stageFile = stageFileFor(stateFile);
+  const savedStage = readState(stageFile).lastStage;
+  const lastStage = typeof savedStage === 'number' && Number.isInteger(savedStage) && savedStage > 0 ? savedStage : null;
   lines.push(where.stage ? `the road: stage ${where.stage} of ${STAGES.length}, ${STAGES[where.stage - 1]}` : `the road: ${ROAD_DONE.replace(/^yokoten: /, '')}`);
+  // A stage that moved by more than one since the last full doctor says which stages it
+  // passed, and why each counts as done, one line each (#514). The first run has no stage to
+  // compare with, and a move of one is the usual next step, so neither says anything.
+  if (where.stage !== null && lastStage !== null && where.stage - lastStage >= 2) {
+    for (let stage = lastStage + 1; stage < where.stage; stage++) {
+      const marks = where.steps.filter((walked) => walked.step.stage === stage).map((walked) => walked.mark);
+      const isDone = marks.every((mark) => mark === 'done');
+      lines.push(`stage ${stage} ${isDone ? 'is done too' : 'counts as done'}: ${stageJumpText(marks)}`);
+    }
+  }
   const steps: StepState[] = [];
   // With no origin remote, the steps that read the server say so in one line, not one each (#502).
   const noRemote = server !== undefined && 'unread' in server && server.unread === NO_REMOTE;
@@ -365,17 +408,18 @@ function doctorRun(
     if (core.mark === 'MISSING') findings.push(core.finding);
     else if (core.mark === 'note') notes.push(core.finding);
   }
-  // Work only on this machine (#365): notes, never a failure, and read only. Read here, so
-  // the state file is found in the git folder it names, as a session start finds it (#453).
-  const unsaved = readUnsaved(root, { env });
+  // A merge made in another zone stays in history (record 0027): a count to know, never a
+  // failure, and one command shows the merges (#760). Full doctor only: a session reads no history.
+  const zones = config.privacy.utc ? mergeTimeZones(root, env) : null;
+  if (zones) {
+    lines.push(`  note    time-zone: ${stepText(zones)}`);
+    notes.push(zones);
+  }
   const noCi = noCiNote(config.notNow, where.stage, server);
   if (noCi) {
     lines.push(`  note    no-ci: ${stepText(noCi)}`);
     notes.push(noCi);
   }
-  // Full doctor keeps which lessons this clone has seen; a session start keeps only which it ran.
-  const stateFile = unsaved?.commonDir ? join(unsaved.commonDir, STATE_FILE) : findStateFile(root, env);
-  const state = readState(stateFile);
   const seenLessons = state.seenLessons ?? [];
   const lessons = lessonChecks(root, config.notNow, undefined, stateFile ? seenLessons : null);
   const nextSeen = seenAfter(seenLessons, lessons);
@@ -389,6 +433,9 @@ function doctorRun(
   }
   const nextWorkflows = [...seenWorkflows, ...workflows.flatMap((w) => (w.seen === undefined ? [] : [w.seen]))];
   if (nextSeen.length > seenLessons.length || nextWorkflows.length > seenWorkflows.length) saveState(stateFile, { ...state, seenLessons: nextSeen, ...(nextWorkflows.length ? { seenWorkflows: nextWorkflows } : {}) });
+  // A stage this run holds is saved for the next one. The done road (`where.stage === null`)
+  // leaves the last stage where it was: there is no new stage to compare with.
+  if (where.stage !== null && where.stage !== lastStage) saveState(stageFile, { lastStage: where.stage });
   lines.push(...formatLessonChecks(lessons));
   notes.push(...lessons.flatMap((lesson) => lesson.findings));
   const checkNotes: Finding[] = [];
@@ -440,7 +487,7 @@ function doctorRun(
     lines.push(`  note    plugin: ${stepText(stale)}`);
     notes.push(stale);
   }
-  const double = hasHome ? doubleInstallCheck(env) : null;
+  const double = hasHome ? doubleInstallCheck(root, env) : null;
   if (double) {
     lines.push(`  note    plugin-and-install: ${stepText(double)}`);
     notes.push(double);

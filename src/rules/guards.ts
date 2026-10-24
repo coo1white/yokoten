@@ -17,7 +17,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } fr
 import type { Config, Env } from './config.ts';
 import { loadConfig, matcher } from './config.ts';
 import { WORKTREES_DIR } from './layout.ts';
-import { type Finding, finding } from './message.ts';
+import { type Finding, finding, noteWork } from './message.ts';
 import { checkCommandTitle } from './pr.ts';
 import { type CommandFiles, checkPost, type GhCommand, ghIndex, homeIn, homeOf, hostApiValues, isBotProgram, PIPE_READERS, type Risk, withoutReadPipe } from './privacy.ts';
 
@@ -72,6 +72,9 @@ const LEAD_ONLY_FIX = 'stop and hand the change to the lead: say in your report 
 /** The mark's file name, in the worktree's own git folder. */
 export const WORKER_MARK = 'yokoten-worker';
 
+/** The file in a checkout's git folder that holds a worker's done-when command. */
+export const DONE_WHEN_FILE = 'yokoten-done-when';
+
 // ---- The worker list (#566) ----
 //
 // The mark in the git folder goes with the worktree: moving `.git` away takes it too.
@@ -96,6 +99,23 @@ export function workersFile(env: Env): string {
 export function configFolder(env: Env): string | null {
   const home = homeOf(env);
   return home ? join(home, '.config', 'yokoten') : null;
+}
+
+/** The stop log's name, in yokoten's config folder (#621). */
+export const STOPS_FILE = 'stops.jsonl';
+/** The file that says the owner turned the stop log off (#621). */
+export const STOPS_OFF_FILE = 'stops-off';
+
+/** The stop log in yokoten's config folder, or null with no home folder. Nothing reads it from the project (#621). */
+export function stopsFile(env: Env): string | null {
+  const folder = configFolder(env);
+  return folder ? join(folder, STOPS_FILE) : null;
+}
+
+/** The file that marks the stop log off, or null with no home folder (#621). */
+export function stopsOffFile(env: Env): string | null {
+  const folder = configFolder(env);
+  return folder ? join(folder, STOPS_OFF_FILE) : null;
 }
 
 const CONFIG_FIX = "leave yokoten's config folder (~/.config/yokoten) as it is: only the lead changes the worker list and the bot's keys; if your task needs a change there, stop and tell the lead";
@@ -265,9 +285,10 @@ const DOT_GIT_LIMIT = 4096;
 
 /**
  * What the `.git` at or above `folder` says, with no git process: `folder`, a main checkout's
- * git folder; `file`, the git folder a linked worktree's or a submodule's `.git` names (it may
- * be gone); `broken`, a `.git` that is no folder and no small readable file with a gitdir
- * line; null outside a checkout.
+ * git folder (it holds the `HEAD`, `objects` and `refs` git needs); `file`, the git folder a
+ * linked worktree's or a submodule's `.git` names (it may be gone); `broken`, a `.git` that is
+ * no folder and no small readable file with a gitdir line, a folder the guard cannot read, or
+ * a folder that kept the worker's own files but lost what git needs; null outside a checkout.
  */
 export type GitLink = { kind: 'folder' | 'file'; top: string; gitDir: string } | { kind: 'broken'; top: string } | null;
 
@@ -282,13 +303,55 @@ export function gitLinkAbove(folder: string): GitLink {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return { kind: 'broken', top: dir };
     }
     if (stats) {
-      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) return { kind: 'folder', top: dir, gitDir: dotGit };
-      const text = readSmallFile(dotGit);
-      const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
-      return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      if (stats.isDirectory() || (stats.isSymbolicLink() && isFolder(dotGit))) {
+        const isGit = gitFolderState(dotGit);
+        if (isGit === 'yes') return { kind: 'folder', top: dir, gitDir: dotGit };
+        if (isGit === 'broken') return { kind: 'broken', top: dir };
+        // An empty `.git` is not a checkout: walk on past it (#746).
+      } else {
+        const text = readSmallFile(dotGit);
+        const line = text === null ? null : /^gitdir:[ \t]*(.+?)[ \t\r]*$/m.exec(text);
+        return line ? { kind: 'file', top: dir, gitDir: resolve(dir, line[1]) } : { kind: 'broken', top: dir };
+      }
     }
     if (dirname(dir) === dir) return null;
   }
+}
+
+/**
+ * Whether a `.git` folder is one git would use. `broken` when the guard can't read it, or when
+ * the folder carries the worker's own files but git would not use it: a desk must not become
+ * its parent's checkout (#746). The caller then fails closed. No git process runs.
+ */
+function gitFolderState(gitDir: string): 'yes' | 'no' | 'broken' {
+  try {
+    if (isGitFolder(gitDir)) return 'yes';
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+  }
+  for (const name of [WORKER_MARK, DONE_WHEN_FILE]) {
+    try {
+      statSync(join(gitDir, name));
+      return 'broken';
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return 'broken';
+    }
+  }
+  return 'no';
+}
+
+/**
+ * Whether git itself would use this folder: `HEAD` a regular file (not a symlink) whose text is
+ * a `ref:` line or a commit sha, plus `objects` and `refs` folders. Git ignores anything less
+ * and walks up to the parent checkout, so the guard must too (#746). A reftable store is not
+ * checked: git still writes a `HEAD` line beside it, and no git here has `--ref-format`.
+ */
+function isGitFolder(gitDir: string): boolean {
+  const head = join(gitDir, 'HEAD');
+  if (!lstatSync(head).isFile()) return false;
+  const text = readSmallFile(head)?.trim() ?? '';
+  if (!/^ref:[ \t]*\S/.test(text) && !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(text)) return false;
+  return statSync(join(gitDir, 'objects')).isDirectory() && statSync(join(gitDir, 'refs')).isDirectory();
 }
 
 function isFolder(path: string): boolean {
@@ -1470,7 +1533,7 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   const movesFolder = commands.some((words) => ['cd', 'pushd', 'popd'].includes(words[0] ?? ''));
   // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
   const isTildeQuoted = QUOTED_TILDE.test(command);
-  // A download piped into a shell runs code nobody read (#560).
+  // A download piped into a shell, eval, or a `$` program runs code nobody read (#560, #734, #745).
   const piped = checkPipeToShell(command);
   if (piped) return piped;
   const token = checkTokenUse(command, commands);
@@ -1509,11 +1572,13 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
       // The likely folder, read as written: a write there is refused, never let through.
       checkGitSetupWrites(words, { folder: nearCwd, from, env }) ??
       // A changed home folder hides the private marks (#664).
-      checkHomeSetting(words);
+      checkHomeSetting(words, env);
     postCwd = folderAfter(words, postCwd, { env, isTildeQuoted });
     nearCwd = folderAfter(words, nearCwd, { env, isTildeQuoted, isCdPathSkipped: true });
   }
-  return (env.YOKOTEN_ROLE === 'worker' ? (checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null) ?? later;
+  // A worker's changed home, before the box: the box would answer first and hide this fix (#739).
+  const worker = env.YOKOTEN_ROLE === 'worker' ? (checkWorkerRealHome(commands) ?? checkWorkerBox(command, commands, { cwd: from, env }) ?? checkWorkerPointers(command, commands, env)) : null;
+  return worker ?? later;
 }
 
 /**
@@ -1526,6 +1591,37 @@ export function releaseFix(start?: string): string {
   return `if the owner asked for this, they start ${session}; do not look for another way`;
 }
 const release = (what: string) => finding('release', what, releaseFix());
+
+// `git tag` alone, `git tag -l` and `git tag --contains` only read. Deleting a local tag
+// (`-d`) and verifying one (`-v`) publish nothing. Every other `git tag` writes a tag,
+// which the owner alone creates (record 0028): `git push --follow-tags` would publish it.
+const TAG_READ_FLAGS = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify']);
+// These choose what a listing matches, so git stays in listing mode after one.
+const TAG_READ_OPTIONS = ['--contains', '--no-contains', '--merged', '--no-merged', '--points-at'];
+// `--sort`, `--format` and `--column` only change how a listing prints. With a name,
+// git still creates the tag, so they must not mark the command as a read (#873).
+// `--sort` and `--format` take their value as the next word, or after `=`.
+const TAG_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user', '--cleanup', '--trailer', '--sort', '--format']);
+// A combined short flag keeps its letters: `git tag -ln v1` lists, because `-n` only shapes
+// the listing. A writing letter in the group (`-af`) still makes the command a write (#873).
+const TAG_SHORT_GROUP = /^-[a-zA-Z]{2,}$/;
+function isTagRead(arg: string): boolean {
+  if (TAG_READ_FLAGS.has(arg) || /^-n\d*$/.test(arg)) return true;
+  if (TAG_READ_OPTIONS.some((option) => arg === option || arg.startsWith(`${option}=`))) return true;
+  return TAG_SHORT_GROUP.test(arg) && /[ldv]/.test(arg.slice(1)) && !/[asf]/.test(arg.slice(1));
+}
+const TAG_WRITE_OPTIONS = new Set(['--annotate', '--sign', '--force']);
+
+function createsTag(args: string[]): boolean {
+  if (args.some(isTagRead)) return false;
+  const isWriteFlag = args.some((arg) => TAG_WRITE_OPTIONS.has(arg) || /^-[a-zA-Z]*[asf]/.test(arg));
+  let hasName = false;
+  for (let index = 0; index < args.length; index++) {
+    if (TAG_VALUE_OPTIONS.has(args[index])) index++;
+    else if (!args[index].startsWith('-')) hasName = true;
+  }
+  return hasName || isWriteFlag;
+}
 
 const MOVERS = new Set(['cd', 'pushd', 'popd']);
 function movesRepo(words: string[]): boolean {
@@ -1619,6 +1715,10 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
     const pushed = findPushedDeletes(withoutShellRedirects(words, argsAt));
     const gone = pushed?.find((name) => isDefaultBranch(name, directory, env));
     if (gone !== undefined) return deleteBranchFinding(`\`git push\` deletes the default branch \`${gone}\` on the remote`);
+  }
+  if (sub === 'tag' && !env.YOKOTEN_RELEASE_APPROVAL) {
+    const tagArgs = withoutShellRedirects(words, argsAt);
+    if (createsTag(tagArgs)) return release(`git tag ${tagArgs.join(' ')} creates a tag`);
   }
   if (sub === 'branch') {
     const names = findDeletedBranches(withoutShellRedirects(words, argsAt));
@@ -2681,7 +2781,7 @@ const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, t
 // A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
 const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
 
-/** A pipeline that feeds a download into a shell runs code nobody read (#560, #574, #734, #745). */
+/** A pipeline that feeds a download into a shell, `eval`, or a program word that is not plain text runs code nobody read (#560, #574, #734, #745). */
 function checkPipeToShell(command: string): Finding | null {
   for (const pipeline of splitPipelines(command)) {
     const segments = splitPipeSegments(pipeline);
@@ -3140,6 +3240,8 @@ function settingsIn(words: string[]): Setting[] {
   }
   for (const at of programs) {
     const name = programName(words[at]);
+    // The tail is long inside `find -exec find`. Copy it only for a program that reads names.
+    if (!NAME_READERS.has(name) && name !== 'let' && name !== 'printf' && name !== 'getopts') continue;
     const args = words.slice(at + 1);
     if (NAME_READERS.has(name)) args.forEach((arg) => settings.push({ name: arg.replace(/^-[A-Za-z]*a/, ''), program: null }));
     if (name === 'let') args.filter(isAssignment).forEach((arg) => settings.push({ name: nameOf(arg), program: null }));
@@ -3161,13 +3263,18 @@ function settingsIn(words: string[]): Setting[] {
   return settings;
 }
 
-/** The settings in `words` whose name passes `isNamed`, that the rule refuses: see above. */
-function refusedSetting(words: string[], isNamed: (name: string) => boolean): string | null {
+/**
+ * The settings in `words` whose name passes `isNamed`, that the rule refuses: see above.
+ * `guards` replaces the usual program test (git, gh, yokoten, a shell). A setting for the
+ * rest of the line is refused when `includeRest` is set, which it is unless a caller says
+ * the script never reaches the check.
+ */
+function refusedSetting(words: string[], isNamed: (name: string) => boolean, guards?: (at: number) => boolean, includeRest = true): string | null {
   const settings = settingsIn(words).filter((setting) => isNamed(setting.name));
   if (settings.length === 0) return null;
   const lastYokoten = words.findLastIndex(isYokotenWord);
-  const runsGuarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
-  return settings.find((setting) => setting.program === null || runsGuarded(setting.program))?.name ?? null;
+  const runsGuarded = guards ?? ((at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at);
+  return settings.find((setting) => (includeRest && setting.program === null) || (setting.program !== null && runsGuarded(setting.program)))?.name ?? null;
 }
 
 // git's config variables (#361). GIT_CONFIG_PARAMETERS is read above, for core.hooksPath.
@@ -3218,17 +3325,34 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
   const known = new Map<string, string | null>();
   const isWorker = env.YOKOTEN_ROLE === 'worker';
   const targets = writeTargets(words, folder, (dir) => gitRootAbove(dir, known), { keepsRestores: isWorker }).map((target) => target.path);
+  const findStarts = (args: string[]) => findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? [];
   let at = 0;
+  // Set when the outer find's tail has a write. Nested finds then add their own start folders.
+  let findTailWrites = false;
+  let findTailRead = false;
   for (const program of findPrograms(words)) {
     const index = words.indexOf(program, at);
     if (index === -1) continue;
     at = index + 1;
     const name = programName(program);
-    const args = withoutShellRedirects(words, index + 1);
-    if (name !== 'mkdir' && MARK_WRITERS.has(name)) targets.push(...plainArgs(args));
-    if (Object.hasOwn(SETUP_WRITERS, name)) targets.push(...SETUP_WRITERS[name](args));
+    const isMarkWriter = name !== 'mkdir' && MARK_WRITERS.has(name);
+    const isSetupWriter = Object.hasOwn(SETUP_WRITERS, name);
+    if (isMarkWriter || isSetupWriter) {
+      const args = withoutShellRedirects(words, index + 1);
+      if (isMarkWriter) targets.push(...plainArgs(args));
+      if (isSetupWriter) targets.push(...SETUP_WRITERS[name](args));
+    }
     // A find that writes changes files under where it starts: `find .githooks -exec rm {} +`.
-    if (name === 'find') targets.push(...(findWrites(args, (writer) => Object.hasOwn(WRITERS, writer) || Object.hasOwn(SETUP_WRITERS, writer) || MARK_WRITERS.has(writer) || RUNS_CODE.test(writer))?.starts ?? []));
+    // Its tail holds every nested find. Read that tail once, unless it writes.
+    if (name !== 'find') continue;
+    if (!findTailRead) {
+      findTailRead = true;
+      const starts = findStarts(withoutShellRedirects(words, index + 1));
+      findTailWrites = starts.length > 0;
+      targets.push(...starts);
+      continue;
+    }
+    if (findTailWrites) targets.push(...findStarts(withoutShellRedirects(words, index + 1)));
   }
   if (targets.length === 0) return null;
   // The repo the command starts in, and its git folders: a placed path outside them all is
@@ -3256,13 +3380,229 @@ function checkGitSetupWrites(words: string[], { folder, from, env }: { folder: s
 // HOME, or USERPROFILE on Windows when HOME is not set. `HOME=/tmp/x git commit` would make
 // them look in another folder, find no marks and pass. So the guard refuses these names
 // where the settings rule above does. Names on Windows ignore case, so `home=` counts too.
-// Reading $HOME is fine. XDG_CONFIG_HOME moves nothing yokoten's checks read, so it passes.
+// Reading $HOME is fine. For the lead, XDG_CONFIG_HOME moves nothing these checks read, so
+// it passes. A worker may not set it before the commit check: see checkWorkerRealHome (#739).
 const HOME_NAMES = new Set(['HOME', 'USERPROFILE']);
 const HOME_FIX = 'run the command without changing the home folder; yokoten reads the private marks from your own home';
 
-function checkHomeSetting(words: string[]): Finding | null {
+function checkHomeSetting(words: string[], env: Env): Finding | null {
   const name = refusedSetting(words, (setting) => HOME_NAMES.has(setting.toUpperCase()));
-  return name === null ? null : finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  if (name !== null) return finding('home-folder', `this command sets ${name}, which moves where yokoten finds your private marks`, HOME_FIX);
+  // A worker unsets only when the script reaches the commit check: see checkWorkerRealHome.
+  if (env.YOKOTEN_ROLE === 'worker') return null;
+  const cleared = clearedHomeName(words, HOME_NAMES);
+  return cleared === null ? null : finding('home-folder', `this command unsets ${cleared}, which moves where yokoten finds your private marks`, HOME_FIX);
+}
+
+/**
+ * A home name this command clears, or null (#739). `unset NAME` holds for the rest of the
+ * line, like `export`. `env -u NAME` clears it for the one program after `env`, and only
+ * when that program is git, gh, yokoten or a shell. `env -u HOME npm test` stays allowed.
+ */
+function clearedHomeName(words: string[], names: Set<string>): string | null {
+  const isHome = (name: string) => names.has(name.toUpperCase());
+  const fromUnset = (args: string[]): string | null => {
+    for (const arg of args) {
+      if (!arg.startsWith('-') && isHome(arg)) return arg;
+    }
+    return null;
+  };
+  // env's own options, from the word after `env` to the program it runs. A cluster is read
+  // here: findPrograms does not treat `-iu` as `-u`, so `env -iu HOME git` would hide git.
+  const readEnv = (start: number): { cleared: string | null; program: number | null } => {
+    let cleared: string | null = null;
+    let index = start;
+    while (index < words.length) {
+      const word = words[index];
+      if (isAssignment(word)) {
+        index += 1;
+        continue;
+      }
+      if (!word.startsWith('-')) return { cleared, program: index };
+      const inline = /^--unset=(.*)$/.exec(word);
+      if (inline) {
+        if (cleared === null && isHome(inline[1])) cleared = inline[1];
+        index += 1;
+        continue;
+      }
+      if (word === '--unset') {
+        const next = words[index + 1] ?? '';
+        if (cleared === null && isHome(next)) cleared = next;
+        index += next === '' ? 1 : 2;
+        continue;
+      }
+      // `-u NAME`, `-uNAME`, and a cluster whose last flag is `u` (`-iuHOME`, `-iu HOME`).
+      const cluster = /^-([a-zA-Z]*)u(.*)$/.exec(word);
+      if (cluster) {
+        const rest = cluster[2];
+        if (rest === '') {
+          const next = words[index + 1] ?? '';
+          if (cleared === null && isHome(next)) cleared = next;
+          index += next === '' ? 1 : 2;
+        } else {
+          if (cleared === null && isHome(rest)) cleared = rest;
+          index += 1;
+        }
+        continue;
+      }
+      // These take the next word. Skipping it keeps a later `-u HOME` visible.
+      if (word === '-C' || word === '--chdir' || word === '-S' || word === '--split-string') {
+        index += index + 1 < words.length ? 2 : 1;
+        continue;
+      }
+      index += 1;
+    }
+    return { cleared, program: null };
+  };
+  const lastYokoten = words.findLastIndex(isYokotenWord);
+  const guarded = (at: number) => isGit(words[at]) || ['gh', 'yokoten'].includes(programName(words[at])) || RUNS_LINES.test(programName(words[at])) || lastYokoten >= at;
+  // One pass over the programs, then one pass over the words before the last of them.
+  // Reading every earlier word once per program made `find -exec find` take quadratic time.
+  let lastProgram = -1;
+  for (const place of findProgramPlaces(words)) {
+    if (place.index === -1) continue;
+    if (place.index > lastProgram) lastProgram = place.index;
+    if (programName(place.word) === 'unset') {
+      const cleared = fromUnset(words.slice(place.index + 1));
+      if (cleared !== null) return cleared;
+    }
+  }
+  for (let cursor = 0; cursor < lastProgram; cursor++) {
+    if (programName(words[cursor]) !== 'env') continue;
+    const read = readEnv(cursor + 1);
+    if (read.cleared !== null && read.program !== null && guarded(read.program)) return read.cleared;
+  }
+  return null;
+}
+
+// A worker's home before the commit check (#739). HOME and USERPROFILE move the marks file.
+// XDG_CONFIG_HOME is the same door for a worker: the desk already refuses other settings, and
+// this one must say why, before git commit, yokoten check, or a shell that runs them. The
+// lead's XDG_CONFIG_HOME is left alone. The box still refuses every other setting.
+// A shell script file is the same door with the assignment hidden in the file. The guard
+// reads the command, not the file, so a worker's `bash file` or `sh file` is refused.
+// `bash -c` stays, because that text is in the command.
+const REAL_HOME_NAMES = new Set(['HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']);
+const REAL_HOME_FIX = 'the commit check needs the real home; in a desk, the runner commits for you (issue #736)';
+// Shell flags that do not name a file and do not take a value. `s` reads stdin, which the
+// reader already has when the text is in the command. Anything else may name a file.
+const SHELL_FLAG = /^-[euxnvfhlips]+$/;
+const SHELL_LONG_FLAGS = new Set(['--posix', '--noprofile', '--norc', '--login', '--noediting', '--restricted', '--help', '--version']);
+
+/** Whether the program at `at` is git commit, yokoten check, or a shell that can run them. */
+function runsCommitCheck(words: string[], at: number): boolean {
+  const program = words[at];
+  if (RUNS_LINES.test(programName(program))) return true;
+  if (isGit(program)) return gitParts(withoutShellRedirects(words, at + 1), null).sub === 'commit';
+  const tail = words.slice(at);
+  return tail.some(isYokotenWord) && tail.includes('check');
+}
+
+/** Whether any program in `words` is git commit, yokoten check, or a shell that can run them. */
+function commandReachesCheck(words: string[]): boolean {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (runsCommitCheck(words, at)) return true;
+  }
+  return false;
+}
+
+/** Whether `word` is a shell that can run a script file, in any case (`Bash`, `rbash`, `mksh`). */
+function isScriptShell(word: string): boolean {
+  const name = programName(word).toLowerCase();
+  return isShell(name) || name === 'mksh' || name === 'rbash';
+}
+
+/**
+ * Whether a shell's arguments hide the script (#739). `bash -c text` and `--command` are in
+ * the command, so they are not hidden. A file operand, an input redirect (`< file`, not a
+ * heredoc) and an option the guard does not know (`--rcfile`, `-o`) are hidden: the guard
+ * cannot tell whether that file sets HOME, so it refuses.
+ */
+function shellOperandsHide(args: string[]): boolean {
+  let index = 0;
+  let inline = false;
+  while (index < args.length) {
+    const arg = args[index];
+    if (REDIRECT.test(arg)) {
+      const operator = REDIRECT_OPERATOR.exec(arg)?.[0] ?? '';
+      if (operator.includes('<') && !operator.includes('<<') && !inline) return true;
+      index += redirectLength(args, index) || 1;
+      continue;
+    }
+    if (arg === '--') {
+      if (!inline) return true;
+      index += 1;
+      continue;
+    }
+    if (arg === '-c' || arg === '--command') {
+      const script = args[index + 1] ?? '';
+      if (script === '' || REDIRECT.test(script)) return true;
+      inline = true;
+      index += 2;
+      continue;
+    }
+    if (arg.startsWith('--command=')) {
+      if (arg.length === '--command='.length) return true;
+      inline = true;
+      index += 1;
+      continue;
+    }
+    // `-lc`, `-cecho hi`: `c` ends the flags, or the rest of the word is the script text.
+    const cluster = /^-(?:[euxnvfhlips]*)c(.*)$/s.exec(arg);
+    if (cluster && !arg.startsWith('--')) {
+      const rest = cluster[1];
+      if (rest === '') {
+        const script = args[index + 1] ?? '';
+        if (script === '' || REDIRECT.test(script)) return true;
+        index += 2;
+      } else index += 1;
+      inline = true;
+      continue;
+    }
+    if (SHELL_FLAG.test(arg) || SHELL_LONG_FLAGS.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-') || !inline) return true;
+    index += 1;
+  }
+  return false;
+}
+
+/** Whether `words` runs a shell script the guard cannot read. The lead is not asked. */
+function shellHidesScript(words: string[]): boolean {
+  let from = 0;
+  for (const program of findPrograms(words)) {
+    const at = words.indexOf(program, from);
+    if (at === -1) continue;
+    from = at + 1;
+    if (isScriptShell(program) && shellOperandsHide(words.slice(at + 1))) return true;
+  }
+  return false;
+}
+
+/**
+ * For a worker: a home setting that would hide the private marks from the commit check, or
+ * null. A setting for the rest of the line counts only when this script reaches that check,
+ * so `HOME+=x; rm` stays with the worker box (#591). A shell script file counts too: the
+ * guard cannot read it, so it refuses instead of guessing.
+ */
+function checkWorkerRealHome(commands: string[][]): Finding | null {
+  const reaches = commands.some(commandReachesCheck);
+  for (const words of commands) {
+    const name = refusedSetting(words, (setting) => REAL_HOME_NAMES.has(setting.toUpperCase()), (at) => runsCommitCheck(words, at), reaches);
+    if (name !== null) return finding('home-folder', `this command sets ${name}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+    if (reaches) {
+      const cleared = clearedHomeName(words, REAL_HOME_NAMES);
+      if (cleared !== null) return finding('home-folder', `this command unsets ${cleared}, so the commit check would not see your private marks`, REAL_HOME_FIX);
+    }
+    if (shellHidesScript(words)) return finding('home-folder', 'this command runs a shell script yokoten cannot read, so the commit check might not see your private marks', REAL_HOME_FIX);
+  }
+  return null;
 }
 
 // A shell redirect is no argument to git: `git config core.hooksPath 2>/dev/null` reads
@@ -4799,6 +5139,77 @@ export function findProgramPlaces(words: string[]): { word: string; index: numbe
   return programs;
 }
 
+// ---- Heavy jobs (#401) ----
+//
+// A build, a test suite, a package install or a container build can fill a disk. When the
+// kept reading of the Windows drive under a WSL disk file is low, the hook asks the owner
+// before one of these starts. Only a program counts, as for a blocked command: a text that
+// merely mentions `npm test` is no heavy job, and a shell the guard cannot read names none.
+
+const PACKAGE_PROGRAMS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+const PACKAGE_INSTALLS = new Set(['install', 'i', 'ci', 'add', 'remove', 'rm', 'uninstall', 'update', 'up', 'upgrade', 'rebuild', 'link', 'dedupe', 'prune', 'pack']);
+const PACKAGE_RUNS = new Set(['run', 'run-script']);
+// A script whose name says it builds, tests or checks the project.
+const HEAVY_SCRIPTS = /(^|[:._-])(build|test|lint|check|typecheck|verify|ci)([:._-]|$)/i;
+// A program that is a heavy job on its own (`null`), or the subcommands that are one.
+const HEAVY_PROGRAMS: Record<string, ReadonlySet<string> | null> = {
+  make: null, ninja: null, bazel: null, cmake: null, meson: null, tsc: null,
+  jest: null, vitest: null, mocha: null, pytest: null, phpunit: null, rspec: null,
+  mvn: null, mvnw: null, gradle: null, gradlew: null, buildah: null,
+  cargo: new Set(['build', 'test', 'check', 'clippy', 'bench', 'install']),
+  go: new Set(['build', 'test', 'install', 'generate']),
+  dotnet: new Set(['build', 'test', 'restore', 'publish', 'pack']),
+  docker: new Set(['build', 'buildx', 'pull', 'run', 'compose']),
+  podman: new Set(['build', 'pull', 'run', 'compose']),
+  nerdctl: new Set(['build', 'pull', 'run', 'compose']),
+};
+// A version or help word asks nothing about the project.
+const PROBES = new Set(['--version', '-v', '-V', '--help', '-h']);
+
+/** The package manager's job when it installs or runs a build or test script, or null. */
+function packageJob(name: string, args: string[]): string | null {
+  const first = args.find((arg) => !arg.startsWith('-'));
+  if (first === undefined) return null;
+  if (PACKAGE_INSTALLS.has(first)) return `${name} ${first}`;
+  if (first === 'test' || first === 'build') return `${name} ${first}`;
+  if (name === 'npm' && first === 't') return 'npm test';
+  if (!PACKAGE_RUNS.has(first)) return null;
+  const script = args.slice(args.indexOf(first) + 1).find((arg) => !arg.startsWith('-'));
+  return script !== undefined && HEAVY_SCRIPTS.test(script) ? `${name} ${first} ${script}` : null;
+}
+
+/** The heavy job the program at `index` runs, as a person reads it, or null. */
+function heavyAt(words: string[], index: number): string | null {
+  const program = programName(words[index]);
+  const args = words.slice(index + 1);
+  if (program === 'node') return args.some((arg) => arg === '--test' || arg.startsWith('--test=')) ? 'node --test' : null;
+  if (PACKAGE_PROGRAMS.has(program)) return packageJob(program, args);
+  const subcommands = HEAVY_PROGRAMS[program];
+  if (subcommands === undefined) return null;
+  if (args[0] !== undefined && PROBES.has(args[0])) return null;
+  if (subcommands === null) return program;
+  const sub = args.find((arg) => !arg.startsWith('-'));
+  return sub !== undefined && subcommands.has(sub) ? `${program} ${sub}` : null;
+}
+
+/**
+ * The heavy job `command` starts, such as `npm test`, or null. It reads the command's
+ * programs, not its text, so `echo npm test` names none.
+ */
+export function findHeavyJob(command: string): string | null {
+  try {
+    for (const words of commandWords(command)) {
+      for (const place of findProgramPlaces(words)) {
+        const job = heavyAt(words, place.index);
+        if (job !== null) return job;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 // Adds the program of the command that starts at `index` to `programs`, after
 // assignments, redirects, keywords and launchers, and the programs of an `env -S`
 // string. Returns the index of the program when it is find, or -1. In a find action
@@ -5074,6 +5485,8 @@ let budget: { left: number } | null = null;
 class OverBudget extends Error {}
 
 function spend(amount: number): void {
+  // The same steps the budget draws. The linear tests read the count (#754).
+  noteWork(amount);
   if (budget !== null && (budget.left -= amount) < 0) throw new OverBudget('the command costs too much to read');
 }
 
@@ -5381,14 +5794,25 @@ interface Group {
   reads: boolean;
 }
 
+// `%(refname)`, `%(refname:short)`: a git format atom, which git reads as the value of
+// `--format`. Only this shape is one word. A space, a `;` or a missing `)` means the `(` is a
+// subshell after all, and the words after it must be read as commands (#873).
+const GIT_FORMAT_ATOM = /^\*?[A-Za-z][A-Za-z0-9_.:*,=/@+-]*$/;
+function isGitFormatAtom(text: string, open: number): boolean {
+  const close = text.indexOf(')', open + 1);
+  return close !== -1 && GIT_FORMAT_ATOM.test(text.slice(open + 1, close));
+}
+
 // Reads commands from `start` until `closer` (`)` or a backtick) or the end, and adds them
 // to `out`. Returns the index after the closer, or -1 if a closer was wanted and not found.
 function read(text: string, start: number, closer: string, depth: number, out: string[][]): number {
   // Too deep to follow: fall back to the rough cut, which finds more than is there.
+  // Return -1 when a closer was wanted. text.length would look like the closer was found
+  // at the end, and the caller would read the same tail again (#754).
   if (depth > MAX_DEPTH) {
     spend(text.length - start);
     for (const words of rough(text.slice(start))) out.push(words);
-    return text.length;
+    return closer ? -1 : text.length;
   }
   const nested = (s: string) => out.push(...commandWords(s, depth + 1));
   let words: string[] = [];
@@ -5644,6 +6068,16 @@ function read(text: string, start: number, closer: string, depth: number, out: s
       const end = read(text, index + 1, ')', depth + 1, out);
       if (end === -1) endCommand();
       index = end === -1 ? text.length : end; // unclosed: the read inside read the rest
+    } else if (character === '(' && word.endsWith('%') && isGitFormatAtom(text, index)) {
+      // A git format such as `%(refname)` is one word, as the quote note above says: git
+      // reads it as the value of `--format`, and a shell refuses the unquoted form. Reading
+      // it whole keeps the tag name in the same command, so the release check sees it (#873).
+      // Only an atom is read whole. Anything else, such as `%(git push --tags)` or an
+      // unclosed `%(`, falls to the group arm below and still reads as the command it is.
+      const stop = text.indexOf(')', index + 1) + 1;
+      word += text.slice(index, stop);
+      inWord = true;
+      index = stop;
     } else if (character === '(' || (character === '{' && !inWord && /\s/.test(next ?? ''))) {
       // A subshell or a group cuts like a separator, and is open until its ) or }.
       endCommand();

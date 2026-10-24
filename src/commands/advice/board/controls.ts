@@ -7,28 +7,29 @@
 // Each agent's latest output shows on the page. Stopping keeps the worktree and its
 // commits.
 //
-// The waiting list at the top shows what needs the owner: tier A pull requests with
-// green checks and no Approve, guard stops, and agent questions. The list is read
+// `yokoten board --text` and /data still list what needs the owner: tier A pull
+// requests with green checks and no Approve on the head commit, guard stops, and
+// agent questions. The page lists Needs you under the header bell (#737). The list is read
 // only: no request an agent can make clears an item. There are no Approve or Merge
-// buttons anywhere; those stay on the host, with the owner. Safety: 127.0.0.1 only, a
-// random link token, the page's Origin on every change, stop only for processes this
-// board started, and every start and stop in a log file.
+// buttons anywhere; those stay on the host, with the owner. Safety: 127.0.0.1 only.
+// The page is at <repo>.localhost on a stable port. The first visit sets an HttpOnly
+// cookie and leaves the token out of the address. A change needs the page's Origin.
+// Stop only for processes this board started, and every start and stop in a log file.
 
 import { execFileSync, spawn } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as codex from '../../../agents/runtimes/codex.ts';
-import * as deepseekHarness from '../../../agents/runtimes/deepseek-harness.ts';
+import * as deepseekHarness from '../../../agents/runtimes/small/deepseek-harness.ts';
 import * as grok from '../../../agents/runtimes/grok.ts';
 import * as muse from '../../../agents/runtimes/muse.ts';
-import { type Gh, repoOf } from '../../../host/github/index.ts';
 import { type Env } from '../../../rules/config.ts';
 import { hideHome } from '../../../rules/privacy.ts';
 import { hookCliPath } from '../../../setup/init.ts';
-import { readOriginUrl } from '../../../setup/plan.ts';
+import { type MachineState, type ScheduleRoom, type ScheduleSettings, type ScheduleSummary, roomStateOf, SCHEDULE_DEFAULTS, takeStarts } from '../schedule.ts';
+import { planOf, roomOf } from './waiting.ts';
 import { markWorktree } from '../../hook.ts';
-import { ageText, BOARD_AGENT_FILE, BOARD_READ_TIMEOUT_MS, parseBoardAgent, type BoardRole, type BoardWorktree } from './agents.ts';
-import { type AgentView, type BoardData, type PullView } from './view.ts';
+import { BOARD_READ_TIMEOUT_MS, type BoardRole } from './agents.ts';
 
 /**
  * How the board starts one agent of each vendor, before the brief. Each command is the
@@ -62,14 +63,27 @@ const BOARD_MODEL_FLAGS: Record<string, string> = {
   antigravity: '--model',
 };
 
-/** The board's limits: how many agents run at once, and how many of one model. */
+/** The board's limits: how many agents run at once, how many of one model, and the memory a start keeps free. */
 export interface BoardLimits {
   maxAgents: number;
   byModel: Record<string, number>;
+  /** Free memory the machine keeps for itself before another agent starts, in MB (#709). */
+  memoryFloorMb: number;
 }
 
-/** The board's limits at start: three agents at once, and no per-model cap. */
-export const BOARD_DEFAULT_LIMITS: BoardLimits = { maxAgents: 3, byModel: {} };
+/** The board's limits at start: three agents at once, no per-model cap, and a 1024 MB memory floor. */
+export const BOARD_DEFAULT_LIMITS: BoardLimits = { maxAgents: 3, byModel: {}, memoryFloorMb: SCHEDULE_DEFAULTS.memoryFloorMb };
+
+/** How long a worker the board starts may run: three hours unless yokoten.json says otherwise (#711). */
+export const BOARD_TIME_LIMIT_MS = 3 * 60 * 60 * 1000;
+
+/** The report the board writes when the time limit ends a worker that wrote none (#711). */
+export const BOARD_REPORT_PREFIX = 'REPORT-';
+
+/** Where the worker's own report goes: REPORT-<issue>.md in its worktree. */
+export function boardReportPath(worktree: string, issue: string): string {
+  return join(worktree, `${BOARD_REPORT_PREFIX}${issue}.md`);
+}
 
 /** One agent the board started. Its output stays while it runs and after it stops. */
 export interface BoardRun {
@@ -79,8 +93,10 @@ export interface BoardRun {
   model: string;
   worktree: string;
   pid: number | null;
-  /** Running, or stopped by the owner. A start that fails never joins the list. */
+  /** Running, or stopped by the owner or its time limit. A start that fails never joins the list. */
   status: 'running' | 'stopped';
+  /** Who ended a stopped run: the owner, or the time limit (#711). */
+  stoppedBy?: 'owner' | 'time limit';
   startedAt: string;
   stoppedAt: string;
   exitCode: number | null;
@@ -88,11 +104,21 @@ export interface BoardRun {
   output: string[];
 }
 
-/** One open issue to start an agent on: its number, title, and link. */
+/** One open issue to start an agent on: its number, title, link, and what it waits for. */
 export interface BoardIssue {
   number: number;
   title: string;
   url: string;
+  /** When it was opened, or ''. */
+  createdAt: string;
+  /** When it last changed, or ''. */
+  updatedAt: string;
+  /** Issue numbers on a "Depends on" line. The timeline shows them on the row. */
+  dependsOn: number[];
+  /** The issue's labels, for the schedule's priority (#709). Missing when a reader has none. */
+  labels?: string[];
+  /** The issue's milestone title, or '' (#709). P1 when it has one. */
+  milestone?: string;
 }
 
 /** One hold-up an agent reports in its status file: a guard stop or a question. */
@@ -126,11 +152,8 @@ export interface BoardWaiting {
   latchedAt?: string;
 }
 
-/** How many output lines a run keeps; the page shows the last BOARD_OUTPUT_SHOWN. */
+/** How many output lines a run keeps. The page shows the last 30. */
 const BOARD_OUTPUT_LINES = 100;
-
-/** How many of a run's output lines /data serves. */
-const BOARD_OUTPUT_SHOWN = 30;
 
 /** A model name: letters and numbers first, then letters, numbers, dots and dashes. */
 const BOARD_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/;
@@ -191,11 +214,13 @@ export interface BoardControls {
   handles: Map<string, BoardChild>;
   logPath: string;
   spawner: BoardSpawner;
+  /** How long each started worker may run, in milliseconds (#711). */
+  timeLimitMs: number;
 }
 
 /** Fresh controls for a board: default limits, no runs, the log at the given path. */
-export function createBoardControls(logPath: string, spawner: BoardSpawner = spawnBoardChild): BoardControls {
-  return { limits: { ...BOARD_DEFAULT_LIMITS, byModel: {} }, runs: [], seen: [], handles: new Map(), logPath, spawner };
+export function createBoardControls(logPath: string, spawner: BoardSpawner = spawnBoardChild, timeLimitMs = BOARD_TIME_LIMIT_MS): BoardControls {
+  return { limits: { ...BOARD_DEFAULT_LIMITS, byModel: {} }, runs: [], seen: [], handles: new Map(), logPath, spawner, timeLimitMs };
 }
 
 /** One line in the board's log: when, and what started, stopped, or changed. Never throws. */
@@ -221,7 +246,38 @@ export function boardBrief(issue: string, worktree: string, model: string): stri
     `Worktree: ${worktree}`,
     `Model: ${model}`,
     'Goal: do the issue in this worktree as a yokoten worker. Follow AGENTS.md. Commit the work. Never push.',
+    `Report: write ${BOARD_REPORT_PREFIX}${issue}.md in the worktree before you stop.`,
+    'Stuck: if the same step fails three times, stop, go back to your last anchor, or write your report. Stopping is good work.',
   ].join('\n');
+}
+
+/**
+ * Write a short report for a worker the time limit stopped, when it wrote none (#711).
+ * It uses the last output lines the board kept, so the lead still hears where it
+ * stopped. A report the worker wrote is never touched.
+ */
+export function writeStopReport(run: BoardRun, limitMs: number): string | null {
+  const path = boardReportPath(run.worktree, run.issue);
+  if (existsSync(path)) return null;
+  const minutes = Math.round(limitMs / 60_000);
+  const last = run.output.slice(-20);
+  const text = [
+    `# Report for issue #${run.issue}`,
+    '',
+    `Stopped by the time limit after ${minutes} minutes. The worker wrote no report.`,
+    `Vendor: ${run.vendor}; model: ${run.model}; issue: #${run.issue}.`,
+    '',
+    '## Last output',
+    '',
+    ...(last.length ? last.map((line) => `    ${line}`) : ['    (no output)']),
+    '',
+  ].join('\n');
+  try {
+    writeFileSync(path, text);
+    return path;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -285,17 +341,35 @@ export function boardGuardReady(vendor: string, dir: string, env: Env): string |
   return null;
 }
 
-/** The ask as given, or the plain reason it is refused. */
-export function readBoardStartAsk(fields: Record<string, string>): BoardStartAsk | string {
-  const issue = (fields.issue ?? '').trim();
-  if (!/^[1-9]\d*$/.test(issue)) return 'give the issue by its number, such as 603';
+/** The vendor and the model, or the plain reason they are refused. */
+function readVendorModel(fields: Record<string, string>): { vendor: string; model: string } | string {
   const vendor = (fields.vendor ?? '').trim();
   if (!Object.hasOwn(BOARD_START_COMMANDS, vendor)) {
     return `the board starts ${Object.keys(BOARD_START_COMMANDS).join(', ')}: start ${vendor || 'that vendor'} by hand`;
   }
   const model = (fields.model ?? '').trim();
   if (!BOARD_MODEL_PATTERN.test(model)) return 'name the model in letters, numbers, dots and dashes, such as muse-spark-1.3';
-  return { issue, vendor, model };
+  return { vendor, model };
+}
+
+/** The ask as given, or the plain reason it is refused. */
+export function readBoardStartAsk(fields: Record<string, string>): BoardStartAsk | string {
+  const issue = (fields.issue ?? '').trim();
+  if (!/^[1-9]\d*$/.test(issue)) return 'give the issue by its number, such as 603';
+  const vendorModel = readVendorModel(fields);
+  if (typeof vendorModel === 'string') return vendorModel;
+  return { issue, ...vendorModel };
+}
+
+/** One "start the next ready issues" request: a vendor and a model, no issue number. */
+export interface BoardStartNextAsk {
+  vendor: string;
+  model: string;
+}
+
+/** The ask for the next ready issues as given, or the plain reason it is refused. */
+export function readBoardStartNext(fields: Record<string, string>): BoardStartNextAsk | string {
+  return readVendorModel(fields);
 }
 
 /** The worktree for the issue, made when missing, or the plain reason git cannot make it. */
@@ -381,12 +455,14 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
     if (run.output.length > BOARD_OUTPUT_LINES) run.output.splice(0, run.output.length - BOARD_OUTPUT_LINES);
   };
   let child: BoardChild;
+  let timer: NodeJS.Timeout | undefined;
   try {
     child = controls.spawner(command, args, { cwd: made.dir, env: { ...env, YOKOTEN_ROLE: 'worker', YOKOTEN_MODEL: ask.model } }, {
       line: push,
       // An exit by itself stops the run: its limits slot and waiting rows free, and
       // a later stop answers already-stopped instead of signalling a dead child.
       exit: (code) => {
+        if (timer !== undefined) clearTimeout(timer);
         run.exitCode = code;
         run.status = 'stopped';
         run.stoppedAt = new Date().toISOString();
@@ -401,7 +477,85 @@ export function startBoardAgent(root: string, env: Env, controls: BoardControls,
   controls.handles.set(name, child);
   controls.runs.push(run);
   appendBoardLog(controls, boardLogLine(`start ${name} pid ${child.pid ?? '?'} issue #${ask.issue} ${ask.vendor} ${ask.model} ${made.dir} ${command} ${args.join(' ')}`));
+  // The time limit (#711): stop the worker, keep its work, and leave a report for the lead.
+  timer = setTimeout(() => {
+    if (run.status !== 'running') return;
+    try {
+      child.kill();
+    } catch {
+      // Already gone: the exit event reports it.
+    }
+    run.status = 'stopped';
+    run.stoppedBy = 'time limit';
+    run.stoppedAt = new Date().toISOString();
+    controls.handles.delete(name);
+    writeStopReport(run, controls.timeLimitMs);
+    appendBoardLog(controls, `limit ${name} pid ${run.pid ?? '?'} issue #${run.issue} stopped after ${Math.round(controls.timeLimitMs / 60_000)} minutes`);
+  }, controls.timeLimitMs);
+  timer.unref?.();
   return run;
+}
+
+/** What one "start the next ready issues" did. */
+export interface BoardStarts {
+  /** The runs it started, in start order. */
+  runs: BoardRun[];
+  /** The ready issues it left waiting, in start order. */
+  waiting: number[];
+  /** Why it left them: the agent cap, the memory floor, or nothing else ready. */
+  heldBy: 'slots' | 'memory' | 'none';
+  /** Why a start in the list was refused, or '' when each one it took started. */
+  refused: string;
+}
+
+/** What a test or a caller already knows about the machine, so a start needs no reading of it. */
+export interface BoardStartNextOptions {
+  /** The machine now. The board reads it when missing. */
+  machine?: MachineState;
+}
+
+/** The settings a start is held by: the board's agent cap and its memory floor. */
+function settingsOf(controls: BoardControls): ScheduleSettings {
+  return { maxAgents: controls.limits.maxAgents, memoryFloorMb: controls.limits.memoryFloorMb };
+}
+
+/** Plain words for why the machine cannot take another agent now. */
+function roomRefusal(room: ScheduleRoom, settings: ScheduleSettings): string {
+  if (room.hold === 'memory') return `the machine has ${room.freeMemoryMb} MB free, under the ${settings.memoryFloorMb} MB floor: lower the floor, or free some memory`;
+  return `the board already runs ${room.running} agents of ${settings.maxAgents}: stop one before starting another`;
+}
+
+/**
+ * Start the next ready issues, in the schedule's heap order (#709): priority, then the
+ * smallest number. The agent cap and the memory floor hold the rest: the first start
+ * that would break either stops the list, so the start order is the heap's. An issue the
+ * board already runs is skipped, so a second press never starts it twice.
+ */
+export function startBoardNext(root: string, env: Env, controls: BoardControls, ask: BoardStartNextAsk, issues: BoardIssue[] | string, options: BoardStartNextOptions = {}): BoardStarts | string {
+  const plan = planOf(issues);
+  if (!plan) {
+    return typeof issues === 'string'
+      ? `${issues}: the board starts nothing until it can read the open issues`
+      : 'the open issue list was cut off: a closed issue could look open, so the board starts nothing';
+  }
+  const isRunning = new Set(controls.runs.filter((run) => run.status === 'running').map((run) => run.issue));
+  const ready = plan.ready.filter((issue) => !isRunning.has(String(issue.number)));
+  if (!ready.length) return 'no open issue is ready to start: each one waits on another, or the list was cut off';
+  const settings = settingsOf(controls);
+  const room = options.machine ? roomStateOf(options.machine, settings) : roomOf(controls);
+  const starts = takeStarts(ready, room, settings);
+  if (!starts.started.length) return roomRefusal(room, settings);
+  const runs: BoardRun[] = [];
+  for (const number of starts.started) {
+    const run = startBoardAgent(root, env, controls, { issue: String(number), vendor: ask.vendor, model: ask.model });
+    if (typeof run === 'string') {
+      // A refused start ends the run of starts: the rest would meet the same guard.
+      if (!runs.length) return run;
+      return { runs, waiting: ready.slice(runs.length).map((issue) => issue.number), heldBy: starts.stoppedBy ?? 'none', refused: run };
+    }
+    runs.push(run);
+  }
+  return { runs, waiting: ready.slice(runs.length).map((issue) => issue.number), heldBy: starts.stoppedBy ?? 'none', refused: '' };
 }
 
 /**
@@ -422,15 +576,17 @@ export function stopBoardAgent(controls: BoardControls, name: string): BoardRun 
     return `the board could not stop ${clean}: run it again`;
   }
   run.status = 'stopped';
+  run.stoppedBy = 'owner';
   run.stoppedAt = new Date().toISOString();
   appendBoardLog(controls, `stop ${run.name} pid ${run.pid ?? '?'} issue #${run.issue} ${run.vendor} ${run.model}`);
   return run;
 }
 
-/** One limits change: a new cap, a new per-model map, or both. Missing stays as it is. */
+/** One limits change: a new cap, a new per-model map, a new memory floor, or several. Missing stays as it is. */
 export interface BoardLimitChange {
   maxAgents?: number;
   byModel?: Record<string, number>;
+  memoryFloorMb?: number;
 }
 
 /** The limits change as given, or the plain reason it is refused. */
@@ -454,154 +610,24 @@ export function readBoardLimitChange(fields: Record<string, string>): BoardLimit
     }
     change.byModel = byModel;
   }
-  if (change.maxAgents === undefined && change.byModel === undefined) return 'set maxAgents, models, or both';
+  const memoryText = (fields.memory ?? '').trim();
+  if (memoryText !== '') {
+    if (!/^\d+$/.test(memoryText) || Number(memoryText) > 65536) return 'set memory to a whole number of MB from 0 to 65536';
+    change.memoryFloorMb = Number(memoryText);
+  }
+  if (change.maxAgents === undefined && change.byModel === undefined && change.memoryFloorMb === undefined) return 'set maxAgents, models, memory, or all';
   return change;
 }
 
-/** The new limits, or the plain reason they are refused. Setting one keeps the other. */
+/** The new limits, or the plain reason they are refused. Setting one keeps the others. */
 export function setBoardLimits(controls: BoardControls, fields: Record<string, string>): BoardLimits | string {
   const change = readBoardLimitChange(fields);
   if (typeof change === 'string') return change;
   if (change.maxAgents !== undefined) controls.limits.maxAgents = change.maxAgents;
   if (change.byModel !== undefined) controls.limits.byModel = change.byModel;
-  appendBoardLog(controls, `limits maxAgents ${controls.limits.maxAgents} models ${JSON.stringify(controls.limits.byModel)}`);
+  if (change.memoryFloorMb !== undefined) controls.limits.memoryFloorMb = change.memoryFloorMb;
+  appendBoardLog(controls, `limits maxAgents ${controls.limits.maxAgents} memoryFloorMb ${controls.limits.memoryFloorMb} models ${JSON.stringify(controls.limits.byModel)}`);
   return { ...controls.limits, byModel: { ...controls.limits.byModel } };
-}
-
-/** The open issues, gh's order, or why gh cannot read them. */
-export function readBoardIssues(gh: Gh, repo: string): BoardIssue[] | string {
-  let text: string;
-  try {
-    text = gh(['issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30', '--json', 'number,title,url']);
-  } catch {
-    return 'gh could not list the open issues: run it again';
-  }
-  let rows: unknown;
-  try {
-    rows = JSON.parse(text || '[]');
-  } catch {
-    return 'gh gave no open issue list: run it again';
-  }
-  if (!Array.isArray(rows)) return 'gh gave no open issue list: run it again';
-  return rows.flatMap((row) => {
-    if (typeof row !== 'object' || row === null) return [];
-    const fields = row as Record<string, unknown>;
-    const number = fields.number;
-    if (typeof number !== 'number' || !Number.isSafeInteger(number) || number <= 0) return [];
-    return [{ number, title: typeof fields.title === 'string' ? fields.title : '', url: typeof fields.url === 'string' ? fields.url : '' }];
-  });
-}
-
-/** Plain text of a status field, or '' when it is missing or not text. */
-function fieldText(fields: Record<string, unknown>, name: string): string {
-  const value: unknown = fields[name];
-  return typeof value === 'string' ? value : '';
-}
-
-/** The link when it is http(s), else ''. Anything else stays plain text, never a link. */
-function boardLink(url: string): string {
-  const clean = url.trim().toLowerCase();
-  return clean.startsWith('http://') || clean.startsWith('https://') ? url.trim() : '';
-}
-
-/**
- * The hold-ups the status files name: `blocked` (a guard stop that needs a decision) or
- * `question` (one line the agent asks the owner), with `link` for where to act. A file
- * that is missing, broken, or names neither is skipped.
- */
-export function readBoardAttention(trees: BoardWorktree[]): BoardAttention[] {
-  const found: BoardAttention[] = [];
-  for (const tree of trees) {
-    let text: string;
-    try {
-      text = readFileSync(join(tree.path, BOARD_AGENT_FILE), 'utf8');
-    } catch {
-      continue;
-    }
-    const agent = parseBoardAgent(text, tree.path);
-    if (!agent) continue;
-    let status: unknown;
-    try {
-      status = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const fields = status as Record<string, unknown>;
-    const link = boardLink(fieldText(fields, 'link'));
-    for (const kind of ['guard', 'question'] as const) {
-      const why = fieldText(fields, kind === 'guard' ? 'blocked' : 'question').split('\n')[0].trim().slice(0, 140);
-      if (!why) continue;
-      found.push({ name: agent.name, vendor: agent.vendor, role: agent.role, worktree: agent.worktree, updated: agent.updated, kind, why, link });
-    }
-  }
-  return found;
-}
-
-/**
- * True when the pull request waits for the owner: tier A with green checks and no
- * Approve. The page reads the same rows from `status`: `approve` is tier A, open and
- * green without an Approve, and `changes` is the same with changes asked.
- */
-function isWaitingPull(pull: PullView): boolean {
-  return pull.status === 'approve' || pull.status === 'changes';
-}
-
-/** The agent in the worktree on the pull's branch, or null when no agent is there. */
-function pullAgent(board: BoardData, branch: string): AgentView | null {
-  if (typeof board.worktrees === 'string' || !branch) return null;
-  const path = board.worktrees.find((tree) => tree.branch === branch)?.path;
-  if (!path) return null;
-  return board.agents.find((agent) => agent.key === path) ?? null;
-}
-
-/**
- * The waiting list: tier A pull requests that need the Approve, and the agents' guard
- * stops and questions. Tier A rows are live from the pull requests. Agent rows latch:
- * once a hold-up shows, it stays while the agent is here, even when its file stops
- * naming it. Only leaving (removing the file) clears a file row, and only stopping
- * clears a run's own row. `seen` keeps the latched rows; the answer copies them, so
- * callers never move the latch.
- */
-export function collectBoardWaiting(board: BoardData, attention: BoardAttention[], runs: BoardRun[], seen: BoardWaiting[], now: number = Date.now()): BoardWaiting[] {
-  const live: BoardWaiting[] = [];
-  if (typeof board.pulls !== 'string') {
-    for (const pull of board.pulls.filter(isWaitingPull)) {
-      const agent = pullAgent(board, pull.branch);
-      live.push({
-        kind: 'approve',
-        agent: agent?.name ?? '',
-        role: agent?.role ?? '',
-        wait: agent?.age ?? '',
-        why: `tier A, checks pass, needs the owner go-ahead: #${pull.number} ${pull.title}`.slice(0, 140),
-        link: pull.url,
-      });
-    }
-  }
-  const fresh: BoardWaiting[] = attention.map((held) => ({ kind: held.kind, agent: held.name, role: held.role, wait: ageText(held.updated, now), why: held.why, link: held.link }));
-  for (const run of runs.filter((one) => one.status === 'running')) {
-    const stop = run.output.filter((line) => /guard stopped/i.test(line)).at(-1);
-    if (!stop) continue;
-    if (fresh.some((row) => row.agent === run.name && row.kind === 'guard')) continue;
-    if (seen.some((row) => row.agent === run.name && row.kind === 'guard')) continue;
-    fresh.push({ kind: 'guard', agent: run.name, role: '', wait: ageText(run.startedAt, now), why: stop.slice(0, 140), link: '' });
-  }
-  for (const row of fresh) {
-    const old = seen.find((kept) => kept.agent === row.agent && kept.kind === row.kind);
-    if (old) {
-      old.role = row.role;
-      old.why = row.why;
-      old.link = row.link;
-    } else seen.push({ ...row, latchedAt: new Date(now).toISOString() });
-  }
-  // The wait counts from when the row first showed, so a rewrite never resets it.
-  for (const row of seen) {
-    if (row.latchedAt) row.wait = ageText(row.latchedAt, now);
-  }
-  const here = new Set([...board.agents.map((agent) => agent.name), ...runs.filter((run) => run.status === 'running').map((run) => run.name)]);
-  for (let at = seen.length - 1; at >= 0; at -= 1) {
-    if (!here.has(seen[at].agent)) seen.splice(at, 1);
-  }
-  return [...live, ...seen.map((row) => ({ ...row }))];
 }
 
 /** The board's data with the controls: the waiting list, the open issues, the runs, and the limits. */
@@ -610,30 +636,17 @@ export interface BoardSnapshot {
   issues: BoardIssue[] | string;
   runs: BoardRun[];
   limits: BoardLimits;
+  /** The dependency order of the open issues, and the longest chain still open (#709). */
+  schedule: ScheduleSummary;
+  /** The machine's room now: agents running, free memory, and why a start waits (#709). */
+  room: ScheduleRoom;
 }
 
-/** The runs as /data serves them: worktrees hide the home folder, and only the tail of the output. */
-function snapshotRuns(runs: BoardRun[], env: Env): BoardRun[] {
-  return runs.map((run) => ({ ...run, worktree: hideHome(run.worktree, env), output: run.output.slice(-BOARD_OUTPUT_SHOWN) }));
-}
-
-/**
- * The waiting list as /data serves it: the latch time stays on the server, so the
- * rows hold what waits, who waits, how long, why, and where to act, and nothing else.
- */
-function snapshotWaiting(board: BoardData, attention: BoardAttention[], controls: BoardControls, now: number = Date.now()): BoardWaiting[] {
-  return collectBoardWaiting(board, attention, controls.runs, controls.seen, now).map(
-    ({ latchedAt: _, ...row }) => row,
-  );
-}
-
-/** The snapshot for /data: the waiting list, the open issues, the runs, and the limits. */
-export function readBoardSnapshot(root: string, env: Env, gh: Gh, controls: BoardControls, board: BoardData, trees: BoardWorktree[] | string): BoardSnapshot {
-  const remote = repoOf(readOriginUrl(root, env));
-  return {
-    waiting: snapshotWaiting(board, typeof trees === 'string' ? [] : readBoardAttention(trees), controls),
-    issues: remote ? readBoardIssues(gh, remote) : 'this repo has no GitHub remote, so the board shows no open issues',
-    runs: snapshotRuns(controls.runs, env),
-    limits: { ...controls.limits, byModel: { ...controls.limits.byModel } },
-  };
-}
+export {
+  collectBoardWaiting,
+  readBoardAttention,
+  readBoardIssues,
+  readBoardIssuesLater,
+  readBoardSnapshot,
+  scheduleOf,
+} from './waiting.ts';

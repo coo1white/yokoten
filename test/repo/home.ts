@@ -8,7 +8,7 @@
 // Yokoten's own variables are removed too (#712). A test must not see the session that
 // started the suite: YOKOTEN_ROLE, YOKOTEN_DESK and the rest. The architecture test checks it.
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -66,6 +66,29 @@ process.on('exit', () => rmSync(TEST_HOME, { recursive: true, force: true }));
  */
 export const COMPILE_CACHE = join(tmpdir(), 'node-compile-cache');
 process.env.NODE_COMPILE_CACHE = COMPILE_CACHE;
+
+// The commit check reads the password-database home when $HOME has no marks file (#739).
+// Point that read at nothing, after HOME is set, so no test opens the real marks file.
+const { useRealHome } = await import('../../src/rules/privacy.ts');
+useRealHome(() => '');
+
+// A child does not import this file: that would point its HOME at a new empty folder.
+// --import would load the child program as an ES module. Node then refuses a name it
+// does not know, such as the fake gh.exe (#750). --require runs CommonJS, sets the same
+// slot as useRealHome, and leaves the program's own format alone. The script is in the
+// temp folder, so test/repo stays at 7 files (#739, #356).
+// test files run side by side, and every one of them writes this same file. writeFileSync
+// empties it first, so a child that started in that moment read an empty script, found no
+// slot and failed the privacy test. Write a private copy and rename it into place:
+// rename is atomic, so a reader always sees the whole file.
+const preloadFile = join(tmpdir(), 'yokoten-real-home.cjs');
+const preloadDraft = join(tmpdir(), `yokoten-real-home-${process.pid}.cjs`);
+writeFileSync(preloadDraft, "globalThis[Symbol.for('yokoten.readRealHome')] = () => '';\n");
+renameSync(preloadDraft, preloadFile);
+const flag = `--require ${JSON.stringify(preloadFile)}`;
+if (!process.env.NODE_OPTIONS?.includes(flag)) {
+  process.env.NODE_OPTIONS = process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${flag}` : flag;
+}
 
 // Tests call the guard without the hook. The host command list registers when its module
 // loads. Load it here, after HOME is set, so nothing it imports reads the real home folder.

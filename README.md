@@ -34,22 +34,34 @@ hooks, sandbox and settings, and doesn't replace them.
 3. **A board for a team of agents.** Agents from different vendors work side by side,
    each in its own fenced desk, and you see all of them on one page.
 
+yokoten works before the pull request and alongside [PR review bots](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#review-bots-you-will-see-on-pull-requests).
+
 ## Install
 
 You need [Node](https://nodejs.org/) 22.23.4 or later (24.22.1 or later on Node 24, 26.12.1
 or later on Node 26). Nothing else.
 
 ```sh
-npx yokoten install      # once per computer
 cd your-project
-npx yokoten init         # once per project
-npx yokoten doctor       # where you are, and the one next step
+npx yokoten             # once: installs yokoten, adds the rules, shows the next step
+```
+
+That is the whole start. Run `npx yokoten` again in any project, and it does only what is
+still missing. If you would rather do one step at a time:
+
+```sh
+npx yokoten install     # once per computer
+npx yokoten init        # once per project
+npx yokoten doctor      # where you are, and the one next step
 ```
 
 In Claude Code you can use the plugin instead: `/plugin marketplace add yokoten-labs/yokoten`,
 then `/plugin install yokoten@yokoten`. Use the plugin or `npx`, not both. For CI only,
 [use it as a GitHub Action](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action).
 The commit check asks for UTC commit times, so add `export TZ=UTC` to your shell profile once.
+
+`npx skills add yokoten-labs/yokoten` copies the skills only: run `npx yokoten install`
+too, or you get no command guard and no session doctor.
 
 ## What you see
 
