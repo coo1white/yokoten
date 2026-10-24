@@ -80,6 +80,169 @@ export function hostRunRemoval(words: string[]): Finding | undefined {
   return undefined;
 }
 
+// ---- Repository and organization settings (#825) ----
+//
+// Protection 3 of record 0034: an agent does not make a repo public or change the server's
+// lock. `gh repo edit` is the other way to make that change; the same change through `gh api`
+// was not refused, so this reads the route. A read passes. A comment, a label or a review
+// stays allowed.
+
+const SETTINGS_FIX = 'ask the owner, who changes repository and organization settings in the browser';
+const ORG = 'orgs/[^/]+';
+// `gh api graphql` sends one document, and a mutation reaches settings the REST routes below
+// do not name. A document can hold fragments and a read before its mutation, so the keyword
+// is looked for anywhere in the code. A GitHub Enterprise server serves the same call at
+// `api/graphql`.
+const GRAPHQL_ROUTE = /^(?:api\/)?graphql$/i;
+const MUTATION = /\bmutation\b/i;
+// The first field of a mutation, after its optional name and variable declarations.
+const MUTATION_FIELD = /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*mutation\b(?:\s+[A-Za-z_]\w*)?(?:\s*\([^)]*\))?\s*\{\s*([A-Za-z_]\w*)/i;
+// A document the shell builds is not one the guard can read: a variable, a substitution or
+// a backtick. A GraphQL variable declaration (`query($id: ID!)`) is none of these.
+const SHELL_DOCUMENT = /^\$|\$\(|\$\{|`/;
+// The options that carry the document: a field, or an input file (#825).
+const GRAPHQL_FIELD = new Set(['-f', '--raw-field', '-F', '--field']);
+const GRAPHQL_INPUT = new Set(['--input']);
+// A repo setting: the repo itself (visibility, default branch, deletion), its branch
+// protection, its rulesets, and the groups that change what checks run or who reaches the
+// code. Any other repo write (a comment, a label, a review, a merge) is one the bot needs.
+const SETTINGS_ROUTES = [
+  new RegExp(`^${REPO}$`, 'i'),
+  new RegExp(`^${REPO}/branches/.+/protection(?:/.*)?$`, 'i'),
+  new RegExp(`^${REPO}/rulesets(?:/.*)?$`, 'i'),
+  new RegExp(`^${REPO}/(?:actions/permissions(?:/.*)?|interaction-limits|vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|transfer)$`, 'i'),
+  // Who reaches the code, and what CI runs with: collaborators, teams, invitations, deploy
+  // keys, webhooks, secrets, variables, runners and environments. A dependabot or codespace
+  // secret is a CI secret too, and it sits outside `actions/`. The bot needs none of them.
+  new RegExp(`^${REPO}/(?:collaborators|teams|invitations|keys|hooks|actions/(?:secrets|variables|runners)|(?:dependabot|codespaces)/secrets|environments)(?:/.*)?$`, 'i'),
+  // An organization and everything under it: its settings, membership, teams and rulesets
+  // are the owner's, and the bot has no write there.
+  new RegExp(`^${ORG}(?:/.*)?$`, 'i'),
+];
+
+/**
+ * The document with its comments and string literals blanked, so a keyword inside one is not
+ * read as an operation (#825). What is left is code.
+ */
+function documentCode(document: string): string {
+  let code = '';
+  let index = 0;
+  while (index < document.length) {
+    if (document.startsWith('"""', index)) {
+      const block = document.indexOf('"""', index + 3);
+      index = block === -1 ? document.length : block + 3;
+      code += ' ';
+      continue;
+    }
+    if (document[index] === '"') {
+      index++;
+      while (index < document.length && document[index] !== '"') index += document[index] === '\\' ? 2 : 1;
+      index++;
+      code += ' ';
+      continue;
+    }
+    if (document[index] === '#') {
+      while (index < document.length && document[index] !== '\n') index++;
+      code += '\n';
+      continue;
+    }
+    code += document[index];
+    index++;
+  }
+  return code;
+}
+
+/**
+ * Whether a GraphQL mutation only adds a comment, the one write the bot needs. It must be one
+ * top-level `addComment` field and nothing else, because another field could change a setting
+ * (#825). Anything that does not read as exactly that is refused.
+ */
+function isCommentMutation(document: string): boolean {
+  const start = MUTATION_FIELD.exec(document);
+  if (start?.[1].toLowerCase() !== 'addcomment') return false;
+  let index = start[0].length;
+  let braces = 1;
+  let parens = 0;
+  let isClosed = false;
+  while (index < document.length) {
+    const char = document[index];
+    if (char === '"') {
+      if (document.startsWith('"""', index)) {
+        const block = document.indexOf('"""', index + 3);
+        index = block === -1 ? document.length : block + 3;
+        continue;
+      }
+      index++;
+      while (index < document.length && document[index] !== '"') index += document[index] === '\\' ? 2 : 1;
+      index++;
+      continue;
+    }
+    if (char === '#') {
+      while (index < document.length && document[index] !== '\n') index++;
+      continue;
+    }
+    if (char === '(') parens++;
+    else if (char === ')') parens = Math.max(0, parens - 1);
+    else if (parens === 0 && char === '{') braces++;
+    else if (parens === 0 && char === '}') {
+      braces--;
+      if (braces === 0) {
+        index++;
+        isClosed = true;
+        break;
+      }
+    } else if (braces === 1 && parens === 0 && /[A-Za-z_]/.test(char)) {
+      // A second top-level field: this mutation does more than comment.
+      return false;
+    }
+    index++;
+  }
+  return isClosed && /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*$/.test(document.slice(index));
+}
+
+/**
+ * Whether a `gh api graphql` call sends a mutation that may change settings (#825). A document
+ * the guard cannot read, an `@file`, a shell variable or substitution, `--input`, or none at
+ * all, counts as one it cannot vouch for. A mutation that only adds a comment passes.
+ */
+function isGraphqlSettingsWrite(args: string[]): boolean {
+  let hasDocument = false;
+  for (let index = 0; index < args.length; index++) {
+    if (optionValue(args, index, GRAPHQL_INPUT)) return true;
+    const field = optionValue(args, index, GRAPHQL_FIELD);
+    if (!field) continue;
+    const value = field.value ?? '';
+    const equals = value.indexOf('=');
+    const document = equals === -1 ? value : value.slice(equals + 1);
+    if (document.startsWith('@') || SHELL_DOCUMENT.test(document)) return true;
+    hasDocument = true;
+    if (MUTATION.test(documentCode(document)) && !isCommentMutation(document)) return true;
+    index = field.next - 1;
+  }
+  return !hasDocument;
+}
+
+/** A `gh api` call that writes to repository or organization settings, or undefined when it is not one or is a read (#825). */
+export function hostSettingsWrite(words: string[]): Finding | undefined {
+  const at = ghIndex(words, findProgramPlaces(words));
+  if (at === -1) return undefined;
+  const args = withoutShellRedirects(words, at + 1);
+  const plain = plainArgs(args, ['-R', '--repo', '--hostname']);
+  if (plain[0] !== 'api') return undefined;
+  const call = readApi(args.slice(args.indexOf('api') + 1));
+  // A short-option cluster is refused before this check, by hostRunRemoval.
+  if (call.cluster) return undefined;
+  // No method and a field or `--input`: gh sends POST. A named GET is a read, even with fields.
+  const method = call.method || (call.hasFields ? 'POST' : 'GET');
+  if (method === 'GET') return undefined;
+  if (GRAPHQL_ROUTE.test(call.path)) {
+    if (isGraphqlSettingsWrite(args)) return finding('repo-settings', 'this `gh api graphql` call sends a mutation, which can change repository or organization settings', SETTINGS_FIX);
+    return undefined;
+  }
+  if (!SETTINGS_ROUTES.some((route) => route.test(call.path))) return undefined;
+  return finding('repo-settings', 'this `gh api` call changes repository or organization settings', SETTINGS_FIX);
+}
+
 const GH_ALIAS_FIX = 'ask the owner to add the alias by hand';
 
 /** `gh alias set` and `gh alias import` hide any later command under a new name, for both roles (#650). */
@@ -265,6 +428,7 @@ const GUARD_SAMPLES: { command: string; name: string }[] = [
   { command: 'gh extension install o/gh-x', name: 'gh command guard' },
   { command: 'gh extension exec demo', name: 'gh command guard' },
   { command: 'gh extension browse', name: 'gh command guard' },
+  { command: 'gh api -X PATCH repos/o/r -f visibility=public', name: 'settings guard' },
 ];
 
 /** The names of the samples `check` did not catch. A finding counts as a catch. Each name is listed once. */
@@ -281,4 +445,4 @@ export function hostGuardMisses(check: (command: string) => unknown): string[] {
 }
 
 useHostApi({ read: readApi, clusterFinding: apiClusterFinding, values: () => API_VALUES });
-useHostCommands({ hostRunRemoval, hostAlias, hostHiddenCommand, hostTokenReveal, hostWorkflowOff });
+useHostCommands({ hostRunRemoval, hostSettingsWrite, hostAlias, hostHiddenCommand, hostTokenReveal, hostWorkflowOff });
