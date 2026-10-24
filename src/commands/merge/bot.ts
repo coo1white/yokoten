@@ -4,11 +4,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../host/github/index.ts';
-import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
-import { finding, type Finding } from '../rules/message.ts';
-import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkIssueLabels, checkMergeApproval, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../rules/pr.ts';
-import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from './shared.ts';
+import { botConfig, botEnv, botProgram, type Gh, installationToken, readApprovalState, readBranchFiles, readCodeOwners, readIssueMilestone, readRepoLabelNames, repoOf } from '../../host/github/index.ts';
+import { DEFAULTS, type Env, loadConfig } from '../../rules/config.ts';
+import { finding, type Finding } from '../../rules/message.ts';
+import { type CommandIssueLabels, type CommandLabels, type CommandMilestone, checkCommandTitle, checkMergeApproval, checkIssueLabels, checkOwnedTier, checkPullRequestBody, madeWithFindings, noMilestoneFinding, prTier, readCommandBody, readCommandIssueLabels, readCommandLabels, readCommandMilestone } from '../../rules/pr.ts';
+import { bullets, type Invocation, type Output, parse, print, readInput, requireRoot, rootOf, usage } from '../shared.ts';
 
 async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const { env, cwd } = invocation;
@@ -599,9 +599,10 @@ interface MergeStop {
 
 /**
  * Why pull request `number` must not merge yet, or null when it may: not tier A, or the
- * owner's Approve is on its head, or only base merges came after it with the same own
- * diff. What gh or git can't answer is `unchecked`. It names the cause and does not
- * ask for a new Approve. A missing or stale Approve is `needsApprove`.
+ * owner's Approve is on its head, or an area lead of another vendor than the writer
+ * approved it, or only base merges came after that Approve with the same own diff.
+ * What gh or git can't answer is `unchecked`. It names the cause and does not ask for
+ * a new Approve. A missing or stale Approve is `needsApprove`.
  */
 function approvalRefusal(gh: Gh, root: string, env: Env, number: number, repo: string): MergeStop | null {
   const state = readApprovalState(gh, root, env, number, repo);
