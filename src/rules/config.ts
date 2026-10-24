@@ -16,6 +16,7 @@ export interface Config {
   areas: string[];
   translations: { fail: boolean };
   commands: { block: Record<string, string> };
+  worker: { timeLimitMinutes: number };
 }
 
 /** The guard's own environment (process.env, or a test's stand-in). */
@@ -52,6 +53,9 @@ export const DEFAULTS: Config = {
   // Programs no agent may run here, each with the reason (#192):
   // { "block": { "python3": "this project is TypeScript only" } }.
   commands: { block: {} },
+  // A worker that a runner or the board starts stops after this many minutes (#711):
+  // three hours unless the project says otherwise.
+  worker: { timeLimitMinutes: 180 },
 };
 
 /**
@@ -127,6 +131,10 @@ const SHAPES: Record<keyof Config, Shape | Fields> = {
   areas: shape('a list of names, like ["cli", "docs"]', (value) => isTextList(value) && (value as string[]).every((item) => item.trim() !== '')),
   translations: { example: '{ "fail": true }', fields: { fail: trueOrFalse } },
   commands: blockList,
+  worker: {
+    example: '{ "timeLimitMinutes": 180 }',
+    fields: { timeLimitMinutes: shape('a whole number of minutes above 0, such as 180', (value) => Number.isInteger(value) && (value as number) > 0) },
+  },
 };
 
 /**

@@ -132,6 +132,7 @@ export function killedLine(testName: string | undefined, command: string, timeou
 
 /**
  * spawnSync for a test, with text output, CHILD_TIMEOUT_MS and CHILD_MAX_BUFFER unless given.
+ * No shell, ever (#813): an argument is a value the test chose, never shell code.
  * A killed child is printed on stderr with the test that ran it.
  */
 export function runChild(command: string, args: string[], options: Pick<SpawnSyncOptionsWithStringEncoding, 'cwd' | 'env' | 'input' | 'timeout' | 'maxBuffer' | 'stdio'> = {}): SpawnSyncReturns<string> {
@@ -229,7 +230,17 @@ export const GOOD: Record<string, unknown> = {
     { type: 'deletion' },
   ],
   [`repos/${REPO}/rulesets?targets=tag&includes_parents=true&per_page=100`]: [{ id: 7, target: 'tag', enforcement: 'active' }],
-  [`repos/${REPO}/rulesets/7`]: { conditions: { ref_name: { include: ['refs/tags/v*'] } }, rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }] },
+  [`repos/${REPO}/rulesets/7`]: {
+    conditions: { ref_name: { include: ['refs/tags/v*'] } },
+    rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }],
+    bypass_actors: [{ actor_id: 5, actor_type: 'RepositoryRole' }],
+  },
+  [`repos/${REPO}/environments/release`]: {
+    protection_rules: [{ type: 'required_reviewers', reviewers: [{ type: 'User', reviewer: { login: 'octo' } }] }],
+  },
+  [`repos/${REPO}/environments/release/deployment-branch-policies`]: {
+    branch_policies: [{ id: 1, name: 'v*', type: 'tag' }],
+  },
   [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: true },
   [`repos/${REPO}/vulnerability-alerts`]: '',
   [`repos/${REPO}/pulls?state=open&per_page=100`]: 'octo:feat/a\nsomeone:main\n',

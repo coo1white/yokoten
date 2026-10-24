@@ -5,11 +5,13 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { makeSandbox, makeTempDir } from '../../../repo/helpers.ts';
 import { EMPTY_DESK } from '../../../../src/commands/advice/board/feed/read/desk.ts';
 import {
   boardBrief,
   boardGuardReady,
+  boardReportPath,
   boardStartParts,
   collectBoardWaiting,
   createBoardControls,
@@ -132,6 +134,24 @@ test('board controls: a started agent works in a marked worktree', () => {
   assert.ok(typeof run !== 'string', `the start passes: ${run}`);
   assert.equal(workerMarkAt(run.worktree, sandbox.env), 'mark', 'the board-made worktree carries the worker mark');
   assert.equal(workerRole({}, [run.worktree]), 'mark', 'a worker even with no YOKOTEN_ROLE in the env');
+});
+
+// #711: the time limit ends a worker, keeps its work, and leaves a report for the lead.
+test('board controls: the time limit stops a run and writes a report when there is none', async () => {
+  const sandbox = makeSandbox();
+  const agents = fakeAgents();
+  const controls = createBoardControls(join(sandbox.repo, '.yokoten-board.log'), agents.spawner);
+  controls.timeLimitMs = 20;
+  const run = startBoardAgent(sandbox.repo, sandbox.env, controls, { issue: '12', vendor: 'claude-code', model: 'model-a' });
+  assert.ok(typeof run !== 'string', `the start passes: ${run}`);
+  assert.equal(run.status, 'running');
+  await delay(60);
+  assert.equal(run.status, 'stopped');
+  assert.equal(run.stoppedBy, 'time limit');
+  assert.deepEqual(agents.killed, [run.pid], 'the time limit stops its own process');
+  const report = readFileSync(boardReportPath(run.worktree, '12'), 'utf8');
+  assert.match(report, /Stopped by the time limit/);
+  assert.match(report, /wrote no report/);
 });
 
 // #603 findings: on a fresh untrusted worktree the guard hooks are skipped without a
