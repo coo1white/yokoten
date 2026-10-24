@@ -6,6 +6,7 @@
 import { formatFinding } from '../../../rules/message.ts';
 import { type Invocation, parse, print, printJson, requireRoot, say, usage } from '../../shared.ts';
 import { beforeChange, buildMap, openChanges, writeMap } from './map.ts';
+import { rebuildPrompt } from './rebuild.ts';
 import type { Change, Collision, ConflictMap } from './types.ts';
 
 /** The most labels one line names before it counts the rest. */
@@ -84,7 +85,7 @@ export function summaryLines(map: ConflictMap): string[] {
   }
   const pairs: { collision: Collision; pair: [Change, Change] }[] = [];
   for (const collision of map.collisions) {
-    const pair = pairOf(map, collision.a, collision.b);
+    const pair = pairOf(map, collision.first, collision.second);
     if (pair) pairs.push({ collision, pair });
   }
   for (const { collision, pair } of pairs.slice(0, MAX_PAIRS)) {
@@ -100,7 +101,7 @@ export function summaryLines(map: ConflictMap): string[] {
     lines.push(`${change.label} moves ${one(change.moves.length, 'file')} that ${one(others.length, 'other change')} ${others.length === 1 ? 'touches' : 'touch'}. It goes in alone, first.`);
   }
   if (moving.length > MAX_MOVERS) lines.push(`${one(moving.length - MAX_MOVERS, 'more change')} move files that others touch: \`yokoten conflicts --json\` names every one.`);
-  const drafts = map.changes.filter((change) => change.draft && (change.mainConflicts?.length || map.collisions.some((collision) => collision.a === change.id || collision.b === change.id)));
+  const drafts = map.changes.filter((change) => change.draft && (change.mainConflicts?.length || map.collisions.some((collision) => collision.first === change.id || collision.second === change.id)));
   if (drafts.length) {
     lines.push(drafts.length === 1
       ? `${drafts[0]?.label ?? 'A draft'} is a draft, so it is listed here, but not ordered.`
@@ -112,36 +113,14 @@ export function summaryLines(map: ConflictMap): string[] {
   return lines;
 }
 
-/** The rebuild offer of #913: a prompt that rebuilds one change instead of merging it. */
-type RebuildPrompt = (map: ConflictMap, id: string) => string;
-
-// #913 writes ./rebuild.ts. A variable specifier typechecks and runs before that file
-// lands, because the five parts of #914 merge into one branch before the pull request.
-const REBUILD_MODULE = './rebuild.ts';
-
-/** The rebuild offer, or null when this build has none yet. */
-async function loadRebuild(): Promise<RebuildPrompt | null> {
-  try {
-    const module = (await import(REBUILD_MODULE)) as { rebuildPrompt?: RebuildPrompt };
-    return typeof module.rebuildPrompt === 'function' ? module.rebuildPrompt : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Build one change in a fresh worktree instead of merging it (#913), as a prompt to hand over. */
-async function rebuild(map: ConflictMap, word: string, invocation: Invocation): Promise<number> {
+function rebuild(map: ConflictMap, word: string, invocation: Invocation): number {
   const change = map.changes.find((held) => held.id === word || held.branch === word);
   if (!change) {
     print(invocation, [`yokoten conflicts: no open change ${word}. Run \`yokoten conflicts\` to see the ${one(map.changes.length, 'change')} this map holds.`], invocation.stderr);
     return 1;
   }
-  const prompt = await loadRebuild();
-  if (prompt === null) {
-    print(invocation, ['yokoten conflicts: this build has no rebuild offer yet, so nothing was rebuilt.', 'Update yokoten, then run `yokoten conflicts --rebuild` again.'], invocation.stderr);
-    return 1;
-  }
-  print(invocation, prompt(map, change.id).split('\n'));
+  print(invocation, rebuildPrompt(map, change.id).split('\n'));
   return 0;
 }
 

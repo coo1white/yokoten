@@ -35,7 +35,7 @@ function issueExample(): ConflictMap {
       change('pr:20', 'PR #20', ['src/new.ts'], ['src/old.ts']),
       change('pr:25', 'PR #25', ['src/old.ts']),
     ],
-    [{ a: 'pr:12', b: 'pr:15', files: ['src/app.ts'] }],
+    [{ first: 'pr:12', second: 'pr:15', files: ['src/app.ts'] }],
   );
 }
 
@@ -77,7 +77,7 @@ test('a long map stays short on a line', () => {
   assert.equal(pathsText(['a.ts', 'b.ts', 'c.ts', 'd.ts', 'e.ts']), 'a.ts, b.ts, c.ts, and 2 more');
   assert.equal(pathsText(['a.ts']), 'a.ts');
   const changes = Array.from({ length: 9 }, (_, index) => change(`pr:${index + 1}`, `PR #${index + 1}`, [`src/${index}.ts`]));
-  const collisions: Collision[] = changes.slice(1).map((held) => ({ a: 'pr:1', b: held.id, files: ['src/app.ts'] }));
+  const collisions: Collision[] = changes.slice(1).map((held) => ({ first: 'pr:1', second: held.id, files: ['src/app.ts'] }));
   const lines = summaryLines(mapOf(changes, collisions));
   assert.equal(lines.filter((line) => line.includes('both change')).length, 5);
   assert.ok(lines.some((line) => line === '3 more pairs collide: `yokoten conflicts --json` names every one.'), lines.join('\n'));

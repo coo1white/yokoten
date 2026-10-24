@@ -83,7 +83,7 @@ test('two branches that change one file collide', () => {
 
   const { map, notes } = build(sandbox, null);
 
-  assert.deepEqual(map.collisions, [{ a: 'branch:one', b: 'branch:two', files: ['a.txt'] }]);
+  assert.deepEqual(map.collisions, [{ first: 'branch:one', second: 'branch:two', files: ['a.txt'] }]);
   assert.deepEqual(map.changes.map((held) => held.label), ['branch one', 'branch two']);
   // Each merges with main on its own: what collides here is the pair, not main.
   assert.deepEqual(map.changes.map((held) => held.mainConflicts), [[], []]);
@@ -131,7 +131,7 @@ test('a pair with no shared file is never merged', () => {
   const pairs = calls.filter((words) => words[0] === 'merge-tree');
   // One merge-tree with main for each of three branches, then the one pair that shares a.txt.
   assert.equal(pairs.length, 4, pairs.map((words) => words.slice(3).join(' ')).join('; '));
-  assert.deepEqual(map.collisions.map((collision) => [collision.a, collision.b]), [['branch:left', 'branch:other']]);
+  assert.deepEqual(map.collisions.map((collision) => [collision.first, collision.second]), [['branch:left', 'branch:other']]);
 });
 
 test('the pairs to try are the pairs that share a file', () => {

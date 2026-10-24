@@ -328,7 +328,7 @@ export function buildMap(root: string, env: Env, options: MapOptions): MapBuild 
       unknownPairs++;
       continue;
     }
-    if (files.length) collisions.push({ a: a.id, b: b.id, files });
+    if (files.length) collisions.push({ first: a.id, second: b.id, files });
   }
 
   if (skipped) notes.push(`${one(skipped, 'open change')} ${skipped === 1 ? 'is' : 'are'} not in this clone, so the map leaves ${skipped === 1 ? 'it' : 'them'} out`);
@@ -359,7 +359,7 @@ export async function openChanges(root: string, env: Env, reads: HostReads = {})
   if (host.kind === 'github') {
     const list = readOpenPulls(reads.gh ?? ghIn(root, env, HOST_TIMEOUT_MS), host.repo);
     if (typeof list === 'string') return { listed: null, notes: [`${list}, ${local}`] };
-    const listed = list.pulls.map((pull) => ({ id: `pr:${pull.number}`, label: `PR #${pull.number}`, branch: pull.branch, draft: false }));
+    const listed = list.pulls.map((pull) => ({ id: `pr:${pull.number}`, label: `PR #${pull.number}`, branch: pull.branch, draft: pull.isDraft }));
     return { listed, notes: list.isCut ? [`only the first ${OPEN_PULL_LIMIT} open pull requests were read`] : [] };
   }
   if (host.kind === 'gitea') {
@@ -443,7 +443,7 @@ function isChange(value: unknown): value is Change {
 }
 
 function isCollision(value: unknown): value is Collision {
-  return isObject(value) && typeof value.a === 'string' && typeof value.b === 'string' && isTextArray(value.files);
+  return isObject(value) && typeof value.first === 'string' && typeof value.second === 'string' && isTextArray(value.files);
 }
 
 /** Whether a parsed file is a map this version reads: its version, its time, and its shapes. */
