@@ -15,6 +15,7 @@ import { hookCliPath, isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
+import { hasUserSettings } from '../../agents/runtimes/claude-code.ts';
 import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, editedKitCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, releaseChannel, userAgentHooks, type Practice } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, stageFileFor, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
@@ -346,6 +347,14 @@ function doctorRun(
       blocks.push([`yokoten: ${formatFinding(marks.finding)}`]);
       findings.push(marks.finding);
     }
+    // No guard at all is unsafe at once, so a session hears it too (#904). Only where
+    // Claude Code has its own settings: a machine without them has no such session to
+    // guard, and full doctor names the missing guard for the user who wants one.
+    const guard = hasUserSettings(env) ? machine.find((c) => c.name === 'user-guard' && !c.ok) : undefined;
+    if (guard) {
+      blocks.push([`yokoten: ${formatFinding(guard.finding)}`]);
+      findings.push(guard.finding);
+    }
     // A stale plugin keeps old guard rules running; the session hears it (#198).
     const stale = pluginAgeCheck(root, env);
     if (stale) blocks.push([`yokoten: ${formatFinding(stale)}`]);
@@ -377,7 +386,8 @@ function doctorRun(
     const lesson = sessionLessonNote(root, config.notNow, stateFile, env.CLAUDE_PLUGIN_ROOT ? '/yokoten:doctor' : '`yokoten doctor`');
     if (lesson.line) blocks.push([lesson.line]);
     const notes = [...unsaved.notes, ...lesson.findings, ...(claudeRules ? [claudeRules.finding] : [])];
-    const ok = !failed.length && !isCoreBehind;
+    // A machine with no guard fails the run as full doctor does; a session still starts.
+    const ok = !failed.length && !isCoreBehind && !guard;
     return { ok, lines: blocks.flat(), blocks, report: { ...base, ok, repo: true, stage, next, findings, ...(notes.length ? { notes } : {}) } };
   }
 

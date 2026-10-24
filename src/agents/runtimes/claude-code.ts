@@ -2,7 +2,7 @@
 // settings, skills and agents live, and how its hooks are written. Each other runtime
 // gets a sibling file with the same tool-call exports (codex.ts, gemini.ts).
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { releaseFix } from '../../rules/guards/index.ts';
@@ -213,6 +213,13 @@ export function addUserHooks(env: Env, cli: string, missing: string): { doctor: 
 // With no home folder there are no user settings to read: nothing is on (#356).
 export const hasSessionDoctor = (env: Env): boolean => homeOf(env) !== null && hasHook(userSettings(env), 'SessionStart', 'doctor');
 export const hasUserGuard = (env: Env): boolean => homeOf(env) !== null && hasHook(userSettings(env), 'PreToolUse', 'hook');
+
+/**
+ * Whether Claude Code keeps its user settings here: the file `install` adds its two hooks
+ * to. A machine without it has no Claude Code session to guard, so a session stays quiet
+ * about a guard the plugin took with it (#904); full `doctor` still names it with its fix.
+ */
+export const hasUserSettings = (env: Env): boolean => homeOf(env) !== null && existsSync(userSettings(env));
 
 /**
  * Take out the two hooks addUserHooks adds, and nothing else in the file. Null when the

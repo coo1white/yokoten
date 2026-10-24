@@ -35,6 +35,7 @@ import {
   makeSandbox,
   makeTempDir,
   onToolCall,
+  ROOT,
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime, isEditedManaged, sealManaged, writeManaged } from '../../src/setup/files.ts';
@@ -69,25 +70,29 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^kept agent reviewer \(yours, not yokoten's\)$/m);
   assert.equal(readFileSync(join(claude, 'agents', 'reviewer.md'), 'utf8'), 'my own reviewer\n');
-  // Every skill in both folders: Claude Code's, and the shared one other agents read (#29).
+  // One entry skill: Claude Code's folder, and the shared one other agents read (#904).
   const kitSkills = readdirSync(join(sandbox.home, '.local/share/yokoten/kit/user/skills'));
   assert.ok(kitSkills.includes('release'), 'the release skill (#34)');
   // The release skill leaves the tag to the owner: the tag command it gives is stopped for an agent.
-  const tagLine = readFileSync(join(claude, 'skills', 'release', 'SKILL.md'), 'utf8').match(/`(git tag [^`]+)`/);
+  const releaseSkill = readFileSync(join(sandbox.home, '.local/share/yokoten/kit/user/skills/release/SKILL.md'), 'utf8');
+  const tagLine = releaseSkill.match(/`(git tag [^`]+)`/);
   assert.ok(tagLine);
   // A real child: the guard's exit code 2 comes from the entry point.
   assert.equal(sandbox.run(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: tagLine[1].replaceAll('X.Y.Z', '1.2.3') } }) }).status, 2);
   for (const name of kitSkills) {
-    assert.ok(existsSync(join(claude, 'skills', name, 'SKILL.md')), `~/.claude/skills/${name}`);
-    assert.ok(existsSync(join(shared, 'skills', name, 'SKILL.md')), `~/.agents/skills/${name}`);
-    assert.match(result.stdout, new RegExp(`wrote skill ${name} in ~/\\.claude/skills`));
+    if (name === 'yokoten' || name === 'rca') continue;
+    assert.ok(!existsSync(join(claude, 'skills', name)), `no global copy of ${name}`);
+    assert.ok(!existsSync(join(shared, 'skills', name)), `no shared copy of ${name}`);
   }
-  // The shared folder holds one link per skill to Claude Code's copy, so Muse, which reads
-  // both folders, sees each skill once and warns about none (#557).
-  for (const name of kitSkills.filter((n) => n !== 'rca')) {
-    assert.match(result.stdout, new RegExp(`linked skill ${name} in ~/\\.agents/skills`));
-    assert.equal(readlinkSync(join(shared, 'skills', name)), join(claude, 'skills', name), `~/.agents/skills/${name}`);
-  }
+  assert.ok(existsSync(join(claude, 'skills', 'yokoten', 'SKILL.md')), '~/.claude/skills/yokoten');
+  assert.ok(existsSync(join(shared, 'skills', 'yokoten', 'SKILL.md')), '~/.agents/skills/yokoten');
+  assert.match(result.stdout, /wrote skill yokoten in ~\/\.claude\/skills/);
+  assert.match(result.stdout, /linked skill yokoten in ~\/\.agents\/skills/);
+  // The shared folder holds one link to Claude Code's copy, so Muse, which reads both
+  // folders, sees the entry skill once and warns about none (#557).
+  assert.equal(readlinkSync(join(shared, 'skills', 'yokoten')), join(claude, 'skills', 'yokoten'));
+  // The entry names where the rest live.
+  assert.match(readFileSync(join(claude, 'skills', 'yokoten', 'SKILL.md'), 'utf8'), /kit\/user\/skills\/<name>\/SKILL\.md/);
   assert.match(result.stdout, /^kept skill rca in ~\/\.agents\/skills \(yours, not yokoten's\)$/m);
   assert.equal(readFileSync(join(shared, 'skills', 'rca', 'SKILL.md'), 'utf8'), 'my own rca\n');
   assert.ok(!existsSync(join(shared, 'agents')), 'agents stay Claude-only');
@@ -96,8 +101,8 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // The git display name is no mark: a common name would flag every file holding the word.
   assert.ok(!readFileSync(marks, 'utf8').includes('Jane Example'));
   result = await sandbox.call(['install']);
-  for (const name of kitSkills) assert.match(result.stdout, new RegExp(`kept skill ${name} in ~/\\.claude/skills`));
-  for (const name of kitSkills.filter((n) => n !== 'rca')) assert.match(result.stdout, new RegExp(`kept skill ${name} in ~/\\.agents/skills`));
+  assert.match(result.stdout, /^kept skill yokoten in ~\/\.claude\/skills$/m);
+  assert.match(result.stdout, /^kept skill yokoten in ~\/\.agents\/skills$/m);
   assert.match(result.stdout, /^kept skill rca in ~\/\.agents\/skills \(yours, not yokoten's\)$/m);
   const settings = JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8'));
   assert.equal(settings.model, 'x');
@@ -111,12 +116,12 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   // The home folder names the machine's user; it never shows (#25).
   for (const out of [result.stdout, doctor.stdout]) assert.ok(!out.includes(sandbox.home), 'output shows the home path');
   assert.match(doctor.stdout, /~\/\.config\/yokoten\/private-marks/);
-  // The skills check wants every skill in both folders, and names what is missing.
+  // The skills check wants the one entry skill in both folders, and names what is missing.
   // Skills are a step on the road, stage 4.
   const skillsLine = async () => (await sandbox.call(['doctor'])).stdout.split('\n').find((l) => / skills/.test(l)) ?? '';
   assert.match(await skillsLine(), /^\s+done\s+skills$/);
-  rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
-  assert.match(await skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `npx yokoten install`, or install the Claude Code plugin$/);
+  rmSync(join(shared, 'skills', 'yokoten'), { recursive: true });
+  assert.match(await skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(yokoten\); run `npx yokoten install`, or install the Claude Code plugin$/);
 });
 
 test('isMachineSetUp: false before install, true after, false when the runtime is gone (#548)', async () => {
@@ -140,22 +145,23 @@ test('uninstall: takes back what install wrote, keeps the user\'s own files and 
   const own = { model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'other' }] }] } };
   writeFileSync(join(claude, 'settings.json'), JSON.stringify(own));
   assert.equal((await sandbox.call(['install'])).status, 0);
-  writeFileSync(join(claude, 'skills', 'release', 'notes.txt'), 'mine\n');
+  writeFileSync(join(claude, 'skills', 'yokoten', 'notes.txt'), 'mine\n');
   const before = readdirSync(join(sandbox.home, '.local/share/yokoten/kit/user/skills'));
 
   // A real child, for the entry.
   const result = sandbox.run(['uninstall']);
   assert.equal(result.status, 0, result.stderr);
-  for (const name of before) assert.match(result.stdout, new RegExp(`^removed skill ${name} in ~/\\.claude/skills$`, 'm'));
-  // The shared links are removed, never followed: only the user's own skill is left there.
-  for (const name of before.filter((n) => n !== 'rca')) assert.match(result.stdout, new RegExp(`^removed skill ${name} in ~/\\.agents/skills$`, 'm'));
+  assert.match(result.stdout, /^removed skill yokoten in ~\/\.claude\/skills$/m);
+  for (const name of before.filter((n) => n !== 'yokoten')) assert.match(result.stdout, new RegExp(`^nothing to remove: skill ${name} in ~/\\.claude/skills$`, 'm'));
+  // The shared link is removed, never followed: only the user's own skill is left there.
+  assert.match(result.stdout, /^removed skill yokoten in ~\/\.agents\/skills$/m);
   assert.deepEqual(readdirSync(join(sandbox.home, '.agents', 'skills')), ['rca']);
   assert.match(result.stdout, /^kept skill rca in ~\/\.agents\/skills \(yours, not yokoten's\)$/m);
   assert.match(result.stdout, /^removed agent worker$/m);
   assert.match(result.stdout, /^removed the SessionStart doctor$/m);
   assert.match(result.stdout, /^removed the user-level command guard$/m);
   assert.match(result.stdout, /^removed the runtime ~\/\.local\/share\/yokoten$/m);
-  assert.match(result.stdout, /^kept ~\/\.config\/yokoten \(your keys and private marks\)$/m);
+  assert.match(result.stdout, /^removed ~\/\.config\/yokoten\/private-marks$/m);
   assert.ok(!result.stdout.includes(sandbox.home), 'output shows the home path');
   // No file with the managed mark is left anywhere in the home.
   const left = readdirSync(sandbox.home, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile());
@@ -163,8 +169,8 @@ test('uninstall: takes back what install wrote, keeps the user\'s own files and 
   assert.ok(!existsSync(join(sandbox.home, '.local/share/yokoten')));
   assert.equal(readFileSync(join(claude, 'skills', 'mine', 'SKILL.md'), 'utf8'), 'my own skill\n');
   assert.equal(readFileSync(join(sandbox.home, '.agents', 'skills', 'rca', 'SKILL.md'), 'utf8'), 'my own rca\n');
-  assert.equal(readFileSync(join(claude, 'skills', 'release', 'notes.txt'), 'utf8'), 'mine\n');
-  assert.ok(existsSync(join(sandbox.home, '.config/yokoten/private-marks')));
+  assert.equal(readFileSync(join(claude, 'skills', 'yokoten', 'notes.txt'), 'utf8'), 'mine\n');
+  assert.ok(!existsSync(join(sandbox.home, '.config/yokoten')), 'the header-only marks went with install');
   assert.deepEqual(JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8')), own);
 
   // A second run finds nothing to remove and changes nothing.
@@ -183,10 +189,60 @@ test('uninstall: takes back what install wrote, keeps the user\'s own files and 
   assert.equal(readFileSync(join(claude, 'settings.json'), 'utf8'), 'not json');
 });
 
+// #904: with the Claude Code plugin on, install writes no global skill or agent, and takes
+// back the copies it wrote before. A file of the user's stays.
+test('install: the plugin replaces the global skills and agents (#904)', async () => {
+  const sandbox = makeSandbox();
+  const claude = join(sandbox.home, '.claude');
+  mkdirSync(join(claude, 'skills', 'dispatch'), { recursive: true });
+  mkdirSync(join(claude, 'agents'), { recursive: true });
+  mkdirSync(join(sandbox.home, '.agents', 'skills', 'dispatch'), { recursive: true });
+  const skill = readFileSync(join(ROOT, 'kit/user/skills/dispatch/SKILL.md'), 'utf8');
+  const agent = readFileSync(join(ROOT, 'kit/user/agents/worker.md'), 'utf8');
+  writeFileSync(join(claude, 'skills', 'dispatch', 'SKILL.md'), skill);
+  writeFileSync(join(sandbox.home, '.agents', 'skills', 'dispatch', 'SKILL.md'), skill);
+  writeFileSync(join(claude, 'agents', 'worker.md'), agent);
+  mkdirSync(join(claude, 'skills', 'mine'), { recursive: true });
+  writeFileSync(join(claude, 'skills', 'mine', 'SKILL.md'), 'my own skill\n');
+  writeFileSync(join(claude, 'settings.json'), JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  const result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /no global skills or agents: the yokoten plugin brings them/);
+  assert.match(result.stdout, /^removed skill dispatch in ~\/\.claude\/skills$/m);
+  assert.match(result.stdout, /^removed skill dispatch in ~\/\.agents\/skills$/m);
+  assert.match(result.stdout, /^removed agent worker$/m);
+  assert.ok(!existsSync(join(claude, 'skills', 'dispatch')));
+  assert.ok(!existsSync(join(sandbox.home, '.agents', 'skills', 'dispatch')));
+  assert.ok(!existsSync(join(claude, 'agents', 'worker.md')));
+  assert.ok(!existsSync(join(claude, 'skills', 'yokoten')), 'no entry skill beside the plugin');
+  assert.equal(readFileSync(join(claude, 'skills', 'mine', 'SKILL.md'), 'utf8'), 'my own skill\n');
+  assert.equal(JSON.parse(readFileSync(join(claude, 'settings.json'), 'utf8')).hooks, undefined, 'the plugin brings the hooks');
+  assert.match(result.stdout, /no runtime: the yokoten plugin brings its own/);
+  assert.doesNotMatch(result.stdout, /nothing to remove/, 'a skill that was never there is not named');
+  assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /plugin-and-install/, 'nothing is left for the plugin to duplicate');
+});
+
+// #904: install says what it will write, and uninstall leaves the home folder as it was.
+test('install prints its plan, and uninstall restores the home folder (#904)', async () => {
+  const sandbox = makeSandbox();
+  const home = (): string[] => readdirSync(sandbox.home, { recursive: true, withFileTypes: true }).map((entry) => `${relative(sandbox.home, join(entry.parentPath, entry.name))}${entry.isDirectory() ? '/' : ''}`).sort();
+  const before = home();
+  const result = await sandbox.call(['install']);
+  assert.equal(result.status, 0, result.stderr);
+  const plan = result.stdout.split('\n').slice(0, 20).join('\n');
+  assert.match(plan, /^install will write these files and settings keys:$/m);
+  assert.match(plan, /~\/\.claude\/skills\/yokoten\/SKILL\.md/);
+  assert.match(plan, /~\/\.claude\/settings\.json: hooks\.SessionStart, hooks\.PreToolUse/);
+  assert.match(plan, /~\/\.config\/yokoten\/private-marks/);
+  const uninstalled = await sandbox.call(['uninstall']);
+  assert.equal(uninstalled.status, 0, uninstalled.stderr);
+  assert.deepEqual(home(), before, 'the home folder is as it was before install');
+});
+
 // #477: install keeps a managed file the user edited, and still updates a file they did not.
 test('install: a managed skill you edited is kept; an untouched copy updates from the kit (#477)', async () => {
   const sandbox = makeSandbox();
-  const skill = join(sandbox.home, '.claude', 'skills', 'dispatch', 'SKILL.md');
+  const skill = join(sandbox.home, '.claude', 'skills', 'yokoten', 'SKILL.md');
   assert.equal((await sandbox.call(['install'])).status, 0);
   const installed = readFileSync(skill, 'utf8');
   assert.match(installed, /managed by yokoten.* sha256=[0-9a-f]{64}/, 'the mark records what install wrote');
@@ -195,26 +251,26 @@ test('install: a managed skill you edited is kept; an untouched copy updates fro
   const mine = `${installed}\nAsk the owner before a release.\n`;
   writeFileSync(skill, mine);
   let result = await sandbox.call(['install']);
-  assert.match(result.stdout, /^kept \(your edit\) skill dispatch in ~\/\.claude\/skills$/m);
+  assert.match(result.stdout, /^kept \(your edit\) skill yokoten in ~\/\.claude\/skills$/m);
   assert.equal(readFileSync(skill, 'utf8'), mine, 'their edit stays');
-  assert.match(result.stdout, /your edits stay: install skipped skill dispatch\. The new copy is in ~\/\.local\/share\/yokoten\/kit\/user\./);
+  assert.match(result.stdout, /your edits stay: install skipped skill yokoten\. The new copy is in ~\/\.local\/share\/yokoten\/kit\/user\./);
 
   // A copy yokoten wrote from an older kit, which the user did not touch, is replaced.
-  writeFileSync(skill, sealManaged(installed.replace('Hand one task', 'Hand one job')));
+  writeFileSync(skill, sealManaged(installed.replace('hand a task to a worker', 'hand a task to a helper')));
   result = await sandbox.call(['install']);
-  assert.match(result.stdout, /^updated skill dispatch in ~\/\.claude\/skills$/m);
+  assert.match(result.stdout, /^updated skill yokoten in ~\/\.claude\/skills$/m);
   assert.equal(readFileSync(skill, 'utf8'), installed, 'the new copy is in place');
 
   // A copy from an older yokoten has no hash: install replaces it once, then it has one.
   writeFileSync(skill, installed.replace(/;? sha256=[0-9a-f]{64}/, ''));
   result = await sandbox.call(['install']);
-  assert.match(result.stdout, /^updated skill dispatch/m);
+  assert.match(result.stdout, /^updated skill yokoten/m);
   assert.equal(readFileSync(skill, 'utf8'), installed);
 
   // uninstall keeps the edit too: it is the user's.
   writeFileSync(skill, mine);
   result = await sandbox.call(['uninstall']);
-  assert.match(result.stdout, /^kept \(your edit\) skill dispatch in ~\/\.claude\/skills$/m);
+  assert.match(result.stdout, /^kept \(your edit\) skill yokoten in ~\/\.claude\/skills$/m);
   assert.match(readFileSync(skill, 'utf8'), /Ask the owner before a release\./);
 });
 
@@ -235,18 +291,18 @@ test('uninstall: a skill file that only mentions the mark in a sentence stays (#
 // uninstall keeps the folder.
 test('install: a shared skill folder with your own files in it stays real', async () => {
   const sandbox = makeSandbox();
-  const shared = join(sandbox.home, '.agents', 'skills', 'release');
+  const shared = join(sandbox.home, '.agents', 'skills', 'yokoten');
   assert.equal((await sandbox.call(['install'])).status, 0);
   assert.ok(lstatSync(shared).isSymbolicLink(), 'first install links it');
   // The user's own file next to a managed copy: the folder goes back to real files.
-  const managed = readFileSync(join(sandbox.home, '.claude', 'skills', 'release', 'SKILL.md'), 'utf8');
+  const managed = readFileSync(join(sandbox.home, '.claude', 'skills', 'yokoten', 'SKILL.md'), 'utf8');
   rmSync(shared);
   mkdirSync(shared, { recursive: true });
   writeFileSync(join(shared, 'SKILL.md'), managed);
   writeFileSync(join(shared, 'notes.txt'), 'mine\n');
   const result = await sandbox.call(['install']);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^kept skill release in ~\/\.agents\/skills$/m);
+  assert.match(result.stdout, /^kept skill yokoten in ~\/\.agents\/skills$/m);
   assert.ok(!lstatSync(shared).isSymbolicLink(), 'still a real folder');
   assert.equal(readFileSync(join(shared, 'SKILL.md'), 'utf8'), managed);
   assert.equal(readFileSync(join(shared, 'notes.txt'), 'utf8'), 'mine\n');
@@ -352,10 +408,33 @@ test('install: the user-level command guard for Antigravity CLI and Copilot CLI,
   // uninstall takes the guard out and leaves the user's own entries.
   const removed = await sandbox.call(['uninstall']);
   assert.equal(removed.status, 0, removed.stderr);
-  assert.match(removed.stdout, /^removed the Antigravity CLI command guard in ~\/\.gemini\/config\/hooks\.json$/m);
-  assert.match(removed.stdout, /^removed the Copilot CLI command guard in ~\/\.copilot\/hooks\/yokoten\.json$/m);
+  assert.match(removed.stdout, /^removed the Antigravity CLI user hook$/m);
+  assert.match(removed.stdout, /^removed the Copilot CLI user hook$/m);
   assert.deepEqual(JSON.parse(readFileSync(agyFile, 'utf8')), { lint: { PreToolUse: [{ matcher: 'run_command', hooks: [{ command: './lint.sh' }] }] } });
   assert.deepEqual(JSON.parse(readFileSync(copilotFile, 'utf8')), { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine' }] }] } });
+});
+
+// #904: uninstall takes back every tool's user hook, and the files and folders install
+// made for them. A hook of the user's stays, and so does a file install never touched.
+test('uninstall: takes back the user hooks of Codex, Gemini CLI, Grok CLI, Muse Code and OpenCode (#904)', async () => {
+  const sandbox = makeSandbox();
+  const codexFile = join(sandbox.home, '.codex', 'hooks.json');
+  const geminiFile = join(sandbox.home, '.gemini', 'settings.json');
+  const grokFile = join(sandbox.home, '.grok', 'hooks', 'yokoten.json');
+  const museFile = join(sandbox.home, '.config', 'muse', 'settings.json');
+  const openCodeFile = join(sandbox.home, '.config', 'opencode', 'plugins', 'yokoten.ts');
+  for (const file of [codexFile, geminiFile, grokFile, museFile, openCodeFile]) mkdirSync(dirname(file), { recursive: true });
+  // A hook of the user's in Codex's file, which stays.
+  const mine = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'mine' }] }] } };
+  writeFileSync(codexFile, JSON.stringify(mine));
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  for (const file of [grokFile, museFile, openCodeFile]) assert.ok(existsSync(file), `install wrote ${file}`);
+  const result = await sandbox.call(['uninstall']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of ['Codex CLI', 'Gemini CLI', 'Grok CLI', 'Muse Code']) assert.match(result.stdout, new RegExp(`^removed the ${name} user hooks?$`, 'm'));
+  assert.match(result.stdout, /^removed the OpenCode user hook$/m);
+  assert.deepEqual(JSON.parse(readFileSync(codexFile, 'utf8')), mine, 'the user\'s own hook stays');
+  for (const file of [geminiFile, grokFile, museFile, openCodeFile]) assert.ok(!existsSync(file), `${file} is gone`);
 });
 
 // #248: a hooks file that won't parse, or where a key yokoten edits has the wrong type, is
@@ -736,6 +815,7 @@ test('uninstall: removes the launcher and the marked PATH line, and keeps the re
   assert.equal(readFileSync(join(sandbox.home, '.bashrc'), 'utf8'), "export EDITOR=vi\nalias ll='ls -l'\n");
   assert.equal(readFileSync(join(sandbox.home, '.zshrc'), 'utf8'), '');
   // A launcher of the user's own is kept.
+  mkdirSync(dirname(launcher), { recursive: true });
   writeFileSync(launcher, '#!/bin/sh\necho mine\n');
   const again = await sandbox.call(['uninstall']);
   assert.match(again.stdout, /^kept the launcher ~\/\.local\/bin\/yokoten \(yours, not yokoten's\)$/m);
@@ -1089,6 +1169,7 @@ test('uninstall: removes the stop log (#621)', async () => {
   const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
   mkdirSync(dirname(log), { recursive: true });
   writeFileSync(log, '{"time":"2026-10-23T00:00:00.000Z","vendor":"codex","role":"lead","rule":"release","answer":"refused"}\n');
+  writeFileSync(join(sandbox.home, '.config', 'yokoten', 'keys.json'), '{}\n');
   const result = await sandbox.call(['uninstall']);
   assert.equal(result.status, 0, result.stderr);
   assert.ok(!existsSync(log));

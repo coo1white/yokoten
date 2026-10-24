@@ -33,7 +33,7 @@
 // `allow` and `ask` let it go on. Exit 0 and exit 1 also let it go on. A crash, a signal,
 // a timeout, or an answer it cannot read denies.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
 import { homeIn, homeOf } from '../../../rules/privacy.ts';
@@ -468,6 +468,19 @@ export const userPluginState = (env: Env, cli: string, missing: string): HookSta
 
 /** The user's command guard, in `~/.config/opencode/plugins/yokoten.ts`. */
 export const addUserPlugin = (env: Env, cli: string, missing: string): Added => writePlugin(userPluginPath(env), pluginSource(userCommand(cli, missing)));
+
+/** Take back the user plugin, only when it is still the text yokoten writes. */
+export function removeUserPlugin(env: Env, cli: string, missing: string): 'removed' | 'not there' | 'kept (yours)' {
+  const path = userPluginPath(env);
+  if (!existsSync(path)) return 'not there';
+  try {
+    if (readFileSync(path, 'utf8') !== pluginSource(userCommand(cli, missing))) return 'kept (yours)';
+  } catch {
+    return 'kept (yours)';
+  }
+  rmSync(path, { force: true });
+  return 'removed';
+}
 
 /** The names this runtime's agent gets on top of the shared ones. OpenCode's login name was not in the docs. */
 export const AGENT_ENV: RuntimeEnv = { login: [], config: [] };

@@ -10,15 +10,16 @@ import { checkBuildOutput, checkCodeOwners, checkLayout } from '../../rules/layo
 import { notUtc, POSITIVE_CONTROL, scanText } from '../../rules/privacy.ts';
 import { SECRET_CONTROL } from '../../rules/privacy/secrets.ts';
 import { judge } from '../../run/hook.ts';
-import { readToolCall, sandboxProblem as claudeSandboxProblem } from '../../agents/runtimes/claude-code.ts';
+import { readToolCall, sandboxProblem as claudeSandboxProblem, addUserHooks } from '../../agents/runtimes/claude-code.ts';
 import { addProjectPlugin } from '../../agents/runtimes/small/opencode.ts';
-import { openCodePluginNote } from './checks.ts';
+import { machineChecks, openCodePluginNote, type Practice } from './checks.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as gemini from '../../agents/runtimes/gemini.ts';
 import * as grok from '../../agents/runtimes/grok.ts';
 import { hostGuardMisses } from '../../host/gh-commands.ts';
 import { UNSAVED_CONTROL, unsavedNotes } from '../advice/unsaved.ts';
 import { HOME_DIR, isNewerKitCopy, sealManaged } from '../files.ts';
+import { USER_CLI, USER_MISSING } from '../install.ts';
 import { compareCoreRules } from '../init.ts';
 import { coreRulesControl, roadControl } from './lessons.ts';
 import { leftoverControl, machineControl } from './machine.ts';
@@ -48,6 +49,7 @@ export function selfTest(): string[] {
   if (!isNewerKitCopy(olderCopy, `${kitMark}new body\n`) || isNewerKitCopy(olderCopy, `${kitMark}old body\n`)) failed.push('edited kit note');
   failed.push(...coreRulesControl());
   failed.push(...machineControl());
+  failed.push(...guardControl());
   failed.push(...leftoverControl());
   failed.push(...sandboxControl());
   failed.push(...openCodeControl());
@@ -77,6 +79,33 @@ function openCodeControl(): string[] {
   } finally {
     if (quiet) rmSync(quiet, { recursive: true, force: true });
     if (marked) rmSync(marked, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A machine whose Claude Code settings hold no guard, and whose plugin is off, must fail
+ * the guard check. Install's own hook must pass it, and so must the plugin, which brings
+ * the same guard (#904).
+ */
+export function guardControl(): string[] {
+  let dir = '';
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'yokoten-guard-'));
+    const env = { HOME: dir };
+    const file = join(dir, '.claude', 'settings.json');
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, '{}\n');
+    const guard = (): Practice | undefined => machineChecks(env).find((check) => check.name === 'user-guard');
+    if (guard()?.ok !== false || guard()?.finding.id !== 'user-guard') return ['user guard check'];
+    addUserHooks(env, USER_CLI, USER_MISSING);
+    if (guard()?.ok !== true) return ['user guard check (install\'s own hook passes)'];
+    writeFileSync(file, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+    if (guard()?.ok !== true) return ['user guard check (the plugin passes)'];
+    return [];
+  } catch {
+    return ['user guard check'];
+  } finally {
+    if (dir) rmSync(dir, { recursive: true, force: true });
   }
 }
 

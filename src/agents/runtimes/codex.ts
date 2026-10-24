@@ -17,7 +17,7 @@ import { type Action, isWorkerType } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
 import { readStop } from './claude-code.ts';
 import type { AgentAdapter } from './runtime.ts';
-import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject } from '../hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookArgs, type HookState, hookState, isObject, removeHook } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
 
@@ -139,6 +139,16 @@ export function hasUserDir(env: Env): boolean {
     return statSync(dirname(userHooks(env))).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/** Take out the two user hooks, and the file when they were all it held; null when it is not JSON and stays as it is. */
+export function removeUserHooks(env: Env): { doctor: 'removed' | 'not there'; guard: 'removed' | 'not there' } | null {
+  try {
+    const file = userHooks(env);
+    return { doctor: removeHook(file, 'SessionStart', 'doctor'), guard: removeHook(file, 'PreToolUse', 'hook') };
+  } catch {
+    return null;
   }
 }
 

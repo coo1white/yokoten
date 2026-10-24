@@ -8,7 +8,7 @@ import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
-import { enabledPluginChannel, hasPlugin, hasProjectHook, hasSessionDoctor, type PluginChannel, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
+import { enabledPluginChannel, hasPlugin, hasProjectHook, hasSessionDoctor, hasUserGuard, type PluginChannel, readInstalledPlugin, userDir, userSettingsProblem } from '../../agents/runtimes/claude-code.ts';
 import * as codex from '../../agents/runtimes/codex.ts';
 import * as copilot from '../../agents/copilot.ts';
 import * as dsh from '../../agents/runtimes/small/deepseek-harness.ts';
@@ -185,9 +185,11 @@ function dshPractice(states: { guard: HookState; patch: string }, profiles: { fo
 
 /**
  * Machine checks: the user-level hooks, the runtime, the private marks. The skills are a
- * step on the road. The Claude Code plugin brings its own hooks and runtime, so with it
- * on, those two checks pass; an old runtime that install left is still reported, with
- * the advice to remove it: installing again would keep both (#300).
+ * step on the road. The Claude Code plugin brings its own hooks, guard and runtime, so with
+ * it on, those three checks pass; an old runtime that install left is still reported, with
+ * the advice to remove it: installing again would keep both (#300). When the plugin goes
+ * away, the guard it brought goes with it, and doctor says so until `install` writes one
+ * of its own (#904).
  */
 export function machineChecks(env: Env): Practice[] {
   const target = paths(env);
@@ -203,8 +205,14 @@ export function machineChecks(env: Env): Practice[] {
       : problem?.kind === 'shape'
         ? practice('session-doctor', 'session-doctor', false, '~/.claude/settings.json has an unexpected shape', `${problem.hint}; fix it, then run \`yokoten install\``)
         : practice('session-doctor', 'session-doctor', plugin || hasSessionDoctor(env), 'sessions do not start with doctor', 'run `yokoten install`, or install the Claude Code plugin');
+  // The guard of every session on this machine (#904). While the plugin is on it brings the
+  // guard, and install writes none; when the plugin goes away, nothing is left to stop a
+  // risky command, so this is a failure with one fix, never a note. A settings file doctor
+  // can't use is already the session-doctor line, so the guard stays quiet then.
+  const guard = problem ? null : practice('user-guard', 'user-guard', plugin || hasUserGuard(env), 'no guard for Claude Code', 'run `yokoten install`');
   return [
     session,
+    ...(guard ? [guard] : []),
     // 'runtime' in the text, as before; the id differs from the road's runtime step.
     practice('runtime', 'machine-runtime', runtime === VERSION || (plugin && runtime === null), runtime ? `the installed runtime is ${runtime}, this yokoten is ${VERSION}` : 'no runtime installed', plugin ? 'remove it with `yokoten uninstall`; the plugin brings its own' : 'run `yokoten install` from this copy of yokoten'),
     // Any mark counts, the ones install found too: only a file with none is missing (#522).

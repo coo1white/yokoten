@@ -534,9 +534,14 @@ Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，�
 插件只管 Claude Code。它不会帮你建私有词表文件：`doctor` 会告诉你文件在哪，你自己建。
 插件在你的用户设置里开着的时候，`doctor` 就把它的 hook 和技能算作已经装好。
 
-插件和 `install` 二选一，别两个都用：两个都在的话，守卫和会话开头的 doctor 会跑两遍，
-每个技能也会出现两次，`doctor` 会提醒你。想从 `install` 换成插件，就跑 `yokoten uninstall`。
+插件和 `install` 二选一，别两个都用：插件开着的时候，`install` 不会往全局文件夹里放自己的一份。
+以前两个都装过的机器上，守卫和会话开头的 doctor 会跑两遍，每个技能也会出现两次，`doctor` 会提醒你，
+插件开着的 `install` 会把自己写过的全局副本收回来。想从 `install` 换成插件，就跑 `yokoten uninstall`。
 它会删掉 `install` 写的东西，`~/.config/yokoten` 留着不动。
+
+插件开着的时候，`install` 不写自己的守卫，守卫只留插件那一个。把插件关掉或者删掉，
+这台机器就一个守卫都没有了：`doctor` 会以“no guard for Claude Code”报失败，
+`yokoten install` 会写回 `install` 自己的守卫。
 
 ### 用 npx 装
 
@@ -730,7 +735,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 
 | 命令 | 做什么 |
 |------|--------|
-| `install` | 把技能装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份。它还会把这台电脑上能找到的私有词加进词表，并设好 git 的 mailmap。见「隐私」 |
+| `install` | 把入口技能 `yokoten` 一个装进 `~/.claude/skills` 和 `~/.agents/skills`，agent 装进 `~/.claude/agents`，加上会话开头的 `doctor` hook 和用户级命令守卫，再建一个空的私有词表。写之前，先列出要写的文件和设置键。这两个 hook 给 Claude Code 装一份；已经有 `~/.codex` 或 `~/.gemini` 文件夹的话，Codex 和 Gemini CLI 也各装一份。Claude Code 的插件开着的时候，它不写全局的技能、agent 和 hook，并收回旧 `install` 写过的那些。它还会把这台电脑上能找到的私有词加进词表，并设好 git 的 mailmap。见「隐私」 |
 | `init [dir]` | 把这套做法放进一个项目。只加文件；已有的文件保留，并告诉你保留了哪些。kit 的 workflow 你没改过的，会换成最新版。它还会用 `gh` 看一眼 GitHub，告诉你要补哪些标准标签和里程碑，但不会去改 GitHub。没装 `gh`、没登录，或者远程仓库不在 GitHub 上，就说一声跳过了 |
 | `init --github --yes [--remove-default-labels] [--board]` | 补上缺的标准标签；没有打开的里程碑时，建一个叫 "First release" 的；要是已经有一个关掉的里程碑叫这个名字，就叫 "Next release"。关掉的里程碑不会被重新打开。已有的标准标签，颜色和说明改成标准的。`yokoten.json` 里的模块不超过 8 个时，每个模块建一个灰色标签。再跑一次什么也不会变。GitHub 自带的、不在这套里的标签（`question`、`wontfix` 等），只有加上 `--remove-default-labels` 才会删。加 `--board` 还会建一个关联到仓库的看板，要 gh 的令牌带 `project` 权限 |
 | `init --no-ci` | 不用 CI：在 `yokoten.json` 的 `"notNow"` 里记下 `"ci"`，不写 workflow，也不写 Dependabot 配置；这些文件如果还是 kit 原样，就删掉。私有仓库的 Actions 按分钟收费，用这个省下来 |
@@ -767,7 +772,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `worker env [运行环境]` | 列出 yokoten 给 agent 准备环境变量时，会从这个 shell 留下哪些变量名，并数出去掉了几个。加上运行环境名，会把它自己的登录变量也算进去。从不显示值。`desk` 就用它启动 agent。见 [agent 拿到的环境变量](#agent-拿到的环境变量) |
 | `msg send <收件人> [<文字>]`、`msg inbox`、`msg who`、`msg log` | 各家 agent 通过这台电脑上的文件互相发消息。只有 lead 能跑 `log`。见 [agent 之间发消息](#agent-之间发消息) |
 | `desk <agent> <文件夹> [--name <名字>] [--read <路径>] [--host <主机>] [--marks] -- <命令>` | 把 worker 的 agent 放进一个围起来的工位里启动：只有它自己的克隆、自己的状态文件夹，除了模型的 API 不能上网。只有 lead 跑它。见 [工位](#工位) |
-| `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的技能和 agent、`~/.claude/settings.json` 里它加的两个 hook，还有 `~/.local/share/yokoten`。你自己的文件、别的设置和 `~/.config/yokoten`（密钥、私有词表）都留着；拦截记录会被删掉。再跑一次什么也不会变 |
+| `uninstall` | 撤掉 `install` 装的东西：带 yokoten 管理标记的入口技能和 agent，Claude Code、Codex CLI、Gemini CLI、Antigravity CLI、Copilot CLI、Grok CLI、Muse Code 设置里的 hook，OpenCode 的插件，还有 `~/.local/share/yokoten`。私有词表和 mailmap 文件只剩 `install` 写的表头时，也一并删掉；`install` 建的空文件夹也删掉。你自己的文件、改动和设置都留着；拦截记录会被删掉。再跑一次什么也不会变 |
 | `bot -- <命令>` | 以 bot 的身份运行一条命令（`gh`、`git push`），用一小时有效的令牌，令牌不会打印出来。如果命令是 `gh issue` 或 `gh pr` 的 `create`、`edit`，并且带了标题，它会先按 CI 的规则检查标题；标题不合格就直接拒绝，什么都不会发出去。用 `gh api` 改 issue 或 PR 时，标题也照样检查。`gh pr create` 和 `gh pr edit` 如果带了 `--body` 或 `--body-file`，正文也会先过一遍：规则和 `check --pr` 里检查正文的那部分一样，看的是这个 PR 的分支改了哪些文件，以及基础分支上的 CODEOWNERS。正文不合格同样直接拒绝，什么都不发出去。正文最后一行不是 `🤖 Made with <agent> (<model>)`（可写一个或多个逗号分隔的组合）的同样直接拒绝：每个 PR 都要写明做出它的每个 AI 和模型。这一行可以加一段 `reviewed by <agent> (<模型>)`，或用 `and` 连起两个审阅者，最多两个。评论（`gh pr comment`、`gh issue comment`）、带正文的审查（`gh pr review --body`）和新建的 issue（`gh issue create --body`）也要带上这一行：最后一行不是 `Made with` 行的正文同样直接拒绝。带 `--attach` 的正文会被拒绝：上传的文件会落在 `Made with` 行之后。只改正文的编辑（`gh pr edit --body`、`gh issue edit --body`）保持原样。`gh pr create` 没给类型标签或 tier 标签时，bot 会自动补上：类型看标题（`fix` 补 `bug`），tier 看正文第一行的 `tier:`。`gh pr edit` 换了标题或正文时也会这样补，并在正文给出新 tier 时移除旧的 tier 标签。你自己给的标签保留不动。你给的 tier 标签和正文对不上，就直接拒绝，提示和 `check --pr` 一样。仓库里没有的标签，bot 会说一声然后不加；它从不新建标签。`gh pr create` 没带 `--milestone` 时，bot 会用第一个关联 issue（`Closes #N`、`Part of #N`）的里程碑；这些 issue 都没有里程碑，就直接拒绝，什么都不发出去，请自己加上 `--milestone`。gh 读不到那个 issue 时，PR 照发，不带里程碑，只留一条提示。它只运行 `gh` 和 `git`，所以 `env gh …`、`sh -c …` 这类写法会被拒绝；gh 的别名（alias）它不认，别名里的标题不会被检查。设置方法见 [server.md](../../server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <秒>]` | 按给出的顺序，以 bot 的身份合并一批已批准、检查全绿的 PR；第一个需要人来处理的 PR 就让它停下。第一次合并之前先记下每个 PR 的基础分支，所以叠在被 squash 合并的分支上的 PR，会用它和那个分支真正共有的基础来合并。只涉及 import 行的冲突取并集；真正的冲突、测试失败、`check` 失败或缺少批准都会让列车停下。每次合并后的树先测试再推送；推送后的合并要等 CI 通过；`--wait` 设等多久，默认 1800 秒。只有 lead 能跑 |
 | `board [--text] [--no-open] [--role name] [--vendor name]` | 只在这台电脑上开一个实时页面：按 issue 分组的 agent、选中的 agent、每个 PR 的状态，以及每个 agent 估算的 API 费用。在页面上，owner 还能启动和停掉 agent，看到在等什么。启动后自己在浏览器里打开页面，也打印链接（加 `--no-open` 就只打印），按 Ctrl-C 停掉。页面每 15 秒刷新一次。加 `--text` 就在终端里用纯文本打印 agent、PR、worktree 和用量；这时再用 `--role` 和 `--vendor`，只保留该角色或该厂商的用量行。见「团队看板」 |
