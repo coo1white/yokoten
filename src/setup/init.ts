@@ -1852,10 +1852,15 @@ export function trustLines(root: string, env: Env, ask?: Ask): { ok: boolean; li
   if (plans.length === 0) return { ok: true, lines: [] };
   const todo = plans.filter(({ plan }) => plan.state === 'trusted');
   const same = plans.filter(({ plan }) => plan.state === 'same');
+  const edited = plans.filter(({ plan }) => plan.state === 'changed');
   const blocked = plans.filter(({ plan }) => plan.state === 'unreadable' || plan.state === 'no home');
   const lines: string[] = [];
   if (same.length > 0) lines.push(`yokoten's guard is already on in ${listOf(same.map(({ name }) => name))}`);
   let ok = true;
+  for (const { name } of edited) {
+    ok = false;
+    lines.push(`left yokoten's guard off in ${name}: a hook yokoten wrote there was edited; run \`yokoten init\` to put it back, then \`yokoten trust\``);
+  }
   for (const { name, plan } of blocked) {
     ok = false;
     lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);
@@ -1876,10 +1881,15 @@ export function trust(root: string, env: Env): { ok: boolean; lines: string[] } 
   if (plans.length === 0) return { ok: true, lines: ['no agent installed here runs yokoten\'s hooks in this project, so there is nothing to turn on'] };
   const todo = plans.filter(({ plan }) => plan.state === 'trusted');
   const same = plans.filter(({ plan }) => plan.state === 'same');
+  const edited = plans.filter(({ plan }) => plan.state === 'changed');
   const blocked = plans.filter(({ plan }) => plan.state === 'unreadable' || plan.state === 'no home');
   const lines: string[] = [];
   if (same.length > 0) lines.push(`yokoten's guard is already on in ${listOf(same.map(({ name }) => name))}`);
   let ok = true;
+  for (const { name } of edited) {
+    ok = false;
+    lines.push(`left yokoten's guard off in ${name}: a hook yokoten wrote there was edited; run \`yokoten init\` to put it back, then \`yokoten trust\``);
+  }
   for (const { name, plan } of blocked) {
     ok = false;
     lines.push(`couldn't turn on yokoten's guard in ${name}: ${whyNot(plan)}`);

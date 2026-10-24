@@ -61,6 +61,8 @@ function trustPractice(id: RuleId, agent: string, file: string, trust: FolderTru
       return note(`${agent} trusts this folder, but not yokoten's hooks in ${file}, so it skips them`, TRUST_COMMAND);
     case 'hooks changed':
       return note(`yokoten's hooks in ${file} changed after you trusted them, so ${agent} skips them`, TRUST_COMMAND);
+    case 'hooks edited':
+      return note(`a hook in ${file} runs yokoten's guard, but it is not the one yokoten writes, so ${agent} skips it`, 'run `yokoten init` to put yokoten\'s hook back, then `yokoten trust`');
     case 'hooks off':
       return note(`a yokoten hook in ${file} is turned off in ${agent}`, TRUST_COMMAND);
   }

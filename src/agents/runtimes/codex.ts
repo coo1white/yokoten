@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
-import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
+import { guardCommand, missingProjectRuntime, runs } from '../../run/cli.ts';
 import { type Action, isWorkerType } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
 import { readStop } from './claude-code.ts';
@@ -169,8 +169,12 @@ export function userHooksState(env: Env, cli: string, missing: string): { doctor
  */
 export const TRUST_STEP = `${TRUST_COMMAND} (Codex's \`/hooks\` screen does the same)`;
 
-/** What Codex's trust says, past the shared states: the project is trusted, the hooks are not. */
-export type CodexTrust = FolderTrust<'hooks untrusted' | 'hooks changed' | 'hooks off'>;
+/**
+ * What Codex's trust says, past the shared states: the project is trusted, the hooks are
+ * not. `hooks edited` is a hook that runs yokoten's guard but is not the command yokoten
+ * writes; trust must not trust that one, and `yokoten init` puts the command back.
+ */
+export type CodexTrust = FolderTrust<'hooks untrusted' | 'hooks changed' | 'hooks edited' | 'hooks off'>;
 
 /** One TOML key, bare or quoted, at the start of `text`: the key and the text after it. */
 function readTomlKey(text: string): [string, string] | null {
@@ -337,6 +341,48 @@ const TRUST_EVENTS = [
 ] as const;
 
 /**
+ * The entries a project hook may name: `isSelf` picks the repo's own bin, every other
+ * project the vendored copy, and `.ts` is what yokoten wrote before #408.
+ */
+const HOOK_ENTRIES = ['bin/yokoten.ts', 'bin/yokoten.mjs', '.yokoten/bin/yokoten.ts', '.yokoten/bin/yokoten.mjs'];
+
+/** The yokoten subcommand and flags a Codex hook runs, by event. */
+const HOOK_ARGS: ReadonlyMap<string, string> = new Map([
+  ['pre_tool_use', 'hook --agent codex'],
+  ['stop', 'hook --stop --agent codex'],
+]);
+
+/**
+ * The commands yokoten writes for one hook event, one per entry it may use (#661). Trust
+ * matches a handler against these exactly: a hook is yokoten's only when it *is* the guard
+ * yokoten writes, never when it merely mentions yokoten's flags. A repo can ship a hook of
+ * its own beside yokoten's, and `yokoten trust` must not trust that one.
+ */
+function yokotenHookCommands(event: string): string[] {
+  const args = HOOK_ARGS.get(event);
+  if (args === undefined) return [];
+  return HOOK_ENTRIES.map((cli) =>
+    guardCommand(`"$(git rev-parse --show-toplevel)/${cli}"`, args, missingProjectRuntime(cli), event === 'pre_tool_use' ? { isToolCall: true } : {}),
+  );
+}
+
+/** Whether a hook handler is one yokoten writes for this event. */
+function isYokotenHook(event: string, handler: Record<string, unknown>): boolean {
+  return typeof handler.command === 'string' && yokotenHookCommands(event).includes(handler.command);
+}
+
+/**
+ * Whether a handler runs yokoten's hook for this event, even if its command is not
+ * exactly what yokoten writes now: a hook edited after trust, or one from an older
+ * yokoten. Doctor names it; trust never trusts it (#661).
+ */
+function isEditedYokotenHook(event: string, handler: Record<string, unknown>): boolean {
+  const args = HOOK_ARGS.get(event);
+  if (args === undefined || typeof handler.command !== 'string' || isYokotenHook(event, handler)) return false;
+  return runs(args).test(handler.command);
+}
+
+/**
  * The hash Codex trusts a command hook by (`hook_hash` in discovery.rs): sha256 of the
  * hook as Codex reads it, with the defaults filled in, as JSON with sorted keys. A field
  * Codex leaves out when empty is left out here too. Checked against a real config.toml
@@ -393,7 +439,8 @@ export function readModelIdentity(env: Env): { model: string; provider: string }
 
 /**
  * Whether Codex runs yokoten's hooks in the project at `root`, from its config.toml.
- * Read-only. Only hooks that run `--agent codex` count: those are the ones init writes.
+ * Read-only. Only the hook commands yokoten writes count: a hook that merely mentions
+ * yokoten's flags is not yokoten's.
  */
 export function readTrust(root: string, env: Env): CodexTrust {
   const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
@@ -427,7 +474,12 @@ export function readTrust(root: string, env: Env): CodexTrust {
     groups.forEach((group: unknown, groupIndex: number) => {
       if (!isObject(group) || !Array.isArray(group.hooks)) return;
       group.hooks.forEach((handler: unknown, handlerIndex: number) => {
-        if (!isObject(handler) || typeof handler.command !== 'string' || !handler.command.includes('--agent codex')) return;
+        if (!isObject(handler) || typeof handler.command !== 'string') return;
+        if (isEditedYokotenHook(event, handler)) {
+          states.push('hooks edited');
+          return;
+        }
+        if (!isYokotenHook(event, handler)) return;
         const saved = folderKeys(root)
           .map((folder) => tables.hookStates.get(`${join(folder, '.codex', 'hooks.json')}:${event}:${groupIndex}:${handlerIndex}`))
           .find((fields) => fields !== undefined);
@@ -438,13 +490,14 @@ export function readTrust(root: string, env: Env): CodexTrust {
     });
   }
   if (!states.length) return { state: 'hooks untrusted', store };
-  return { state: (['hooks off', 'hooks untrusted', 'hooks changed'] as const).find((state) => states.includes(state)) ?? 'trusted', store };
+  return { state: (['hooks edited', 'hooks off', 'hooks untrusted', 'hooks changed'] as const).find((state) => states.includes(state)) ?? 'trusted', store };
 }
 
 /**
  * What yokoten must write into config.toml to trust the project and the hooks it wrote
  * (#661). Only fields that differ are named, so a second run writes nothing. It never
- * trusts a hook that is not yokoten's: the same filter `readTrust` uses.
+ * trusts a hook that is not the exact command yokoten writes: a hook edited after trust
+ * is reported instead (`changed`), for `yokoten init` to put back.
  */
 export function trustProject(root: string, env: Env): TrustPlan {
   const store = env.CODEX_HOME ? '$CODEX_HOME/config.toml' : '~/.codex/config.toml';
@@ -462,6 +515,18 @@ export function trustProject(root: string, env: Env): TrustPlan {
   const changes: TrustChange[] = [];
   const change = (path: string[], key: string, value: string, before: string | null, kind?: 'boolean'): TrustChange => ({ agent: 'Codex', store, file, format: 'toml', path, key, value, before, ...(kind ? { kind } : {}) });
   const folders = folderKeys(root);
+  let hooks: unknown = null;
+  try {
+    hooks = JSON.parse(readFileSync(projectHooks(root), 'utf8'));
+  } catch {
+    // no hooks file doctor can read: no yokoten hook for Codex to trust
+  }
+  const events = isObject(hooks) && isObject(hooks.hooks) ? hooks.hooks : {};
+  const edited = TRUST_EVENTS.some(([name, event]) => {
+    const groups = Array.isArray(events[name]) ? events[name] : [];
+    return groups.some((group: unknown) => isObject(group) && Array.isArray(group.hooks) && group.hooks.some((handler: unknown) => isObject(handler) && isEditedYokotenHook(event, handler)));
+  });
+  if (edited) return { state: 'changed', store, changes: [] };
   const main = mainCheckout(root);
   const keys = [...folders, ...(main ? folderKeys(main) : [])];
   // Codex stops at the first folder key it finds, trusted or not.
@@ -471,19 +536,12 @@ export function trustProject(root: string, env: Env): TrustPlan {
     const before = typeof savedProject?.trust_level === 'string' ? savedProject.trust_level : null;
     changes.push(change(['projects', folder], 'trust_level', 'trusted', before));
   }
-  let hooks: unknown = null;
-  try {
-    hooks = JSON.parse(readFileSync(projectHooks(root), 'utf8'));
-  } catch {
-    // no hooks file doctor can read: no yokoten hook for Codex to trust
-  }
-  const events = isObject(hooks) && isObject(hooks.hooks) ? hooks.hooks : {};
   for (const [name, event] of TRUST_EVENTS) {
     const groups = Array.isArray(events[name]) ? events[name] : [];
     groups.forEach((group: unknown, groupIndex: number) => {
       if (!isObject(group) || !Array.isArray(group.hooks)) return;
       group.hooks.forEach((handler: unknown, handlerIndex: number) => {
-        if (!isObject(handler) || typeof handler.command !== 'string' || !handler.command.includes('--agent codex')) return;
+        if (!isObject(handler) || !isYokotenHook(event, handler)) return;
         const key = `${join(root, '.codex', 'hooks.json')}:${event}:${groupIndex}:${handlerIndex}`;
         const saved = folders
           .map((folder) => tables.hookStates.get(`${join(folder, '.codex', 'hooks.json')}:${event}:${groupIndex}:${handlerIndex}`))
@@ -1142,7 +1200,11 @@ export interface TrustChange {
 
 /** What one agent's trust store needs: entries to write, and what was there. */
 export interface TrustPlan {
-  state: 'trusted' | 'same' | 'unreadable' | 'no home';
+  /**
+   * `changed`: a hook yokoten wrote was edited, so writing trust would bless a command
+   * yokoten does not know. `yokoten init` puts the hook back; nothing is written here.
+   */
+  state: 'trusted' | 'same' | 'changed' | 'unreadable' | 'no home';
   store: string;
   changes: TrustChange[];
   /** The shape of a missing store: Muse's schema version, or Copilot's list. */
