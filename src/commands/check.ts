@@ -925,8 +925,17 @@ function utcText(stamp: string): string {
   return Number.isNaN(time) ? stamp : `${new Date(time).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
-/** A table cell: no pipe, no newline. */
-const cellText = (text: string): string => text.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
+/**
+ * A table cell: no pipe, one line. The text comes from GitHub, so the work stays linear:
+ * each line is trimmed and joined, and no pattern scans a whitespace run twice.
+ */
+const cellText = (text: string): string =>
+  text
+    .replace(/\|/g, '\\|')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
 
 /** The run as one line: workflow, event, branch, conclusion, time, link. */
 function runLine(run: HealthRun): string {
