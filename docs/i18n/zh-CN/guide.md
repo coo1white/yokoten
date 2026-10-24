@@ -499,8 +499,14 @@ Claude Code 用 `node` 直接跑插件里的 `.ts` 文件。之所以能跑，�
 用 Codex CLI、Gemini CLI，或者不想用插件，就这样装：
 
 ```sh
-npx yokoten install      # 这台电脑：技能、agent、hook
 cd your-project
+npx yokoten             # 一次就好：装好缺的东西，再看看走到哪一关
+```
+
+在任何项目里再运行一次，它只做还缺的部分。想一步一步来的话：
+
+```sh
+npx yokoten install      # 这台电脑：技能、agent、hook
 npx yokoten init         # 这个项目：只加文件，不覆盖
 npx yokoten doctor       # 看看走到哪一关，下一步做什么
 ```
