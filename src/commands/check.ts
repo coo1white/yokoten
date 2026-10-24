@@ -10,16 +10,16 @@
 // touched by `off`, `on` or install.
 
 import { randomUUID } from 'node:crypto';
-import { chmodSync, closeSync, linkSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, closeSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
-import { ghIn, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
+import { asText, borrowedHost, type Gh, ghIn, isObject, readCodeOwners, readIssue, readNumberedPullRequest, readPullRequest, readRepoLabelNames } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
 import { type Finding, formatFinding, isWarningFinding } from '../rules/message.ts';
 import { addedLinesByFile, changedLines, checkIssueLabels, checkIssueTitle, checkOwnedTier, checkPullRequest, isChangeFile, largeDiff, longSentenceNote, longSentences, splitForDependabot } from '../rules/pr.ts';
 import { parseChange } from '../run/changelog.ts';
-import { check, checkHistory, GitReadError, gitReadFinding, historyTimeZones, readGit, timeZoneNote, unstageHint } from '../run/check/inspect.ts';
+import { check, checkHistory, borrowedFiles, type BorrowedChange, GitReadError, gitReadFinding, historyTimeZones, indexFiles, readGit, timeZoneNote, unstageHint, watchBorrowed } from '../run/check/inspect.ts';
 import { ruleChange, ruleChangeFindings } from '../run/check/loosen.ts';
 import { isCodeFile, nameNotes } from '../run/names.ts';
 import { addedIgnores, type AllowEntry, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
@@ -606,4 +606,95 @@ function save(file: string, entries: AllowEntry[], skipOwnName?: false): void {
   } finally {
     rmSync(temporary, { force: true });
   }
+}
+
+// ---- Borrowed code (record 0024) ----
+
+/** The issue for one changed source. The title meets the issue-title rule of this repo. */
+export function borrowedIssue(change: BorrowedChange): { title: string; body: string; labels: string[] } {
+  const title = change.isSecurity ? 'check: take a borrowed security fix' : 'check: review borrowed code upstream';
+  const labels = change.isSecurity ? ['bug', 'hotfix', 'tier B'] : ['bug', 'tier B'];
+  const where = change.files.map((path) => `- \`${path}\``).join('\n');
+  const newest = change.latestCommit === null ? 'the file is gone from the default branch' : `\`${change.latestCommit}\``;
+  const commits = change.commits.length
+    ? change.commits.map((commit) => `- \`${commit.sha}\` ${commit.message.split('\n')[0]}`).join('\n')
+    : '- none the host could list';
+  const security = change.isSecurity ? '\n**Upstream names a security fix. Take it first.**\n' : '';
+  const note = change.note ? `\n${change.note}.\n` : '';
+  const body = [
+    `Upstream changed \`${change.source}\` after the commit we borrowed.`,
+    security + note,
+    `Borrowed files:\n${where}`,
+    `Borrowed commit: \`${change.borrowedCommit}\``,
+    `Newest commit on the default branch: ${newest}`,
+    `Commits after the borrowed one:\n${commits}`,
+    'Record 0024: re-take the part we need, or say in this issue why the change does not touch it.',
+  ].join('\n\n');
+  return { title, body: `${body}\n`, labels };
+}
+
+/**
+ * Whether an open issue already names this source, so a later run opens no second one.
+ * An answer that is not a list throws: it is a gap, not "none open", so the run stops
+ * instead of opening a duplicate.
+ */
+export function hasOpenIssue(gh: Gh, source: string): boolean {
+  const text = gh(['issue', 'list', '--state', 'open', '--limit', '500', '--json', 'number,body']);
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error('gh did not give an issue list');
+  }
+  if (!Array.isArray(json)) throw new Error('gh did not give an issue list');
+  return json.some((issue) => isObject(issue) && asText(issue.body).includes(source));
+}
+
+/**
+ * `yokoten borrowed`: compare each wheel with upstream's default branch, and open one
+ * issue per source that moved (record 0024). A security fix is called out. With
+ * `--dry-run` it writes nothing; with `--json` it prints the report and writes nothing.
+ */
+export async function runBorrowed(invocation: Invocation): Promise<number> {
+  const options = parse('borrowed', invocation.args);
+  if (typeof options === 'string') return usage(invocation, options);
+  const isDryRun = options.flags.has('--dry-run');
+  const json = options.flags.has('--json');
+  const root = requireRoot(invocation, invocation.cwd, json ? (missing) => ({ borrowed: { changed: [], unreadable: [] }, ok: false, findings: [missing] }) : undefined);
+  if (!root) return 1;
+  const { env } = invocation;
+  const files = borrowedFiles(indexFiles(root, env), (path) => {
+    try {
+      return readFileSync(join(root, path), 'utf8');
+    } catch {
+      return null;
+    }
+  });
+  const gh = ghIn(root, env, GH_TIMEOUT_MS);
+  const watch = watchBorrowed(files, borrowedHost(gh));
+  for (const gap of watch.unreadable) print(invocation, [`borrowed: can't read upstream ${gap.source} (${gap.files.join(', ')}): ${gap.reason}`], invocation.stderr);
+  const issues = watch.changed.map((change) => ({ change, issue: borrowedIssue(change) }));
+  if (json) printJson(invocation, { borrowed: watch, issues: issues.map(({ change, issue }) => ({ source: change.source, ...issue })) });
+  else if (isDryRun) {
+    for (const { change, issue } of issues) print(invocation, [`would open: ${issue.title} for ${change.source}`, ...issue.body.trimEnd().split('\n')]);
+    print(invocation, [`borrowed: ${files.length} file(s), ${watch.changed.length} source(s) changed, ${watch.unreadable.length} unreadable`]);
+  }
+  if (isDryRun || json) return watch.unreadable.length ? 1 : 0;
+  let failed = watch.unreadable.length > 0;
+  for (const { change, issue } of issues) {
+    try {
+      if (hasOpenIssue(gh, change.source)) {
+        print(invocation, [`open already: ${change.source}`]);
+        continue;
+      }
+      gh(['issue', 'create', ...issue.labels.flatMap((label) => ['--label', label]), '--title', issue.title, '--body', issue.body]);
+      print(invocation, [`opened: ${issue.title} for ${change.source}`]);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      print(invocation, [`borrowed: couldn't open an issue for ${change.source}: ${reason}`], invocation.stderr);
+      failed = true;
+    }
+  }
+  print(invocation, [`borrowed: ${files.length} file(s), ${watch.changed.length} source(s) changed, ${watch.unreadable.length} unreadable`]);
+  return failed ? 1 : 0;
 }
