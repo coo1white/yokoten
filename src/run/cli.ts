@@ -317,6 +317,22 @@ export const COMMANDS: Command[] = [
     example: 'git log -1 2>&1 | yokoten redact',
   },
   {
+    name: 'test',
+    summary: 'run the tests light: niced, with few at once',
+    usage: '[--heavy] [--print] [-- <test runner words>]',
+    text: [
+      "Runs Node's test runner (node --test) under nice, with at most half the cores and one",
+      'file per GB of free memory at once, so tests do not starve a shared machine. Words',
+      'after -- go to the runner: test files, or its options. YOKOTEN_LIGHT_TESTS=0 turns',
+      'the light run off for every call; --heavy does it for this call.',
+    ],
+    options: [
+      { name: '--heavy', text: 'no nice and no cap on concurrency, for this call' },
+      { name: '--print', text: 'show the command and why it was chosen, and run nothing' },
+    ],
+    example: 'yokoten test -- test/run/cli.test.ts',
+  },
+  {
     name: 'marks',
     summary: 'count your private marks, add or remove one, turn a kind off, or allow one here',
     usage: '[add | remove | off <kind> | on <kind> | allow <mark> --here | allow --remove <mark> --here]',

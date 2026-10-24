@@ -82,6 +82,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/check.ts').then((m) => m.runBorrowed(invocation));
     case 'redact':
       return import('../src/commands/check.ts').then((m) => m.runRedact(invocation));
+    case 'test':
+      return import('../src/commands/check.ts').then((m) => m.runTest(invocation));
     case 'marks':
       return import('../src/commands/check.ts').then((m) => m.runMarks(invocation));
     case 'changelog':
