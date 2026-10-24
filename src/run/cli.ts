@@ -255,6 +255,25 @@ export const COMMANDS: Command[] = [
     example: 'yokoten provenance main~1..main',
   },
   {
+    name: 'mcp',
+    summary: 'start the project MCP server and check its tools for every agent client',
+    usage: '[dir] [--command "<command>"] [--json]',
+    text: [
+      'Starts each stdio server in .mcp.json, .vscode/mcp.json or mcp.json and calls tools/list.',
+      'It checks each tool schema for Claude, Gemini and OpenAI strict mode, the tool and',
+      'property names, all four annotations, the count under 40, and an outputSchema result',
+      'that carries both structuredContent and text. It also reports any non-JSON-RPC line on',
+      'stdout, and warns when a Windows config needs cmd /c for npx or a .cmd file.',
+      'Use --command to check a server that has no config entry.',
+    ],
+    options: [
+      { name: '--command', value: 'command', text: 'start this command instead of a config entry, such as "node server.ts"' },
+      { name: '--json', text: 'the findings as JSON on stdout' },
+    ],
+    argument: 'dir',
+    example: 'yokoten mcp',
+  },
+  {
     name: 'borrowed',
     summary: 'compare borrowed code with its upstream, and open issues when it moved',
     usage: '[--dry-run] [--json]',
@@ -454,7 +473,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'board',
     summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
-    usage: '[--text] [--no-open]',
+    usage: '[--text] [--no-open] [--role name] [--vendor name]',
     text: [
       'Serves a live page on this machine only, at http://<repo>.localhost:<port>/.',
       'The folder name is the host. The port stays with this repo. The first visit',
@@ -468,6 +487,8 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' },
       { name: '--no-open', text: 'only print the link; do not open the browser' },
+      { name: '--role', value: 'name', text: 'with --text: only this role in the usage view: engineer, reviewer or checker' },
+      { name: '--vendor', value: 'name', text: 'with --text: only this vendor in the usage view, such as claude or muse' },
     ],
     example: 'yokoten board --text',
   },

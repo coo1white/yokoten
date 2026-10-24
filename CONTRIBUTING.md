@@ -21,6 +21,8 @@ All the rules are in [AGENTS.md](AGENTS.md). They are the same for people and fo
 agents. The short version:
 
 1. Every change starts as an issue. Say what you want to do there first.
+   Some issues are one line of work. That issue lists its tasks in priority order,
+   top first. Read it before you pick a task.
 2. Work on a branch, and open a pull request that links the issue.
 3. Run the checks before you push:
 
