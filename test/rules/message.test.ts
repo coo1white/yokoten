@@ -35,14 +35,17 @@ import {
   finding,
   type Finding,
   formatFinding,
+  formatRefusal,
   measureWork,
   noteWork,
   notRepoFinding,
+  parseRefusal,
   type Rule,
   RULES,
 } from '../../src/rules/message.ts';
 import {
   checkApprovalFreshness,
+  provenanceFindings,
   checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
@@ -170,6 +173,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   // An Approve on an older commit, with code changes after it (#612).
   add(checkApprovalFreshness({ tier: 'A', head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 2, sameDiff: true }));
+  add(provenanceFindings({ writers: [{ vendor: 'Claude Code', model: 'm' }], reviewers: [{ vendor: 'Anthropic', model: 'n' }], leads: [], others: [] }, [])[0]);
   found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
   found.push(...checkIssueLabels([], ['feat', 'tier A']));
   add(largeDiff(500));
@@ -362,6 +366,32 @@ test('docs: a finding carries its rule\'s link, in text, JSON and explain (#94)'
   assert.equal(explained && explainLines(explained).at(-1), `Docs: ${link}`);
   const step = explain('commit-check');
   assert.ok(step && step.docs === undefined && !explainLines(step).some((line) => line.startsWith('Docs:')), 'a step has no link yet');
+});
+
+// #707: every refusal has the same four parts, the rule id in its title, and a link even
+// when the finding has no section of its own.
+test('refusal: title, why, do instead and more, the same for every rule (#707)', () => {
+  const refused = finding('release', 'git push --tags pushes tags', 'ask the owner to start a new session');
+  const text = formatRefusal(refused);
+  assert.equal(
+    text,
+    `yokoten stopped this: git push --tags pushes tags [release]\nWhy: Only the owner decides when to release.\nDo instead: Ask the owner to start a new session.\nMore: ${DOCS_URL}#the-core-rules`,
+  );
+  for (const id of Object.keys(RULES) as (keyof typeof RULES)[]) {
+    const link = (RULES[id] as Rule).docs ?? DOCS_URL;
+    const one = formatRefusal(finding(id, 'something was refused', 'do the safe thing'));
+    assert.match(one, /^yokoten stopped this: something was refused \[[\w-]+\]\nWhy: .+\nDo instead: .+\nMore: https:\/\/\S+$/, id);
+    assert.ok(one.includes(link), `${id}: the link is always there`);
+    assert.ok(!one.includes('\u001b'), `${id}: no ANSI code in a refusal`);
+  }
+  // The board reads the same parts back, past a runtime's wrapper.
+  const parsed = parseRefusal(`PreToolUse:Bash hook error:\n${text}\n`);
+  assert.equal(parsed?.id, 'release');
+  assert.equal(parsed?.title, 'yokoten stopped this: git push --tags pushes tags [release]');
+  assert.equal(parsed?.why, 'Only the owner decides when to release.');
+  assert.equal(parsed?.fix, 'Ask the owner to start a new session.');
+  assert.equal(parsed?.docs, `${DOCS_URL}#the-core-rules`);
+  assert.equal(parseRefusal('yokoten: an older form'), null);
 });
 
 test('docs: no message names a docs/<file>.md path without a link (#524)', () => {

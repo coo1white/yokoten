@@ -24,8 +24,12 @@ import {
   checkIssueTitle,
   checkOwnedTier,
   hasMadeWith,
+  isSameVendor,
   parseLeadApproval,
   parseMadeWith,
+  parseProvenance,
+  provenanceFindings,
+  type DeskAgent,
   vendorFamily,
   writerVendors,
   checkPullRequest,
@@ -624,6 +628,54 @@ test('approve: only an Approve on the head merges a tier A pull request (#612)',
   const none = checkApprovalFreshness(read({ approved: null }));
   assert.equal(none?.id, 'pr-approve');
   assert.equal(none?.what, 'no owner Approve on this pull request');
+});
+
+// #756: the Made-with line is checked against the desks that worked on the branch.
+const rolesOf = (line: string) => parseMadeWith(`tier: B\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\n${line}\n`)?.roles ?? null;
+const desk = (vendor: string, model: string, role = 'engineer'): DeskAgent => ({ vendor, model, role });
+
+test('provenance: a desk on the branch must be named with its vendor and model (#756)', () => {
+  const found = (line: string, desks: DeskAgent[]) => provenanceFindings(rolesOf(line), desks).map((finding) => finding.id);
+  assert.deepEqual(found('Made with worker DeepSeek (deepseek-v4.1-flash)', [desk('deepseek-harness', 'deepseek-v4.1-flash')]), [], 'the desk is named');
+  assert.deepEqual(found('Made with worker DeepSeek (deepseek-v4.1-flash)', [desk('deepseek-harness', 'deepseek-v4.2-flash')]), ['pr-provenance'], 'the model is wrong');
+  assert.deepEqual(found('Made with worker Claude Code (claude-opus-5-5)', [desk('deepseek-harness', 'claude-opus-5-5')]), ['pr-provenance'], 'the vendor is wrong');
+  assert.deepEqual(found('Made with worker Grok (grok-4.7)', [desk('grok', 'grok-4.7')]), [], 'an old role-less pair names the worker too');
+  assert.deepEqual(found('Made with worker Grok (grok-4.7)', [desk('grok', 'grok-4.7', 'lead')]), [], 'a lead the line does not name is skipped');
+  assert.deepEqual(found('Made with worker Grok (grok-4.7), reviewed by DeepSeek (deepseek-v4.1-flash)', [desk('grok', 'grok-4.7'), desk('deepseek-harness', 'deepseek-v4.1-flash', 'reviewer')]), [], 'the reviewer desk is named');
+  assert.deepEqual(found('Made with worker Grok (grok-4.7)', [desk('grok', 'grok-4.7'), desk('deepseek-harness', 'deepseek-v4.1-flash', 'reviewer')]), [], 'a role the line does not name is skipped');
+  assert.deepEqual(provenanceFindings(null, [desk('grok', 'grok-4.7')]), [], 'no line, no provenance finding');
+  assert.deepEqual(provenanceFindings(rolesOf('Made with worker Grok (grok-4.7)'), []), [], 'no status files, nothing to compare');
+  const wrong = provenanceFindings(rolesOf('Made with worker Claude Code (claude-opus-5-5)'), [desk('deepseek-harness', 'deepseek-v4.1-flash')])[0];
+  assert.match(wrong.what, /a desk on this branch ran deepseek-harness \(deepseek-v4\.1-flash\), but the Made-with line does not name it/);
+  assert.match(wrong.fix, /worker deepseek-harness \(deepseek-v4\.1-flash\)/);
+});
+
+test('provenance: a reviewer from the writer vendor is a finding (record 0021)', () => {
+  const found = (line: string) => provenanceFindings(rolesOf(line), []).map((finding) => finding.id);
+  assert.deepEqual(found('Made with worker Claude Code (claude-opus-5-5), reviewed by Anthropic (claude-opus-4)'), ['pr-provenance'], 'same vendor, two spellings');
+  assert.deepEqual(found('Made with worker Claude Code (claude-opus-5-5), reviewed by DeepSeek (deepseek-v4.1-flash)'), [], 'another vendor is fine');
+  assert.deepEqual(found('Made with lead Claude Code (claude-opus-5-5), reviewed by Claude Code (claude-opus-4)'), ['pr-provenance'], 'a solo lead is the writer');
+  const same = provenanceFindings(rolesOf('Made with worker Claude Code (claude-opus-5-5), reviewed by Anthropic (claude-opus-4)'), [])[0];
+  assert.match(same.what, /the reviewer Anthropic \(claude-opus-4\) has the writer's vendor, Claude Code \(claude-opus-5-5\)/);
+});
+
+test('provenance: vendor spellings and a commit message are read (#756)', () => {
+  assert.equal(isSameVendor('Claude Code', 'claude-code'), true);
+  assert.equal(isSameVendor('DeepSeek', 'deepseek-harness'), true);
+  assert.equal(isSameVendor('xAI', 'grok'), true);
+  assert.equal(isSameVendor('Claude Code', 'Grok'), false);
+  assert.equal(isSameVendor('', 'Grok'), false);
+  // A squash merge leaves Co-authored-by trailers after the Made-with line.
+  const message = ['fix(guard): a pipe is refused (#745)', '', 'tier: A', '', 'Closes #745', 'Refs #700', '', '🤖 Made with worker Grok (grok-4.7), reviewed by Claude Code (claude-opus-5-5), lead Claude Code (claude-opus-5-5)', '', 'Co-authored-by: someone <someone@example.com>', ''].join('\n');
+  const record = parseProvenance('a'.repeat(40), message);
+  assert.equal(record.commit, 'a'.repeat(40));
+  assert.equal(record.subject, 'fix(guard): a pipe is refused (#745)');
+  assert.deepEqual(record.writers, [{ vendor: 'Grok', model: 'grok-4.7' }]);
+  assert.deepEqual(record.reviewers, [{ vendor: 'Claude Code', model: 'claude-opus-5-5' }]);
+  assert.equal(record.tier, 'A');
+  assert.deepEqual(record.issues, [745, 700]);
+  assert.deepEqual(parseProvenance('b'.repeat(40), 'docs: a page').writers, [], 'no Made-with line, no writer');
+  assert.deepEqual(parseProvenance('c'.repeat(40), 'docs: a page\n\ntier: C\n\n🤖 Made with lead Claude Code (claude-opus-5-5)\n').writers, [{ vendor: 'Claude Code', model: 'claude-opus-5-5' }], 'a solo lead wrote it');
 });
 
 // #699: an area lead approves in its area, but never its own vendor's work, and never

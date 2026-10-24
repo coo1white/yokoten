@@ -14,6 +14,9 @@ import {
   at,
   makeSandbox,
 } from '../repo/helpers.ts';
+import { invoke } from '../repo/invoke.ts';
+import { canColour, isColourTerminal, paint, styleLine, styleText, type Invocation } from '../../src/commands/shared.ts';
+import type { Env } from '../../src/rules/config.ts';
 
 test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', async () => {
   const sandbox = makeSandbox();
@@ -131,7 +134,7 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   const call = { cwd: sandbox.repo, tool_input: { command: 'git push --force' } };
   result = await sandbox.call(['hook', '--json'], { input: JSON.stringify(call) });
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten: git push --force forces the push\. .+\. Use --force-with-lease/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --force forces the push \[force-push\]\nWhy: .+\nDo instead: .*Use --force-with-lease/);
   const blocked = JSON.parse(result.stdout);
   assert.equal(blocked.blocked, true);
   shaped(blocked.finding);
@@ -169,4 +172,67 @@ test('--json: check, doctor, hook and explain print pure JSON with what, why and
   assert.match(result.stdout, /^secret: .+\.\nWhy: .+\.\nCheck: .+\.\nDocs: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy\n$/, 'the link to the rule (#94)');
   result = await sandbox.call(['explain', 'commit-check']);
   assert.match(result.stdout, /^commit-check: a step on the road: stage 1 of 5, safety net\.\nWhy: .+\.\nCheck: .+\.\nStandard: OSPS-BR-07\.01\.\n$/);
+});
+
+// #707: colour for a person's terminal, never for an agent, a pipe or a file. `NO_COLOR`
+// turns it off.
+test('output colour: a terminal only, and NO_COLOR or a dumb terminal turns it off (#707)', () => {
+  assert.equal(isColourTerminal({}, { isTTY: true }), true);
+  assert.equal(isColourTerminal({}, { isTTY: false }), false);
+  assert.equal(isColourTerminal({}, {}), false, 'a pipe is not a terminal');
+  assert.equal(isColourTerminal({ NO_COLOR: '' }, { isTTY: true }), false, 'an empty NO_COLOR still turns it off');
+  assert.equal(isColourTerminal({ NO_COLOR: '1' }, { isTTY: true }), false);
+  assert.equal(isColourTerminal({ TERM: 'dumb' }, { isTTY: true }), false);
+  const invocation = (command: string, env: Env = {}): Invocation => ({
+    command,
+    args: [],
+    env,
+    cwd: '',
+    stdout: { isTTY: true } as Invocation['stdout'],
+    stderr: { isTTY: true } as Invocation['stderr'],
+    stdin: { fd: null, text: null, stream: {} as Invocation['stdin']['stream'] },
+    script: '',
+  });
+  assert.equal(canColour(invocation('doctor'), invocation('doctor').stdout), true);
+  assert.equal(canColour(invocation('hook'), invocation('hook').stdout), false, 'an agent reads the hook answer');
+  assert.equal(canColour(invocation('doctor', { NO_COLOR: '1' }), invocation('doctor').stdout), false);
+});
+
+test('output colour: a mark in green, red or yellow, a heading in bold, a command in cyan (#707)', () => {
+  assert.equal(paint('ok', '32', false), 'ok', 'off is plain text');
+  assert.equal(styleLine('  ok      tool-call-guard: ready', false), '  ok      tool-call-guard: ready');
+  assert.equal(styleLine('  ok      tool-call-guard: ready', true), '  \u001b[32mok\u001b[0m      tool-call-guard: ready');
+  assert.match(styleLine('  MISSING tree: 2 problems', true), /^\s+\u001b\[31mMISSING\u001b\[0m /);
+  assert.match(styleLine('    note    a warning', true), /^\s+\u001b\[33mnote\u001b\[0m /);
+  assert.equal(styleLine('project:', true), '\u001b[1mproject:\u001b[0m');
+  assert.equal(styleLine('yokoten stopped this: a tag push [release]', true), '\u001b[1;31myokoten stopped this: a tag push [release]\u001b[0m');
+  assert.equal(styleLine('  1. safety net', true), '\u001b[1m  1. safety net\u001b[0m');
+  assert.equal(styleLine('Run `yokoten init` first', true), 'Run \u001b[36m`yokoten init`\u001b[0m first');
+  // A command inside a coloured line closes the colour, so the outer style is opened again
+  // after it; otherwise the rest of a red refusal or a bold heading goes plain (#707).
+  assert.equal(
+    styleLine('yokoten stopped this: run `yokoten init` now [release]', true),
+    '\u001b[1;31myokoten stopped this: run \u001b[36m`yokoten init`\u001b[0m\u001b[1;31m now [release]\u001b[0m',
+  );
+  assert.equal(
+    styleLine('the road: run `yokoten doctor` next', true),
+    '\u001b[1mthe road: run \u001b[36m`yokoten doctor`\u001b[0m\u001b[1m next\u001b[0m',
+  );
+  assert.equal(styleLine('project: `yokoten init`', true), '\u001b[1mproject: \u001b[36m`yokoten init`\u001b[0m\u001b[0m', 'a command at the end needs no re-open');
+  assert.equal(styleText('project:\n  ok      done', false), 'project:\n  ok      done');
+  assert.ok(!styleText('project:\n  ok      done', false).includes('\u001b'));
+});
+
+// #707: doctor on a terminal, through the command, gets colour; a pipe or NO_COLOR does not.
+test('output colour: doctor colours a terminal report and never a pipe or NO_COLOR (#707)', async () => {
+  const sandbox = makeSandbox();
+  const colour = await invoke(['doctor'], { env: { ...sandbox.env, NO_COLOR: undefined }, cwd: sandbox.repo, isTTY: true });
+  assert.match(colour.stdout, /\u001b\[1m/, 'a heading is bold');
+  assert.match(colour.stdout, /\u001b\[(?:32|31|33)m(?:ok|MISSING|note)\u001b\[0m/, 'a mark has its colour');
+  const plain = await invoke(['doctor'], { env: { ...sandbox.env, NO_COLOR: '1' }, cwd: sandbox.repo, isTTY: true });
+  const piped = await invoke(['doctor'], { env: { ...sandbox.env, NO_COLOR: undefined }, cwd: sandbox.repo });
+  for (const [name, result] of [['NO_COLOR', plain], ['a pipe', piped]] as const) {
+    assert.ok(!result.stdout.includes('\u001b'), `${name}: no ANSI code`);
+    assert.ok(result.stdout.includes('yokoten '), `${name}: the report still reads`);
+  }
 });
