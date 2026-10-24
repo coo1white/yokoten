@@ -29,7 +29,7 @@ import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder, TRUST_COMMAND } from '../folder-trust.ts';
-import { type Added, addHook, checkHooksFile, hasHook, type HookState, hookState, isObject } from '../hooks-file.ts';
+import { type Added, addHook, checkHooksFile, hasHook, type HookState, hookState, isObject, removeHook } from '../hooks-file.ts';
 import { blankedToml, hasTomlArray, hasTomlHeader, hasTomlKey, hasTomlTable, isInsideProject, parseToml, readTomlTables, type TrustChange, type TrustPlan } from './codex.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -160,6 +160,15 @@ export const userHooksState = (env: Env, cli: string, missing: string): { guard:
 
 /** Whether Grok CLI looks used on this machine: its home folder is there. */
 export const hasUserDir = (env: Env): boolean => isFolder(homeDir(env));
+
+/** Take out the user guard, and the file when it was all it held; null when it is not JSON and stays as it is. */
+export function removeUserHooks(env: Env): 'removed' | 'not there' | null {
+  try {
+    return removeHook(userHooks(env), 'PreToolUse', 'hook');
+  } catch {
+    return null;
+  }
+}
 
 // ---- Trust ----
 //

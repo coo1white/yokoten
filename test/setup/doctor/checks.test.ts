@@ -43,18 +43,18 @@ test('install then doctor: the private-marks lines agree, in full doctor and a s
 test('doctor: names a newer kit copy that waits behind an edit (#477)', async () => {
   const sandbox = makeSandbox();
   assert.equal((await sandbox.call(['install'])).status, 0);
-  const skill = join(sandbox.home, '.claude', 'skills', 'dispatch', 'SKILL.md');
+  const skill = join(sandbox.home, '.claude', 'skills', 'yokoten', 'SKILL.md');
   const installed = readFileSync(skill, 'utf8');
   // An edit on the copy install wrote: the kit has nothing newer, so doctor stays quiet.
   writeFileSync(skill, `${installed}\nAsk the owner before a release.\n`);
   assert.doesNotMatch((await sandbox.call(['doctor'])).stdout, /edited-kit/);
   // An edit on an older kit copy: the newer copy waits, and doctor names how to compare.
-  const older = sealManaged(installed.replace('Hand one task', 'Hand one job'));
+  const older = sealManaged(installed.replace('hand a task to a worker', 'hand a task to a helper'));
   writeFileSync(skill, `${older}\nAsk the owner before a release.\n`);
   const out = (await sandbox.call(['doctor'])).stdout;
-  assert.match(out, /^ +note +edited-kit: a newer kit copy is waiting for the skill dispatch \(~\/\.claude\/skills\/dispatch\/SKILL\.md\) you edited/m);
-  assert.match(out, /diff ~\/\.claude\/skills\/dispatch\/SKILL\.md .*kit\/user\/skills\/dispatch\/SKILL\.md/);
-  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /a newer kit copy is waiting for the skill dispatch/);
+  assert.match(out, /^ +note +edited-kit: a newer kit copy is waiting for the skill yokoten \(~\/\.claude\/skills\/yokoten\/SKILL\.md\) you edited/m);
+  assert.match(out, /diff ~\/\.claude\/skills\/yokoten\/SKILL\.md .*kit\/user\/entry\/SKILL\.md/);
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /a newer kit copy is waiting for the skill yokoten/);
 });
 
 test('doctor: the plugin, when on, stands in for install', async () => {
@@ -75,6 +75,40 @@ test('doctor: the plugin, when on, stands in for install', async () => {
   assert.doesNotMatch(out, /plugin-and-install/, 'no install pieces, no note');
   writeFileSync(join(sandbox.home, '.claude', 'settings.json'), 'not json');
   assert.match(await machine(), /MISSING session-doctor/, 'a broken settings file enables nothing');
+});
+
+// #904: the plugin stands in for install's guard while it is on, and install then writes
+// none. Turn the plugin off, and the machine has no guard at all: doctor says so as a
+// failure with one fix, and install again writes install's own guard. The owner decided
+// both on 2026-10-24.
+test('doctor: a guard that left with the plugin fails, and install brings it back (#904)', async () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.claude', 'settings.json');
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': true } }));
+  const hasGuard = (): boolean => {
+    const hooks = JSON.parse(readFileSync(file, 'utf8')).hooks;
+    return Array.isArray(hooks?.PreToolUse) && hooks.PreToolUse.length > 0;
+  };
+  const guardLine = async (): Promise<string | undefined> => (await sandbox.call(['doctor'])).stdout.split('\n').find((line) => line.includes('user-guard'));
+  // The plugin is on: install writes no guard of its own, and the plugin's guard counts.
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  assert.ok(!hasGuard(), 'install wrote no guard beside the plugin');
+  assert.match(String(await guardLine()), /^ {2}ok {6}user-guard$/);
+  // The plugin goes away: no guard is left, and that is a failure with one fix.
+  writeFileSync(file, JSON.stringify({ enabledPlugins: { 'yokoten@yokoten': false } }));
+  const failed = await sandbox.call(['doctor']);
+  assert.match(failed.stdout, /^ {2}MISSING user-guard: no guard for Claude Code; run `(npx )?yokoten install`$/m);
+  assert.equal(failed.status, 1, 'a machine with no guard fails doctor');
+  const json = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { ok: boolean; findings: { id: string; what: string }[] };
+  assert.ok(!json.ok);
+  assert.ok(json.findings.some((found) => found.id === 'user-guard' && found.what === 'no guard for Claude Code'), 'the guard fails the run, as a finding');
+  assert.match((await sandbox.call(['doctor', '--session'])).stdout, /no guard for Claude Code/, 'a session hears it too');
+  // Install again writes install's own guard, and doctor passes.
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  assert.ok(hasGuard(), 'install wrote its own guard');
+  assert.match(String(await guardLine()), /^ {2}ok {6}user-guard$/);
+  assert.ok(!(JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { findings: { id: string }[] }).findings.some((found) => found.id === 'user-guard'));
 });
 
 test('doctor: names the release channel this machine runs (#632)', async () => {

@@ -17,7 +17,7 @@ import { releaseFix } from '../../rules/guards.ts';
 import { homeIn } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import type { Action } from '../../run/hook.ts';
-import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, isObject, type Problem, readTable, type ReadOptions, type Settings, writeSettings } from '../hooks-file.ts';
+import { type Added, addHook, checkHooks, hasHook, type HookArgs, type HookState, hookState, isObject, type Problem, readTable, type ReadOptions, removeHook, type Settings, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import { readStop } from './claude-code.ts';
 import type { AgentAdapter } from './runtime.ts';
@@ -119,6 +119,16 @@ export function hasUserDir(env: Env): boolean {
     return statSync(dirname(userSettings(env))).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/** Take out the two user hooks, and the file when they were all it held; null when it is not JSON and stays as it is. */
+export function removeUserHooks(env: Env): { doctor: 'removed' | 'not there'; guard: 'removed' | 'not there' } | null {
+  try {
+    const file = userSettings(env);
+    return { doctor: removeHook(file, 'SessionStart', 'doctor'), guard: removeHook(file, 'BeforeTool', 'hook') };
+  } catch {
+    return null;
   }
 }
 

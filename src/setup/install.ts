@@ -1,7 +1,8 @@
-// `yokoten install`: the machine layer, the same on every computer. It puts the skills
-// where Claude Code and the agents that read `.agents/skills` find them in every project,
-// the agents where Claude Code finds them, and adds two user-level hooks, for Claude Code,
-// Codex and Gemini CLI alike:
+// `yokoten install`: the machine layer, the same on every computer. It puts one entry
+// skill where Claude Code and the agents that read `.agents/skills` find it in every
+// project, and the agents where Claude Code finds them. The other skills stay in the kit
+// copy and are read through the entry skill, so the skill list does not grow seven lines.
+// It adds two user-level hooks, for Claude Code, Codex and Gemini CLI alike:
 //
 // - SessionStart runs `doctor --session`, so every session in every repo starts by
 //   hearing which practices that repo is missing. Nobody has to remember to ask.
@@ -30,7 +31,7 @@ import type { Env } from '../rules/config.ts';
 import { STOPS_FILE, STOPS_OFF_FILE } from '../rules/guards.ts';
 import { skillFile as sharedSkillFile } from '../agents/agent-skills.ts';
 import * as copilot from '../agents/copilot.ts';
-import { addUserHooks, agentFile, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
+import { addUserHooks, agentFile, hasPlugin, hasSessionDoctor, hasUserGuard, removeUserHooks, skillFile as claudeSkillFile, userDir } from '../agents/runtimes/claude-code.ts';
 import * as codex from '../agents/runtimes/codex.ts';
 import * as gemini from '../agents/runtimes/gemini.ts';
 import * as antigravity from '../agents/runtimes/small/antigravity.ts';
@@ -63,6 +64,15 @@ export const USER_MISSING = 'yokoten: the runtime at ~/.local/share/yokoten is m
 
 /** Every place a skill goes: Claude Code's folder, and the shared one other agents read. */
 export const skillFiles = (env: Env, name: string): string[] => [claudeSkillFile(env, name), sharedSkillFile(env, name)];
+
+/**
+ * The one skill install puts in the global folders (#904). It routes to the other skills,
+ * which stay in the kit copy at ~/.local/share/yokoten and are read from there. With the
+ * Claude Code plugin on, install writes no global skill at all: the plugin brings them.
+ */
+export const ENTRY_SKILL = 'yokoten';
+/** The file install copies as the one entry skill; the plugin brings its own set. */
+const entryFile = (): string => join(KIT, 'user', 'entry', 'SKILL.md');
 
 /**
  * Yokoten's skill in the shared folder, as a link to Claude Code's copy (#557). Muse reads
@@ -317,17 +327,40 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   const target = paths(env);
   const report: string[] = [];
   let ok = true;
+  const plugin = hasPlugin(env);
+  // With the plugin on, a machine that uses Claude Code alone needs no copy of yokoten:
+  // the plugin brings the skills, the hooks and the runtime. Another tool's hook still
+  // needs the runtime, so it stays when that tool is here.
+  const otherTool = codex.hasUserDir(env) || gemini.hasUserDir(env) || antigravity.hasUserDir(env) || copilot.hasUserDir(env) || grok.hasUserDir(env) || muse.hasUserDir(env) || opencode.hasUserDir(env);
+  const needsRuntime = !plugin || otherTool;
+  const plan = installPlan(env, target.runtime, plugin, needsRuntime);
   // Run from this copy, install keeps it (#204). The report shows the home folder as ~.
-  const copied = copyRuntime(target.runtime, { withKit: true });
-  report.push(copied === 'kept' ? `kept: ${target.runtime} is the copy running now` : `wrote ${target.runtime}`);
+  if (needsRuntime) {
+    const copied = copyRuntime(target.runtime, { withKit: true });
+    report.push(copied === 'kept' ? `kept: ${target.runtime} is the copy running now` : `wrote ${target.runtime}`);
+  } else {
+    const had = existsSync(target.runtime);
+    rmSync(target.runtime, { recursive: true, force: true });
+    report.push(had ? `removed the runtime ${target.runtime}: the yokoten plugin brings its own` : 'kept out the runtime: the yokoten plugin brings its own');
+  }
 
   // The files whose copy the user edited: install keeps them and names the new copies (0015).
   const edited = new Set<string>();
   const isKeptEdit = (result: string): boolean => result === 'kept (your edit)';
   const skills = join(KIT, 'user', 'skills');
+  // The plugin brings every skill and agent, so a global copy would show each one twice
+  // (#904). Install then only takes back the copies it wrote before.
   for (const name of readdirSync(skills)) {
-    const content = readFileSync(join(skills, name, 'SKILL.md'), 'utf8');
     const [claudeFile, sharedFile] = skillFiles(env, name);
+    if (plugin || name !== ENTRY_SKILL) {
+      // Only what was there is named: a run on a machine with no copy says nothing per skill.
+      const removedClaude = removeManaged(claudeFile, { folder: true });
+      if (removedClaude !== 'not there') report.push(describeWrite(removedClaude, `skill ${name} in ${skillsDir(claudeFile)}`));
+      const removedShared = removeSharedSkill(sharedFile);
+      if (removedShared !== 'not there') report.push(describeWrite(removedShared, `skill ${name} in ${skillsDir(sharedFile)}`));
+      continue;
+    }
+    const content = readFileSync(entryFile(), 'utf8');
     const written = writeManaged(claudeFile, content);
     if (isKeptEdit(written)) edited.add(`skill ${name}`);
     report.push(describeWrite(written, `skill ${name} in ${skillsDir(claudeFile)}`));
@@ -337,18 +370,27 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
   }
   const agents = join(KIT, 'user', 'agents');
   for (const file of readdirSync(agents)) {
+    if (plugin) {
+      const removed = removeManaged(agentFile(env, file));
+      if (removed !== 'not there') report.push(describeWrite(removed, `agent ${file.replace(/\.md$/, '')}`));
+      continue;
+    }
     const result = writeManaged(agentFile(env, file), readFileSync(join(agents, file), 'utf8'));
     if (isKeptEdit(result)) edited.add(`agent ${file.replace(/\.md$/, '')}`);
     report.push(describeWrite(result, `agent ${file.replace(/\.md$/, '')}`));
   }
   if (edited.size) report.push(`your edits stay: install skipped ${[...edited].join(', ')}. The new ${edited.size === 1 ? 'copy is' : 'copies are'} in ~/.local/share/yokoten/kit/user.`);
 
-  const claudeHooks = agentHooks('Claude Code', '~/.claude/settings.json', () => {
-    const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
-    return [describeWrite(hooks.doctor, 'the SessionStart doctor'), describeWrite(hooks.guard, 'the user-level command guard')];
-  });
-  ok &&= claudeHooks.ok;
-  report.push(...claudeHooks.lines);
+  // The plugin brings both user hooks too, so install does not add a second copy.
+  if (plugin) report.push('skipped Claude Code hooks: the yokoten plugin brings them');
+  else {
+    const claudeHooks = agentHooks('Claude Code', '~/.claude/settings.json', () => {
+      const hooks = addUserHooks(env, USER_CLI, USER_MISSING);
+      return [describeWrite(hooks.doctor, 'the SessionStart doctor'), describeWrite(hooks.guard, 'the user-level command guard')];
+    });
+    ok &&= claudeHooks.ok;
+    report.push(...claudeHooks.lines);
+  }
   // Codex and Gemini CLI get the same two hooks (#211), but only when the CLI's folder is
   // already there: install never makes ~/.codex or ~/.gemini for someone who doesn't use it.
   // A file that won't parse, or has the wrong shape, is named and skipped, never rewritten (#248).
@@ -421,8 +463,35 @@ export function install(env: Env, { cwd, gh, ask, platform }: { cwd?: string; gh
     ...trySafely('the git mailmap', () => [setUpMailmap(env, found)]),
   );
   // Last, so the way to call `yokoten` is the line the user reads at the end.
-  report.push(...trySafely('the launcher', () => setUpLauncher(env, target.runtime, homeIn(env), { ask, platform })));
-  return { ok, lines: report };
+  if (needsRuntime) report.push(...trySafely('the launcher', () => setUpLauncher(env, target.runtime, homeIn(env), { ask, platform })));
+  // Nothing is kept out silently: with the plugin on, a launcher that was never there is
+  // not worth a line, and one an older install left is named as removed.
+  else report.push(...trySafely('the launcher', () => removeLauncher(homeIn(env), platform ?? process.platform)).filter((line) => !line.startsWith('nothing to remove:')));
+  return { ok, lines: [...plan, ...report] };
+}
+
+/** The files and settings keys install will touch, printed before it writes (#904). */
+function installPlan(env: Env, runtime: string, plugin: boolean, needsRuntime: boolean): string[] {
+  const shown = (path: string): string => path.split(homeIn(env)).join('~');
+  const plan = ['install will write these files and settings keys:'];
+  plan.push(needsRuntime ? `  ${shown(runtime)}` : '  no runtime: the yokoten plugin brings its own');
+  if (plugin) {
+    plan.push('  no global skills or agents: the yokoten plugin brings them');
+  } else {
+    for (const file of skillFiles(env, ENTRY_SKILL)) plan.push(`  ${shown(file)}`);
+    for (const file of readdirSync(join(KIT, 'user', 'agents'))) plan.push(`  ${shown(agentFile(env, file))}`);
+    plan.push(`  ${shown(join(userDir(env), 'settings.json'))}: hooks.SessionStart, hooks.PreToolUse`);
+  }
+  if (codex.hasUserDir(env)) plan.push('  ~/.codex/hooks.json: hooks.SessionStart, hooks.PreToolUse');
+  if (gemini.hasUserDir(env)) plan.push('  ~/.gemini/settings.json: hooks.SessionStart, hooks.BeforeTool');
+  if (antigravity.hasUserDir(env)) plan.push(`  ${antigravity.userHooksFile(env)}: hooks.yokoten`);
+  if (copilot.hasUserDir(env)) plan.push(`  ${copilot.userHooksFile(env)}: hooks.yokoten`);
+  if (grok.hasUserDir(env)) plan.push(`  ${grok.userHooksFile(env)}: hooks.PreToolUse`);
+  if (muse.hasUserDir(env)) plan.push(`  ${muse.userSettingsFile(env)}: hooks.SessionStart, hooks.PreToolUse`);
+  if (opencode.hasUserDir(env)) plan.push(`  ${opencode.userPluginFile(env)}`);
+  if (needsRuntime) plan.push('  ~/.local/bin/yokoten');
+  plan.push(`  ${shown(paths(env).marks)}`);
+  return plan;
 }
 
 const kitSkills = (): string[] => readdirSync(join(KIT, 'user', 'skills'));
@@ -521,7 +590,8 @@ export function editedKitCopies(env: Env): EditedKitCopy[] {
   // A project copy of the kit has no kit/user folder, so this says nothing there (#77).
   for (const name of listOrNone(join(KIT, 'user', 'skills'))) {
     const [claudeFile, sharedFile] = skillFiles(env, name);
-    const kitFile = join(KIT, 'user', 'skills', name, 'SKILL.md');
+    // The entry skill comes from kit/user/entry: the adoption skill is not the copy install writes.
+    const kitFile = name === ENTRY_SKILL ? entryFile() : join(KIT, 'user', 'skills', name, 'SKILL.md');
     look(claudeFile, kitFile, `skill ${name}`);
     look(sharedFile, kitFile, `skill ${name}`);
   }
@@ -557,8 +627,9 @@ export function isMachineSetUp(env: Env): boolean {
 
 /**
  * Take back what install wrote: the skills and agents that carry the managed mark, the two
- * user-level hooks, and the runtime. The keys and the private marks in ~/.config/yokoten
- * stay: the user wrote them. A second run finds nothing and changes nothing.
+ * user-level hooks, the runtime, and the files install made that the user never added to
+ * (the private marks' header, the mailmap). A key or a mark of theirs keeps its file and
+ * folder. A second run finds nothing and changes nothing.
  */
 export function uninstall(env: Env, { platform = process.platform }: { platform?: NodeJS.Platform } = {}): { ok: boolean; lines: string[] } {
   // As install: with no home, every path below would be relative (#404).
@@ -576,13 +647,22 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   const hooks = removeUserHooks(env);
   if (hooks) report.push(describeWrite(hooks.doctor, 'the SessionStart doctor'), describeWrite(hooks.guard, 'the user-level command guard'));
   else report.push(`kept ${settings}: it is not JSON, so the two hooks are still in it; take them out by hand`);
-  // The user-level guards outside Claude Code's settings (#342).
-  for (const [name, file, removed] of [
-    ['Antigravity CLI', antigravity.userHooksFile(env), antigravity.hasUserDir(env) ? antigravity.removeUserHooks(env) : 'not there'],
-    ['Copilot CLI', copilot.userHooksFile(env), copilot.hasUserDir(env) ? copilot.removeUserHooks(env) : 'not there'],
-  ] as const) {
-    if (removed === null) report.push(`kept ${file}: it is not JSON, so the ${name} command guard is still in it; take it out by hand`);
-    else if (removed === 'removed') report.push(`removed the ${name} command guard in ${file}`);
+  // The user-level guards outside Claude Code's settings (#342). Each is touched only
+  // when its tool is on this machine; an unreadable file stays as it is.
+  const extras: [string, 'removed' | 'not there' | 'kept (yours)' | null | { doctor: 'removed' | 'not there'; guard: 'removed' | 'not there' }][] = [
+    ['Antigravity CLI', antigravity.hasUserDir(env) ? antigravity.removeUserHooks(env) : 'not there'],
+    ['Copilot CLI', copilot.hasUserDir(env) ? copilot.removeUserHooks(env) : 'not there'],
+    ['Codex CLI', codex.hasUserDir(env) ? codex.removeUserHooks(env) : 'not there'],
+    ['Gemini CLI', gemini.hasUserDir(env) ? gemini.removeUserHooks(env) : 'not there'],
+    ['Grok CLI', grok.hasUserDir(env) ? grok.removeUserHooks(env) : 'not there'],
+    ['Muse Code', muse.hasUserDir(env) ? muse.removeUserHooks(env) : 'not there'],
+    ['OpenCode', opencode.hasUserDir(env) ? opencode.removeUserPlugin(env, USER_CLI, USER_MISSING) : 'not there'],
+  ];
+  for (const [name, removed] of extras) {
+    if (removed === null) report.push(`kept the ${name} hooks: the file is not JSON; take them out by hand`);
+    else if (typeof removed === 'object') {
+      if (removed.doctor === 'removed' || removed.guard === 'removed') report.push(`removed the ${name} user hooks`);
+    } else if (removed === 'removed') report.push(`removed the ${name} user hook`);
   }
 
   report.push(...trySafely('the launcher', () => removeLauncher(homeIn(env), platform)));
@@ -596,6 +676,57 @@ export function uninstall(env: Env, { platform = process.platform }: { platform?
   rmSync(stopLog, { force: true });
   rmSync(stopOff, { force: true });
   report.push(`${hadStopLog ? 'removed' : 'not there'} the stop log`);
+  // A file install wrote and the user never added to goes too, so the home folder is as
+  // it was before install (#904). A mark or a mailmap line of their own keeps the file.
+  const headerOnly = (file: string, header: string): boolean => {
+    try {
+      return readFileSync(file, 'utf8') === header;
+    } catch {
+      return false;
+    }
+  };
+  if (headerOnly(target.marks, MARKS_HEADER)) {
+    rmSync(target.marks, { force: true });
+    report.push(`removed ${target.marks}`);
+  }
+  const mailmapFile = join(target.config, 'mailmap');
+  const mailmapHeader = '# yokoten: git prints the owner\'s emails as a placeholder. Kept outside every repo; never commit it.\n';
+  if (headerOnly(mailmapFile, mailmapHeader) && mailmapState(env) !== 'other') {
+    rmSync(mailmapFile, { force: true });
+    report.push(`removed ${mailmapFile}`);
+  }
+  if (mailmapState(env) === 'ours') readGitValue(env, ['config', '--global', '--unset', 'mailmap.file']);
+  const gitConfig = env.GIT_CONFIG_GLOBAL;
+  try {
+    if (gitConfig && statSync(gitConfig).size === 0) rmSync(gitConfig, { force: true });
+  } catch {
+    // no global git config, or it holds the user's own settings: it stays
+  }
+  // A folder install made, and the user never put anything in, goes too. A folder with
+  // anything of theirs in it stays.
+  for (const dir of [
+    join(homeIn(env), '.local', 'bin'),
+    join(homeIn(env), '.local', 'share'),
+    join(homeIn(env), '.local'),
+    target.config,
+    join(homeIn(env), '.agents', 'skills'),
+    join(homeIn(env), '.agents'),
+    join(userDir(env), 'skills'),
+    join(userDir(env), 'agents'),
+    userDir(env),
+    join(homeIn(env), '.grok', 'hooks'),
+    join(homeIn(env), '.copilot', 'hooks'),
+    join(homeIn(env), '.gemini', 'config'),
+    join(homeIn(env), '.config', 'opencode', 'plugins'),
+    join(homeIn(env), '.config', 'muse'),
+    join(homeIn(env), '.config'),
+  ]) {
+    try {
+      rmdirSync(dir);
+    } catch {
+      // the folder holds something of the user's: it stays
+    }
+  }
   if (existsSync(target.config)) report.push(`kept ${target.config} (your keys and private marks)`);
   return { ok: true, lines: report };
 }

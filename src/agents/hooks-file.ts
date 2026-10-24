@@ -3,7 +3,7 @@
 // Each adapter names its own file, event, matcher and command; this file only edits the
 // table, and keeps everything else in the file as it was.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { runs, subcommand } from '../run/cli.ts';
 
@@ -290,6 +290,12 @@ export function removeHook(path: string, event: string, sub: string): 'removed' 
   if (kept.length) settings.hooks[event] = kept;
   else delete settings.hooks[event];
   if (!Object.keys(settings.hooks).length) delete settings.hooks;
+  // A file whose only content was the hooks goes too: install made it, so uninstall leaves
+  // the home folder as it was (#904).
+  if (!Object.keys(settings).length) {
+    rmSync(path, { force: true });
+    return 'removed';
+  }
   writeSettings(path, settings);
   return 'removed';
 }

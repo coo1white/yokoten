@@ -34,7 +34,7 @@ import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
 import { nodeTestsFix } from './advice/tests-job.ts';
 import { commands, FALLBACK_RUNNERS, orList, runLines, runsTests, scriptedRuns, testLanguages } from './advice/test-commands.ts';
-import { skillFiles, skillsDir } from './install.ts';
+import { ENTRY_SKILL, skillFiles, skillsDir } from './install.ts';
 
 /** The stage names, in order. A step's `stage` is its number here, from 1. */
 export const STAGES = ['safety net', 'issues and pull requests', 'release', 'a team of agents', 'going public'];
@@ -176,9 +176,8 @@ export function skillsLacking(env: Env): string[] | null {
   // No home folder (#356): no skills folder to look in, so none is there.
   if (!homeOf(env)) return ['your home folder (HOME is not set)'];
   const lacking = new Map<string, string[]>();
-  for (const name of readdirSync(kitSkills)) {
-    for (const file of skillFiles(env, name)) if (!existsSync(file)) lacking.set(skillsDir(file), [...(lacking.get(skillsDir(file)) ?? []), name]);
-  }
+  // Install keeps one entry skill in the home folders (#904); the rest live in its kit copy.
+  for (const file of skillFiles(env, ENTRY_SKILL)) if (!existsSync(file)) lacking.set(skillsDir(file), [...(lacking.get(skillsDir(file)) ?? []), ENTRY_SKILL]);
   return [...lacking].map(([dir, names]) => `${dir} (${names.join(', ')})`);
 }
 
