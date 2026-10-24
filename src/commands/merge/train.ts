@@ -28,7 +28,7 @@ import { workerRole } from '../../rules/guards/index.ts';
 import { runGit } from '../../run/check.ts';
 import { runBot } from './bot.ts';
 import { listPullRequests, nextPick } from './conflicts/order.ts';
-import { MAP_FILE, type ConflictMap } from './conflicts/types.ts';
+import { MAP_FILE, MAP_MAX_AGE_MS, type ConflictMap } from './conflicts/types.ts';
 import { type Invocation, type Output, parse, print, requireRoot, usage } from '../shared.ts';
 
 /** How long one test or check run may take, in ms. */
@@ -594,14 +594,17 @@ function checksOf(list: unknown): PullRequest['checks'] {
 function readConflictMap(root: string, env: Env): ConflictMap | string {
   const commonDir = text(runGit(root, ['rev-parse', '--git-common-dir'], { env }).stdout);
   const path = resolve(root, commonDir, MAP_FILE);
-  if (!existsSync(path)) return `no conflict map at ${MAP_FILE} in this clone; build the map first, then run the train again`;
+  if (!existsSync(path)) return `no conflict map at ${MAP_FILE} in this clone; run \`yokoten conflicts\` first, then the train again`;
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch {
-    return `the conflict map at ${MAP_FILE} is not readable JSON; build the map again`;
+    return `the conflict map at ${MAP_FILE} is not readable JSON; run \`yokoten conflicts\` again`;
   }
-  if (!isConflictMap(parsed)) return `the conflict map at ${MAP_FILE} has a shape this version cannot read; build the map again with this version of yokoten`;
+  if (!isConflictMap(parsed)) return `the conflict map at ${MAP_FILE} has a shape this version cannot read; run \`yokoten conflicts\` again with this version of yokoten`;
+  // An old map names changes that merged since and misses new ones: order nothing from it.
+  const age = Date.now() - Date.parse(parsed.builtAt);
+  if (!Number.isFinite(age) || age > MAP_MAX_AGE_MS) return `the conflict map at ${MAP_FILE} is more than an hour old; run \`yokoten conflicts\` again`;
   return parsed;
 }
 

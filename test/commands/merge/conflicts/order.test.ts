@@ -85,9 +85,9 @@ test('the map is built again before the next pick, so a change may collide with 
 test('train --next prints the next pick in one line and merges nothing', () => {
   const sandbox = makeSandbox();
   const map = mapOf([change('pr:12'), change('pr:9', { moves: ['src/old.ts'] })]);
-  sandbox.write('.git/yokoten/conflicts.json', JSON.stringify(map));
+  sandbox.write('.git/yokoten/conflicts.json', JSON.stringify({ ...map, builtAt: new Date().toISOString() }));
   const result = sandbox.run(['train', '--next']);
-  assert.equal(result.status, 0);
+  assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim().split('\n').length, 1);
   assert.match(result.stdout, /next is PR #9: it moves or deletes 1 file, so it goes first and alone/);
 });
@@ -96,5 +96,14 @@ test('train --next refuses plainly when the map is missing', () => {
   const sandbox = makeSandbox();
   const result = sandbox.run(['train', '--next']);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /no conflict map at yokoten\/conflicts\.json in this clone; build the map first/);
+  assert.match(result.stderr, /no conflict map at yokoten\/conflicts\.json in this clone; run `yokoten conflicts` first/);
+});
+
+test('train refuses a map more than an hour old: it names changes that merged since', () => {
+  const sandbox = makeSandbox();
+  const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  sandbox.write('.git/yokoten/conflicts.json', JSON.stringify({ ...mapOf([change('pr:12')]), builtAt: old }));
+  const result = sandbox.run(['train', '--next']);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /more than an hour old; run `yokoten conflicts` again/);
 });

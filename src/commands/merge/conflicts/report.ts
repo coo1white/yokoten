@@ -129,7 +129,14 @@ function rebuild(map: ConflictMap, word: string, invocation: Invocation): number
     print(invocation, [`yokoten conflicts: no open change ${word}. Run \`yokoten conflicts\` to see the ${one(map.changes.length, 'change')} this map holds.`], invocation.stderr);
     return 1;
   }
-  print(invocation, rebuildPrompt(map, change.id).split('\n'));
+  let prompt: string;
+  try {
+    prompt = rebuildPrompt(map, change.id);
+  } catch (err) {
+    print(invocation, [`yokoten conflicts: ${err instanceof Error ? err.message : String(err)}`], invocation.stderr);
+    return 1;
+  }
+  print(invocation, prompt.split('\n'));
   return 0;
 }
 

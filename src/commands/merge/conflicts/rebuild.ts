@@ -88,20 +88,25 @@ export function rebuildPrompt(map: ConflictMap, id: string): string {
   ].join('\n');
 }
 
+/** The characters a branch name may hold in a rebuild prompt. */
+const SAFE_BRANCH = /^[A-Za-z0-9._/-]+$/;
+
 /**
  * The git arguments that push a rebuilt branch (#913): `git <args>`. The lease names the
  * branch and the head it started from, so git refuses when the branch moved meanwhile.
  * This is the safe push: a plain force push could throw away the work that moved it.
  */
 export function leasePush(branch: string, startedFrom: string): string[] {
-  if (branch === '' || branch.startsWith('-') || branch.includes(':')) {
+  // The prompt puts both into shell lines an AI runs, and git allows ; $ | & in a branch
+  // name. Allow a small set of characters instead of quoting (#914).
+  if (!SAFE_BRANCH.test(branch) || branch.startsWith('-')) {
     throw refuse(
       `the branch name "${branch}" cannot be pushed`,
-      'a branch name is never empty, never starts with a dash, and holds no colon',
-      'use the branch name from the conflict map',
+      'the rebuild prompt puts it into shell commands, so it may hold only letters, digits and . _ / -, and not start with a dash',
+      'rename the branch, or rebuild this change by hand',
     );
   }
-  if (startedFrom === '' || startedFrom.startsWith('-') || startedFrom.includes(':')) {
+  if (!/^[0-9a-f]{7,64}$/.test(startedFrom)) {
     throw refuse(
       `the old head "${startedFrom}" cannot be leased`,
       'the lease needs the commit the branch held before the rebuild',
