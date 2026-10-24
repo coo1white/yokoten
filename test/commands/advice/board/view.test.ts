@@ -175,8 +175,9 @@ test('board view: Needs you drops a row once it is approved on the head, or merg
   ]);
   const kept = needsOf(agents, pulls, null).filter((need) => need.kind === 'answer').map((need) => need.agentKey);
   assert.deepEqual(kept, ['~/shut', '~/open', '~/missing'], 'an unknown issue list cannot prove an issue is closed');
-  const full = Array.from({ length: 30 }, (_, index) => ({ number: index + 1 }));
-  assert.equal(issueNumbersOf(full), null, 'a list at the cap may be cut off');
+  const atLimit = Array.from({ length: 30 }, (_, index) => ({ number: index + 1 }));
+  assert.deepEqual(issueNumbersOf(atLimit), atLimit.map((row) => row.number), 'a complete list at the limit is known whole');
+  assert.equal(issueNumbersOf([...atLimit, { number: 31 }]), null, 'one issue past the limit proves the list was cut');
   assert.equal(issueNumbersOf('gh could not list the open issues: run it again'), null);
   assert.deepEqual(issueNumbersOf([{ number: 9 }, { number: 10 }]), [9, 10]);
 });

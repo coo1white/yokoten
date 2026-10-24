@@ -15,7 +15,7 @@ import {
   stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { SECRET } from '../../src/rules/secrets.ts';
+import { SECRET } from '../../src/rules/privacy/secrets.ts';
 import {
   AGENT_STATUS_FILE,
   bumpDoneTries,
@@ -38,6 +38,8 @@ import {
   shortenOutput,
   STATUS_TEXT_LIMIT,
   startGuard,
+  STOPS_MAX_BYTES,
+  trimStopsLog,
   wasRefusedRecently,
   windowsTreeKillArgs,
   writeAgentChecks,
@@ -71,6 +73,44 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   result = await sandbox.call(['hook', '--commands-only'], { input: tool({ file_path: 'CLAUDE.md' }), extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 0);
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
+});
+
+test('hook: a heavy job asks when the kept host drive is low, and a light one never asks (#401)', async () => {
+  const sandbox = makeSandbox();
+  const state = join(sandbox.home, '.config', 'yokoten', 'machine.json');
+  mkdirSync(dirname(state), { recursive: true });
+  const gb = 1024 ** 3;
+  const kept = (free: number) => JSON.stringify({ hostDisk: { free, size: 250 * gb, readAt: new Date().toISOString(), distro: 'Ubuntu', version: 2 } });
+  const tool = (command: string) => JSON.stringify({ cwd: sandbox.repo, tool_input: { command } });
+  // No reading: the hook does not change.
+  let result = await sandbox.call(['hook'], { input: tool('npm test') });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  // A low reading: a heavy job gets the question, and the command is not refused.
+  writeFileSync(state, kept(0));
+  result = await sandbox.call(['hook'], { input: tool('npm test') });
+  assert.equal(result.status, 0);
+  const question = JSON.parse(result.stdout);
+  assert.equal(question.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(question.hookSpecificOutput.permissionDecisionReason, /`npm test` is a heavy job/);
+  assert.match(question.hookSpecificOutput.permissionDecisionReason, /free some space on that drive in Windows/);
+  // A light command asks nothing.
+  assert.equal((await sandbox.call(['hook'], { input: tool('git status') })).stdout, '');
+  // An old reading, or a WSL 1 one, is not repeated.
+  writeFileSync(state, JSON.stringify({ hostDisk: { free: 0, size: 250 * gb, readAt: '2020-01-01T00:00:00Z', distro: 'Ubuntu', version: 2 } }));
+  assert.equal((await sandbox.call(['hook'], { input: tool('npm test') })).stdout, '');
+  writeFileSync(state, JSON.stringify({ hostDisk: { free: 0, size: 250 * gb, readAt: new Date().toISOString(), distro: 'Ubuntu', version: 1 } }));
+  assert.equal((await sandbox.call(['hook'], { input: tool('npm test') })).stdout, '');
+  // Room enough: nothing changes.
+  writeFileSync(state, kept(200 * gb));
+  assert.equal((await sandbox.call(['hook'], { input: tool('npm install') })).stdout, '');
+  // YOKOTEN_MIN_FREE_GB=0 turns the question off.
+  writeFileSync(state, kept(0));
+  assert.equal((await sandbox.call(['hook'], { input: tool('docker build .'), extra: { YOKOTEN_MIN_FREE_GB: '0' } })).stdout, '');
+  // JSON, as the board and other runtimes read it.
+  result = await sandbox.call(['hook', '--json'], { input: tool('npm run build') });
+  assert.equal(result.status, 0);
+  assert.equal(JSON.parse(result.stdout).ask.ask, true);
 });
 
 test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#571)', () => {
@@ -658,4 +698,18 @@ setInterval(() => {}, 1000);
       }
     }
   }
+});
+
+// #621: the stop log is capped, and the oldest lines go first.
+test('stop log: the cap drops the oldest lines (#621)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  mkdirSync(dirname(file), { recursive: true });
+  const line = (n: number) => JSON.stringify({ time: '2026-10-23T00:00:00.000Z', vendor: 'codex', role: 'lead', rule: 'release', answer: 'refused', command: `echo ${n}` });
+  const lines = [0, 1, 2, 3, 4].map(line);
+  writeFileSync(file, lines.map((one) => `${one}\n`).join(''));
+  const cap = Buffer.byteLength(`${lines[3]}\n${lines[4]}\n`);
+  trimStopsLog(file, cap);
+  assert.deepEqual(readFileSync(file, 'utf8').trim().split('\n'), [lines[3], lines[4]]);
+  assert.equal(STOPS_MAX_BYTES, 5 * 1024 * 1024);
 });

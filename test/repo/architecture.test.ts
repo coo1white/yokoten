@@ -1195,9 +1195,9 @@ test('home: every test file loads the temp home first, and no child gets an env 
   assert.deepEqual(homeProblems(files), [], 'import test/repo/home.ts first; give a child process HOME, or spread an env that has it');
 });
 
-test('home: in src, only privacy.ts asks the system for the home folder (#356)', () => {
+test('home: in src, only privacy/home.ts asks the system for the home folder (#356)', () => {
   const found = filesUnder(SRC).filter((path) => /\bhomedir\(|userInfo\(\)\.homedir/.test(readFileSync(join(SRC, path), 'utf8')));
-  assert.deepEqual(found, ['rules/privacy.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
+  assert.deepEqual(found, ['rules/privacy/home.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
 });
 
 test('home: a test that reads the home folder gets the empty temp one, not the real one (#356)', () => {
