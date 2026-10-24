@@ -33,7 +33,9 @@ export function withBudget<T>(size: number, read: () => T, fresh = false): T {
   }
 }
 
-export const isShell = (word: string) => /^(?:ba|da|z|k|c|tc|fi|pw)?sh(?:\.exe)?$/.test(base(word));
+// Every shell name, including the small ones a minimal image ships (#830): ash, mksh,
+// pdksh, yash, posh, oksh and rbash all run a script from a pipe.
+export const isShell = (word: string) => /^(?:ba|da|z|k|c|tc|fi|pw|a|mk|pdk|ya|po|ok|rba)?sh(?:\.exe)?$/.test(base(word));
 // Programs that run a later word through a shell, beside the shells. A pattern means only
 // with that option: sudo and doas pass their words to a program unless given -s or -i,
 // and env unless given -S. xargs, nohup, time and the like run a program, not a shell

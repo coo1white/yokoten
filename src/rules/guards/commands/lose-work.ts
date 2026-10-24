@@ -1241,6 +1241,10 @@ function looksLikeGitDelete(args: string[]): boolean {
 const PIPE_SHELL_FIX = 'save it first (`curl -fsSL <url> -o <file>`), read it, then run it (`sh <file>`)';
 // A download written to a pipe: curl and wget, plus wget2, aria2c and fetch (#574).
 const DOWNLOAD_PROGRAMS = new Set(['curl', 'wget', 'wget2', 'aria2c', 'fetch']);
+// Where a download reads from. A download command with no URL is not one here.
+const DOWNLOAD_URL = /(?:https?|ftp):\/\/[^\s'"|;)]+/;
+// A URL without the `user:password@` part: a refusal names the download but never a secret in it (core rule 11).
+const withoutCredentials = (url: string) => url.replace(/\/\/[^/@]*@/, '//');
 
 /** A pipeline that feeds a download into a shell, `eval`, or a program word that is not plain text runs code nobody read (#560, #574, #734, #745). */
 export function checkPipeToShell(command: string): Finding | null {
@@ -1254,16 +1258,16 @@ export function checkPipeToShell(command: string): Finding | null {
     for (const segment of segments) {
       const commands = commandWords(segment);
       const programs = commands.flatMap(findPrograms).map(programName);
-      const shell = findPipeShell(programs, commands, segment);
+      const shell = findPipeShell(programs, commands, segment) ?? findStdinRunner(commands) ?? findMakeStdin(commands);
       if (shell !== undefined && downloader !== undefined) {
-        const download = downloadUrl === undefined ? 'a download' : `the download ${downloadUrl}`;
+        const download = downloadUrl === undefined ? 'a download' : `the download ${withoutCredentials(downloadUrl)}`;
         return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs ${download} without letting you read it first`, PIPE_SHELL_FIX);
       }
       if (downloader === undefined) {
         const program = programs.find((name) => DOWNLOAD_PROGRAMS.has(name.toLowerCase()));
         if (program !== undefined) {
           downloader = program;
-          downloadUrl = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(segment)?.[0];
+          downloadUrl = DOWNLOAD_URL.exec(segment)?.[0];
         }
       }
     }
@@ -1347,6 +1351,198 @@ function hasEvalArgument(words: string[]): boolean {
     if (index < words.length) return true;
   }
   return false;
+}
+
+// ---- A download run without a pipe (#830) ----
+//
+// `bash -c "$(curl …)"`, `eval "$(curl …)"`, `sh <<< "$(curl …)"`, `bash <(curl …)` and a
+// makefile from a pipe all run code nobody read. The guard allows a small set
+// of characters rather than reading grammar, so a form it cannot name is refused.
+
+/** Programs that run the text they are given as commands, beyond the shells (#830). */
+const STRING_RUNNERS = new Set(['eval', 'source', '.', 'ssh', 'su', 'runuser', 'watch', 'script', 'flock', 'parallel', 'tmux', 'screen']);
+// Programs that run their input as a program when no script file names one (#830).
+// Rscript needs the `-` word; the others read their input with no word at all.
+const STDIN_PROGRAMS = new Set(['python', 'node', 'nodejs', 'perl', 'ruby', 'php', 'lua', 'luajit', 'r', 'deno', 'bun', 'tclsh', 'guile', 'racket', 'osascript']);
+const STDIN_NEEDS_DASH = new Set(['rscript']);
+// An option that gives the program inline (`-c`, `-e`, `-m`), so no input is read.
+const INLINE_PROGRAM_OPTION = /^-(?:[A-Za-z]*[cem]|-(?:eval|execute|print|require|import|command|module))/;
+// An option that prints the version or the help and then exits, so no input is read.
+const PRINT_ONLY_OPTION = /^(?:--(?:version|help|usage)|-[Vh])$/;
+// `-v` is version for these, but verbose for python and R, which still run the program (#885).
+const VERSION_IS_V = new Set(['perl', 'ruby', 'php', 'lua', 'luajit', 'node', 'nodejs', 'tclsh']);
+// A file that is the program's input: `<` names it, `make -f` names it, and an
+// interpreter operand names it too (#830, #885).
+const STDIN_FILE = /^\/?(?:dev\/(?:stdin|fd\/0)|proc\/(?:self|\d+)\/fd\/0)$/;
+const MAKE_PROGRAMS = new Set(['make', 'gmake', 'bmake']);
+// The URL of a download inside `text`, if any.
+const downloadIn = (text: string): string | undefined => DOWNLOAD_URL.exec(text)?.[0];
+
+/** The base name of an interpreter, with its version dropped: `python3.12` is `python`. */
+const interpreterName = (word: string) => programName(word).toLowerCase().replace(/\d+(?:\.\d+)*$/, '');
+
+/** Whether `arg` only prints the program's version or help, so the program never reads input. */
+function printsOnly(name: string, arg: string): boolean {
+  if (PRINT_ONLY_OPTION.test(arg)) return true;
+  return arg === '-v' && VERSION_IS_V.has(name);
+}
+
+/** Whether `words[from]` names an interpreter that reads its program from input. */
+function interpreterReadsStdin(words: string[], from: number): boolean {
+  const name = interpreterName(words[from] ?? '');
+  const isInterpreter = STDIN_PROGRAMS.has(name) || STDIN_NEEDS_DASH.has(name);
+  if (!isInterpreter) return false;
+  const args = words.slice(from + 1);
+  // A `-` word, or a file that is input, is the program the interpreter runs (#885).
+  if (args.some((arg) => arg === '-' || STDIN_FILE.test(arg))) return true;
+  // Another operand is a script file, unless an inline-program option came first.
+  if (args.some((arg) => !arg.startsWith('-'))) return false;
+  if (args.some((arg) => INLINE_PROGRAM_OPTION.test(arg))) return false;
+  // `python3 --version` and `perl -v` print and exit: they never run the pipe as a program.
+  if (args.some((arg) => printsOnly(name, arg))) return false;
+  return STDIN_PROGRAMS.has(name);
+}
+
+/** The interpreter a command feeds from a pipe, or undefined (#830). */
+function findStdinRunner(commands: string[][]): string | undefined {
+  for (const words of commands) {
+    for (const place of findProgramPlaces(words)) {
+      if (place.index < 0) continue;
+      if (interpreterReadsStdin(words, place.index)) {
+        const args = words.slice(place.index + 1);
+        const stdin = args.some((arg) => arg === '-' || STDIN_FILE.test(arg)) ? ' -' : '';
+        return `${programName(place.word)}${stdin}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** The makefile word of a make option at `at`, with the index of the word it used, or null. */
+function makefileValue(words: string[], at: number): { value: string; next: number } | null {
+  const word = words[at];
+  if (word.startsWith('--')) {
+    // make accepts a unique prefix of a long option, and so does the guard (#830).
+    const match = /^--([A-Za-z][A-Za-z-]*)(?:=(.*))?$/s.exec(word);
+    if (match === null) return null;
+    const option = match[1].toLowerCase();
+    const isFile = 'file'.startsWith(option) || 'makefile'.startsWith(option);
+    if (!isFile) return null;
+    if (match[2] !== undefined) return { value: match[2], next: at };
+    return at + 1 < words.length ? { value: words[at + 1], next: at + 1 } : null;
+  }
+  if (!word.startsWith('-') || word === '-') return null;
+  const letter = word.indexOf('f', 1);
+  if (letter === -1) return null;
+  const rest = word.slice(letter + 1);
+  if (rest !== '') return { value: rest, next: at };
+  return at + 1 < words.length ? { value: words[at + 1], next: at + 1 } : null;
+}
+
+/** Whether a make command runs a makefile from input, which a pipe can fill (#830). */
+function makeReadsStdin(words: string[], from: number): boolean {
+  for (let at = from + 1; at < words.length; at++) {
+    const found = makefileValue(words, at);
+    if (found === null) continue;
+    at = found.next;
+    if (found.value === '-' || STDIN_FILE.test(found.value) || runsDownload(found.value)) return true;
+  }
+  return false;
+}
+
+/** The make command that runs the makefile a pipe carries, or undefined (#830). */
+function findMakeStdin(commands: string[][]): string | undefined {
+  for (const words of commands) {
+    for (const place of findProgramPlaces(words)) {
+      if (place.index < 0) continue;
+      const name = programName(place.word).toLowerCase();
+      if (!MAKE_PROGRAMS.has(name)) continue;
+      if (makeReadsStdin(words, place.index)) return `${name} -f -`;
+    }
+  }
+  return undefined;
+}
+
+/** Whether a command in `text` downloads from the internet. */
+function hasDownloadCommand(text: string): boolean {
+  if (downloadIn(text) === undefined) return false;
+  return commandWords(text).some((words) => findPrograms(words).some((program) => DOWNLOAD_PROGRAMS.has(programName(program).toLowerCase())));
+}
+
+/**
+ * The text inside the substitution or process substitution that starts at `from`.
+ * Undefined when it never closes, so the rest of the text is treated as inside it.
+ */
+function substitutionBody(text: string, from: number): string | undefined {
+  const width = text[from] === '`' ? 1 : 2;
+  const start = from + width;
+  if (width === 1) {
+    const end = text.indexOf('`', start);
+    return end === -1 ? undefined : text.slice(start, end);
+  }
+  let depth = 1;
+  for (let at = start; at < text.length; at++) {
+    if (text.startsWith('$(', at) || text.startsWith('<(', at) || text.startsWith('>(', at)) {
+      depth++;
+      at++;
+    } else if (text[at] === ')') {
+      depth--;
+      if (depth === 0) return text.slice(start, at);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Whether `text` runs a download inside a substitution or a process substitution (#830).
+ * The download is a program of the substitution's own text, not just a word beside it:
+ * `bash -c "curl <url>"` only reads, while `bash -c "$(curl <url>)"` runs the answer.
+ * A download after the closing parenthesis is beside it, not inside it.
+ */
+function runsDownload(text: string): boolean {
+  spend(text.length);
+  for (let at = 0; at < text.length; at++) {
+    const opens = text.startsWith('$(', at) || text.startsWith('<(', at) || text.startsWith('>(', at);
+    if (!opens && text[at] !== '`') continue;
+    const width = text[at] === '`' ? 1 : 2;
+    const body = substitutionBody(text, at) ?? text.slice(at + width);
+    if (hasDownloadCommand(body)) return true;
+    at += width - 1;
+  }
+  return false;
+}
+
+/** The program that runs a substitution, process substitution or here-string in `words` (#830). */
+function findStringRunner(words: string[]): string | undefined {
+  for (const place of findProgramPlaces(words)) {
+    if (place.index < 0) continue;
+    const name = programName(place.word).toLowerCase();
+    const run = isShell(name) || STRING_RUNNERS.has(name) || STDIN_PROGRAMS.has(interpreterName(place.word)) || STDIN_NEEDS_DASH.has(interpreterName(place.word));
+    if (run) return name;
+  }
+  return undefined;
+}
+
+/**
+ * A download run without a pipe, inside a substitution, a process substitution or a
+ * here-string (#830). The guard cannot read the code, so it refuses.
+ */
+export function checkDownloadRunner(commands: string[][]): Finding | null {
+  for (const words of commands) {
+    const carried = words.find((word) => runsDownload(word));
+    if (carried === undefined) continue;
+    // `source <(…)` runs it; so does a makefile given as a process substitution.
+    const runner = findStringRunner(words) ?? findMakeStdin([words]);
+    if (runner !== undefined) return finding('pipe-to-shell', `\`${runner}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
+    // A download inside a substitution where a command goes runs too (#885): `$(curl …)`,
+    // the backtick form, and the same after an assignment or a launcher. Elsewhere it is
+    // only read: `echo "$(curl …)"` prints it, and `X=$(curl …)` saves it.
+    const place = findProgramPlaces(words).find((at) => at.index >= 0 && runsDownload(at.word));
+    if (place === undefined) continue;
+    const shape = place.word.includes('`') ? 'a backtick substitution' : '`$(…)`';
+    return finding('pipe-to-shell', `a command from ${shape} runs a download without letting you read it first`, PIPE_SHELL_FIX);
+  }
+  return null;
 }
 
 // Whether a substitution in `text` runs, and whether one never closes.
@@ -1485,6 +1681,22 @@ function findShellRunner(words: string[]): string | undefined {
   return undefined;
 }
 
+/** Whether `text` ends in a pipe, so the shell reads the next line as its right side (#830). */
+function endsWithPipe(text: string): boolean {
+  let end = text.length - 1;
+  while (end >= 0 && (text[end] === ' ' || text[end] === '\t')) end--;
+  if (end < 0) return false;
+  if (text[end] === '&' && text[end - 1] === '|') return true;
+  return text[end] === '|' && text[end - 1] !== '|';
+}
+
+/** Whether the line break at `from` stands before a pipe, so the pipe belongs to this line (#830). */
+function startsWithPipe(text: string, from: number): boolean {
+  let at = from;
+  while (at < text.length && (text[at] === ' ' || text[at] === '\t' || text[at] === '\r')) at++;
+  return text[at] === '|' && text[at + 1] !== '|';
+}
+
 /** The command's pipelines: cut at ; && || and line ends, outside quotes and groups. */
 function splitPipelines(command: string): string[] {
   const pipelines: string[] = [];
@@ -1519,6 +1731,8 @@ function splitPipelines(command: string): string[] {
       depth = Math.max(0, depth - 1);
       current += character;
     } else if ((character === ';' || character === '\n' || character === '\r') && depth === 0) {
+      // A line break on either side of a pipe continues the same pipeline (#830).
+      if ((character === '\n' || character === '\r') && (endsWithPipe(current) || startsWithPipe(command, at + 1))) continue;
       push();
     } else if ((character === '&' && next === '&') || (character === '|' && next === '|')) {
       if (depth === 0) {

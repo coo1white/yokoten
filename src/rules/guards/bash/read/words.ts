@@ -161,6 +161,7 @@ export const LAUNCHERS: Record<string, { options: string[]; operands?: number }>
   stdbuf: { options: ['-i', '-o', '-e'] },
   unbuffer: { options: [] },
   busybox: { options: [] },
+  toybox: { options: [] },
   chrt: { options: ['-T', '--sched-runtime', '-P', '--sched-period', '-D', '--sched-deadline'], operands: 1 },
   ionice: { options: ['-c', '--class', '-n', '--classdata'] },
   taskset: { options: [], operands: 1 },

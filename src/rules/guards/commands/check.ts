@@ -8,7 +8,7 @@ import { checkWorkerBox } from '../worker/box.ts';
 import { checkWorkerPointers, hostRunRemoval, hostAlias, hostHiddenCommand, hostWorkflowOff } from '../worker/config-command.ts';
 import { sends, checkWorkerSends, checkWorkerUnmark } from '../worker/sends.ts';
 import { base, isGit, GIT_VALUE_OPTIONS, unquotedRedirects, withoutShellRedirects, LAUNCHERS, programName, splitString, MAX_PROGRAMS, findPrograms, findProgramPlaces } from '../bash/read/words.ts';
-import { aliasFinding, checkShellAlias, checkRemoveGit, deleteBranchFinding, findDeletedBranches, findPushedDeletes, findDeletedRef, isDefaultBranch, checkPipeToShell, checkGitLoseWork, isGitLongOption } from './lose-work.ts';
+import { aliasFinding, checkShellAlias, checkRemoveGit, deleteBranchFinding, findDeletedBranches, findPushedDeletes, findDeletedRef, isDefaultBranch, checkPipeToShell, checkGitLoseWork, isGitLongOption, checkDownloadRunner } from './lose-work.ts';
 import { checkHooksSettings, checkHooksEnvironment, checkGitConfigEnvironment, checkGitSetupWrites, checkHomeSetting, checkWorkerRealHome } from '../hooks/settings.ts';
 import { CONFIG_READS, checkConfig, gitAnswers } from '../hooks/read.ts';
 import { heredocPost, plainBreak, writeRisk, withoutStdin, tildesPlain, isUnsure, writesNoFile, writesFile, QUOTED_TILDE, folderAfter } from '../bash/body.ts';
@@ -67,7 +67,8 @@ function checkEachCommand(command: string, { env, config, cwd, titles = false, r
   // The words have lost their quotes: a quote or \ next to any ~ makes a ~ folder unsure (#465).
   const isTildeQuoted = QUOTED_TILDE.test(command);
   // A download piped into a shell, eval, or a `$` program runs code nobody read (#560, #734, #745).
-  const piped = checkPipeToShell(command);
+  // So does one run inside a substitution, a process substitution or a here-string (#830).
+  const piped = checkPipeToShell(command) ?? checkDownloadRunner(commands);
   if (piped) return piped;
   const token = checkTokenUse(command, commands);
   if (token) return token;
