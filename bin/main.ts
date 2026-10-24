@@ -58,6 +58,8 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       const guard = args.includes('--stop') ? undefined : import('../src/run/hook.ts').then((m) => m.takeGuard());
       return Promise.all([guard, import('../src/commands/hook.ts')]).then(([started, m]) => m.runHook(invocation, started));
     }
+    case 'stops':
+      return import('../src/commands/hook.ts').then((m) => m.runStops(invocation));
     case 'worker':
       return import('../src/commands/hook.ts').then((m) => m.runWorker(invocation));
     case 'desk':
@@ -66,6 +68,10 @@ function dispatch(invocation: Invocation): number | Promise<number> {
       return import('../src/commands/advice/messages.ts').then((m) => m.runMsg(invocation));
     case 'check':
       return import('../src/commands/check.ts').then((m) => m.runCheck(invocation));
+    case 'mcp':
+      return import('../src/commands/advice/mcp.ts').then((m) => m.runMcp(invocation));
+    case 'borrowed':
+      return import('../src/commands/check.ts').then((m) => m.runBorrowed(invocation));
     case 'speed':
       return import('../src/commands/advice/speed.ts').then((m) => m.runSpeed(invocation));
     case 'redact':
@@ -87,7 +93,9 @@ function dispatch(invocation: Invocation): number | Promise<number> {
     case 'update':
       return import('../src/commands/setup.ts').then((m) => m.runUpdate(invocation));
     case 'bot':
-      return import('../src/commands/bot.ts').then((m) => m.runBot(invocation));
+      return import('../src/commands/merge/bot.ts').then((m) => m.runBot(invocation));
+    case 'train':
+      return import('../src/commands/merge/train.ts').then((m) => m.runTrain(invocation));
     case 'board':
       return import('../src/commands/advice/board/server.ts').then((m) => m.runBoard(invocation));
     case 'install':

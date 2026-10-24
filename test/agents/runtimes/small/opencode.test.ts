@@ -191,6 +191,24 @@ test('OpenCode 1 server() refuses command and code on any tool, and a git path u
   });
 });
 
+test('the plugin refuses the tag push the issue names, and a subagent call it cannot read', () => {
+  const sandbox = makeSandbox();
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const tagPush = runPlugin(sandbox.repo, sandbox.env, source, { tool: 'bash', args: { command: 'git push --tags' } });
+  assert.equal(tagPush.status, 0, tagPush.stderr);
+  assert.equal(tagPush.stdout.split('\n')[0], 'REFUSED');
+  assert.match(tagPush.stdout, /pushes tags/, 'the owner-only tag reason reaches the model');
+  // A subagent launch carries a prompt, not a command or a path. The plugin cannot read
+  // it, so it refuses (#337): a subagent never runs outside the guard.
+  const subagent = runPlugin(sandbox.repo, sandbox.env, source, {
+    tool: 'task',
+    args: { description: 'count lines', prompt: 'Run wc -l on README.md', subagent_type: 'general' },
+  });
+  assert.equal(subagent.status, 0, subagent.stderr);
+  assert.equal(subagent.stdout.split('\n')[0], 'REFUSED');
+  assert.ok(subagent.stdout.includes(UNREADABLE_CALL), subagent.stdout);
+});
+
 test('OpenCode readToolCall: v1 tools, and an evaluate event read from resources then metadata', () => {
   assert.deepEqual(readToolCall({ tool: 'shell', args: { command: 'ls' }, directory: '/work' }), { command: 'ls', paths: [], cwd: '/work', worker: false });
   assert.deepEqual(readToolCall({ tool: 'bash', args: { command: 'pwd' } }), { command: 'pwd', paths: [], cwd: undefined, worker: false });
@@ -395,7 +413,7 @@ test('init writes the OpenCode plugin, and doctor notes a project that has OpenC
   const after = await sandbox.call(['doctor']);
   assert.doesNotMatch(after.stdout, /opencode-hook/);
   const again = await sandbox.call(['init']);
-  assert.match(again.stdout, /same the OpenCode tool-call plugin in \.opencode\/plugins\/yokoten\.ts/);
+  assert.match(again.stdout, /kept the OpenCode tool-call plugin in \.opencode\/plugins\/yokoten\.ts/);
   sandbox.write(PLUGIN_FILE, 'old\n');
   noted = agentHooks(sandbox.repo, sandbox.env).filter((item) => item.name === 'opencode-hook');
   assert.match(noted[0]?.finding.what ?? '', /out of date/);
