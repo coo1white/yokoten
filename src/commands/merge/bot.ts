@@ -47,19 +47,40 @@ function gitText(dir: string, env: Env, args: string[]): string | null {
 }
 
 /**
- * The commits a push sends: the revisions to read, and what the remote already has. The
- * base is the branch's tracking ref when this desk has it, else every ref of that remote,
- * so a new branch is not refused for an ancestor the remote already has.
+ * The commits a push sends: the revisions to read, and the commits the remote already
+ * has. The base is what the remote reports, never a tracking ref: `refs/remotes/...` is a
+ * local ref, and the agent can point it at the tip it is about to push (#789).
  */
 interface PushSpec {
   local: string[];
   base: string[];
 }
 
-/** The revisions a push sends, as local revisions. A delete sends no commit. An error string when git can't answer. */
-function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | string {
+/** What stopped the check before it could read a commit: what happened, and its fix. */
+interface PushProblem {
+  what: string;
+  fix: string;
+}
+
+/** The refs the remote reports, by name, or what went wrong. It asks; it never pushes. */
+function remoteRefs(dir: string, env: Env, remote: string): Map<string, string> | PushProblem {
+  const text = gitText(dir, env, ['ls-remote', remote]);
+  if (text === null) {
+    return { what: "git can't read what the remote already has, so nothing was pushed", fix: 'check the remote name and that this desk can reach it, then push again' };
+  }
+  const refs = new Map<string, string>();
+  for (const line of text.split('\n')) {
+    const [sha, name] = line.split('\t');
+    if (sha && name && /^[0-9a-f]{40,64}$/.test(sha)) refs.set(name, sha);
+  }
+  return refs;
+}
+
+/** The revisions a push sends, with the commits the remote already has. A delete sends no commit. */
+function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | PushProblem {
   const words: string[] = [];
   const flags = new Set<string>();
+  let repoOption: string | null = null;
   for (let index = 0; index < args.length; index++) {
     const word = args[index];
     if (word === '--') {
@@ -72,62 +93,72 @@ function specsForPush(dir: string, env: Env, args: string[]): PushSpec[] | strin
     }
     const name = word.split('=')[0];
     flags.add(name);
+    // `--repo <repository>` names the destination when no word does.
+    if (name === '--repo') repoOption = word.includes('=') ? word.slice(word.indexOf('=') + 1) : args[index + 1] ?? null;
     if (!word.includes('=') && PUSH_VALUE_OPTIONS.has(name)) index += 1;
   }
   // A delete sends no commit, so there is no time to check.
   if (flags.has('--delete') || flags.has('-d')) return [];
-  const remoteText = gitText(dir, env, ['remote']);
-  if (remoteText === null) return 'git remote gave no answer';
-  const remoteNames = remoteText.split('\n').filter(Boolean);
+  // The first word that is not an option is the remote, the way git reads it: a name, a
+  // path or a URL. Only the words after it are refspecs. `--repo` names it when no word
+  // does; a word wins over the option, as git says.
   let remote = 'origin';
   let refspecs = words;
-  let namedRemote = false;
-  if (words.length && remoteNames.includes(words[0])) {
+  let named = false;
+  if (words.length) {
     remote = words[0];
     refspecs = words.slice(1);
-    namedRemote = true;
+    named = true;
+  } else if (repoOption !== null) {
+    remote = repoOption;
+    named = true;
   }
-  const branchOf = (dest: string): string | null => {
-    const name = dest.startsWith('refs/heads/') ? dest.slice('refs/heads/'.length) : dest;
-    return name && !name.startsWith('refs/') ? name : null;
-  };
-  const baseFor = (branch: string | null): string[] => {
-    if (branch) {
-      const tracking = `refs/remotes/${remote}/${branch}`;
-      if (spawnSync('git', ['rev-parse', '--verify', '--quiet', tracking], { cwd: dir, env, encoding: 'utf8' }).status === 0) return [tracking];
-    }
-    // With no history of that branch here, every ref of the remote is history this push
-    // does not send. An unknown remote leaves no ref out, so every commit is read.
-    return [`--remotes=${remote}`];
-  };
-  const specs: PushSpec[] = [];
-  if (flags.has('--mirror')) return [{ local: ['--all'], base: baseFor(null) }];
-  if (flags.has('--all')) specs.push({ local: ['--branches'], base: baseFor(null) });
-  if (flags.has('--tags')) specs.push({ local: ['--tags'], base: baseFor(null) });
+  // Each spec: the local revisions to read, and the ref whose remote value is the base.
+  const pending: { local: string[]; dest: string | null }[] = [];
+  if (flags.has('--mirror')) pending.push({ local: ['--all'], dest: null });
+  if (flags.has('--all')) pending.push({ local: ['--branches'], dest: null });
+  if (flags.has('--tags')) pending.push({ local: ['--tags'], dest: null });
   // `--follow-tags` sends only tags that point into the refs already read, so it adds no commit.
   for (const spec of refspecs) {
     const text = spec.startsWith('+') ? spec.slice(1) : spec;
     const colon = text.indexOf(':');
     const source = colon === -1 ? text : text.slice(0, colon);
     const dest = colon === -1 ? text : text.slice(colon + 1);
+    // `git push origin :branch` deletes that branch: a delete sends no commit.
     if (!source) continue;
     // A refspec may name a pattern (`refs/heads/*:refs/heads/*`), which git expands and
     // `git log` does not, so the pattern goes in as `--glob`.
-    specs.push({ local: [/[*?[]/.test(source) ? `--glob=${source}` : source], base: baseFor(branchOf(dest || source)) });
+    pending.push({ local: [/[*?[]/.test(source) ? `--glob=${source}` : source], dest: dest || source });
   }
-  if (specs.length) return specs;
-  const current = gitText(dir, env, ['symbolic-ref', '--quiet', '--short', 'HEAD'])?.trim();
-  if (!current) return [];
-  let dest = current;
-  if (!namedRemote) {
-    const upstream = gitText(dir, env, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])?.trim();
-    const slash = upstream ? upstream.indexOf('/') : -1;
-    if (upstream && slash > 0) {
-      remote = upstream.slice(0, slash);
-      dest = upstream.slice(slash + 1);
+  if (!pending.length) {
+    // Every refspec named a delete, so this push sends no commit of its own.
+    if (refspecs.length) return [];
+    // A bare `git push` sends the current branch, to its upstream when it has one.
+    const current = gitText(dir, env, ['symbolic-ref', '--quiet', '--short', 'HEAD'])?.trim();
+    if (!current) return [];
+    let dest = current;
+    if (!named) {
+      const upstream = gitText(dir, env, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])?.trim();
+      const slash = upstream ? upstream.indexOf('/') : -1;
+      if (upstream && slash > 0) {
+        remote = upstream.slice(0, slash);
+        dest = upstream.slice(slash + 1);
+      }
     }
+    pending.push({ local: [current], dest });
   }
-  return [{ local: [current], base: baseFor(branchOf(dest)) }];
+  // A remote with a `pushurl` is pushed there, so the question goes there too.
+  const pushUrl = gitText(dir, env, ['remote', 'get-url', '--push', remote])?.trim();
+  const refs = remoteRefs(dir, env, pushUrl || remote);
+  if (!(refs instanceof Map)) return refs;
+  const known = [...new Set(refs.values())];
+  return pending.map(({ local, dest }) => {
+    // A ref the remote has: its value there is the base. A ref it does not have: every ref
+    // it reports is history this push does not send, so a new branch is not read again.
+    const names = dest === null ? [] : dest.startsWith('refs/') ? [dest] : [`refs/heads/${dest}`, `refs/tags/${dest}`];
+    const base = names.map((name) => refs.get(name)).filter((sha): sha is string => sha !== undefined);
+    return { local, base: base.length ? base : known };
+  });
 }
 
 const ZONE_FIX = 're-date in UTC, then push again: `TZ=UTC git commit --amend --date=<date>` for the latest commit, or a rebase that re-dates each older commit in UTC';
@@ -143,13 +174,12 @@ function zonedPushFinding(cwd: string, env: Env, command: string[]): Finding | n
     return finding('git-read', "this push points git at another folder, so the time check can't see the commits", 'run the push in the repo, with no --git-dir and no --work-tree');
   }
   const specs = specsForPush(target.dir, env, target.args);
-  if (typeof specs === 'string') {
-    return finding('git-read', `git can't list the commits this push sends, so nothing was pushed`, 'check the branch name and that git runs, then push again');
-  }
+  if (!Array.isArray(specs)) return finding('git-read', specs.what, specs.fix);
   let count = 0;
   for (const spec of specs) {
-    const exclude = spec.base.length ? ['--not', ...spec.base] : [];
-    const result = spawnSync('git', ['--no-replace-objects', 'log', '--format=%ad %cd', '--date=format:%z', ...spec.local, ...exclude], { cwd: target.dir, env, encoding: 'utf8', maxBuffer: 1 << 24 });
+    // The base goes in on standard input: a repo can have more refs than a command line holds.
+    const input = spec.base.map((sha) => `^${sha}\n`).join('');
+    const result = spawnSync('git', ['--no-replace-objects', 'log', '--format=%ad %cd', '--date=format:%z', ...spec.local, '--stdin'], { cwd: target.dir, env, encoding: 'utf8', maxBuffer: 1 << 24, input });
     if (result.error || result.status !== 0) {
       return finding('git-read', "git can't list the commits this push sends, so nothing was pushed", 'check the branch name and that git runs, then push again');
     }
@@ -195,12 +225,6 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   // list the repo's labels. A bad issue is refused, never sent; its labels are not
   // added, as no line of the command names the type.
   const pendingIssue = root ? readPendingIssueLabels(command, root, env) : null;
-  // Before a token and before the push (#789): a commit time that is not UTC never leaves.
-  const zoned = zonedPushFinding(cwd, env, command);
-  if (zoned) {
-    print(invocation, ['yokoten bot: 1 problem(s); nothing was pushed. Fix it and run the push again:', ...bullets([zoned])], invocation.stderr);
-    return 1;
-  }
   const config = botConfig(env);
   if (typeof config === 'string') {
     print(invocation, [`yokoten bot: ${config}`], invocation.stderr);
@@ -218,6 +242,14 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
     return 1;
   }
   const token = await installationToken(config, repo);
+  const runEnv = botEnv(env, token);
+  // Before the push (#789): a commit time that is not UTC never leaves. The base is what
+  // the remote reports, so it is asked with the bot's own credential.
+  const zoned = zonedPushFinding(cwd, runEnv, command);
+  if (zoned) {
+    print(invocation, ['yokoten bot: 1 problem(s); nothing was pushed. Fix it and run the push again:', ...bullets([zoned])], invocation.stderr);
+    return 1;
+  }
   const [file, ...given] = command;
   // The type and tier labels the command leaves out, by the names the repo has (#422).
   const withLabels = labels?.missing.length ? addArgs(given, chooseLabels(invocation, labels, file, botEnv(env, token)).flatMap((name) => ['--label', name])) : given;

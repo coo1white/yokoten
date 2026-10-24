@@ -1525,7 +1525,7 @@ test('bot: a push of a +0700 commit is refused and nothing is pushed; a UTC bran
     assert.match(refused.stderr, /rebase that re-dates/);
     assert.doesNotMatch(refused.stderr, /\+0700/, 'the offset is never printed');
     assert.equal(remoteTip('zoned'), '', 'the zoned branch was not pushed');
-    assert.deepEqual(requests, [], 'no token was asked for');
+    assert.notDeepEqual(requests, [], 'the token is minted first, so the remote can be asked what it has');
     sandbox.git('checkout', '-qb', 'clean', 'main');
     sandbox.git('commit', '--allow-empty', '-qm', 'utc');
     const passed = await push('clean');
@@ -1599,7 +1599,7 @@ test('bot: a first push is not refused for a zoned ancestor the remote already h
 });
 
 test('bot: a tag push and a mirror send the zoned commits they read (#789)', async () => {
-  const { sandbox, push, remoteRefs, requests, done } = zonedOrigin();
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
   try {
     // The zoned commit is kept alive only by the tag, so refs/heads alone do not see it.
     sandbox.git('checkout', '-qb', 'tagged', 'main');
@@ -1616,7 +1616,6 @@ test('bot: a tag push and a mirror send the zoned commits they read (#789)', asy
     assert.equal(mirror.status, 1, 'a mirror that sends a zoned tag is refused');
     assert.match(mirror.stderr, /nothing was pushed/);
     assert.equal(remoteRefs('--tags', 'v-zoned'), '', 'a mirror sent no tag');
-    assert.deepEqual(requests, [], 'no token was asked for a refused push');
   } finally {
     done();
   }
@@ -1646,6 +1645,71 @@ test('bot: a delete sends no commit, so a zoned one is not refused (#789)', asyn
     const deleted = await push('--delete', 'origin', 'stale');
     assert.equal(deleted.status, 0, deleted.stderr);
     assert.equal(remoteRefs('--heads', 'stale'), '', 'the delete went through');
+  } finally {
+    done();
+  }
+});
+
+// #789: the base is what the remote reports. `refs/remotes/<remote>/<branch>` is a local
+// ref, so an agent can point it at the tip it is about to push and hide a zoned commit.
+test('bot: a tracking ref written by hand cannot hide a zoned commit (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'zoned', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    sandbox.git('update-ref', 'refs/remotes/origin/zoned', 'zoned');
+    const sent = await push('origin', 'zoned');
+    assert.equal(sent.status, 1, sent.stderr);
+    assert.match(sent.stderr, /nothing was pushed/);
+    assert.doesNotMatch(sent.stderr, /\+0700/, 'the offset is never printed');
+    assert.equal(remoteRefs('--heads', 'zoned'), '', 'the zoned branch was not pushed');
+  } finally {
+    done();
+  }
+});
+
+// #789: `git push origin :branch` is a delete. It sends no commit, so a zoned commit in
+// the checkout is not its business, and it is not read as a push of the current branch.
+test('bot: a colon delete sends no commit, so a zoned checkout does not block it (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    sandbox.git('checkout', '-qb', 'clean', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc and on the remote');
+    sandbox.git('push', '-q', 'origin', 'clean');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned and never pushed');
+    const deleted = await push('origin', ':clean');
+    assert.equal(deleted.status, 0, deleted.stderr);
+    assert.equal(remoteRefs('--heads', 'clean'), '', 'the delete went through');
+  } finally {
+    done();
+  }
+});
+
+// #789: the first word of a push is the remote, and that may be a path or a URL. It was
+// read as a refspec, so `git log` was asked to read the path as a revision.
+test('bot: a push to a path or a URL is read, not refused (#789)', async () => {
+  const { sandbox, push, remoteRefs, done } = zonedOrigin();
+  try {
+    const origin = join(sandbox.home, 'github.com', 'me', 'repo.git');
+    sandbox.git('checkout', '-qb', 'clean', 'main');
+    sandbox.git('commit', '--allow-empty', '-qm', 'utc');
+    const byPath = await push(origin, 'clean');
+    assert.equal(byPath.status, 0, byPath.stderr);
+    assert.equal(remoteRefs('--heads', 'clean'), sandbox.git('rev-parse', 'clean').stdout.trim(), 'a push to a path sent the branch');
+    sandbox.git('checkout', '-qb', 'zoned', 'main');
+    sandbox.git('commit', '--allow-empty', '--date=2026-10-23T12:00:00+0700', '-qm', 'zoned');
+    const byUrl = await push(`file://${origin}`, 'zoned');
+    assert.equal(byUrl.status, 1, byUrl.stderr);
+    assert.match(byUrl.stderr, /nothing was pushed/);
+    assert.equal(remoteRefs('--heads', 'zoned'), '', 'a push to a URL is checked too');
+    // `--repo` names the destination when no word does.
+    sandbox.git('checkout', '-q', 'clean');
+    const byOption = await push(`--repo=${origin}`);
+    assert.equal(byOption.status, 0, byOption.stderr);
+    // A remote the desk can't read is not guessed at: the push stops, and says why.
+    const missing = await push(join(sandbox.home, 'no-such-remote.git'), 'clean');
+    assert.equal(missing.status, 1, missing.stderr);
+    assert.match(missing.stderr, /can't read what the remote already has/);
   } finally {
     done();
   }
