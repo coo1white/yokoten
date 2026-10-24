@@ -151,7 +151,7 @@ test('hook --agent opencode: a force push and a .git edit match Claude Code; ls 
   assert.equal(plain.stdout, '');
   assert.deepEqual(formatDenial('because'), { stdout: '', exitCode: 2 });
 
-  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --protocol', 'missing runtime', { isToolCall: true }));
   const refused = runPlugin(sandbox.repo, sandbox.env, source, { tool: 'shell', args: { command: push } });
   assert.equal(refused.status, 0, refused.stderr);
   assert.equal(refused.stdout.split('\n')[0], 'REFUSED');
@@ -165,7 +165,7 @@ test('hook --agent opencode: a force push and a .git edit match Claude Code; ls 
 test('OpenCode 1 server() refuses command and code on any tool, and a git path under path or file_path', () => {
   const sandbox = makeSandbox();
   const push = 'git push --force origin main';
-  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --protocol', 'missing runtime', { isToolCall: true }));
   const run = (tool: string, args: Record<string, unknown>) => runPlugin(sandbox.repo, sandbox.env, source, { tool, args });
   const refused = (tool: string, args: Record<string, unknown>) => {
     const ran = run(tool, args);
@@ -193,7 +193,7 @@ test('OpenCode 1 server() refuses command and code on any tool, and a git path u
 
 test('the plugin refuses the tag push the issue names, and a subagent call it cannot read', () => {
   const sandbox = makeSandbox();
-  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --protocol', 'missing runtime', { isToolCall: true }));
   const tagPush = runPlugin(sandbox.repo, sandbox.env, source, { tool: 'bash', args: { command: 'git push --tags' } });
   assert.equal(tagPush.status, 0, tagPush.stderr);
   assert.equal(tagPush.stdout.split('\n')[0], 'REFUSED');
@@ -278,7 +278,7 @@ test("OpenCode 2 setup: a force push is denied, ls stays allowed, a failing guar
     extra: worker,
   });
   assert.equal(edited.status, 2, edited.stderr);
-  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --protocol', 'missing runtime', { isToolCall: true }));
   const ran = runSetup(sandbox.repo, sandbox.env, source, [
     { label: 'push', hook: 'permission:evaluate', event: allow('bash', { resources: [push] }) },
     { label: 'meta', hook: 'permission:evaluate', event: allow('shell', { metadata: { command: push } }) },
@@ -356,7 +356,7 @@ test('OpenCode 2 refuses an unknown action when any command field is refused', a
   const event = { action: 'code', resources: ['main.ts'], metadata: { input: { code: push } }, directory: sandbox.repo };
   const plain = await sandbox.call(['hook', '--agent', 'opencode'], { input: JSON.stringify(event), extra: worker });
   assert.equal(plain.status, 2, plain.stderr);
-  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --agent opencode', 'missing runtime', { isToolCall: true }));
+  const source = pluginSource(guardCommand(`"${CLI}"`, 'hook --protocol', 'missing runtime', { isToolCall: true }));
   const ran = runSetup(sandbox.repo, sandbox.env, source, [
     { label: 'code', hook: 'permission:evaluate', event: allow('code', { resources: ['main.ts'], metadata: { input: { code: push } } }) },
     { label: 'ls-code', hook: 'permission:evaluate', event: allow('code', { resources: ['main.ts'], metadata: { input: { code: 'ls' } } }) },

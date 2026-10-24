@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import { killedLine, makeSandbox, makeTempDir, runChild } from './helpers.ts';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../../src/run/cli.ts';
-import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/names.ts';
+import { findDeclarations, findNameProblems, splitWords, type Token, tokenize } from '../../src/run/notes/names.ts';
 import { HOME_DIR, homeDirOf } from '../../src/setup/files.ts';
 import { noteWork } from '../../src/rules/message.ts';
 import { assertLinear, assertLinearEach, assertWallSmoke } from '../../scripts/linear.ts';
@@ -689,7 +689,7 @@ test('workflows: a run on main is never cancelled, waiting or running (#660, #79
 // ---- Names (#109, record 0006) ----
 //
 // The names we declare in src/, bin/ and test/ follow the rule in AGENTS.md. The reader lives
-// in src/run/names.ts, where `check --pr` uses it too. A test may still use a one-letter name
+// in src/run/notes/names.ts, where `check --pr` uses it too. A test may still use a one-letter name
 // inside a short block (10 lines or fewer).
 
 test('names: words are counted from camelCase, PascalCase and CONSTANT_CASE (#109)', () => {

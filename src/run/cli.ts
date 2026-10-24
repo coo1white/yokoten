@@ -376,12 +376,13 @@ export const COMMANDS: Command[] = [
   {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
-    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>]',
+    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>] [--protocol]',
     text: [
       'Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.',
       "With --agent claude-code, it answers as Claude Code's PreToolUse hook: a deny in JSON on stdout, exit 0. YOKOTEN_HOOK_DENIAL=exit2 keeps exit 2.",
       'With --denial exit2, it keeps the reason on stderr and exit 2, for a host that reads the exit code alone.',
       'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.',
+      'With --protocol, it reads the guard protocol (version yokoten-guard/1) and answers in it, so any tool can call the guard.',
     ],
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness, grok or opencode' },
@@ -389,6 +390,7 @@ export const COMMANDS: Command[] = [
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
       { name: '--denial', value: 'mode', text: 'the answer a refusal gets: exit2 puts the reason on stderr and exits 2, for a host that ignores a JSON deny' },
+      { name: '--protocol', text: 'read one yokoten-guard/1 call on stdin and answer in the same protocol on stdout; any agent tool can send it (https://github.com/yokoten-labs/yokoten/blob/main/docs/records/0039-the-guard-protocol.md)' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },
