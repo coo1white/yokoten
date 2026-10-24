@@ -75,10 +75,17 @@ yokoten doctor
 **With no install at all**, use npx:
 
 ```sh
-npx yokoten install      # once per computer
 cd your-project
-npx yokoten init         # once per project
-npx yokoten doctor       # where you are, and the one next step
+npx yokoten             # once: installs yokoten, adds the rules, shows the next step
+```
+
+That is the whole start. Run `npx yokoten` again in any project, and it does only what is
+still missing. If you would rather do one step at a time:
+
+```sh
+npx yokoten install     # once per computer
+npx yokoten init        # once per project
+npx yokoten doctor      # where you are, and the one next step
 ```
 
 `yokoten install` adds the skills, agents and hooks to this machine, whichever way you

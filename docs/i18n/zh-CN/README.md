@@ -64,8 +64,14 @@ yokoten doctor
 **完全不想装**，用 npx：
 
 ```sh
-npx yokoten install      # 每台电脑一次
 cd your-project
+npx yokoten             # 一次就好：装好 yokoten，加上规则，显示下一步
+```
+
+这就是全部的开始。在任何项目里再运行一次 `npx yokoten`，它只做还缺的部分。想一步一步来的话：
+
+```sh
+npx yokoten install      # 每台电脑一次
 npx yokoten init         # 每个项目一次
 npx yokoten doctor       # 走到了第几关，下一步做什么
 ```

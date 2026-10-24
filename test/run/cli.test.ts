@@ -18,6 +18,7 @@ import {
 } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { errorLabel } from '../../bin/main.ts';
 import {
   at,
   CLI,
@@ -182,8 +183,9 @@ test('help: every command has --help, -h and `help <command>`; each exits 0 and 
     }
   }
   assert.deepEqual(before(), start, '--help writes nothing');
-  // The command list names every command, and -h and -v work alone.
-  for (const args of [[], ['--help'], ['-h'], ['help']]) {
+  // The command list names every command, and -h and -v work alone. Bare `yokoten` is the
+  // start now, not the list (#548): test/commands/setup.test.ts holds it.
+  for (const args of [['--help'], ['-h'], ['help']]) {
     const r = await run(args);
     assert.equal(r.code, 0, args.join(' '));
     for (const command of COMMANDS) assert.match(r.stdout, new RegExp(`^ {2}${command.name} `, 'm'), `${args.join(' ')}: lists ${command.name}`);
@@ -726,4 +728,9 @@ test('sandbox: call runs a command in this process with the same result as run (
     const same = await sandbox.call(words);
     assert.deepEqual({ status: same.status, stdout: same.stdout, stderr: same.stderr }, { status: child.status, stdout: child.stdout, stderr: child.stderr }, `yokoten ${words.join(' ')}`);
   }
+});
+
+test('main: an error names its command, and bare yokoten when there is none (#548)', () => {
+  assert.equal(errorLabel(undefined), 'yokoten', 'the one-command start has no name: never "undefined"');
+  assert.equal(errorLabel('doctor'), 'yokoten doctor');
 });

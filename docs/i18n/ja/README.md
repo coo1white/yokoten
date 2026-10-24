@@ -66,10 +66,16 @@ yokoten doctor
 **何も入れずに**使うなら npx です：
 
 ```sh
-npx yokoten install      # PC ごとに一度
 cd your-project
-npx yokoten init         # プロジェクトごとに一度
-npx yokoten doctor       # 今いる関所と、次の一手
+npx yokoten             # 一度だけ: yokoten を入れ、ルールを加え、次の一手を表示
+```
+
+これで始められます。どのプロジェクトでも `npx yokoten` をもう一度実行すると、足りないものだけを行います。一つずつ進めたい場合はこうです。
+
+```sh
+npx yokoten install     # PC ごとに一度
+npx yokoten init        # プロジェクトごとに一度
+npx yokoten doctor      # 今いる関所と、次の一手
 ```
 
 `yokoten install` は、この PC に skills、agents、フックを加えます。コマンドの入れ方がどれでも同じです。

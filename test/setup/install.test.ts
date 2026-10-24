@@ -38,7 +38,7 @@ import {
 } from '../repo/helpers.ts';
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
-import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
+import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isMachineSetUp, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
 import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
@@ -117,6 +117,16 @@ test('install: skills, agents and hooks once, the user\'s own files untouched', 
   assert.match(await skillsLine(), /^\s+done\s+skills$/);
   rmSync(join(shared, 'skills', 'inspect'), { recursive: true });
   assert.match(await skillsLine(), /^\s+(next|to do)\s+skills: the yokoten skills are not in ~\/\.agents\/skills \(inspect\); run `npx yokoten install`, or install the Claude Code plugin$/);
+});
+
+test('isMachineSetUp: false before install, true after, false when the runtime is gone (#548)', async () => {
+  const sandbox = makeSandbox();
+  assert.equal(isMachineSetUp(sandbox.env), false, 'a fresh machine is not set up');
+  assert.equal((await sandbox.call(['install'])).status, 0);
+  assert.equal(isMachineSetUp(sandbox.env), true, 'install set the machine up');
+  // The runtime the user hooks run is the one piece that must be there.
+  rmSync(join(paths(sandbox.env).runtime, 'bin'), { recursive: true });
+  assert.equal(isMachineSetUp(sandbox.env), false, 'no runtime, no working hooks');
 });
 
 test('uninstall: takes back what install wrote, keeps the user\'s own files and settings (#300)', async () => {
@@ -1024,4 +1034,20 @@ test('fillMarks and addOwnMark: a mark only in the setting\'s file still goes in
   assert.ok(text.includes(`jane${at}personal-mail.dev\n`) && text.endsWith('QuietHarbor\n'), 'both are in the default file');
   assert.equal(addOwnMark(env, 'quietharbor'), false, 'once there, it is known');
   assert.equal(readFileSync(extra, 'utf8'), `jane${at}personal-mail.dev\nquietharbor\n`, 'the setting\'s file is never written');
+});
+
+// #621: uninstall removes the stop log, and keeps the rest of ~/.config/yokoten.
+test('uninstall: removes the stop log (#621)', async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  mkdirSync(dirname(log), { recursive: true });
+  writeFileSync(log, '{"time":"2026-10-23T00:00:00.000Z","vendor":"codex","role":"lead","rule":"release","answer":"refused"}\n');
+  const result = await sandbox.call(['uninstall']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(log));
+  assert.match(result.stdout, /^removed the stop log$/m);
+  assert.match(result.stdout, /^kept ~\/\.config\/yokoten \(your keys and private marks\)$/m, 'the folder stays');
+  const again = await sandbox.call(['uninstall']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /^not there the stop log$/m);
 });

@@ -16,8 +16,9 @@
       { "cmd": "yokoten doctor", "note": { "en": "where you are, and the one next step", "zh": "走到了第几关，下一步做什么" } }
     ],
     "npx": [
-      { "cmd": "npx yokoten install", "note": { "en": "once per computer", "zh": "每台电脑一次" } },
       { "cmd": "cd your-project" },
+      { "cmd": "npx yokoten", "note": { "en": "once: installs what is missing, then shows the next step", "zh": "一次就好：装好缺的东西，再显示下一步" } },
+      { "cmd": "npx yokoten install", "note": { "en": "once per computer", "zh": "每台电脑一次" } },
       { "cmd": "npx yokoten init", "note": { "en": "once per project", "zh": "每个项目一次" } },
       { "cmd": "npx yokoten doctor", "note": { "en": "where you are, and the one next step", "zh": "走到了第几关，下一步做什么" } }
     ],
