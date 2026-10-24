@@ -215,7 +215,8 @@ test('check --issue: an issue needs the type and tier labels its repo has (#544)
   const labelsFile = join(sandbox.home, 'labels.json');
   writeFileSync(
     join(bin, 'gh'),
-    `#!/usr/bin/env node\nconst fs = require("node:fs");\nif (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\nprocess.exit(1);\n`,
+    // The file has no extension, so Node 26 runs it as an ES module: `require` is not there.
+    `#!/usr/bin/env node\nconst fs = process.getBuiltinModule("node:fs");\nif (process.argv.slice(2, 4).join(" ") === "label list") { process.stdout.write(fs.readFileSync(${JSON.stringify(labelsFile)}, "utf8")); process.exit(0); }\nprocess.exit(1);\n`,
     { mode: 0o755 },
   );
   const extra = { PATH: `${bin}:${process.env.PATH}` };
