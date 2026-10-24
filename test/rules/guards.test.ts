@@ -4338,6 +4338,8 @@ interface BashSandbox {
   logs: string;
   tmp: string;
   bash: string;
+  /** Its major.minor, so the cases can ask for a bash that has a shape at all. */
+  version: number;
   log: () => string;
 }
 
@@ -4353,8 +4355,9 @@ function makeBashSandbox(): BashSandbox {
   chmodSync(join(bin, 'record'), 0o755);
   for (const name of STUB_PROGRAMS) symlinkSync(join(bin, 'record'), join(bin, name));
   const bash = execFileSync('bash', ['-c', 'command -v bash'], { encoding: 'utf8' }).trim();
+  const version = Number(execFileSync(bash, ['-c', 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'], { encoding: 'utf8' }).trim());
   let count = 0;
-  return { base, bin, logs, tmp, bash, log: () => join(logs, `record-${++count}`) };
+  return { base, bin, logs, tmp, bash, version, log: () => join(logs, `record-${++count}`) };
 }
 
 /** Every file under `folder`, by relative path, with its text. */
@@ -4512,16 +4515,20 @@ function disagreements(run: BashRun, reading: GuardReading): string[] {
   return found.sort();
 }
 
-// The reviewers' known holes (#402, #413, #439), with the shape that hid them.
-const KNOWN_HOLES: [string, string][] = [
+// The reviewers' known holes (#402, #413, #439), with the shape that hid them. The third
+// number is the oldest bash that runs the shape: macOS ships bash 3.2, and CI runs it, so
+// `printf -v` (4.0) and `test -v` / `[[ -v` (4.2) never see the code there. The guard still
+// refuses those two (the hidden-code test below), but this test can only compare with what
+// real bash does.
+const KNOWN_HOLES: [string, string, number?][] = [
   ['PS4 xtrace', "export PS4='$(cp ev/f.md f.md)'; set -x; :"],
   ['PS4 before set -x', "PS4='$(cp ev/f.md f.md) ' && set -x && true"],
   ['arithmetic subscript', "X='a[$(cp ev/f.md f.md)]'; echo $((X))"],
   ['arithmetic $[]', "X='a[$(cp ev/f.md f.md)]'; echo $[X]"],
   ['indirect name', "X='a[$(cp ev/f.md f.md)]'; echo ${!X}"],
-  ['printf -v subscript', "printf -v 'a[$(cp ev/f.md f.md)]' %s 1"],
-  ['test -v subscript', "test -v 'a[$(cp ev/f.md f.md)]'"],
-  ['[[ -v subscript', "[[ -v 'a[$(cp ev/f.md f.md)]' ]]"],
+  ['printf -v subscript', "printf -v 'a[$(cp ev/f.md f.md)]' %s 1", 4],
+  ['test -v subscript', "test -v 'a[$(cp ev/f.md f.md)]'", 4.2],
+  ['[[ -v subscript', "[[ -v 'a[$(cp ev/f.md f.md)]' ]]", 4.2],
   ['unquoted heredoc body', ': <<EOF\n$(cp ev/f.md f.md)\nEOF'],
   ['glob becomes an option', 'git log *'],
   ['quote hides a redirect', `git log --format="%an %ae'$x" > out.txt --invert-grep --grep='"'`],
@@ -4530,7 +4537,7 @@ const KNOWN_HOLES: [string, string][] = [
 // Commands a reader and bash must agree on: redirects in every spelling, heredocs, quotes,
 // braces, arithmetic, substitutions, settings, functions and the everyday shapes.
 const DIFF_CORPUS: [string, string][] = [
-  ...KNOWN_HOLES,
+  ...KNOWN_HOLES.map(([name, command]): [string, string] => [name, command]),
   ['plain write', 'echo hi > out.md'],
   ['append', 'printf x >> f.md'],
   ['clobber', 'echo y >| f.md'],
@@ -4613,7 +4620,9 @@ function seededCases(count: number, seed: number): [string, string][] {
 
 test('bash differential: the reviewers\' known holes are caught when they are put back (#457)', () => {
   const sandbox = makeBashSandbox();
-  for (const [name, command] of KNOWN_HOLES) {
+  for (const [name, command, needsBash = 3] of KNOWN_HOLES) {
+    // A shape this bash does not run is not a hole here. The guard refuses it anyway.
+    if (sandbox.version < needsBash) continue;
     const run = runUnderBash(sandbox, command);
     const caught = disagreements(run, naiveReading(command));
     assert.ok(caught.length > 0, `${name}: a reader that treats single quotes as data was not caught: ${command}`);
