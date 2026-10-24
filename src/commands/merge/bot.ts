@@ -95,7 +95,13 @@ async function bot(invocation: Invocation, command: string[]): Promise<number> {
   const chosen = labels?.missing.length ? chooseLabels(invocation, labels, file, ghEnv) : [];
   const addLabel = labels?.edit ? '--add-label' : '--label';
   const adds = chosen.filter((name) => !current?.some((label) => label.toLowerCase() === name.toLowerCase()));
-  const removes = wantedTier === null ? [] : current?.filter((label) => {
+  // The old tier label goes only when the new one is in place: the command gives it, the
+  // bot adds it, or the pull request already has it. A tier the repo does not have is left
+  // out by `chooseLabels`, so the pull request keeps its current tier label (#422).
+  const hasNewTier = Boolean(labels?.hasTierLabel)
+    || chosen.some((name) => readLabelTier(name) === wantedTier)
+    || (current?.some((label) => readLabelTier(label) === wantedTier) ?? false);
+  const removes = wantedTier === null || !hasNewTier ? [] : current?.filter((label) => {
     const tier = readLabelTier(label);
     return tier !== null && tier !== wantedTier && !labels?.removes.some((given) => given.toLowerCase() === label.toLowerCase());
   }) ?? [];

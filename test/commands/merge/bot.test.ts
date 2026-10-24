@@ -468,6 +468,7 @@ test('bot: an edit adds its title type and moves the tier label (#422)', async (
   const run = (command: string[]) => sandbox.call(['bot', '--', ...command], { extra: bot });
   const note = 'yokoten bot: note: git can\'t compare HEAD with origin/main, so the body was checked without the changed files; CI checks the rest\n';
   const unread = 'yokoten bot: note: gh could not read this pull request\'s labels, so an older tier label may stay next to `tier B`; remove it with --remove-label. `check --pr` refuses two tier labels\n';
+  const absentTier = 'yokoten bot: note: the repo has no label `tier B`, so the pull request gets none; create it on GitHub, or pass another with --label. `check --pr` asks for it\n';
   const body = (tier: string) => `tier: ${tier}\nCloses #1\n\n## Why\nx\n\n## What changed\nx\n\n## How tested\nx\n\nMade with worker (opus)\n`;
   try {
     const cases: [command: string[], stderr: string, args: string[], prep?: () => void][] = [
@@ -479,6 +480,11 @@ test('bot: an edit adds its title type and moves the tier label (#422)', async (
       [['gh', 'pr', 'edit', '--body', body('B'), '--add-label', 'tier B'], note, ['--remove-label', 'tier A']],
       // gh can't say the labels: the new tier is still added, and the note says the old one may stay (#422).
       [['gh', 'pr', 'edit', '--body', body('B')], note + unread, ['--add-label', 'tier B'], () => writeFileSync(pullLabels, '{}')],
+      // The repo has no `tier B`: the old tier label stays, because no new one replaces it (#422).
+      [['gh', 'pr', 'edit', '--body', body('B')], note + absentTier, [], () => {
+        writeFileSync(pullLabels, JSON.stringify({ labels: [{ name: 'bug' }, { name: 'tier A' }] }));
+        writeFileSync(repoLabels, JSON.stringify(['bug', 'feat', 'docs', 'tier A'].map((name) => ({ name }))));
+      }],
     ];
     for (const [command, stderr, args, prep] of cases) {
       prep?.();
@@ -487,6 +493,7 @@ test('bot: an edit adds its title type and moves the tier label (#422)', async (
       assert.deepEqual(lines(log).at(-1), { args: [...command.slice(1), ...args], input: '' }, command.join(' '));
     }
     assert.deepEqual(lines(views), [
+      ['pr', 'view', '--json', 'labels'],
       ['pr', 'view', '--json', 'labels'],
       ['pr', 'view', '--json', 'labels'],
       ['pr', 'view', '--json', 'labels'],

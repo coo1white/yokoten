@@ -152,7 +152,9 @@ test('pull request: one type label and one tier label that matches the body (#22
   const edit = readCommandLabels(['gh', 'pr', 'edit', '7', '-t', 'fix: a'], 'tier: C\n')!;
   assert.deepEqual(edit.missing, [['bug', 'fix'], ['tier C', 'tier: C']]);
   assert.deepEqual(edit.edit, { selector: '7', tier: 'C' });
+  assert.equal(edit.hasTierLabel, false);
   assert.deepEqual(readCommandLabels(['gh', 'pr', 'edit', '7', '--add-label', 'tier C'], 'tier: C\n')!.missing, []);
+  assert.equal(readCommandLabels(['gh', 'pr', 'edit', '7', '--add-label', 'tier C'], 'tier: C\n')!.hasTierLabel, true);
   assert.equal(readCommandLabels(['gh', 'pr', 'edit', '7', '--add-label', 'bug'], null), null, 'a label edit has nothing to add');
   // No tier line in the body: pr-tier says so, and the labels do not say it again.
   const noTier = checkPullRequest({ ...goodPr(), body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map((p) => p.id);

@@ -851,6 +851,8 @@ export interface CommandLabels {
   repo: string | null;
   /** The labels the command already removes with `--remove-label`. */
   removes: string[];
+  /** Whether the command gives a tier label itself, with `--label` or `--add-label`. */
+  hasTierLabel: boolean;
   /**
    * For `gh pr edit`, the pull request it names and the tier its new body sets; null for
    * a create. A null selector means the pull request of the current branch.
@@ -891,7 +893,7 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const tier = bodyTier(body ?? '');
   const hasTier = labels.some((label) => readLabelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
-  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo, removes, edit: isEdit ? { selector: selector ?? null, tier } : null };
+  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo, removes, hasTierLabel: hasTier, edit: isEdit ? { selector: selector ?? null, tier } : null };
 }
 
 /** The labels a `gh issue create` command gives, and its `--repo` value. */
