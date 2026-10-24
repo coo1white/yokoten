@@ -45,6 +45,7 @@ import {
 } from '../../src/rules/message.ts';
 import {
   checkApprovalFreshness,
+  provenanceFindings,
   checkIssueLabels,
   checkIssueTitle,
   checkOwnedTier,
@@ -172,6 +173,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   // An Approve on an older commit, with code changes after it (#612).
   add(checkApprovalFreshness({ tier: 'A', head: 'b'.repeat(40), approved: 'a'.repeat(40), after: 2, sameDiff: true }));
+  add(provenanceFindings({ writers: [{ vendor: 'Claude Code', model: 'm' }], reviewers: [{ vendor: 'Anthropic', model: 'n' }], leads: [], others: [] }, [])[0]);
   found.push(...checkIssueTitle('Bad title (#1) that runs on well past the sixty character limit.', {}));
   found.push(...checkIssueLabels([], ['feat', 'tier A']));
   add(largeDiff(500));

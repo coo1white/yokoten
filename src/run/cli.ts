@@ -248,6 +248,15 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'provenance',
+    summary: 'the writer, reviewers, approver, tier and issue of a commit or a range',
+    usage: '<ref> [--json]',
+    text: ['Reads the message a squash merge leaves on the branch, and the Approve on the pull request it names.', 'The approver is the latest Approve; when gh cannot read it, it shows unknown.', 'A range shows each commit, oldest first.'],
+    options: [{ name: '--json', text: 'the records as JSON on stdout' }],
+    argument: 'ref',
+    example: 'yokoten provenance main~1..main',
+  },
+  {
     name: 'mcp',
     summary: 'start the project MCP server and check its tools for every agent client',
     usage: '[dir] [--command "<command>"] [--json]',
