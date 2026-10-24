@@ -123,7 +123,9 @@ test('plugin: install keeps a direct path, and the guard the plugin registers bl
   const guard = hooks.PreToolUse[0].hooks[0].command;
   const call = (command: string) => JSON.stringify({ cwd: sandbox.repo, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
   const r = run(guard, call('git push --force origin main'));
-  assert.equal(r.status, 2, r.stderr);
+  // The plugin's hook names Claude Code, so its refusal is a deny in JSON on exit 0 (#707).
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
   assert.match(r.stderr, /force/);
   assert.equal(run(guard, call('git status')).status, 0);
   // At session start, doctor tells the agent how to run yokoten from the plugin.
@@ -199,7 +201,7 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
   });
   const result = await sandbox.call(['hook'], { input });
   assert.equal(result.status, 2, 'Claude Code reads exit 2 and stderr');
-  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags\./);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: .+\nDo instead: .+\nMore: https:\/\/\S+\n$/);
   // Copilot CLI shows the agent only "hook exited with code 2" unless stdout names the reason.
   assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
   const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });

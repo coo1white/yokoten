@@ -1,3 +1,7 @@
 Changed
 
-Every refusal is five plain lines now: what yokoten stopped, why, a sentence to say to the AI, a command to run yourself, then the rule id last. The words fit the case: a release workflow, a worker's lead, a new branch and a download read before it runs (#816). The sentence and the command come in English and zh-CN. Creating a tag, a hard reset and making a repo public are stopped too, and a repo without `yokoten.json` gets the same five protections. A command the refusal hands back never runs more than it says: a value the shell would act on shows as `<url>`, `<tag>` or a quoted word. The guide now says a worker cannot edit CI or the rules, and you review a lead's change to them.
+The five safeguards hold in a repo with no `yokoten.json` too: the defaults stop the same
+five things, so a project needs no `init` to be safe. Creating a tag, a hard reset and
+making a repo public are stopped too. The guide says a worker cannot edit CI or the rules,
+and the owner reviews a lead's change to them. A refusal reads in the four parts from
+#707: title, why, do instead, more.

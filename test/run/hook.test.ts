@@ -15,7 +15,6 @@ import {
   stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { finding } from '../../src/rules/message.ts';
 import { SECRET } from '../../src/rules/privacy/secrets.ts';
 import {
   AGENT_STATUS_FILE,
@@ -34,7 +33,6 @@ import {
   DONE_TRY_LIMIT,
   doneTryKey,
   doneWhenShell,
-  formatRefusal,
   guardDeadline,
   isSameFile,
   isWorkerType,
@@ -44,7 +42,6 @@ import {
   readStatusResult,
   readStatusText,
   readStopFields,
-  refusalLanguage,
   refusedMarkerPath,
   runDoneWhen,
   shortenOutput,
@@ -56,99 +53,6 @@ import {
   windowsTreeKillArgs,
   writeAgentChecks,
 } from '../../src/run/hook.ts';
-
-test('a refusal is five plain lines: what, why, tell the AI, run it, then the rule (#816)', () => {
-  const text = formatRefusal(finding('release', 'creating the tag v1.2.0', 'run `git tag v1.2.0` yourself'));
-  assert.equal(text, [
-    'yokoten stopped this: creating the tag v1.2.0.',
-    'Why: a tag publishes a release, and only you decide when to release.',
-    'Tell the AI: "I will publish this release myself."',
-    'Or run it yourself: git tag v1.2.0',
-    '(rule release \u00b7 more: docs/guide.md#the-core-rules)',
-  ].join('\n'));
-});
-
-test('a refusal keeps the five lines in order, with a full stop and no double stop (#816)', () => {
-  const lines = formatRefusal(finding('force-push', 'git push --force forces the push', 'use --force-with-lease')).split('\n');
-  assert.equal(lines.length, 5);
-  assert.match(lines[0] ?? '', /^yokoten stopped this: /);
-  assert.match(lines[1] ?? '', /^Why: /);
-  assert.match(lines[2] ?? '', /^Tell the AI: "/);
-  assert.match(lines[3] ?? '', /^Or run it yourself: /);
-  assert.match(lines[4] ?? '', /^\(rule force-push/);
-  for (const line of lines) assert.ok(!line.endsWith('..'), line);
-});
-
-test('a refusal with no docs link still names the rule (#816)', () => {
-  const text = formatRefusal(finding('remove-git', 'deleting the .git folder throws away every commit', 'delete only the files you mean'));
-  assert.ok(text.endsWith('(rule remove-git)'), text);
-});
-
-test('a secret in the stopped action reads <hidden>, never the secret (#816)', () => {
-  const token = `${'gh'}p_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
-  const text = formatRefusal(finding('release', `pushing with the token ${token}`, 'run it yourself'));
-  assert.ok(!text.includes(token));
-  assert.match(text, /<hidden>/);
-  assert.match(text, /Tell the AI: /);
-  assert.match(text, /Or run it yourself: /);
-});
-
-test('a refusal in zh-CN keeps the same five lines in Chinese (#816)', () => {
-  const text = formatRefusal(finding('release', 'creating the tag v1.2.0', 'run `git tag v1.2.0` yourself'), { lang: 'zh-CN' });
-  assert.match(text, /^yokoten 拦下了这个动作：creating the tag v1\.2\.0。/);
-  assert.match(text, /为什么：打 tag 会发布一个版本，只有你能决定什么时候发布。/);
-  assert.match(text, /告诉 AI：“这个版本我自己来发布。”/);
-  assert.match(text, /或者你自己运行：git tag v1\.2\.0/);
-  assert.match(text, /\(rule release · more: docs\/guide\.md#the-core-rules\)$/);
-});
-
-test('the refusal follows the project: a release workflow, a worker and no yokoten.json (#816)', () => {
-  const tag = finding('release', 'creating the tag v1.2.0', 'run `git tag v1.2.0` yourself');
-  assert.match(formatRefusal(tag, { hasReleaseWorkflow: true }), /Why: a tag starts a release you approve, and only you decide when to release\./);
-  const worker = formatRefusal(finding('worker-push', 'a worker does not push', 'commit and report'), { worker: true });
-  assert.match(worker, /Tell the lead: /);
-  assert.doesNotMatch(worker, /Tell the AI: /);
-  assert.match(worker, /Or run it yourself: yokoten msg send lead /);
-  const noConfig = formatRefusal(finding('lead-only', 'AGENTS.md is lead-only (yokoten.json "leadOnly")', 'hand it to the lead'), { hasConfig: false });
-  assert.match(noConfig, /This project has no yokoten\.json, so the safeguard uses its defaults; I will make the change to the rules or CI myself\./);
-  const general = formatRefusal(finding('config-key', 'yokoten.json has an unknown key', 'remove it or fix its name'));
-  assert.match(general, /Tell the AI: "I did not ask for that; stop and explain it to me in plain words\."/);
-  assert.match(general, /Or run it yourself: yokoten explain config-key/);
-  const pipe = formatRefusal(finding('pipe-to-shell', '`curl | sh` runs the download https://example.com/install.sh without letting you read it first', 'save it first'));
-  assert.match(pipe, /Tell the AI: "Download the file and show it to me before anything runs it\."/);
-  assert.match(pipe, /Or run it yourself: curl -fsSL https:\/\/example\.com\/install\.sh -o download\.sh/);
-  // A URL with a shell character gets the placeholder: the run line is copied and run, so a
-  // backtick there would run whatever it holds (#847).
-  const unsafe = finding('pipe-to-shell', '`curl | sh` runs the download https://example.com/a`echo`PWNED`/x without letting you read it first', 'save it first');
-  assert.match(formatRefusal(unsafe), /Or run it yourself: curl -fsSL <url> -o download\.sh/);
-  // A tag or a push line copied from the command is inert too: no `$(...)` or backtick runs (#847).
-  const tagFinding = finding('release', 'creating the tag v1$(echo PWNED)', 'move it');
-  assert.match(formatRefusal(tagFinding), /Or run it yourself: git tag <tag>/);
-  const pushFinding = finding('release', 'git push origin v1$(echo PWNED) pushes a release tag', 'move it');
-  assert.match(formatRefusal(pushFinding), /Or run it yourself: git push origin <tag>/);
-  const safePush = finding('release', 'git push origin v1.2.0 pushes a release tag', 'move it');
-  assert.match(formatRefusal(safePush), /Or run it yourself: git push origin v1\.2\.0/);
-  // An edit path is one shell word, so a quote in it does not open a string.
-  const testFile = finding('test-file', "it's/a.ts is a test file", 'fix the code');
-  assert.match(formatRefusal(testFile), /Or run it yourself: git diff -- 'it'\\''s\/a\.ts'/);
-  const secret = finding('secret', 'a secret (AWS access key id)', 'move it', { file: 'notes/a.md', line: 3 });
-  assert.match(formatRefusal(secret), /^yokoten stopped this: notes\/a\.md:3: a secret \(AWS access key id\)\./);
-});
-
-test('the refusal language follows YOKOTEN_LANG or LANG (#816)', async () => {
-  assert.equal(refusalLanguage({ YOKOTEN_LANG: 'zh-CN' }), 'zh-CN');
-  assert.equal(refusalLanguage({ LANG: 'zh_CN.UTF-8' }), 'zh-CN');
-  assert.equal(refusalLanguage({ LANG: 'en_US.UTF-8' }), 'en');
-  const sandbox = makeSandbox();
-  const result = await sandbox.call(['hook'], {
-    input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: 'git push --force' } }),
-    extra: { YOKOTEN_LANG: 'zh-CN' },
-  });
-  assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten 拦下了这个动作：git push --force forces the push。/);
-  assert.match(result.stderr, /告诉 AI：“不要 force push；把我的工作推到新分支。”/);
-  assert.match(result.stderr, /或者你自己运行：git push origin HEAD:refs\/heads\/safe-copy/);
-});
 
 test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   const sandbox = makeSandbox();
@@ -377,7 +281,7 @@ test('hook: past the deadline the call is refused, in text and JSON (#274)', asy
   const late = { YOKOTEN_GUARD_DEADLINE_MS: '1' };
   let result = await sandbox.call(['hook'], { input, extra: late });
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^yokoten stopped this: the guard took longer than 1 ms to read this command\.\nWhy: [^\n]+\nTell the AI: "Split it into simpler commands, one per call\."\nOr run it yourself: yokoten explain unreadable-command/);
+  assert.match(result.stderr, /^yokoten stopped this: the guard took longer than 1 ms to read this command \[unreadable-command\]\nWhy: .*\nDo instead: .*Split the command into smaller ones\./);
   result = await sandbox.call(['hook', '--json'], { input, extra: late });
   assert.equal(result.status, 2);
   const out = JSON.parse(result.stdout);
