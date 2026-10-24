@@ -9,7 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { longSentences } from '../../src/rules/pr.ts';
-import { parseSourceMarker } from '../../src/run/translations.ts';
+import { parseSourceMarker } from '../../src/run/notes/translations.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -558,8 +558,8 @@ test('standard: each shape says who writes, who reads, how it is checked, and it
   const english = shapeSections(read(ENGLISH));
   const chinesePage = read(CHINESE);
   const chinese = shapeSections(chinesePage);
-  assert.equal(english.length, 8);
-  assert.equal(chinese.length, 8);
+  assert.equal(english.length, 9);
+  assert.equal(chinese.length, 9);
   for (const section of english) {
     for (const line of ['Who writes', 'Who reads', 'How yokoten checks it', 'Version 1']) {
       assert.ok(section.includes(line), `missing ${line} in: ${section.split('\n')[0]}`);

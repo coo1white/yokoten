@@ -33,7 +33,7 @@ import {
   beforeEach,
 } from 'node:test';
 import { templateRepo } from './git-template.ts';
-import { sourceMarker } from '../../src/run/translations.ts';
+import { sourceMarker } from '../../src/run/notes/translations.ts';
 import {
   type Gh,
   type Label,

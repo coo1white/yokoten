@@ -28,6 +28,7 @@ import {
 } from '../../src/rules/guards.ts';
 import {
   checkBuildOutput,
+  checkCodeOwners,
   checkLayout,
 } from '../../src/rules/layout.ts';
 import {
@@ -78,8 +79,8 @@ import {
   lintStdout,
   lintTools,
 } from '../../src/commands/advice/mcp.ts';
-import { nameNotes } from '../../src/run/names.ts';
-import { translationNotes } from '../../src/run/translations.ts';
+import { nameNotes } from '../../src/run/notes/names.ts';
+import { translationNotes } from '../../src/run/notes/translations.ts';
 import { readCurrentPullRequest } from '../../src/host/current-pr.ts';
 import {
   readIssue,
@@ -144,7 +145,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     found.push(f);
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
-  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git tag v1.2.3', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
+  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git tag v1.2.3', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git reset --hard', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
   add(checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
   add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { cwd: process.cwd(), env: {} })); // too many commands to read
   add(checkCommand('alias x=y', { cwd: process.cwd(), env: {} }));
@@ -157,6 +158,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const mainRepo = makeTempDir('yokoten-default-main-');
   execFileSync('git', ['init', '-q', '-b', 'main', mainRepo]);
   add(checkCommand('git branch -D main', { cwd: mainRepo, env: {} }));
+  // The other ways to lose work or history (#828).
+  add(checkCommand('rm -rf .', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git clean -fdx', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git gc --prune=now', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git branch -f main HEAD~1', { cwd: mainRepo, env: {} }));
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   add(checkCommand('git push', { cwd: process.cwd(), env }));
@@ -170,6 +176,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(addedIgnores('a.ts', `// ${['yokoten', 'ignore'].join('-')} secret: a fixture`, new Set([1]), {})[0]);
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
+  found.push(...checkCodeOwners(['src/app.ts'], 'src/gone.ts @lead\n'));
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   // An Approve on an older commit, with code changes after it (#612).
@@ -234,6 +241,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
   for (const nodeVersion of ['24.21.0', '23.11.1']) add(nodeSecurityCheck({ nodeVersion }).finding);
+  // The guard's own cost, a reading doctor prints as a line (#461).
+  add(finding('guard-cost', 'one guard call costs 90 ms', 'nothing to fix: this is a reading of the machine'));
   // An old test folder in the temp folder (#400): seen from two days on.
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));

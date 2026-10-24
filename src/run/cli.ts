@@ -317,6 +317,22 @@ export const COMMANDS: Command[] = [
     example: 'git log -1 2>&1 | yokoten redact',
   },
   {
+    name: 'test',
+    summary: 'run the tests light: niced, with few at once',
+    usage: '[--heavy] [--print] [-- <test runner words>]',
+    text: [
+      "Runs Node's test runner (node --test) under nice, with at most half the cores and one",
+      'file per GB of free memory at once, so tests do not starve a shared machine. Words',
+      'after -- go to the runner: test files, or its options. YOKOTEN_LIGHT_TESTS=0 turns',
+      'the light run off for every call; --heavy does it for this call.',
+    ],
+    options: [
+      { name: '--heavy', text: 'no nice and no cap on concurrency, for this call' },
+      { name: '--print', text: 'show the command and why it was chosen, and run nothing' },
+    ],
+    example: 'yokoten test -- test/run/cli.test.ts',
+  },
+  {
     name: 'marks',
     summary: 'count your private marks, add or remove one, turn a kind off, or allow one here',
     usage: '[add | remove | off <kind> | on <kind> | allow <mark> --here | allow --remove <mark> --here]',
@@ -352,11 +368,14 @@ export const COMMANDS: Command[] = [
   {
     name: 'learn',
     summary: 'a check draft from an incident issue, for a person to review',
-    usage: '<issue> [--write] | --ship <id> | --upstream "<what happened>" [--area <name>] [--fix <idea>] | --upstream --list | --upstream --done <id>',
+    usage: '<issue> [--write] | --ship <id> | --export <id> [--out <file>] | --import <file> [--write] | --upstream "<what happened>" [--area <name>] [--fix <idea>] | --upstream --list | --upstream --done <id>',
     text: [
       'Reads an incident issue (a number or a URL) through gh and drafts a check from it,',
       'for a person to review. It writes nothing without --write. In yokoten, --ship moves a',
       'reviewed lesson into kit/lessons/, where doctor runs it in every project.',
+      '--export writes a reviewed lesson as one small JSON file, with its incident and its',
+      'positive control, and no private detail; --import shows such a file from another',
+      'project, and --write adds it to lessons/ for review. It runs nowhere before --ship.',
       '--upstream keeps a note about a gap in yokoten itself, found in any project, in',
       '~/.config/yokoten/upstream/, outside every repo. The project name, its path, your',
       'home folder and your name are hidden first; a note with a known secret shape is refused.',
@@ -364,6 +383,9 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' },
       { name: '--ship', text: 'move a reviewed lesson into kit/lessons/; refused while a TODO is left' },
+      { name: '--export', value: 'id', text: 'a reviewed lesson as one small JSON file (prints it, or writes it with --out)' },
+      { name: '--out', value: 'file', text: 'with --export: write the lesson file here instead of printing it' },
+      { name: '--import', value: 'file', text: 'a lesson file from another project: show it, or add it with --write' },
       { name: '--upstream', text: 'a note for the yokoten repo: what happened, in a few words' },
       { name: '--area', value: 'name', text: 'with --upstream: the part of yokoten it is about, such as hook or doctor' },
       { name: '--fix', value: 'idea', text: 'with --upstream: how it could be fixed' },
@@ -376,12 +398,13 @@ export const COMMANDS: Command[] = [
   {
     name: 'hook',
     summary: 'the tool-call guard, or the stop check with --stop',
-    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>]',
+    usage: '[--agent <name>] [--commands-only] [--stop] [--json] [--denial <mode>] [--protocol]',
     text: [
       'Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.',
       "With --agent claude-code, it answers as Claude Code's PreToolUse hook: a deny in JSON on stdout, exit 0. YOKOTEN_HOOK_DENIAL=exit2 keeps exit 2.",
       'With --denial exit2, it keeps the reason on stderr and exit 2, for a host that reads the exit code alone.',
       'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.',
+      'With --protocol, it reads the guard protocol (version yokoten-guard/1) and answers in it, so any tool can call the guard.',
     ],
     options: [
       { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness, grok or opencode' },
@@ -389,6 +412,7 @@ export const COMMANDS: Command[] = [
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
       { name: '--denial', value: 'mode', text: 'the answer a refusal gets: exit2 puts the reason on stderr and exits 2, for a host that ignores a JSON deny' },
+      { name: '--protocol', text: 'read one yokoten-guard/1 call on stdin and answer in the same protocol on stdout; any agent tool can send it (https://github.com/yokoten-labs/yokoten/blob/main/docs/records/0039-the-guard-protocol.md)' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
   },

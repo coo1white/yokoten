@@ -6,7 +6,9 @@ import { posix } from 'node:path';
 import type { Config } from './config.ts';
 import { matcher } from './config.ts';
 import { type Finding, finding } from './message.ts';
-import { CHANGES_DIR } from './pr.ts';
+import { CHANGES_DIR, codeOwnersWords, compileCodeOwnersPattern, isCodeOwnersHeader } from './pr.ts';
+
+export { codeOwnersPatternMatches } from './pr.ts';
 
 /**
  * The folder at the root that holds worker worktrees, one per issue (#571): inside the
@@ -153,5 +155,39 @@ export function checkBuildOutput(files: { path: string; binary: boolean }[], { a
     } else if (id === 'build-output') problems.push(finding(id, `build output, in a ${dir}/ folder`, fix(path), { file: path }));
     else problems.push(finding(id, 'a binary file', fix(path), { file: path }));
   }
+  return problems;
+}
+
+// ---- CODEOWNERS (#667) ----
+//
+// A CODEOWNERS line whose path matches no file protects nothing: a move or a rename leaves
+// the old path behind, so the new path has no owner review, and nothing else says so.
+
+/** The places GitHub reads CODEOWNERS from, first first. */
+export const CODEOWNERS_PLACES = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+
+/** A lead-only glob as the CODEOWNERS path init writes: `x/**` is the folder `/x/`. */
+export const codeOwnersPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
+
+/**
+ * Problems for the rule lines of a CODEOWNERS file whose path matches none of `files`.
+ * `file` is the place the file was read from, for the message. A path in `reserved` is a
+ * lead-only path init writes before it exists, a guard for the future, not a stale line.
+ */
+export function checkCodeOwners(files: string[], text: string, file: string = CODEOWNERS_PLACES[0] as string, reserved: ReadonlySet<string> = new Set()): Finding[] {
+  const problems: Finding[] = [];
+  text.split(/\r?\n/).forEach((line, index) => {
+    // A blank line, a comment and a section header name no path, as on GitHub.
+    if (isCodeOwnersHeader(line.trim())) return;
+    const pattern = codeOwnersWords(line)[0];
+    if (!pattern || reserved.has(pattern)) return;
+    const matcher = compileCodeOwnersPattern(pattern);
+    if (files.some((path) => matcher.test(path))) return;
+    problems.push(finding('stale-codeowners', `${pattern} matches no file: this rule protects nothing; point it at the new path`, `ask the lead or owner to change it in ${file}`, {
+      file,
+      line: index + 1,
+      why: 'a moved or renamed file leaves its CODEOWNERS line behind, so the new path has no owner review',
+    }));
+  });
   return problems;
 }

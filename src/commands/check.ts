@@ -7,7 +7,8 @@
 // from the terminal with no echo, or from stdin, so it never lands in the shell history;
 // `off <kind>` and `on <kind>` stop and start install adding a kind, kept in machine.json
 // (#434). A mark is never printed, logged or repeated back. Marks the owner added are never
-// touched by `off`, `on` or install.
+// touched by `off`, `on` or install. And `yokoten test`, the tests run light on a shared
+// machine (#461).
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -18,6 +19,7 @@ import { dirname, join, resolve } from 'node:path';
 import { checkAnchors } from '../host/sigstore/anchor.ts';
 import { findAnchor, workflowIdentity } from '../host/sigstore/rekor.ts';
 import { readEventLog } from '../host/sigstore/record.ts';
+import { cores, freeMemory, isLight, NICE_LEVEL, OFF_SWITCH, onPath, testCommand, testJobs } from '../host/light.ts';
 import { readCurrentPullRequest, readsCurrentPullRequest } from '../host/current-pr.ts';
 import { asText, botConfig, botEnv, borrowedHost, type Gh, ghIn, installationToken, isObject, OPEN_PULL_LIMIT, readApproverLogin, readCodeOwners, readIssue, readNumberedPullRequest, readOpenPulls, readPullRequest, readRepoLabelNames, repoOf } from '../host/github/index.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
@@ -28,7 +30,7 @@ import { parseChange } from '../run/changelog.ts';
 import { check, checkHistory, borrowedFiles, type BorrowedChange, GitReadError, gitReadFinding, type GitRun, historyTimeZones, indexFiles, readGit, syncPull, timeZoneNote, unstageHint, verifyMerge, watchBorrowed } from '../run/check/inspect.ts';
 import { ruleChange, ruleChangeFindings } from '../run/check/loosen.ts';
 import { readBranchDesks } from '../run/hook.ts';
-import { isCodeFile, nameNotes } from '../run/names.ts';
+import { isCodeFile, nameNotes } from '../run/notes/names.ts';
 import { addedIgnores, type AllowEntry, hideHome, isLink, loadMarks, type Mark, marksFile, marksFiles, machineAllowed, machineAllowFile, makeRedactor, matchingEntries, NO_HOME, readMachineAllow, repoKey } from '../rules/privacy.ts';
 import { addOwnMark, countMarkKinds, fillMarks, kindsTurnedOff, machineMarks, machineUserNames, paths, removeMarks, setKindOff, SWITCHED_KINDS } from '../setup/install.ts';
 import { readOriginUrl } from '../setup/plan.ts';
@@ -440,6 +442,37 @@ export function runRedact(invocation: Invocation): number | Promise<number> {
     });
     stream.on('error', () => settle(0));
   });
+}
+
+// ---- `yokoten test` (#461) ----
+
+/**
+ * `yokoten test`: Node's test runner, light on a shared machine. Words after `--` go to the
+ * runner as they are. `YOKOTEN_LIGHT_TESTS=0` or `--heavy` turns the light run off.
+ */
+export function runTest(invocation: Invocation): number {
+  const { args, env } = invocation;
+  // Everything after `--` is for the test runner, unchanged.
+  const end = args.indexOf('--');
+  const options = parse('test', end === -1 ? args : args.slice(0, end));
+  if (typeof options === 'string') return usage(invocation, options);
+  const light = isLight(env) && !options.flags.has('--heavy');
+  const free = freeMemory();
+  const jobs = testJobs(cores(), free);
+  const hasNice = process.platform !== 'win32' && onPath('nice', env);
+  const command = testCommand(end === -1 ? [] : args.slice(end + 1), { light, jobs, hasNice });
+  if (options.flags.has('--print')) {
+    const shown = [command.file, ...command.args].map((word) => (word === process.execPath ? 'node' : word)).join(' ');
+    const why = light ? `light: ${jobs} at once (${cores()} cores, ${(free / 1024 ** 3).toFixed(1)} GB free)${hasNice ? `, nice ${NICE_LEVEL}` : ', no nice here'}; ${OFF_SWITCH}=0 or --heavy turns it off` : 'the light run is off';
+    print(invocation, [shown, why]);
+    return 0;
+  }
+  const result = spawnSync(command.file, command.args, { stdio: 'inherit', windowsHide: true });
+  if (result.error) {
+    print(invocation, [`yokoten test: can't run the tests: ${result.error.message}`], invocation.stderr);
+    return 1;
+  }
+  return result.status ?? 1;
 }
 
 // ---- `yokoten marks` (#447) ----
