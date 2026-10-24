@@ -311,6 +311,30 @@ function patchName(root: string, from: string, to: string, env: Env): string | n
 }
 
 /**
+ * The login whose latest Approve names pull request `number`, or '' when gh can't read
+ * its reviews or none is approved (#756). A newer Approve wins; a tie keeps the later row.
+ */
+export function readApproverLogin(gh: Gh, number: number): string {
+  let rows = '';
+  try {
+    rows = gh(['pr', 'view', String(number), '--json', 'reviews', '--jq', '.reviews[] | select(.state == "APPROVED") | [.author.login, .submittedAt] | @tsv']);
+  } catch {
+    return '';
+  }
+  let approver = '';
+  let newest = '';
+  for (const row of rows.split('\n')) {
+    const [login, at] = row.split('\t');
+    if (!login || !at) continue;
+    if (at >= newest) {
+      newest = at;
+      approver = login;
+    }
+  }
+  return approver;
+}
+
+/**
  * What came after `approved` on a pull request, or why git can't tell (#612). An
  * approval on the head needs no git. Otherwise the commits are fetched, and only base
  * merges after the approval leave `after` at 0 with `sameDiff` true.
