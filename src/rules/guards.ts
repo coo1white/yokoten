@@ -1731,7 +1731,7 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
       // Name the tag, as the branch's #828 message did; a form whose name the guard cannot
       // read still refuses, with the whole command as the word it names (#873).
       if (tag !== null) {
-        return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${tag}\` themselves, or start a new session with YOKOTEN_RELEASE_APPROVAL=1; do not look for another way`);
+        return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${quoteShellWord(tag)}\` themselves, or start a new session with YOKOTEN_RELEASE_APPROVAL=1; do not look for another way`);
       }
       return release(`git tag ${tagArgs.join(' ')} creates a tag`);
     }
@@ -1843,11 +1843,36 @@ const DELETE_CHECKOUT_FIX = 'delete only the files you mean, by name';
 const DISCARD_WORK_FIX = 'keep the work first (`git stash` saves it), or commit it; do not throw it away';
 const ERASE_HISTORY_FIX = 'leave the history as it is; if you need to roll back, ask the owner first';
 const MOVE_BRANCH_FIX = 'leave the default branch where it is, and put the change on a new branch (`git switch -c <name>`)';
+// The short options of checkout and switch that take a value, so `-bfoo` names a branch
+// and holds no `-f` (#847).
+const CHECKOUT_VALUE_SHORT = new Set(['b', 'B', 'c', 'C']);
 
 /** Whether `word` is the long option `name` as git reads it: a unique prefix counts (`--har`, `--del`). */
 function isGitLongOption(word: string, name: string): boolean {
   const given = word.split('=', 1)[0];
   return given.startsWith('--') && given.length > 2 && name.startsWith(given);
+}
+
+/**
+ * The first short-option word in `args` that holds `flag`, or undefined. A combined word
+ * keeps its letters, so `-qf` holds `-f` (#847). A letter in `valued` takes the rest of the
+ * word as its value, so `-bfoo` names a branch and holds no `f`.
+ */
+function findShortFlag(args: string[], flag: string, valued: Set<string>): string | undefined {
+  for (const word of args) {
+    if (word === '--') break;
+    if (word.startsWith('--') || !word.startsWith('-') || word === '-') continue;
+    for (const letter of word.slice(1)) {
+      if (letter === flag) return word;
+      if (valued.has(letter)) break;
+    }
+  }
+  return undefined;
+}
+
+/** A word a shell can run as it is: anything else goes inside single quotes. */
+function quoteShellWord(word: string): string {
+  return /^[A-Za-z0-9._/:@%+=,-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
 
 /**
@@ -1945,10 +1970,17 @@ function checkGitLoseWork(words: string[], cwd: string | null, env: Env): Findin
       && args.some((arg) => isGitLongOption(arg, '--staged') || /^-[A-Za-z]*S[A-Za-z]*$/.test(arg))
       && !args.some((arg) => isGitLongOption(arg, '--worktree') || /^-[A-Za-z]*W[A-Za-z]*$/.test(arg));
     // A forced checkout or switch writes over uncommitted edits, whichever revision it names.
+    // With a path after `--`, it writes over that path alone (#847).
     const forceFlag = (sub === 'checkout' || sub === 'switch')
-      ? args.find((arg) => arg === '-f' || isGitLongOption(arg, '--force') || isGitLongOption(arg, '--discard-changes'))
+      ? findShortFlag(args, 'f', CHECKOUT_VALUE_SHORT)
+        ?? args.find((arg) => isGitLongOption(arg, '--force') || isGitLongOption(arg, '--discard-changes'))
       : undefined;
     if (forceFlag !== undefined) {
+      const separator = args.indexOf('--');
+      const paths = separator < 0 ? [] : args.slice(separator + 1).filter((word) => word !== '');
+      if (paths.length > 0) {
+        return finding('discard-work', `\`git ${sub} ${forceFlag} -- ${paths.join(' ')}\` writes over the uncommitted edits in ${paths.map((path) => `\`${path}\``).join(', ')}`, DISCARD_WORK_FIX);
+      }
       return finding('discard-work', `\`git ${sub} ${forceFlag}\` writes over every uncommitted edit in the checkout`, DISCARD_WORK_FIX);
     }
     const whole = plain.find((word) => word === ':/' || isCheckoutPath(word, directory));

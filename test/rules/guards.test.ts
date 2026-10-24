@@ -191,6 +191,9 @@ test('release: making a tag is creating a release, so the owner does it (#812)',
   allowed('git tag -v v1.2.0');
   allowed('git tag v1.2.0', { YOKOTEN_RELEASE_APPROVAL: '1' });
   assert.match(checkCommand('git tag v1.2.0', { cwd: process.cwd(), env: {} })?.fix ?? '', /run `git tag v1\.2\.0` themselves/);
+  // A name the shell would run is quoted, so the line handed back can be pasted (#847).
+  const runLine = checkCommand('git tag v1$(id)', { cwd: process.cwd(), env: {} })?.fix ?? '';
+  assert.match(runLine, /run `git tag 'v1\$\(id\)'` themselves/);
 });
 
 test('release: making a repo public is the owner\'s', () => {
@@ -3323,6 +3326,12 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
     stop('git push --del origin main', 'delete-default-branch');
     stop('git branch --del main', 'delete-default-branch');
     for (const command of ['git clean -fdx', 'git clean -fd', 'git checkout .', 'git checkout -- .', 'git checkout ./src/..', 'git restore .', 'git restore -SW .', 'git checkout -f main', 'git checkout ./src/../', 'git switch -f main', 'git stash clear', 'git stash drop']) stop(command, 'discard-work');
+    // A combined short option keeps its letters, so the force flag can hide in `-qf` (#847).
+    for (const command of ['git checkout -qf HEAD', 'git switch -qf other', 'git checkout -qfd HEAD']) stop(command, 'discard-work');
+    // A path after `--` is written over alone, so the finding names it, not every edit (#847).
+    const onePath = checkCommand('git checkout -f -- src/file.ts', { cwd: main, env: {} });
+    assert.equal(onePath?.id, 'discard-work');
+    assert.match(onePath?.what ?? '', /uncommitted edits in `src\/file\.ts`/);
     // A word that only looks like a dry run is not one: `-e` and `--exclude` take a pattern,
     // and the last of `--dry-run` and `--no-dry-run` decides. Each of these deletes (#847).
     for (const command of [
@@ -3361,6 +3370,8 @@ test('guard: the red-team ways to lose work are refused (#828)', () => {
       'git checkout main',
       'git checkout ./src/a/..',
       'git checkout -b feature',
+      'git checkout -bfeature',
+      'git switch -cfeature',
       'git checkout -- src/a.ts',
       'git restore src/a.ts',
       'git restore --staged .',
