@@ -13,6 +13,7 @@ import { test } from 'node:test';
 import {
   at,
   makeSandbox,
+  stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { invoke } from '../repo/invoke.ts';
 import { canColour, isColourTerminal, paint, styleLine, styleText, type Invocation } from '../../src/commands/shared.ts';
@@ -20,7 +21,9 @@ import type { Env } from '../../src/rules/config.ts';
 
 test('outside a git repo: every command that needs one says so plainly, exits 1 and writes nothing (#205)', async () => {
   const sandbox = makeSandbox();
-  // Inside the sandbox home, so the folder shows as ~.
+  // Inside the sandbox home, so the folder shows as ~. Home is a temp folder, which can sit
+  // inside this checkout when TMPDIR does; the marker stops git's walk there (#712).
+  stopCheckoutWalk(sandbox.home);
   const away = join(sandbox.home, 'away');
   mkdirSync(away);
   const said = (command: string) => new RegExp(`^yokoten ${command}: ~/away is not inside a git repo\\. The checks read commits, so yokoten needs git history\\. Run it inside your project, or \`git init\` first\\.\\n  docs: \\S+#commands\\n$`);

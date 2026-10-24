@@ -196,6 +196,9 @@ test('release: making a tag is creating a release, so the owner does it (#812)',
   assert.match(hostile, /`git tag 'v1`echo-PWNED`'`/, 'a backtick in the tag stays text');
   const dollar = checkCommand('git tag v1$(id)', { cwd: process.cwd(), env: {} })?.fix ?? '';
   assert.match(dollar, /`git tag 'v1\$\(id\)'`/, 'a substitution in the tag stays text');
+  // A name the shell would run is quoted, so the line handed back can be pasted (#847).
+  const runLine = checkCommand('git tag v1$(id)', { cwd: process.cwd(), env: {} })?.fix ?? '';
+  assert.match(runLine, /run `git tag 'v1\$\(id\)'` themselves/);
 });
 
 test('release: making a repo public is the owner\'s', () => {
@@ -204,6 +207,7 @@ test('release: making a repo public is the owner\'s', () => {
   blocked('gh repo create octo/demo --public');
   blocked('gh repo create octo/demo --visibility=public');
   blocked('gh repo create octo/demo --visibility public');
+  blocked('gh repo create demo --visibility=public');
   // gh keeps the last flag, so the second one decides.
   blocked('gh repo edit --visibility private --visibility public');
   allowed('gh repo edit --visibility public --visibility private');
@@ -3052,8 +3056,8 @@ test('worker mark: a worker may not remove or replace the folder that holds the 
   for (const command of ['rm -rf src', 'rm -rf ./src/', 'rsync -a --delete src/ out/', "find . -name '*.log' -delete", 'mv src lib', 'rm -rf "$PWD/src"']) {
     assert.equal(check(command), null, command);
   }
-  // The lead may.
-  assert.equal(checkCommand('rm -rf .', { cwd: desk, env: { HOME: worker.HOME } }), null);
+  // The lead may not delete the checkout either: a different rule answers (#828).
+  assert.equal(checkCommand('rm -rf .', { cwd: desk, env: { HOME: worker.HOME } })?.id, 'delete-checkout');
 });
 
 test('checkWorkerMarkEdit: a git folder by name or by real path (#555)', () => {
@@ -3322,6 +3326,86 @@ test('guard: deleting the default branch is refused (#560)', () => {
   } finally {
     rmSync(main, { recursive: true, force: true });
     rmSync(trunk, { recursive: true, force: true });
+  }
+});
+
+// #828: the other ways to lose work or history. A path of `.` or `..` removes the checkout;
+// git clean removes untracked files; checkout/restore of the whole tree and a dropped stash
+// remove uncommitted work; gc/prune/reflog/filter-branch erase the way back; and update-ref,
+// branch -f and checkout -B move the default branch, whose commits every branch builds on.
+test('guard: the red-team ways to lose work are refused (#828)', () => {
+  const main = makeMainRepo();
+  try {
+    const stop = (command: string, id: string) => assert.equal(checkCommand(command, { cwd: main, env: {} })?.id, id, command);
+    for (const command of ['rm -rf .', 'rm -rf ..', 'rm -rf ./', 'rm -rf src/..']) stop(command, 'delete-checkout');
+    for (const command of ['git reset --har HEAD', 'git reset --h HEAD']) stop(command, 'hard-reset');
+    stop('git push --del origin main', 'delete-default-branch');
+    stop('git branch --del main', 'delete-default-branch');
+    for (const command of ['git clean -fdx', 'git clean -fd', 'git checkout .', 'git checkout -- .', 'git checkout ./src/..', 'git restore .', 'git restore -SW .', 'git checkout -f main', 'git checkout ./src/../', 'git switch -f main', 'git stash clear', 'git stash drop']) stop(command, 'discard-work');
+    // A combined short option keeps its letters, so the force flag can hide in `-qf` (#847).
+    for (const command of ['git checkout -qf HEAD', 'git switch -qf other', 'git checkout -qfd HEAD']) stop(command, 'discard-work');
+    // A path after `--` is written over alone, so the finding names it, not every edit (#847).
+    const onePath = checkCommand('git checkout -f -- src/file.ts', { cwd: main, env: {} });
+    assert.equal(onePath?.id, 'discard-work');
+    assert.match(onePath?.what ?? '', /uncommitted edits in `src\/file\.ts`/);
+    // A word that only looks like a dry run is not one: `-e` and `--exclude` take a pattern,
+    // and the last of `--dry-run` and `--no-dry-run` decides. Each of these deletes (#847).
+    for (const command of [
+      'git clean -fd -e --dry-run',
+      'git clean -fd --exclude --dry-run',
+      'git clean -fd -e -n',
+      'git clean -fd -e--dry-run',
+      'git clean -fde --dry-run',
+      'git clean -fnd --no-dry-run',
+    ]) stop(command, 'discard-work');
+    for (const command of ['git gc --prune=now', 'git gc --prune now', 'git gc --prune=2.weeks.ago --prune=now', 'git gc --prune=all', 'git prune --expire=now', 'git prune --expire=all', 'git reflog expire --expire=now --all', 'git reflog delete HEAD@{0}', 'git filter-branch --force --all']) stop(command, 'erase-history');
+    for (const command of [
+      'git update-ref refs/heads/main HEAD~1',
+      'git update-ref --stdin',
+      'git branch -f main HEAD~1',
+      'git branch --force main HEAD~1',
+      'git checkout -B main HEAD~1',
+      'git switch -C main HEAD~1',
+    ]) stop(command, 'move-default-branch');
+    const pass = (command: string) => assert.equal(checkCommand(command, { cwd: main, env: {} }), null, `should allow: ${command}`);
+    for (const command of [
+      'rm -rf dist',
+      'rm -rf ./dist',
+      'rm -rf ../other',
+      'rm -rf src/a/..',
+      'git reset HEAD',
+      'git reset --mixed HEAD~1',
+      'git push origin feature',
+      'git push --delete origin feature',
+      'git clean -n',
+      'git clean -nd',
+      // A dry run stays a dry run whatever pattern it holds, as git reads it.
+      'git clean -nd -e --dry-run',
+      'git clean -n -e build',
+      'git clean -nd --exclude=--dry-run',
+      'git checkout main',
+      'git checkout ./src/a/..',
+      'git checkout -b feature',
+      'git checkout -bfeature',
+      'git switch -cfeature',
+      'git checkout -- src/a.ts',
+      'git restore src/a.ts',
+      'git restore --staged .',
+      'git restore -S .',
+      'git stash',
+      'git stash list',
+      'git stash pop',
+      'git gc',
+      'git prune',
+      'git reflog',
+      'git update-ref --verify refs/heads/main',
+      'git update-ref refs/heads/feature HEAD~1',
+      'git branch -f feature HEAD~1',
+      'git checkout -B feature HEAD~1',
+      'git switch -c feature',
+    ]) pass(command);
+  } finally {
+    rmSync(main, { recursive: true, force: true });
   }
 });
 
@@ -3689,7 +3773,6 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'cp -l a b',
     'cp -a src out',
     'git status',
-    'git clean -fdx',
     'cd src && git status',
     'git clone https://example.com/a/b.git',
     'rm src/$NAME.ts',
@@ -3697,6 +3780,9 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
     'curl -sSL https://example.com/x',
     'wget https://example.com/x',
   ]) allowed(command, worker);
+  // Not work: git clean deletes every untracked file, for a worker and the lead alike (#828).
+  assert.equal(checkCommand('git clean -fdx', { cwd: process.cwd(), env: worker })?.id, 'discard-work');
+  assert.equal(checkCommand('git clean -fdx', { cwd: process.cwd(), env: lead })?.id, 'discard-work');
   // The git folder too: a find that writes from above .git, a hard link into it, a download into it.
   for (const command of ['find . -delete', "find . -name '*' -delete", 'find . -name x -o -delete', 'find . -exec rm {} +', 'cp -l .git/config w', 'curl -o .git/config https://example.com/c']) {
     assert.equal(checkCommand(command, { cwd: process.cwd(), env: worker })?.id, 'worker-mark', command);
@@ -3724,7 +3810,7 @@ test('guard: a worker does not change yokoten config folder; the lead may (#591)
   writeFileSync(join(tree, '.git'), 'gitdir: ' + join(base, 'store') + '\n');
   mkdirSync(join(base, 'store'));
   symlinkSync(join(home, '.config', 'yokoten'), join(tree, 'out'));
-  assert.equal(checkCommand('cd other && git clean -fdx', { cwd: tree, env: worker }), null);
+  assert.equal(checkCommand('cd other && git clean -fdx', { cwd: tree, env: worker })?.id, 'discard-work', 'the config rule passes; losing work does not');
   assert.equal(checkCommand('cd out && chmod 000 workers', { cwd: tree, env: worker })?.id, 'worker-mark', 'a symlink out of the worktree');
   allowed(`rm ${join(base, 'other-file')}`, worker);
 });
@@ -3800,7 +3886,6 @@ test('guard: a worker command that points at a config folder runs only plain rea
     'git log -- ~/.config/yokoten',
     'grep -rn GIT_WORK_TREE src',
     'git status',
-    'git clean -fdx',
     'cd src && git status',
     'npm test',
     "sed -i 's/a/b/' src/config.ts",
@@ -3809,6 +3894,8 @@ test('guard: a worker command that points at a config folder runs only plain rea
     'find ~/.config -name workers -print0',
     'cat webpack.config.js',
   ]) allowed(command, worker);
+  // #828: git clean deletes every untracked file, so it is not everyday work.
+  assert.equal(checkCommand('git clean -fdx', { cwd: process.cwd(), env: worker })?.id, 'discard-work');
 });
 
 // #591, round 5: the worker is boxed instead of its bash read word by word. A cd takes one

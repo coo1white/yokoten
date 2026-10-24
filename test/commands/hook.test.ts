@@ -263,10 +263,9 @@ test('hook --stop --agent codex|gemini: the end-of-turn event sends the agent ba
   assert.match((await sandbox.call(['doctor'])).stdout, /note +codex-hook: no stop check in \.codex\/hooks\.json/);
 });
 
-// The release refusal names the command that starts the agent the hook ran for (#350). Copilot
-// CLI sends Claude Code's shape, so that one says "or your agent's command". Muse Code passes
-// the approval to no hook, so it says so instead of naming a command.
-test('hook --agent: the release refusal names the agent\'s own command (#350)', async () => {
+// The release finding still names the command that starts the agent the hook ran for (#350),
+// in its JSON. The five-line refusal gives the person the command to run instead.
+test('hook --agent: the release finding names the agent\'s own command (#350)', async () => {
   const sandbox = makeSandbox();
   const cwd = sandbox.repo;
   const command = 'git push --tags origin';
@@ -286,7 +285,7 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
     assert.match(result.stderr, fix, agent);
     // --json carries the same fix.
     const json = JSON.parse((await sandbox.call(['hook', '--agent', agent, '--json'], { input: JSON.stringify(input) })).stdout);
-    assert.ok(result.stderr.includes(`${json.finding.fix.slice(1)}.`), `${agent} --json`); // the text form capitalizes it
+    assert.match(json.finding.fix, fix, agent);
     // Another refusal keeps its own fix.
     const force = await sandbox.call(['hook', '--agent', agent], { input: JSON.stringify(input).replace('--tags', '--force') });
     assert.match(force.stderr, /git push --force/, `${agent}: a force push`);
@@ -955,7 +954,7 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
     'gh api repos/a/b/issues -f title=x',
   ]) {
     result = await refused(command, /worker-push|worker does not push|pushes|host|alias|bot/);
-    assert.match(result.stderr, /commit in your worktree and report; the lead pushes after review/i, command);
+    assert.match(result.stderr, /Do instead: .*carries the worker mark/, command);
   }
   // The reviewer's ways to drop the mark (H1, L2).
   const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
@@ -1080,8 +1079,11 @@ test("worker mark: a clone is marked only by the lead, from its own checkout, in
   const leadMark = join(sandbox.repo, '.git', 'yokoten-worker');
   const deskMark = join(desk, '.git', 'yokoten-worker');
   // The lead's checkout, from a folder outside every checkout: refused, nothing written.
-  const elsewhere = makeTempDir('yokoten-elsewhere-');
-  let result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: elsewhere });
+  // The temp folder can sit inside this checkout when TMPDIR does, so git's walk stops at it.
+  const outside = makeTempDir('yokoten-outside-');
+  const elsewhere = join(outside, 'elsewhere');
+  mkdirSync(elsewhere);
+  let result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: elsewhere, extra: { GIT_CEILING_DIRECTORIES: outside } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /from your own checkout, the lead's/);
   assert.ok(!existsSync(leadMark));
@@ -1375,6 +1377,61 @@ test('session start: a lead registers its log path; a worker does not (#700)', a
   assert.equal((await start(sandbox.repo, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
   assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a worker leaves the lead path in place');
   assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the path stays in the git folder');
+});
+
+// #828: protection 1 (record 0034) refuses the red-team calls that lose work. Each call
+// reached the hook in a repo with no yokoten.json, as a new user has. Git reads a
+// shortened long option (`--har` is `--hard`, `--del` is `--delete`), so the guard reads
+// one the same way, and refuses a form it cannot tell apart.
+test('hook: protection 1 refuses the red-team calls that lose work (#828)', async () => {
+  const sandbox = makeSandbox();
+  const bash = (command: string) =>
+    sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  const refused = [
+    'rm -rf .',
+    'rm -rf ..',
+    'git reset --har HEAD',
+    'git reset --h HEAD',
+    'git push --del origin main',
+    'git clean -fdx',
+    'git checkout .',
+    'git restore .',
+    'git stash clear',
+    'git stash drop',
+    'git gc --prune=now',
+    'git prune --expire=now',
+    'git reflog expire --expire=now --all',
+    'git filter-branch --force --all',
+    'git update-ref refs/heads/main HEAD~1',
+    'git branch -f main HEAD~1',
+    'git checkout -B main HEAD~1',
+  ];
+  for (const command of refused) {
+    const result = await bash(command);
+    assert.equal(result.status, 2, `should refuse: ${command}\n${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /^yokoten stopped this: [^\n]+ \[[a-z-]+\]\nWhy: [^\n]+\.\nDo instead: [^\n]+\n(?:Tell the (?:AI|lead): "[^\n]+"\n)?More: \S+/, command);
+  }
+  // Everyday work still passes, including the spellings that only read or save work.
+  for (const command of [
+    'git status',
+    'git stash list',
+    'git stash',
+    'git clean -n',
+    'git clean -nd',
+    'git checkout main',
+    'git checkout -b feature',
+    'git checkout -- src/cart/import.ts',
+    'git restore src/cart/import.ts',
+    'git restore --staged .',
+    'git gc',
+    'git reflog',
+    'git update-ref --verify refs/heads/main',
+    'git branch -f feature HEAD~1',
+    'git checkout -B feature HEAD~1',
+    'rm -rf dist',
+  ]) {
+    assert.equal((await bash(command)).status, 0, `should allow: ${command}`);
+  }
 });
 
 // #621: a stop writes one line to the stop log on this computer, with the command masked.

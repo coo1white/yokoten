@@ -78,7 +78,7 @@ export const RULES = {
   'hard-reset': {
     rule: 'no hard reset: it throws away work (record 0034)',
     why: 'a hard reset drops every change you have not committed, and git cannot bring it back',
-    check: 'the tool-call guard stops `git reset --hard`; `git reset` without `--hard` and `git revert` pass',
+    check: 'the tool-call guard stops `git reset --hard`, and reads a shortened option as git does (`--har` means `--hard`); `git reset` without `--hard` and `git revert` pass',
     docs: guide('the-safeguard'),
   },
   'skip-check': {
@@ -106,7 +106,31 @@ export const RULES = {
   'delete-default-branch': {
     rule: 'no deleting the default branch',
     why: 'the default branch holds the work every branch builds on, so deleting it throws that work away',
-    check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
+    check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; git reads a shortened long option too (`--del` means `--delete`); delete only the branch you mean',
+  },
+  'delete-checkout': {
+    rule: 'no deleting the whole checkout, or the folder that holds it (record 0034)',
+    why: 'the checkout holds every file and every commit, and deleting it leaves no copy anywhere',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on `.`, `..`, or a path that ends at one of them; delete only the files you mean',
+    docs: guide('the-safeguard'),
+  },
+  'discard-work': {
+    rule: 'no throwing away work that exists in one place only (record 0034)',
+    why: 'untracked files, uncommitted edits and a saved stash have no other copy, so git cannot bring them back',
+    check: 'the tool-call guard stops `git clean` (except `-n` or `--dry-run`), `git checkout .` and `git restore .` of the whole tree, a forced checkout or switch (`-f`, `--force`, `--discard-changes`), and `git stash clear` or `git stash drop`; `git restore --staged` or `-S` alone passes',
+    docs: guide('the-safeguard'),
+  },
+  'erase-history': {
+    rule: 'no erasing the history at once (record 0034)',
+    why: 'unreachable commits and the reflog are the usual way back after a mistake, and erasing them takes that way back away',
+    check: 'the tool-call guard stops `git gc --prune=now` or `--prune=all`, `git prune --expire=now` or `--expire=all`, `git reflog expire`, `git reflog delete`, `git filter-branch` and `git filter-repo`; git reads a repeated option by its last value, so `--prune=2.weeks.ago --prune=now` counts as `now`',
+    docs: guide('the-safeguard'),
+  },
+  'move-default-branch': {
+    rule: 'no moving the default branch backwards (record 0034)',
+    why: 'the default branch holds the work every branch builds on, so moving it back loses those commits',
+    check: 'the tool-call guard stops `git update-ref` of the default branch (a read with `--verify` or `--list` passes), `git branch -f` on it, and `git checkout -B` or `git switch -C` on it',
+    docs: guide('the-safeguard'),
   },
   'pipe-to-shell': {
     rule: 'no piping a download into a shell or a program named by a variable',
@@ -230,6 +254,12 @@ export const RULES = {
     rule: 'no folder holds more than 7 entries; the root is not counted (core rule 10)',
     why: 'a flat folder grows until nobody can find anything',
     check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" (paths, or globs with `*` and `**`) may grow',
+    docs: guide('the-core-rules'),
+  },
+  'stale-codeowners': {
+    rule: 'every CODEOWNERS line names a path that exists',
+    why: 'a moved or renamed file leaves its line behind, so the new path has no owner review',
+    check: '`yokoten check` and full `doctor` read the first CODEOWNERS file GitHub reads and report each rule line whose path matches no file in the tree; a pattern with `*` matches when any file does',
     docs: guide('the-core-rules'),
   },
   'build-output': {

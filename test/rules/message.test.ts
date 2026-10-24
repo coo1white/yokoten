@@ -28,6 +28,7 @@ import {
 } from '../../src/rules/guards.ts';
 import {
   checkBuildOutput,
+  checkCodeOwners,
   checkLayout,
 } from '../../src/rules/layout.ts';
 import {
@@ -79,8 +80,8 @@ import {
   lintStdout,
   lintTools,
 } from '../../src/commands/advice/mcp.ts';
-import { nameNotes } from '../../src/run/names.ts';
-import { translationNotes } from '../../src/run/translations.ts';
+import { nameNotes } from '../../src/run/notes/names.ts';
+import { translationNotes } from '../../src/run/notes/translations.ts';
 import { readCurrentPullRequest } from '../../src/host/current-pr.ts';
 import {
   readIssue,
@@ -158,6 +159,11 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const mainRepo = makeTempDir('yokoten-default-main-');
   execFileSync('git', ['init', '-q', '-b', 'main', mainRepo]);
   add(checkCommand('git branch -D main', { cwd: mainRepo, env: {} }));
+  // The other ways to lose work or history (#828).
+  add(checkCommand('rm -rf .', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git clean -fdx', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git gc --prune=now', { cwd: process.cwd(), env: {} }));
+  add(checkCommand('git branch -f main HEAD~1', { cwd: mainRepo, env: {} }));
   add(checkEdit('test/a.test.ts', { config: DEFAULTS, env }));
   add(checkEdit('AGENTS.md', { config: DEFAULTS, env }));
   add(checkCommand('git push', { cwd: process.cwd(), env }));
@@ -171,6 +177,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(addedIgnores('a.ts', `// ${['yokoten', 'ignore'].join('-')} secret: a fixture`, new Set([1]), {})[0]);
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
+  found.push(...checkCodeOwners(['src/app.ts'], 'src/gone.ts @lead\n'));
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   // An Approve on an older commit, with code changes after it (#612).
