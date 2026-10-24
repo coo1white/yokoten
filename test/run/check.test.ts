@@ -285,6 +285,40 @@ test('check and the stop hook read a symlink as its link text, never its target 
   assert.match((await sandbox.call(['check'])).stderr, /mail:1: an email/);
 });
 
+test('check: a CODEOWNERS line whose file moved says it protects nothing (#667)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('docs/guide.md', 'docs\n');
+  sandbox.write('src/host/github/index.ts', 'export {};\n');
+  sandbox.write('.github/CODEOWNERS', '/docs/ @lead\n/src/host/github/* @lead\n/src/host/github.ts @lead\n');
+  sandbox.git('add', '.');
+  const result = await sandbox.call(['check']);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /\.github\/CODEOWNERS:3: \/src\/host\/github\.ts matches no file: this rule protects nothing; point it at the new path/);
+  assert.match(result.stderr, /Ask the lead or owner to change it in \.github\/CODEOWNERS/);
+});
+
+test('check --staged: reads the staged CODEOWNERS, not a dirty work tree (#667)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.write('.github/CODEOWNERS', 'src/gone.ts @lead\n');
+  sandbox.git('add', '.');
+  // Fix the line in the index, then break the work tree copy again: the index is what commits.
+  sandbox.write('.github/CODEOWNERS', 'src/a.ts @lead\n');
+  sandbox.git('add', '.github/CODEOWNERS');
+  sandbox.write('.github/CODEOWNERS', 'src/gone.ts @lead\n');
+  const result = await sandbox.call(['check', '--staged']);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('check: a project with no CODEOWNERS gets no CODEOWNERS finding (#667)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('src/a.ts', 'a\n');
+  sandbox.git('add', '.');
+  const result = await sandbox.call(['check']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /CODEOWNERS/);
+});
+
 test('check --staged: binary is decided from the bytes, not .gitattributes (#244)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('.gitattributes', 'yarn.lock -diff\n*.pbxproj binary\n');
@@ -1002,7 +1036,7 @@ test('check: an added forge login is fine where a file names accounts, and found
   const marks = join(sandbox.home, '.config', 'yokoten', 'private-marks');
   mkdirSync(dirname(marks), { recursive: true });
   writeFileSync(marks, '# my own\nmycity\n# added by yokoten from this machine: forge login\nocto-jdoe\n');
-  sandbox.write('.github/CODEOWNERS', '* @octo-jdoe\n/docs/ @octo-jdoe/docs-team\n');
+  sandbox.write('.github/CODEOWNERS', '* @octo-jdoe\n/.github/ @octo-jdoe/docs-team\n');
   sandbox.write('.claude-plugin/plugin.json', '{\n  "name": "x",\n  "author": {\n    "name": "octo-jdoe",\n    "url": "https://github.com/octo-jdoe"\n  }\n}\n');
   sandbox.write('package.json', '{\n  "name": "x",\n  "author": "octo-jdoe"\n}\n');
   sandbox.write('LICENSE', 'MIT License\n\nCopyright (c) 2026 octo-jdoe\n');

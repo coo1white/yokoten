@@ -430,6 +430,34 @@ Version 1. This is the first form. It has no version field.
 - [src/run/hook.ts](../src/run/hook.ts) and [test/run/check.test.ts](../test/run/check.test.ts).
 - [src/commands/check.ts](../src/commands/check.ts) and [test/commands/check.test.ts](../test/commands/check.test.ts).
 
+## The lesson file
+
+A lesson is a check made from a real incident.
+It has four parts: the incident, the check, the positive control, and where it applies.
+
+- The incident is the issue URL on a `//` line near the top of `lesson.ts`.
+- The check is `findProblems(root)` in `lesson.ts`. It reads files, and returns a finding for each place.
+- The positive control is `lesson.test.ts`. It fails when the check catches nothing.
+- Where it applies is the kit. `yokoten doctor` runs the lesson in every project that has the kit, unless "notNow" names it.
+
+A lesson travels as one small JSON file.
+`yokoten learn --export <id>` prints it, and `--out <file>` writes it.
+
+| Field | What it holds |
+| --- | --- |
+| `version` | `1`. A reader refuses another number. |
+| `id` | Lower-case words, or `incident-<n>`. Never only a number. |
+| `incident` | The issue URL the lesson came from. |
+| `files` | `lesson.ts` and `lesson.test.ts`, each with `path` and `text`. No other path travels. |
+
+Who writes. A person, after an incident. The incident issue is the start.
+Who reads. `yokoten learn --import <file>` in another project.
+How yokoten checks it. Export refuses a TODO, a missing incident, a secret, or a private detail. Import checks the shape, the two paths, the size, and the same privacy rules.
+The import writes to `lessons/<id>/` only with `--write`, and nothing runs before `--ship`.
+Version 1. `LessonPack` has `version`.
+
+- [src/run/learn.ts](../src/run/learn.ts) and [test/run/learn.test.ts](../test/run/learn.test.ts).
+
 ## The risk tier
 
 The first non-blank line of a pull request body is one tier line.

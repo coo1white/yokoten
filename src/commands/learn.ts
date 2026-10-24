@@ -2,11 +2,11 @@
 
 import { ghIn, readIncident, readLocalLogins } from '../host/github/index.ts';
 import { formatChanges, readChanges, writeChanges } from '../run/changelog.ts';
-import { existsSync, readFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { loadConfig } from '../rules/config.ts';
 import { loadMarks, NO_HOME } from '../rules/privacy.ts';
-import { draftLesson, formatDraft, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, makeNoteCleaner, NOTE_ID, type NotePlace, originParts, redactNote, removeNote, shipLesson, upstreamDir, writeDraft, writeNote } from '../run/learn.ts';
+import { draftLesson, exportLesson, formatDraft, formatLessonPack, importLesson, KIT_LESSONS_DIR, LESSONS_TABLE, listNotes, makeNoteCleaner, NOTE_ID, type NotePlace, originParts, redactNote, removeNote, shipLesson, terminalText, upstreamDir, writeDraft, writeLessonFiles, writeNote } from '../run/learn.ts';
 import { HOME_DIR, VERSION } from '../setup/files.ts';
 import { isSelf } from '../setup/init/index.ts';
 import { machineMarks, machineUserNames } from '../setup/install.ts';
@@ -43,6 +43,24 @@ export function runLearn(invocation: Invocation): number {
   const options = parse('learn', args);
   if (typeof options === 'string') return usage(invocation, args.includes('--upstream') ? upstreamUsage(options) : options);
   const [reference] = options.positional;
+  const exportId = options.values['--export'];
+  const importFile = options.values['--import'];
+  // A lesson leaves and enters as a small file, reviewed before it applies (#757).
+  if (exportId !== undefined || importFile !== undefined) {
+    if (exportId !== undefined && importFile !== undefined) return usage(invocation, '--export and --import do different things: give one');
+    for (const option of ['--upstream', '--ship', '--list', '--done', '--area', '--fix']) {
+      if (options.flags.has(option) || option in options.values) return usage(invocation, `${option} does not go with ${exportId !== undefined ? '--export' : '--import'}`);
+    }
+    if (reference !== undefined) return usage(invocation, `${exportId !== undefined ? '--export' : '--import'} takes the lesson by name, not as a second argument`);
+    const root = rootOf(cwd, invocation.env) ?? cwd;
+    if (exportId !== undefined) {
+      if (options.flags.has('--write')) return usage(invocation, '--export writes only with --out <file>, never with --write');
+      return runExport(invocation, root, exportId, options.values['--out']);
+    }
+    if ('--out' in options.values) return usage(invocation, '--out goes with --export, not with --import');
+    return runImport(invocation, root, importFile, options.flags.has('--write'));
+  }
+  if ('--out' in options.values) return usage(invocation, '--out goes with --export');
   if (options.flags.has('--upstream')) return runUpstream(invocation, options);
   for (const option of ['--list', '--done', '--area', '--fix']) {
     if (options.flags.has(option) || option in options.values) return usage(invocation, `${option} goes with --upstream`);
@@ -88,6 +106,66 @@ export function runLearn(invocation: Invocation): number {
     ...(written.length ? ['Wrote:', ...written.map((path) => `- ${path}`)] : []),
     ...(kept.length ? ['Kept, already there:', ...kept.map((path) => `- ${path}`)] : []),
     'Review the draft: fill in each TODO, write the check, and make its test pass.',
+  ]);
+  return 0;
+}
+
+/** `learn --export`: a lesson as one small file, for another project. It writes only with --out. */
+function runExport(invocation: Invocation, root: string, reference: string, out: string | undefined): number {
+  const exported = exportLesson(root, reference, invocation.env);
+  if ('problems' in exported) {
+    print(invocation, [`yokoten learn --export: ${exported.problems.length} problem(s); nothing was written:`, ...exported.problems.map((problem) => `- ${problem}`)], invocation.stderr);
+    return 1;
+  }
+  const { pack, text } = exported;
+  if (out === undefined) {
+    // The file itself on stdout, so a person or a script can review it before it leaves.
+    print(invocation, [text.trimEnd()]);
+    return 0;
+  }
+  const path = isAbsolute(out) ? out : join(invocation.cwd, out);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+  print(invocation, [
+    `yokoten learn --export: ${pack.id} is in ${out}.`,
+    'It holds the incident, the check and its positive control, and no private detail the check found.',
+    'Import it in another project with `yokoten learn --import <file>`, then review it there.',
+  ]);
+  return 0;
+}
+
+/** `learn --import`: a lesson file from another project, shown for review; --write adds it to lessons/. */
+function runImport(invocation: Invocation, root: string, file: string, isWrite: boolean): number {
+  const path = isAbsolute(file) ? file : join(invocation.cwd, file);
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    print(invocation, [`yokoten learn --import: ${file} could not be read: ${((err as Error).message ?? String(err)).split('\n')[0]}`], invocation.stderr);
+    return 1;
+  }
+  const imported = importLesson(text, invocation.env);
+  if ('problems' in imported) {
+    print(invocation, [`yokoten learn --import: ${imported.problems.length} problem(s); nothing was written:`, ...imported.problems.map((problem) => `- ${problem}`)], invocation.stderr);
+    return 1;
+  }
+  const { pack, files } = imported;
+  const first = `yokoten learn --import: ${formatLessonPack(pack)}`;
+  if (!isWrite) {
+    print(invocation, [
+      first,
+      ...files.flatMap((file) => ['', `--- ${terminalText(file.path)}`, terminalText(file.text.trimEnd())]),
+      '',
+      `Nothing was written. \`yokoten learn --import ${file} --write\` adds these files for review.`,
+    ]);
+    return 0;
+  }
+  const { written, kept } = writeLessonFiles(root, files);
+  print(invocation, [
+    first,
+    ...(written.length ? ['Wrote:', ...written.map((file) => `- ${file}`)] : []),
+    ...(kept.length ? ['Kept, already there:', ...kept.map((file) => `- ${file}`)] : []),
+    `Review it and run its test: node --test lessons/${pack.id}/lesson.test.ts. Then, in yokoten, \`yokoten learn --ship ${pack.id}\` adds it to the kit every project gets.`,
   ]);
   return 0;
 }

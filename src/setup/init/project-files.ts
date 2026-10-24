@@ -2,7 +2,7 @@
 import { appendFileSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULTS, type Env } from '../../rules/config.ts';
-import { WORKTREES_DIR } from '../../rules/layout.ts';
+import { codeOwnersPath, WORKTREES_DIR } from '../../rules/layout.ts';
 import { AGENT_STATUS_FILE } from '../../run/hook.ts';
 import { CODEOWNERS_PLACES, type Gh, isOrganization, repoOf } from '../../host/github/index.ts';
 import { readOriginUrl } from '../plan.ts';
@@ -43,8 +43,8 @@ export function walk(dir: string): string[] {
 /** The owner init writes when it can't tell who owns the repo. A GitHub handle has no underscore, so this is never a real account. */
 export const OWNER_PLACEHOLDER = '@YOUR_GITHUB_HANDLE';
 
-/** A lead-only glob as a CODEOWNERS path: `x/**` is the folder `/x/`, a file is `/file`. */
-export const ownedPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
+/** A lead-only glob as a CODEOWNERS path: `x/**` is the folder `/x/`, a file is `/file`. One rule, kept in `rules/layout.ts`. */
+export const ownedPath = codeOwnersPath;
 
 /**
  * The CODEOWNERS init writes: every default lead-only path, owned by `owner`, or by the

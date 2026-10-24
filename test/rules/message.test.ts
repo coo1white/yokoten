@@ -28,6 +28,7 @@ import {
 } from '../../src/rules/guards.ts';
 import {
   checkBuildOutput,
+  checkCodeOwners,
   checkLayout,
 } from '../../src/rules/layout.ts';
 import {
@@ -169,6 +170,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   add(addedIgnores('a.ts', `// ${['yokoten', 'ignore'].join('-')} secret: a fixture`, new Set([1]), {})[0]);
   found.push(...checkLayout(Array.from({ length: 8 }, (_, i) => `d/${i}`), DEFAULTS));
   found.push(...checkBuildOutput([{ path: 'dist/a.js', binary: false }, { path: 'a.bin', binary: true }], DEFAULTS));
+  found.push(...checkCodeOwners(['src/app.ts'], 'src/gone.ts @lead\n'));
   found.push(...checkPullRequest({ title: `Bad title (#1) ${'x'.repeat(70)}.`, body: '## Why\n\n', files: ['src/a.ts', 'kit/x'], labels: [], milestone: null }, DEFAULTS));
   add(checkOwnedTier({ body: 'tier: B\n', files: ['kit/x'] }, { text: '/kit/ @owner\n', from: 'the base branch' }));
   // An Approve on an older commit, with code changes after it (#612).
@@ -231,6 +233,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
   for (const nodeVersion of ['24.21.0', '23.11.1']) add(nodeSecurityCheck({ nodeVersion }).finding);
+  // The guard's own cost, a reading doctor prints as a line (#461).
+  add(finding('guard-cost', 'one guard call costs 90 ms', 'nothing to fix: this is a reading of the machine'));
   // An old test folder in the temp folder (#400): seen from two days on.
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));
