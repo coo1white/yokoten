@@ -107,9 +107,11 @@ export const userHooksFile = (env: Env): string => (env.COPILOT_HOME ? '$COPILOT
 
 /**
  * The user's command guard, as `addHook`'s arguments. Copilot sends Claude Code's shape, so
- * the default reader judges it. Commands only: file rules stay with the project.
+ * the default reader judges it. Commands only: file rules stay with the project. Copilot
+ * refuses on exit 2 alone, so `--denial exit2` keeps that answer rather than Claude Code's
+ * JSON deny on exit 0 (#707).
  */
-const userGuardArgs = (env: Env, cli: string, missing: string) => [userHooks(env), 'PreToolUse', 'Bash', guardCommand(cli, 'hook --agent claude-code --commands-only', missing, { isToolCall: true })] as const;
+const userGuardArgs = (env: Env, cli: string, missing: string) => [userHooks(env), 'PreToolUse', 'Bash', guardCommand(cli, 'hook --agent claude-code --commands-only --denial exit2', missing, { isToolCall: true })] as const;
 
 /** Write the user's guard, in every folder; `missing` is what it says when `cli` is gone. */
 export function addUserHooks(env: Env, cli: string, missing: string): { guard: Added } {

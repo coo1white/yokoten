@@ -7,6 +7,7 @@
 // The guide's "Works with" table is generated here from the same capabilities, plus the
 // dated end-to-end notes. A test fails when docs/guide.md and this module differ.
 
+import type { Env } from '../../rules/config.ts';
 import type { Action, StopEvent } from '../../run/hook.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -51,7 +52,7 @@ export interface AgentAdapter {
   /** The end of a turn, when the runtime has one. */
   readStop?: (input: unknown) => StopEvent | null;
   /** The refusal this runtime reads, or absent: the core writes the reason on stderr and exits 2. */
-  formatDenial?: (reason: string) => { stdout: string; exitCode: number };
+  formatDenial?: (reason: string, env?: Env) => { stdout: string; exitCode: number };
   /** Text added to the agent's context by an allowed tool call, when the runtime takes it. */
   formatContext?: (text: string) => string;
   /** A question shown before a call runs, when the runtime has such a decision. */

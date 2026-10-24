@@ -76,7 +76,21 @@ function markFailed(node: HTMLElement): void {
 /** One message, thought or guard stop as its own block. A time shows once, on the message. */
 function streamBlock(state: PageState, item: StreamItem): HTMLElement {
   if (item.kind === 'think') return el('div', { class: 'think' }, item.text);
-  if (item.kind === 'stop') return el('div', { class: 'gstop' }, el('div', { class: 'ah' }, icon('shield', true), el('b', {}, say(state, 'streamStop'))), el('pre', { class: 'full' }, item.text));
+  if (item.kind === 'stop') {
+    const refused = item.refusal;
+    // The same parts a person reads in the terminal (#707), never a wall of text.
+    if (refused) {
+      return el(
+        'div',
+        { class: 'gstop' },
+        el('div', { class: 'ah' }, icon('shield', true), el('b', {}, refused.title)),
+        el('p', { class: 'why' }, `${say(state, 'stopWhy')}: `, refused.why),
+        el('p', { class: 'fix' }, `${say(state, 'stopInstead')}: `, refused.fix),
+        el('p', { class: 'more' }, `${say(state, 'stopMore')}: `, refused.docs),
+      );
+    }
+    return el('div', { class: 'gstop' }, el('div', { class: 'ah' }, icon('shield', true), el('b', {}, say(state, 'streamStop'))), el('pre', { class: 'full' }, item.text));
+  }
   const time = streamTime(state, item.time);
   return el('div', { class: 'msg' }, time ? el('div', { class: 'tm' }, time) : null, ...item.text.split(/\n{2,}/).map((part) => el('p', {}, part)));
 }
