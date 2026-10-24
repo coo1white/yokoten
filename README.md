@@ -172,6 +172,7 @@ Today's work is in the [issues](https://github.com/yokoten-labs/yokoten/issues) 
 ## Learn more
 
 - **[The guide](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md)**: the twelve rules, every command, how it works, and what it can't do.
+- **[The standard](https://github.com/yokoten-labs/yokoten/blob/main/docs/standard.md)**: the shapes every agent writes and yokoten reads, version 1.
 - **[Decisions](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**: why it's built this way.
 - **[Changelog](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**, **[Contributing](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**, **[Security](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**, **[Server setup](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**.
 

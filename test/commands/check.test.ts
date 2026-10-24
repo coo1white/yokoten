@@ -901,13 +901,13 @@ test('provenance: a commit names its writer, reviewers, approver, tier and issue
   sandbox.write('src/a.ts', 'export const a = 1;\n');
   sandbox.git('add', '.');
   sandbox.git('commit', '-q', '-F', message);
-  gh('printf "coo1white\\t2026-10-20T00:00:00Z\\n"');
+  gh('printf "owner-login\\t2026-10-20T00:00:00Z\\n"');
   let result = await sandbox.call(['provenance', 'HEAD'], { extra: path });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^[0-9a-f]{7} feat\(guard\): a pipe is refused \(#12\)\n  writer: Grok \(grok-4\.7\)\n  reviewers: Claude Code \(claude-opus-5-5\)\n  approver: coo1white\n  tier: B\n  issue: #12, #13$/m);
+  assert.match(result.stdout, /^[0-9a-f]{7} feat\(guard\): a pipe is refused \(#12\)\n  writer: Grok \(grok-4\.7\)\n  reviewers: Claude Code \(claude-opus-5-5\)\n  approver: owner-login\n  tier: B\n  issue: #12, #13$/m);
   const json = JSON.parse((await sandbox.call(['provenance', 'HEAD', '--json'], { extra: path })).stdout);
   assert.equal(json.length, 1);
-  assert.equal(json[0].approver, 'coo1white');
+  assert.equal(json[0].approver, 'owner-login');
   assert.deepEqual(json[0].writers, [{ vendor: 'Grok', model: 'grok-4.7' }]);
   assert.deepEqual(json[0].reviewers, [{ vendor: 'Claude Code', model: 'claude-opus-5-5' }]);
   assert.equal(json[0].tier, 'B');

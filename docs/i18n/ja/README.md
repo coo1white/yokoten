@@ -138,6 +138,7 @@ yokoten はプルリクエストの前に動き、[PR レビューボット](htt
 ## もっと知る
 
 - **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
+- **[標準](https://github.com/yokoten-labs/yokoten/blob/main/docs/standard.md)**：各 agent が書き、yokoten が読む形。バージョン 1。
 - **[決定記録](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：なぜこう作ったのか。
 - **[変更履歴](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[コントリビュート](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[セキュリティ](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[サーバーの設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 
