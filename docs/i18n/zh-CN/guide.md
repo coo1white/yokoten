@@ -58,6 +58,29 @@ yokoten 把这些经验写成规则，再配上会自己跑的检查：
 
 这些保护一装上就开着，人人都有：不用回答问题，也不用改文件。能改变它的每个设置，都能改回默认。[记录 0014](../../records/0014-safe-by-default.md) 写了 yokoten 哪些事自己做、哪些先问你、哪些绝不做。
 
+## 守桥：五条保护
+
+同样的五条保护，从第一天起就对每个人、每个 agent 生效。不需要 `yokoten init`，也不需要改任何设置。
+
+1. **别丢工作**：不许 force push，不许 hard reset，不许删 `.git` 或历史。
+2. **别泄密**：提交或发帖里不许有密钥、令牌、邮箱地址或主目录路径。
+3. **别替你发布**：不许打 tag、发 release、发布软件包，也不许把仓库改成公开。
+4. **别运行没读过的网上代码**：不许把下载内容直接管道给 shell。
+5. **别拆掉守桥**：不许关闭检查或 hook；worker 不许改 CI 或规则，lead 的改动要经过你的审阅。
+
+它拦下动作时，总是显示同样的四个部分：
+
+```
+yokoten stopped this: creating the tag v1.2.0 [release]
+Why: A tag publishes a release, and only you decide when to release.
+Do instead: If the owner asked for this, they run `git tag v1.2.0` themselves.
+More: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-safeguard
+```
+
+第一行点名被拦下的 tag、文件或分支，以及规则。`Why` 说明可能出什么问题。`Do instead`
+给出安全的做法，不会读代码的人也能照着说。`More` 链接到规则全文。第五条保护里的改动
+只有主人能做；agent 要请主人来改。
+
 ## 三道检查，一把锁
 
 ```mermaid
@@ -732,7 +755,7 @@ token。在 `yokoten.yml` 里，同一个 PR 推了新提交，还在跑的那�
 | `learn --upstream "<发生了什么>" [--area <name>] [--fix <idea>]` | 记下 yokoten 自己的一个毛病，项目和你本人的信息都先藏掉。`--list` 列出这些记录，`--done <id>` 删掉一条。见下面的「问题出在 yokoten 自己身上」 |
 | `check --history` | 对所有分支的每一个提交做隐私检查。私有仓库公开之前跑一遍。浅克隆看不到旧的提交，所以它不扫描、直接报错；在 CI 里要拉下全部历史（`fetch-depth: 0`）。文件里查到问题时，写的是加进这个文件的那次提交，和那次提交里的路径：`文件 @ <提交>`。`git replace` 藏不住提交，它照样读原来的提交；有 grafts 文件时同样不扫描、直接报错。 |
 | `pr sync` | 每次合并之后，把每个打开的 PR 更新到它的基础分支：合并基础分支，只解决两种机械冲突（两边在同一处各加了一整块，或两边改了同一个 import 列表），每次合并（干净合并或解决冲突后）都先运行 typecheck 和改动文件对应的测试，然后以 bot 的身份推送。其他冲突会停下，并打印文件、冲突块和一份派活说明。每行报告会写明实际合并的基础分支；打开的 PR 列表最多 100 条，截断时会说明。它从不强制推送、从不 rebase，也不在 GitHub 上解决冲突。每次合并后都要跑。 |
-| `hook [--agent <name>] [--commands-only] [--denial <mode>] [--json]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse。加 `--denial exit2` 时，拒绝仍以退出码 2 和标准错误上的原因返回，供只看退出码的宿主使用 |
+| `hook [--agent <name>] [--commands-only] [--denial <mode>] [--json] [--protocol]` | 工具调用守卫，从标准输入读一次工具调用：默认读 Claude Code 的 PreToolUse；加 `--agent codex` 读 Codex 的 PreToolUse，加 `--agent gemini` 读 Gemini CLI 的 BeforeTool，加 `--agent antigravity` 读 Antigravity CLI 的 PreToolUse，加 `--agent muse` 读 Muse Code 的 PreToolUse，加 `--agent deepseek-harness` 读 DeepSeek Harness 的 PreToolUse，加 `--agent grok` 读 Grok CLI 的 PreToolUse。加 `--denial exit2` 时，拒绝仍以退出码 2 和标准错误上的原因返回，供只看退出码的宿主使用。加 `--protocol` 时，任何工具都能发送守卫协议并读取回答，见[守卫协议](../../records/0039-the-guard-protocol.md) |
 | `hook --stop [--agent <name>]` | 收尾检查。从标准输入读这一轮结束的事件，检查改过的文件：默认读 Claude Code 的 Stop；加 `--agent codex` 读 Codex 的 Stop，加 `--agent gemini` 读 Gemini CLI 的 AfterAgent，加 `--agent grok` 读 Grok CLI 的 Stop。见[收尾检查](#收尾检查) |
 | `test [--heavy] [--print] [-- <runner words>]` | 轻量地跑测试，给和别的工作共用的机器用（#461）：用 `nice -n 10` 跑 `node --test`（Windows 上不用 nice），`--test-concurrency` 最多取核数的一半、每 1 GB 空闲内存最多 1 个，至少为 1。`--` 后面的词交给测试运行器：测试文件，或者它自己的选项。默认就是开着的。`YOKOTEN_LIGHT_TESTS=0` 对每次调用关掉，`--heavy` 只关这一次。`--print` 只显示命令和原因，不运行 |
 | `stops [off \| on]` | 显示 `~/.config/yokoten/stops.jsonl` 这个拦截记录，以及 yokoten 还在不在写它。`off` 停止写入并删掉记录，`on` 重新开始。记录只留在这台电脑上。见[收尾检查](#收尾检查) |

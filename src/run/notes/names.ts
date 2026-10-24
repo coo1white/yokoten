@@ -15,7 +15,7 @@
 // It does not read object literal keys or imports: their names often come from another
 // format. It does not read type parameters (`<T>`): Google's guide allows one letter.
 
-import { type Finding, finding } from '../rules/message.ts';
+import { type Finding, finding } from '../../rules/message.ts';
 
 export interface Token {
   kind: 'name' | 'punct' | 'string' | 'number' | 'regex';
