@@ -1,4 +1,4 @@
-// Tests for src/setup/advice/tests-job.ts: init writes the tests job for six languages (#550).
+// Tests for src/setup/advice/tests-job.ts: init writes the tests job (#550, #653).
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
@@ -8,8 +8,8 @@ import { test } from 'node:test';
 import { makeSandbox, makeTempDir } from '../../repo/helpers.ts';
 import { init } from '../../../src/setup/init.ts';
 import { ROAD } from '../../../src/setup/road.ts';
-import { testLanguages } from '../../../src/setup/advice/test-commands.ts';
-import { addTestsNeeds, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
+import { TEST_LANGUAGES, testLanguages } from '../../../src/setup/advice/test-commands.ts';
+import { addTestsNeeds, nodeTestsFix, nodeVersion, TESTS_JOBS, testsJobText, unpinnedUses, writeTestsJob } from '../../../src/setup/advice/tests-job.ts';
 
 const WORKFLOW = '.github/workflows/yokoten.yml';
 
@@ -39,7 +39,7 @@ const workflowFile = (needs = 'needs: [changes, check]') =>
   ['name: yokoten', 'on:', '  pull_request:', 'jobs:', '  changes:', '    runs-on: ubuntu-latest', '    steps:', `      - uses: ${CHECKOUT}`, '        with:', '          persist-credentials: false', '  # The one required check.', '  ci:', '    if: always()', `    ${needs}`, '    runs-on: ubuntu-latest', '    steps:', '      - run: echo ci', ''].join('\n');
 
 test('tests-job: each job pins its setup action, and runs the install step and the table runner (#550)', () => {
-  assert.deepEqual(TESTS_JOBS.map((job) => job.language), ['Go', 'Python', 'Rust', '.NET', 'Ruby', 'PHP']);
+  assert.deepEqual(TESTS_JOBS.map((job) => job.language), ['Go', 'Python', 'Rust', '.NET', 'Ruby', 'PHP', 'Node.js']);
   for (const shape of SHAPES) {
     const dir = project(shape.files);
     const runner = testLanguages(dir).find((named) => named.language === shape.language)?.runner;
@@ -129,7 +129,222 @@ test('tests-job: the first covered language wins, and other stacks stay quiet (#
   const mixed = project({ 'go.mod': 'module example.com/demo\n', 'pyproject.toml': '[project]\nname = "demo"\n', [WORKFLOW]: workflowFile() });
   assert.match(writeTestsJob(mixed, { ask: () => 'y' }).join('\n'), /wrote the tests job for Go/);
   const node = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }) });
-  assert.deepEqual(writeTestsJob(node, { ask: () => 'y' }), [], 'no covered language: quiet');
+  assert.ok(writeTestsJob(node, { ask: () => 'y' }).join('\n').includes(`no ${WORKFLOW}`), 'a Node project still needs the workflow file');
+});
+
+test('tests-job: a Node project with a test script gets a pinned job that runs npm test (#653)', () => {
+  const node = TESTS_JOBS.find((job) => job.language === 'Node.js');
+  assert.ok(node);
+  assert.equal(node.action, 'actions/setup-node');
+  assert.equal(node.version, 'v7.1.0');
+  assert.equal(node.commit, '949feb2413d6458794dcd2491c4babbbce0c15c1');
+  assert.equal(node.input, 'node-version');
+  assert.equal(node.inputValue, '^22.23.4');
+  assert.equal(node.install, 'npm install', 'the table command is the one used when no lockfile is known');
+  const dir = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), 'package-lock.json': '{}\n', [WORKFLOW]: workflowFile() });
+  const asked: string[] = [];
+  const lines = writeTestsJob(dir, { ask: (question) => (asked.push(question), 'y') });
+  assert.deepEqual(asked, [`Add a tests job for Node.js to ${WORKFLOW}? [Y/n]`]);
+  assert.match(lines.join('\n'), /wrote the tests job for Node\.js in .* \(it runs `npm test`\)/);
+  const after = readFileSync(join(dir, WORKFLOW), 'utf8');
+  assert.ok(after.includes(`- uses: ${node.action}@${node.commit} # ${node.version}`));
+  assert.match(after, /node-version: "\^22\.23\.4"/);
+  assert.ok(after.includes('- run: npm ci') && after.includes('- run: npm test'));
+  assert.equal(after.includes('vitest run'), false, 'the job runs npm test');
+  assert.deepEqual(unpinnedUses(after), []);
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  assert.equal(tests.check(dir, {}, undefined), true, 'the tests step is done');
+  const silent = project({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }), [WORKFLOW]: workflowFile() });
+  const how = writeTestsJob(silent);
+  assert.equal(readFileSync(join(silent, WORKFLOW), 'utf8'), workflowFile(), 'no terminal writes nothing');
+  assert.match(how.join('\n'), /would add a tests job for Node\.js/);
+  const engines = project({
+    'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, engines: { node: '>=22.23.4' } }),
+    [WORKFLOW]: workflowFile(),
+  });
+  writeTestsJob(engines, { ask: () => 'y' });
+  assert.match(readFileSync(join(engines, WORKFLOW), 'utf8'), /node-version: ">=22\.23\.4"/);
+  const fromFile = project({
+    'package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+    '.nvmrc': 'v22.14.0\n',
+    [WORKFLOW]: workflowFile(),
+  });
+  writeTestsJob(fromFile, { ask: () => 'y' });
+  const written = readFileSync(join(fromFile, WORKFLOW), 'utf8');
+  assert.match(written, /node-version: "22\.14\.0"/);
+  assert.equal(written.includes('v22.14.0'), false, 'one leading v is stripped');
+  const loose = project({
+    'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
+    [WORKFLOW]: workflowFile().replace(CHECKOUT, 'actions/checkout@v7.0.1'),
+  });
+  assert.match(writeTestsJob(loose, { ask: () => 'y' }).join('\n'), /not pinned to a commit \(actions\/checkout@v7\.0\.1\)/);
+  assert.equal(readFileSync(join(loose, WORKFLOW), 'utf8').includes('setup-node'), false, 'an unpinned checkout is left unchanged');
+});
+
+test('tests-job: Go wins over a Node test script, and a placeholder or a workspaces root stays quiet (#653)', () => {
+  const mixed = project({
+    'go.mod': 'module example.com/demo\n',
+    'package.json': JSON.stringify({ scripts: { test: 'vitest run' } }),
+    [WORKFLOW]: workflowFile(),
+  });
+  assert.equal(nodeTestsFix(mixed), null, 'Go: doctor does not paste a Node job');
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  const goAdvice = tests.fix(mixed, {}, undefined);
+  assert.equal(goAdvice.includes('setup-node'), false, 'Go: the tests step does not name setup-node');
+  assert.equal(goAdvice.includes('npm'), false, 'Go: the tests step does not name npm');
+  assert.match(writeTestsJob(mixed, { ask: () => 'y' }).join('\n'), /wrote the tests job for Go/);
+  const text = readFileSync(join(mixed, WORKFLOW), 'utf8');
+  assert.ok(text.includes('- run: go test') && text.includes('go-version: stable'));
+  assert.equal(text.includes('setup-node'), false);
+  const placeholder = project({
+    'package.json': JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }),
+    [WORKFLOW]: workflowFile(),
+  });
+  assert.deepEqual(writeTestsJob(placeholder, { ask: () => 'y' }), []);
+  const workspaces = project({ 'package.json': JSON.stringify({ workspaces: ['packages/*'] }), [WORKFLOW]: workflowFile() });
+  assert.deepEqual(writeTestsJob(workspaces, { ask: () => 'y' }), []);
+});
+
+// A marker for each language the table detects and TESTS_JOBS does not write.
+// Flutter and Dart share pubspec.yaml; the sdk line is what tells them apart.
+const FLUTTER_PUBSPEC = 'name: demo\ndependencies:\n  flutter:\n    sdk: flutter\n';
+const UNSUPPORTED_MARKERS: Record<string, Record<string, string>> = {
+  Maven: { 'pom.xml': '<project/>\n' },
+  Gradle: { 'build.gradle': '' },
+  Deno: { 'deno.json': '{}\n' },
+  Swift: { 'Package.swift': '' },
+  Elixir: { 'mix.exs': '' },
+  Flutter: { 'pubspec.yaml': FLUTTER_PUBSPEC },
+  Dart: { 'pubspec.yaml': 'name: demo\n' },
+  Makefile: { Makefile: 'test:\n\ttrue\n' },
+};
+
+test('tests-job: a detected language with no job is not given the Node job (#653)', () => {
+  const pkg = JSON.stringify({ scripts: { test: 'vitest run' } });
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  const unsupported = TEST_LANGUAGES.filter((language) => language.files.length > 0 && !TESTS_JOBS.some((job) => job.language === language.language));
+  assert.ok(unsupported.length >= 4);
+  for (const language of unsupported) {
+    const marker = UNSUPPORTED_MARKERS[language.language];
+    assert.ok(marker, `${language.language}: the test has a marker`);
+    const dir = project({ ...marker, 'package.json': pkg, [WORKFLOW]: workflowFile() });
+    const found = testLanguages(dir).map((named) => named.language);
+    assert.deepEqual(found, [language.language], `${language.language}: the marker is that language`);
+    const before = readFileSync(join(dir, WORKFLOW), 'utf8');
+    assert.deepEqual(writeTestsJob(dir, { ask: () => 'y' }), [], `${language.language}: init writes nothing`);
+    assert.equal(readFileSync(join(dir, WORKFLOW), 'utf8'), before, `${language.language}: the workflow stays`);
+    assert.equal(nodeTestsFix(dir), null, `${language.language}: doctor does not paste a Node job`);
+    const advice = tests.fix(dir, {}, undefined);
+    assert.equal(advice.includes('setup-node'), false, `${language.language}: the tests step does not name setup-node`);
+    assert.equal(advice.includes('npm'), false, `${language.language}: the tests step does not name npm`);
+  }
+});
+
+test('tests-job: a Node job installs with the lockfile it finds, and runs that manager\'s test command (#653)', () => {
+  const pkg = JSON.stringify({ scripts: { test: 'vitest run' } });
+  const berry = '# This file is generated by running "yarn install" inside your project.\n\n__metadata:\n  version: 8\n';
+  const cases: { name: string; extra: Record<string, string>; install: string; runner: string }[] = [
+    { name: 'no lockfile', extra: {}, install: 'npm install', runner: 'npm test' },
+    { name: 'pnpm', extra: { 'pnpm-lock.yaml': 'lockfileVersion: \'9.0\'\n' }, install: 'pnpm install --frozen-lockfile', runner: 'pnpm test' },
+    { name: 'yarn', extra: { 'yarn.lock': '# yarn lockfile v1\n' }, install: 'yarn install --frozen-lockfile', runner: 'yarn test' },
+    { name: 'yarn berry', extra: { 'yarn.lock': berry }, install: 'yarn install --immutable', runner: 'yarn test' },
+    { name: 'yarnrc', extra: { 'yarn.lock': '# yarn lockfile v1\n', '.yarnrc.yml': 'nodeLinker: node-modules\n' }, install: 'yarn install --immutable', runner: 'yarn test' },
+    {
+      name: 'yarn packageManager',
+      extra: { 'yarn.lock': '# yarn lockfile v1\n', 'package.json': JSON.stringify({ scripts: { test: 'vitest run' }, packageManager: 'yarn@4.1.0' }) },
+      install: 'yarn install --immutable',
+      runner: 'yarn test',
+    },
+    { name: 'bun', extra: { 'bun.lock': '{}\n' }, install: 'bun install --frozen-lockfile', runner: 'bun run test' },
+    { name: 'bun binary lock', extra: { 'bun.lockb': '' }, install: 'bun install --frozen-lockfile', runner: 'bun run test' },
+    { name: 'npm shrinkwrap', extra: { 'npm-shrinkwrap.json': '{}\n' }, install: 'npm ci', runner: 'npm test' },
+  ];
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  for (const shape of cases) {
+    const dir = project({ 'package.json': pkg, ...shape.extra, [WORKFLOW]: workflowFile() });
+    const lines = writeTestsJob(dir, { ask: () => 'y' }).join('\n');
+    assert.match(lines, new RegExp(`wrote the tests job for Node\\.js in .* \\(it runs \`${shape.runner}\`\\)`), shape.name);
+    const after = readFileSync(join(dir, WORKFLOW), 'utf8');
+    assert.ok(after.includes(`- run: ${shape.install}`), `${shape.name}: install`);
+    assert.ok(after.includes(`- run: ${shape.runner}`), `${shape.name}: test`);
+    assert.equal(after.includes('- run: npm ci'), shape.install === 'npm ci', `${shape.name}: npm ci only with an npm lockfile`);
+    assert.equal(tests.check(dir, {}, undefined), true, `${shape.name}: the tests step is done`);
+    const advice = nodeTestsFix(dir) ?? '';
+    assert.ok(advice.includes(`{run: ${shape.install}}`) && advice.includes(`{run: ${shape.runner}}`), `${shape.name}: doctor names the same commands`);
+  }
+  // A pnpm lockfile wins over package-lock.json: npm ci cannot install from it.
+  const both = project({
+    'package.json': pkg,
+    'pnpm-lock.yaml': 'lockfileVersion: \'9.0\'\n',
+    'package-lock.json': '{}\n',
+    [WORKFLOW]: workflowFile(),
+  });
+  writeTestsJob(both, { ask: () => 'y' });
+  const text = readFileSync(join(both, WORKFLOW), 'utf8');
+  assert.ok(text.includes('- run: pnpm install --frozen-lockfile') && text.includes('- run: pnpm test'));
+  assert.equal(text.includes('- run: npm ci'), false);
+});
+
+test('tests-job: a missing workflow or a missing checkout is not described as an unpinned checkout (#653)', () => {
+  const pkg = JSON.stringify({ scripts: { test: 'vitest run' } });
+  const tests = ROAD.find((step) => step.key === 'tests');
+  assert.ok(tests);
+  const missing = project({ 'package.json': pkg });
+  assert.equal(nodeTestsFix(missing), null);
+  const advice = tests.fix(missing, {}, undefined);
+  assert.match(advice, /run `yokoten init` to add \.github\/workflows\/yokoten\.yml/);
+  assert.equal(advice.includes('not pinned'), false);
+  const bare = project({
+    'package.json': pkg,
+    [WORKFLOW]: 'name: yokoten\non:\n  pull_request:\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ci\n',
+  });
+  const noStep = nodeTestsFix(bare);
+  assert.ok(noStep);
+  assert.match(noStep, /add a checkout step pinned to a commit, then run `yokoten init`/);
+  assert.equal(noStep.includes('not pinned'), false);
+  assert.equal(noStep.includes('\n'), false);
+  assert.equal(noStep.includes('<'), false);
+  const loose = project({ 'package.json': pkg, [WORKFLOW]: workflowFile().replace(CHECKOUT, 'actions/checkout@v7.0.1') });
+  const unpinned = nodeTestsFix(loose) ?? '';
+  assert.match(unpinned, /checkout step is not pinned/);
+  assert.match(unpinned, /Pin it, then run `yokoten init`/);
+  assert.equal(unpinned.includes('\n'), false);
+});
+
+test('tests-job: node-version comes from engines, then a version file, then the kit default (#653)', () => {
+  const version = (files: Record<string, string>) => nodeVersion(project(files));
+  const forty = `>=${'1'.repeat(38)}`;
+  assert.equal(forty.length, 40);
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: '>=22.23.4' } }), '.nvmrc': 'v20.11.1\n' }), '>=22.23.4');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: forty } }) }), forty, '40 characters still counts');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: '1'.repeat(41) } }), '.nvmrc': 'v20.11.1\n' }), '20.11.1', '41 characters does not count');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: 'lts/*' } }), '.nvmrc': '20.11.1\n' }), '20.11.1');
+  assert.equal(version({ 'package.json': JSON.stringify({ engines: { node: 22 } }), '.node-version': '24.11.1\n' }), '24.11.1');
+  assert.equal(version({ '.nvmrc': 'v22.14.0\n' }), '22.14.0');
+  assert.equal(version({ '.nvmrc': '22.14\n' }), '22.14');
+  assert.equal(version({ '.nvmrc': 'latest\n', '.node-version': 'v24.11.1\n' }), '24.11.1');
+  assert.equal(version({ '.node-version': 'v24.11.1\n' }), '24.11.1');
+  assert.equal(version({}), '^22.23.4');
+  assert.equal(version({ 'package.json': '{' }), '^22.23.4');
+});
+
+// A project that pins Node 20, or an lts alias, must not get the kit's Node 22 with no warning.
+test('tests-job: .nvmrc and .node-version may be a major or an lts alias (#653)', () => {
+  const version = (files: Record<string, string>) => nodeVersion(project(files));
+  assert.equal(version({ '.nvmrc': '20\n' }), '20');
+  assert.equal(version({ '.nvmrc': 'v20\n' }), '20');
+  assert.equal(version({ '.nvmrc': 'lts/*\n' }), 'lts/*');
+  assert.equal(version({ '.nvmrc': '22.14\n' }), '22.14');
+  assert.equal(version({ '.node-version': '20\n' }), '20');
+  assert.equal(version({ '.node-version': 'v20\n' }), '20');
+  assert.equal(version({ '.node-version': 'lts/*\n' }), 'lts/*');
+  assert.equal(version({ '.nvmrc': 'lts/Hydrogen\n' }), 'lts/Hydrogen');
+  assert.equal(version({ '.nvmrc': 'lts/*\n', '.node-version': '24.11.1\n' }), 'lts/*');
+  assert.equal(version({ '.nvmrc': 'latest\n' }), '^22.23.4');
 });
 
 test('tests-job: init asks and writes the job on a yes (#550)', () => {

@@ -220,6 +220,42 @@ function readApi(args: string[]): HostApiCall {
   return { method: call.method, rawPath: call.rawPath, path: plainEndpoint(call.rawPath), hasFields: call.hasFields, cluster: call.cluster };
 }
 
+// ---- gh's token, and turning a workflow off (#659, #668) ----
+//
+// No agent needs to see gh's token: gh and `yokoten bot` use it without showing it. The
+// guard reads the token's variables and git's credential stores itself (guards.ts); here are
+// gh's own commands that print the token. A workflow that is off runs no checks on any pull
+// request, so only the owner turns one off.
+
+const TOKEN_FIX = 'run gh itself, or `yokoten bot -- gh …`, which use the token without showing it; `gh auth status` says whether gh is signed in';
+// gh's options before its command that take a value, and those of `auth`.
+const TOKEN_VALUES = ['-R', '--repo', '-h', '--hostname', '-u', '--user'];
+const shows = (what: string) => finding('gh-token', what, TOKEN_FIX);
+
+/** `gh auth token`, `gh auth status --show-token`, `gh auth git-credential` or `gh config get oauth_token` (#668). */
+function hostTokenReveal(words: string[]): Finding | undefined {
+  const at = ghIndex(words, findProgramPlaces(words));
+  if (at === -1) return undefined;
+  const args = withoutShellRedirects(words, at + 1);
+  const [group, sub, ...rest] = plainArgs(args, TOKEN_VALUES);
+  if (group === 'auth' && sub === 'token') return shows("`gh auth token` prints gh's token");
+  if (group === 'auth' && sub === 'git-credential') return shows("`gh auth git-credential` prints gh's token for git");
+  // `-t`, alone or in a cluster such as `-at`.
+  const showsToken = (word: string) => word === '--show-token' || word.startsWith('--show-token=') || /^-[A-Za-z]*t[A-Za-z]*$/.test(word);
+  if (group === 'auth' && sub === 'status' && args.some(showsToken)) return shows("`gh auth status --show-token` prints gh's token");
+  if (group === 'config' && sub === 'get' && rest.includes('oauth_token')) return shows("`gh config get oauth_token` prints gh's token");
+  return undefined;
+}
+
+/** `gh workflow disable`, for every agent (#668). */
+function hostWorkflowOff(words: string[]): Finding | undefined {
+  const at = ghIndex(words, findProgramPlaces(words));
+  if (at === -1) return undefined;
+  const [group, sub] = plainArgs(withoutShellRedirects(words, at + 1), ['-R', '--repo', '--hostname']);
+  if (group !== 'workflow' || sub !== 'disable') return undefined;
+  return finding('workflow-disable', '`gh workflow disable` turns a workflow off, so its checks stop running on every pull request', 'leave the workflow on; if a run must stop, tell the owner');
+}
+
 // Known-bad commands for doctor's self-test. A check that lets one through is named here.
 const GUARD_SAMPLES: { command: string; name: string }[] = [
   { command: 'gh run cancel 1', name: 'run-remove guard' },
@@ -245,4 +281,4 @@ export function hostGuardMisses(check: (command: string) => unknown): string[] {
 }
 
 useHostApi({ read: readApi, clusterFinding: apiClusterFinding, values: () => API_VALUES });
-useHostCommands({ hostRunRemoval, hostAlias, hostHiddenCommand });
+useHostCommands({ hostRunRemoval, hostAlias, hostHiddenCommand, hostTokenReveal, hostWorkflowOff });

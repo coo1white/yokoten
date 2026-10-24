@@ -47,7 +47,7 @@ export function visibleLength(text: string): number {
  * `documentation`. A label that is the type name itself always counts.
  */
 const TYPE_LABEL_ALIASES: Record<string, string[]> = {
-  fix: ['bug', 'hotfix', 'incident'],
+  fix: ['bug', 'hotfix', 'incident', 'security'],
   feat: ['feature', 'enhancement'],
   docs: ['documentation'],
 };
@@ -220,7 +220,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   const body = pr.body ?? '';
   const tier = bodyTier(body);
   if (!tier) {
-    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: secrets, data, install, releases, files CODEOWNERS owns; B: other code; C: docs and wording)'));
+    problems.push(finding('pr-tier', 'body: the first line is not a tier', 'make the first line `tier: A`, `tier: B` or `tier: C` (A: files CODEOWNERS owns, or a change that makes a rule looser; B: other code; C: docs and wording)'));
   }
   for (const name of SECTIONS) {
     const text = section(body, name);
@@ -233,9 +233,7 @@ export function checkPullRequestBody(pr: Pick<PullRequest, 'body' | 'files' | 'd
   }
   // Every pull request names each AI and model that made it (#570), on its last
   // line, so the credit reads the same each time.
-  if (!hasMadeWith(body)) {
-    problems.push(finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`'));
-  }
+  problems.push(...madeWithFindings(body));
 
   // `yokoten changelog` reads only the files right in changes/, and refuses a folder there,
   // so a new file deeper down would pass here and stop the release.
@@ -759,15 +757,17 @@ export function readCommandTitle(command: string[]): CommandTitle | UnreadableTi
   return title === null ? null : { kind, title, labels };
 }
 
-/** The title (the last one, as in gh) and every label that one gh command's options set. */
-function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[] } {
+/** The title (the last one, as in gh), every label one gh command's options add, and those it removes. */
+function readTitleAndLabels(options: ReadArgs['options']): { title: string | null; labels: string[]; removes: string[] } {
   let title: string | null = null;
   const labels: string[] = [];
+  const removes: string[] = [];
   for (const [name, value] of options) {
     if (TITLE_OPTIONS.has(name)) title = value;
     else if (LABEL_OPTIONS.has(name)) labels.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
+    else if (name === '--remove-label') removes.push(...value.split(',').map((label) => label.trim()).filter(Boolean));
   }
-  return { title, labels };
+  return { title, labels, removes };
 }
 
 /**
@@ -838,9 +838,10 @@ export function readCommandBody(command: string[]): CommandBody | null {
 // ---- The labels a gh command sets (#422) ----
 //
 // `yokoten bot` adds the type and tier labels `check --pr` asks for when `gh pr create`
-// leaves them out, from the title's type and the body's `tier:` line.
+// leaves them out, from the title's type and the body's `tier:` line. An edit keeps them
+// right too: a new title adds its type, a new body moves the tier label.
 
-/** The labels `gh pr create` leaves out that `check --pr` asks for, and the problems with those it gives. */
+/** The labels a `gh pr create` or `gh pr edit` leaves out that `check --pr` asks for, and the problems with those it gives. */
 export interface CommandLabels {
   /** Each missing label, as the label names that would do, best first. */
   missing: string[][];
@@ -848,10 +849,19 @@ export interface CommandLabels {
   problems: Finding[];
   /** The `--repo` value, or null when the command names none. */
   repo: string | null;
+  /** The labels the command already removes with `--remove-label`. */
+  removes: string[];
+  /** Whether the command gives a tier label itself, with `--label` or `--add-label`. */
+  hasTierLabel: boolean;
+  /**
+   * For `gh pr edit`, the pull request it names and the tier its new body sets; null for
+   * a create. A null selector means the pull request of the current branch.
+   */
+  edit: { selector: string | null; tier: string | null } | null;
 }
 
 // Aliases that say more than the type, so the bot never picks them for a person.
-const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident']);
+const NARROW_TYPE_LABELS = new Set(['hotfix', 'incident', 'security']);
 
 /** The label names that say a title's type, best first: the shown one (`bug` for fix), the type, then its aliases. */
 function typeLabelNames(type: string): string[] {
@@ -863,15 +873,19 @@ function typeLabelNames(type: string): string[] {
 /**
  * The type and tier labels that `gh pr create` (or `new`) leaves out, from the title's
  * type and the body's tier line, and the problems with the tier labels it gives. A label
- * it gives is kept. Null for any other command, or a run-together word it can't read.
+ * it gives is kept. An edit adds only what its new title or body asks for, and reports the
+ * tier it sets so the caller can remove the old label. Null for any other command, an edit
+ * that sets neither a title nor a body, or a run-together word it can't read.
  */
 export function readCommandLabels(command: string[], body: string | null): CommandLabels | null {
   const [file, ...rest] = command;
   if (!file || botProgram(file) !== 'gh') return null;
   const { words, options, unreadable } = readArgs(rest, ISSUE_FLAGS);
-  const [kind, verb] = words.map((index) => rest[index]);
-  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new') || unreadable !== null) return null;
-  const { title, labels } = readTitleAndLabels(options);
+  const [kind, verb, selector] = words.map((index) => rest[index]);
+  const isEdit = verb === 'edit';
+  if (kind !== 'pr' || (verb !== 'create' && verb !== 'new' && !isEdit) || unreadable !== null) return null;
+  if (isEdit && body === null && !options.some(([name]) => TITLE_OPTIONS.has(name))) return null;
+  const { title, labels, removes } = readTitleAndLabels(options);
   const repo = options.filter(([name]) => name === '--repo' || name === '-R').at(-1)?.[1] ?? null;
   const missing: string[][] = [];
   const type = title === null ? undefined : TITLE.exec(title.trim())?.[1];
@@ -879,7 +893,7 @@ export function readCommandLabels(command: string[], body: string | null): Comma
   const tier = bodyTier(body ?? '');
   const hasTier = labels.some((label) => readLabelTier(label) !== null);
   if (tier && !hasTier) missing.push([`tier ${tier}`, `tier: ${tier}`]);
-  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo };
+  return { missing, problems: hasTier ? checkTierLabel(labels, tier) : [], repo, removes, hasTierLabel: hasTier, edit: isEdit ? { selector: selector ?? null, tier } : null };
 }
 
 /** The labels a `gh issue create` command gives, and its `--repo` value. */
@@ -924,16 +938,119 @@ export function readLinkedIssues(body: string): number[] {
   return [...new Set([...body.matchAll(LINKED_ISSUE)].map((match) => Number(match[1])))];
 }
 
+/** One agent and the model it ran on, from `<agent> (<model>)`. */
+export interface MadeWithAgent {
+  /** The vendor or tool, for example `Claude Code`. */
+  vendor: string;
+  model: string;
+}
+
+/** The roles a `Made with` line names (#673). Two workers on different models are both kept. */
+export interface MadeWithRoles {
+  /** The agents after `worker`, in order. */
+  writers: MadeWithAgent[];
+  /** The agents after `reviewed by`, at most two in all. */
+  reviewers: MadeWithAgent[];
+  /** The agents after `lead`, in order. */
+  leads: MadeWithAgent[];
+  /** Every other `<agent> (<model>)` pair, in order (the old form without roles). */
+  others: MadeWithAgent[];
+}
+
+const AGENT = /^([^()]+?) \(([^()]+)\)$/;
+const REVIEWED_BY = /^reviewed by ([^(),]+? \([^()]+\))(?: and ([^(),]+? \([^()]+\)))?$/i;
+
+function readAgent(text: string): MadeWithAgent | null {
+  const match = AGENT.exec(text);
+  return match ? { vendor: match[1], model: match[2] } : null;
+}
+
 /**
- * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): its last
- * line that is not blank, with or without the robot emoji. One or more
- * comma-separated `<agent> (<model>)` pairs name each AI and model that made
- * it. HTML comments are set aside first, so a commented line counts neither
- * for nor against, and neither does one inside a code block.
+ * Reads the last non-blank line of a body as a `Made with` line (#570, #673) and
+ * returns the roles it names. The line is `🤖 Made with <part>, <part>`, with or
+ * without the robot emoji. A part is `<agent> (<model>)`, optionally led by
+ * `worker` or `lead`, or `reviewed by <agent> (<model>)` with a second reviewer
+ * joined by ` and `. Role words ignore case, and extra spaces count as one. At
+ * most two reviewers are allowed in all. Returns null when there is no good
+ * line, and `problem: 'reviewers'` when a `reviewed by` part is malformed, even
+ * if another part is bad too. HTML comments are set aside first, so a commented
+ * line counts neither for nor against, and neither does one inside a code block.
+ */
+export function parseMadeWith(body: string): { roles: MadeWithRoles | null; problem: 'reviewers' | null } | null {
+  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  const head = /^(?:🤖 )?Made with (.+)$/.exec(lines.at(-1) ?? '');
+  if (!head) return null;
+  const roles: MadeWithRoles = { writers: [], reviewers: [], leads: [], others: [] };
+  let problem: 'reviewers' | null = null;
+  let bad = false;
+  for (const raw of head[1].split(/(?<=\)),/)) {
+    const part = raw.trim().replace(/\s+/g, ' ');
+    // `reviewed by Y (b), and Z (c)`: the comma splits the pair, so `and` leads a part.
+    if (/^reviewed by\b/i.test(part) || /^and\b/i.test(part)) {
+      const match = REVIEWED_BY.exec(part);
+      const names = match ? [match[1], match[2]].filter((name): name is string => Boolean(name)).map(readAgent) : [];
+      if (!match || names.includes(null) || roles.reviewers.length + names.length > 2) problem = 'reviewers';
+      else roles.reviewers.push(...(names as MadeWithAgent[]));
+      continue;
+    }
+    // `worker (opus)` has no vendor: the whole part is the agent, not a role.
+    const role = /^(worker|lead) (.+)$/i.exec(part);
+    const named = role ? readAgent(role[2]) : null;
+    const agent = named ?? readAgent(part);
+    if (!agent) {
+      bad = true;
+      continue;
+    }
+    if (named && role?.[1].toLowerCase() === 'worker') roles.writers.push(agent);
+    else if (named) roles.leads.push(agent);
+    else roles.others.push(agent);
+  }
+  if (problem) return { roles: null, problem };
+  return bad ? null : { roles, problem: null };
+}
+
+/**
+ * Whether a body ends with `🤖 Made with <agent> (<model>)` (#570): one or more
+ * comma-separated pairs name each AI and model that made it, and an optional
+ * `reviewed by <agent> (<model>)` part, with a second reviewer after ` and `,
+ * names who reviewed it (#673).
  */
 export function hasMadeWith(body: string): boolean {
-  const lines = blankComments(body).split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
-  return /^(?:🤖 )?Made with [^()]+ \([^()]+\)(?:, [^()]+ \([^()]+\))*$/.test(lines.at(-1) ?? '');
+  return parseMadeWith(body)?.roles != null;
+}
+
+/**
+ * The findings for a body whose last line is not a good `Made with` line: none when
+ * it is good, a plain one for a missing line and another for a malformed
+ * `reviewed by` part. Pull request bodies and bot notes share it.
+ */
+export function madeWithFindings(body: string): Finding[] {
+  const parsed = parseMadeWith(body);
+  if (parsed?.problem === 'reviewers') {
+    return [finding('pr-made-with', 'body: the `reviewed by` part of the `Made with` line is not `reviewed by <agent> (<model>)`, or two joined by `and` (two in all)', 'write `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)`, once, with at most two reviewers, after the worker and before the lead')];
+  }
+  if (parsed?.roles) return [];
+  return [finding('pr-made-with', 'body: no `Made with` line at the end', 'end the body with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, for example `🤖 Made with lead (opus), worker (sonnet)`; reviewers may follow the worker: `, reviewed by <agent> (<model>) and <agent> (<model>)`')];
+}
+
+/**
+ * A note when the worker part of a `Made with` line names no model that the worker's own
+ * checkout filed (#748): a harness's prompt can lead a worker to sign as the harness's
+ * vendor. Only the worker role counts, in its full form or its short form `worker (<model>)`;
+ * a lead or a reviewer that names the status model does not hide a wrong worker model. `statusModel` is the model in the status file at the
+ * worker's branch, and '' when there is none: then there is nothing to compare, and no note.
+ */
+export function madeWithModelNote(body: string, statusModel: string, branch: string): Finding | null {
+  const model = statusModel.replace(/\s+/g, ' ').trim();
+  const roles = parseMadeWith(body)?.roles;
+  if (!model || !roles) return null;
+  // A short `worker (<model>)` has no vendor role, so the parser files it as `worker` in others.
+  const workers = [...roles.writers, ...roles.others.filter((agent) => agent.vendor.toLowerCase() === 'worker')];
+  if (!workers.length) return null;
+  const named = workers.map((agent) => agent.model.replace(/\s+/g, ' ').trim());
+  if (named.some((one) => one.toLowerCase() === model.toLowerCase())) return null;
+  const models = [...new Set(named)].join(' and ');
+  return finding('pr-made-with', `body: the \`Made with\` line names worker ${models}, but the status file of ${branch} says the worker ran ${model}`, `name the model the worker ran (${model}), as its status file says`);
 }
 
 /**

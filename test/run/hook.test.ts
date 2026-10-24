@@ -2,22 +2,34 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, constants, existsSync, lstatSync, lutimesSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import {
   CLI,
+  makeGitFolder,
+  makeTempDir,
   makeSandbox,
   runChild,
+  stopCheckoutWalk,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { SECRET } from '../../src/rules/secrets.ts';
+import { SECRET } from '../../src/rules/privacy/secrets.ts';
 import {
   AGENT_STATUS_FILE,
   bumpDoneTries,
+  bumpRepeat,
   clearDoneTries,
   clearRefusedMarker,
+  clearRepeats,
+  commandShape,
+  isWorkingTreeClean,
+  listAnchors,
+  recordAnchor,
+  repeatKeyOf,
+  repeatStopFinding,
+  REPEAT_STOP_LIMIT,
   DONE_TRY_LIMIT,
   doneTryKey,
   doneWhenShell,
@@ -27,6 +39,7 @@ import {
   judge,
   noteRefused,
   readDoneWhen,
+  readStatusResult,
   readStatusText,
   readStopFields,
   refusedMarkerPath,
@@ -34,6 +47,8 @@ import {
   shortenOutput,
   STATUS_TEXT_LIMIT,
   startGuard,
+  STOPS_MAX_BYTES,
+  trimStopsLog,
   wasRefusedRecently,
   windowsTreeKillArgs,
   writeAgentChecks,
@@ -69,12 +84,174 @@ test('hook: blocks with exit 2 and a reason, allows with exit 0', async () => {
   assert.equal((await sandbox.call(['hook'], { input: 'not json' })).status, 0);
 });
 
+// #711: the third same refusal is a stop message, and a success starts the count again.
+test('hook: the third same refusal becomes a stop message; a success resets it (#711)', async () => {
+  const sandbox = makeSandbox();
+  const call = (command: string) => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, session_id: 'session-711', tool_input: { command } }) });
+  let result = await call('git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
+  result = await call('git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
+  result = await call('git push --tags');
+  assert.equal(result.status, 2, 'the third is still refused, with the stop message');
+  assert.match(result.stderr, /three times/);
+  assert.match(result.stderr, /go back to your last anchor or write your report/);
+  // A call that succeeds starts the count again: the next refusal is a plain one.
+  assert.equal((await call('git status')).status, 0);
+  result = await call('git push --tags');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /owner decides when to release/);
+  assert.doesNotMatch(result.stderr, /three times/);
+});
+
+// #792: a count belongs to one session. A call with no session id keeps its refusal, so
+// separate calls in one folder never add up to a stop; within a session they still do.
+test('hook: a repeat count needs a session id; two sessions never reach a stop (#792)', async () => {
+  const sandbox = makeSandbox();
+  const call = (command: string, input: Record<string, unknown> = {}) =>
+    sandbox.call(['hook', '--json'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command }, ...input }) });
+  const idOf = async (command: string, input?: Record<string, unknown>) => {
+    const result = await call(command, input);
+    assert.equal(result.status, 2, result.stderr);
+    return (JSON.parse(result.stdout) as { finding: { id: string } }).finding.id;
+  };
+  for (let round = 0; round < 3; round += 1) assert.equal(await idOf('git push --tags'), 'release', 'no session id, no count');
+  for (const session of ['session-a', 'session-b', 'session-a', 'session-b']) {
+    assert.equal(await idOf('git push --tags', { session_id: session }), 'release', session);
+  }
+  const third = await call('git push --tags', { session_id: 'session-a' });
+  assert.equal((JSON.parse(third.stdout) as { finding: { id: string } }).finding.id, 'repeat-stop', 'one session still reaches the stop');
+});
+
+// #711: the counters are per session and shape, and clearing one forgets it.
+test('hook: repeat counts are kept per session and reset on success (#711)', () => {
+  const env = { HOME: makeTempDir('yokoten-repeat-') };
+  assert.equal(REPEAT_STOP_LIMIT, 3);
+  assert.equal(commandShape('git push --tags'), 'git push');
+  assert.equal(commandShape('GIT_DIR=/x git push origin main'), 'git push');
+  assert.equal(commandShape(undefined, ['src/a.ts']), 'an edit of *.ts');
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 1);
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 2);
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 3);
+  assert.equal(bumpRepeat(env, 'session-b', 'release', 'git push'), 1, 'another session has its own count');
+  clearRepeats(env, 'session-a');
+  assert.equal(bumpRepeat(env, 'session-a', 'release', 'git push'), 1);
+  assert.match(repeatStopFinding().fix, /last anchor or write your report/);
+  assert.equal(repeatKeyOf('session-a'), 'session-a');
+  assert.equal(repeatKeyOf(undefined), null, 'no session id, no count');
+  assert.equal(repeatKeyOf('not a safe name'), null);
+});
+
+// #711: an anchor is a commit whose checks passed; going back is a new branch from it.
+test('anchor: lists commits, and going back keeps every commit (#711)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('README.md', '# demo\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-q', '-m', 'base');
+  const base = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  assert.equal(isWorkingTreeClean(sandbox.repo, sandbox.env), true);
+  const first = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
+  assert.equal(first.kind, 'recorded');
+  assert.equal(first.kind === 'recorded' ? first.anchor.commit : null, base);
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', '-A');
+  sandbox.git('commit', '-q', '-m', 'work');
+  const work = sandbox.git('rev-parse', 'HEAD').stdout.trim();
+  const second = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
+  assert.equal(second.kind, 'recorded');
+  assert.equal(second.kind === 'recorded' ? second.anchor.commit : null, work);
+  // The same commit is one anchor, and the outcome says so (#792).
+  const repeat = recordAnchor(sandbox.repo, sandbox.env, 'node --test');
+  assert.equal(repeat.kind, 'already');
+  assert.equal(repeat.kind === 'already' ? repeat.anchor.commit : null, work);
+  sandbox.write('src/dirty.ts', 'export const dirty = 1;\n');
+  assert.equal(recordAnchor(sandbox.repo, sandbox.env, 'node --test').kind, 'dirty', 'a dirty tree is not an anchor');
+  // A folder without git, and a checkout with no commit, each say so (#792).
+  const outside = makeTempDir('yokoten-anchor-');
+  stopCheckoutWalk(outside);
+  assert.equal(recordAnchor(outside, sandbox.env, 'node --test').kind, 'no-checkout');
+  const empty = makeTempDir('yokoten-anchor-empty-');
+  runChild('git', ['init'], { cwd: empty, env: sandbox.env });
+  assert.equal(recordAnchor(empty, sandbox.env, 'node --test').kind, 'no-commit');
+  assert.deepEqual(listAnchors(sandbox.repo).map((anchor) => anchor.commit), [work, base]);
+  // Going back is a new branch: the later commit is still there.
+  sandbox.git('switch', '-c', 'try-2', base);
+  assert.equal(sandbox.git('rev-parse', 'try-2').stdout.trim(), base);
+  assert.equal(sandbox.git('cat-file', '-e', work).status, 0, 'the later commit is not lost');
+  assert.deepEqual(listAnchors(sandbox.repo).map((anchor) => anchor.commit), [work, base]);
+  // `yokoten anchor` lists them with the non-destructive way back.
+  const listed = await sandbox.call(['anchor']);
+  assert.equal(listed.status, 0);
+  assert.match(listed.stdout, /2 checkpoints/);
+  assert.match(listed.stdout, /git switch -c try-2/);
+  assert.match(listed.stdout, new RegExp(base.slice(0, 12)));
+});
+
+test('hook: a heavy job asks when the kept host drive is low, and a light one never asks (#401)', async () => {
+  const sandbox = makeSandbox();
+  const state = join(sandbox.home, '.config', 'yokoten', 'machine.json');
+  mkdirSync(dirname(state), { recursive: true });
+  const gb = 1024 ** 3;
+  const kept = (free: number) => JSON.stringify({ hostDisk: { free, size: 250 * gb, readAt: new Date().toISOString(), distro: 'Ubuntu', version: 2 } });
+  const tool = (command: string) => JSON.stringify({ cwd: sandbox.repo, tool_input: { command } });
+  // No reading: the hook does not change.
+  let result = await sandbox.call(['hook'], { input: tool('npm test') });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, '');
+  // A low reading: a heavy job gets the question, and the command is not refused.
+  writeFileSync(state, kept(0));
+  result = await sandbox.call(['hook'], { input: tool('npm test') });
+  assert.equal(result.status, 0);
+  const question = JSON.parse(result.stdout);
+  assert.equal(question.hookSpecificOutput.permissionDecision, 'ask');
+  assert.match(question.hookSpecificOutput.permissionDecisionReason, /`npm test` is a heavy job/);
+  assert.match(question.hookSpecificOutput.permissionDecisionReason, /free some space on that drive in Windows/);
+  // A light command asks nothing.
+  assert.equal((await sandbox.call(['hook'], { input: tool('git status') })).stdout, '');
+  // An old reading, or a WSL 1 one, is not repeated.
+  writeFileSync(state, JSON.stringify({ hostDisk: { free: 0, size: 250 * gb, readAt: '2020-01-01T00:00:00Z', distro: 'Ubuntu', version: 2 } }));
+  assert.equal((await sandbox.call(['hook'], { input: tool('npm test') })).stdout, '');
+  writeFileSync(state, JSON.stringify({ hostDisk: { free: 0, size: 250 * gb, readAt: new Date().toISOString(), distro: 'Ubuntu', version: 1 } }));
+  assert.equal((await sandbox.call(['hook'], { input: tool('npm test') })).stdout, '');
+  // Room enough: nothing changes.
+  writeFileSync(state, kept(200 * gb));
+  assert.equal((await sandbox.call(['hook'], { input: tool('npm install') })).stdout, '');
+  // YOKOTEN_MIN_FREE_GB=0 turns the question off.
+  writeFileSync(state, kept(0));
+  assert.equal((await sandbox.call(['hook'], { input: tool('docker build .'), extra: { YOKOTEN_MIN_FREE_GB: '0' } })).stdout, '');
+  // JSON, as the board and other runtimes read it.
+  result = await sandbox.call(['hook', '--json'], { input: tool('npm run build') });
+  assert.equal(result.status, 0);
+  assert.equal(JSON.parse(result.stdout).ask.ask, true);
+});
+
 test('hook: a worker edit under .worktrees/<issue>/ reads from that worktree (#571)', () => {
   const sandbox = makeSandbox();
   const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, options)?.id, 'lead-only');
   assert.equal(judge({ paths: ['.worktrees/571-x/src/a.ts'], worker: false }, options), null, 'other files pass');
   assert.equal(judge({ paths: ['.worktrees/571-x/AGENTS.md'], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+  assert.equal(judge({ command: 'git push --force origin main', commands: [], paths: [], worker: false }, options)?.id !== undefined, true, 'an empty commands list never hides a command');
+});
+
+// #674: a worker outside a desk can't write a team folder: nothing else fences it there.
+test('hook: a worker edit inside <repo>.team/ is refused; the lead and other folders pass (#674)', () => {
+  const sandbox = makeSandbox();
+  const team = `${sandbox.repo}.team`;
+  const options = { root: sandbox.repo, config: DEFAULTS, env: { YOKOTEN_ROLE: 'worker' }, cwd: sandbox.repo };
+  for (const path of [join(team, 'outbox', 'g1.jsonl'), join(team, 'agents', 'g1.json'), join(team, 'lead', 'read.json'), `../${basename(sandbox.repo)}.team/outbox/lead.jsonl`]) {
+    assert.equal(judge({ paths: [path], worker: false }, options)?.id, 'lead-only', path);
+  }
+  assert.equal(judge({ paths: [join(team, 'outbox', 'g1.jsonl')], worker: false }, { ...options, env: {} }), null, 'the lead passes');
+  assert.equal(judge({ paths: ['src/.team.ts'], worker: false }, options), null);
+  assert.equal(judge({ paths: ['notes.team'], worker: false }, options), null, 'a file named .team is not a team folder');
+  // A folder that only ends in .team, with no checkout of that name next to it, is not a team folder.
+  const work = makeTempDir('work-');
+  for (const path of [join(work, 'acme.team', 'repo', 'src', 'a.ts'), join(work, 'acme.team', 'outbox', 'x.jsonl')]) {
+    assert.equal(judge({ paths: [path], worker: false }, options), null, path);
+  }
 });
 
 // #408: the hook starts the guard's worker before it reads the call, so the two overlap.
@@ -291,6 +468,10 @@ test('writeAgentChecks: keeps other fields, skips a link, and sets checks and th
   assert.equal(lstatSync(path).isSymbolicLink(), true);
   assert.equal(lines.length, 1);
   unlinkSync(path);
+  lines.length = 0;
+  writeAgentChecks(sandbox.repo, 'passing', new Date('2026-10-22T10:45:00.000Z'), warn);
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { checks: 'passing', updated: '2026-10-22T10:45:00Z' });
+  assert.deepEqual(lines, [], 'a missing file is created without a warning');
   writeFileSync(path, `${JSON.stringify({ name: 'worker-1', role: 'engineer', doing: 'the task' })}\n`);
   writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T10:00:00.123Z'), warn);
   const status = JSON.parse(readFileSync(path, 'utf8')) as { name: string; role: string; doing: string; checks: string; updated: string };
@@ -309,8 +490,39 @@ test('writeAgentChecks: keeps other fields, skips a link, and sets checks and th
   assert.deepEqual(readdirSync(sandbox.repo).filter((name) => name.endsWith('.tmp')), []);
 });
 
+test('writeAgentChecks: an oversized status file stays byte for byte unchanged and warns (#642)', () => {
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, AGENT_STATUS_FILE);
+  const fields = `${JSON.stringify({ name: 'worker-1', role: 'engineer', doing: 'the task' })}\n`;
+  const text = fields + ' '.repeat(STATUS_TEXT_LIMIT + 1 - Buffer.byteLength(fields));
+  assert.equal(Buffer.byteLength(text), STATUS_TEXT_LIMIT + 1);
+  writeFileSync(path, text);
+  const lines: string[] = [];
+  writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'), (line) => lines.push(line));
+  assert.deepEqual(readFileSync(path), Buffer.from(text), 'the refused file is unchanged');
+  assert.deepEqual(lines, [`yokoten: ${AGENT_STATUS_FILE} is too large, so it was left unchanged.\n`]);
+});
+
+test('writeAgentChecks: an unreadable status file stays unchanged and warns (#642)', { skip: (process.platform === 'win32' || process.getuid?.() === 0) && 'no unreadable file for root or on Windows' }, () => {
+  const sandbox = makeSandbox();
+  const path = join(sandbox.repo, AGENT_STATUS_FILE);
+  const text = `${JSON.stringify({ name: 'worker-1', role: 'engineer' })}\n`;
+  writeFileSync(path, text);
+  chmodSync(path, 0o000);
+  const lines: string[] = [];
+  try {
+    writeAgentChecks(sandbox.repo, 'failing', new Date('2026-10-22T11:00:00.000Z'), (line) => lines.push(line));
+  } finally {
+    chmodSync(path, 0o600);
+  }
+  assert.equal(readFileSync(path, 'utf8'), text, 'the refused file is unchanged');
+  assert.deepEqual(lines, [`yokoten: ${AGENT_STATUS_FILE} cannot be read, so it was left unchanged.\n`]);
+});
+
 test('refused marker: the same worker stays recent for 5 minutes (#614)', () => {
   const sandbox = makeSandbox();
+  // A folder next to the repo must not be the machine's checkout (#712).
+  stopCheckoutWalk(dirname(sandbox.repo));
   const key = 'mark-614';
   const path = refusedMarkerPath(sandbox.repo, key);
   assert.equal(path, join(sandbox.repo, '.git', 'yokoten-stop-refused', key));
@@ -328,6 +540,68 @@ test('refused marker: the same worker stays recent for 5 minutes (#614)', () => 
   assert.equal(existsSync(path), false);
   assert.equal(refusedMarkerPath(join(sandbox.home, 'outside'), key), null);
   assert.doesNotThrow(() => noteRefused(join(sandbox.home, 'outside'), key));
+});
+
+// #746: an empty `.git` above a work folder is not the checkout, so no marker lands in it.
+test('refused marker: an empty .git above a work folder is not the checkout (#746)', () => {
+  const base = makeTempDir('yokoten-empty-git-');
+  makeGitFolder(base);
+  const outer = join(base, 'outer');
+  mkdirSync(join(outer, '.git'), { recursive: true });
+  mkdirSync(join(outer, 'work'), { recursive: true });
+  writeFileSync(join(base, '.git', 'yokoten-done-when'), 'node --test\n');
+  assert.equal(refusedMarkerPath(join(outer, 'work'), 'k'), join(base, '.git', 'yokoten-stop-refused', 'k'));
+  assert.equal(readDoneWhen({}, join(outer, 'work')), 'node --test');
+});
+
+// #746: the same walk for a desk that keeps its mark and done-when but lost HEAD or objects:
+// it is broken, so the parent's done-when and git folder are not used. Its own file still runs.
+test('done-when: a desk that lost HEAD or objects reads its own, not its parent checkout (#746)', () => {
+  const base = makeTempDir('yokoten-desk-partial-');
+  const removals: Record<string, (desk: string) => void> = {
+    head: (desk) => rmSync(join(desk, '.git', 'HEAD')),
+    objects: (desk) => rmSync(join(desk, '.git', 'objects'), { recursive: true }),
+    both: (desk) => {
+      rmSync(join(desk, '.git', 'HEAD'));
+      rmSync(join(desk, '.git', 'objects'), { recursive: true });
+    },
+  };
+  const makeDesk = (top: string, name: string) => {
+    const desk = join(top, name);
+    mkdirSync(desk);
+    makeGitFolder(desk);
+    writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+    writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'node --test-desk\n');
+    mkdirSync(join(desk, 'src'));
+    return desk;
+  };
+  const contexts: Record<string, (name: string) => string> = {
+    sibling: (name) => {
+      const top = join(base, 'sibling');
+      mkdirSync(top, { recursive: true });
+      return makeDesk(top, name);
+    },
+    nested: (name) => {
+      const parent = join(base, 'nested');
+      makeGitFolder(parent);
+      writeFileSync(join(parent, '.git', 'yokoten-done-when'), 'node --test-parent\n');
+      return makeDesk(parent, name);
+    },
+  };
+  for (const [context, make] of Object.entries(contexts)) {
+    for (const [removal, remove] of Object.entries(removals)) {
+      const desk = make(`${context}-${removal}`);
+      remove(desk);
+      const src = join(desk, 'src');
+      const label = `${context}/${removal}`;
+      assert.equal(existsSync(join(desk, '.git', 'yokoten-worker')), true, `${label}: the mark is kept`);
+      assert.equal(existsSync(join(desk, '.git', 'yokoten-done-when')), true, `${label}: the done-when is kept`);
+      assert.equal(readDoneWhen({}, src), 'node --test-desk', `${label}: the desk's own done-when still runs, never a skip`);
+      assert.equal(refusedMarkerPath(src, 'k'), null, `${label}: no marker lands in the parent's git folder`);
+      const parent = join(base, 'nested');
+      if (context === 'nested') assert.equal(readDoneWhen({}, parent), 'node --test-parent', `${label}: the parent still reads its own`);
+    }
+  }
 });
 
 test('done-when: Windows tree kill uses taskkill /F /T while the shell can still be alive (#614)', () => {
@@ -386,6 +660,20 @@ test('done-when: a timeout ends when a program left the process group (#614)', {
   }
 });
 
+// (...) & stays in the shell's group. A normal exit must stop it before the late write (#641).
+test('done-when: a passing check stops a background writer (#641)', { skip: process.platform === 'win32' && 'the kill uses a POSIX process group', timeout: 5000 }, async () => {
+  const sandbox = makeSandbox();
+  const started = join(sandbox.repo, 'writer-started');
+  const late = join(sandbox.repo, 'writer-late');
+  const command = `(touch ${JSON.stringify(started)}; sleep 0.4; touch ${JSON.stringify(late)}) & while [ ! -f ${JSON.stringify(started)} ]; do :; done; exit 0`;
+  const result = await runDoneWhen(command, sandbox.repo, sandbox.env, 5000);
+  assert.equal(result.ok, true, result.output);
+  assert.equal(/ran too long/.test(result.output), false);
+  assert.equal(existsSync(started), true, 'the writer started');
+  await delay(800);
+  assert.equal(existsSync(late), false, 'the writer wrote after the check ended');
+});
+
 // The shell exits 0. setsid keeps the pipes. The check must pass before the timeout.
 test('done-when: an exited shell passes even when a program keeps the pipes open (#614)', { skip: (process.platform === 'win32' || runChild('sh', ['-c', 'command -v setsid']).status !== 0) && 'setsid is missing', timeout: 5000 }, async () => {
   const sandbox = makeSandbox();
@@ -429,24 +717,27 @@ test('readStatusText: an unchanged file is read, and a swap at open time is not 
   const swapped = join(sandbox.repo, 'other.json');
   writeFileSync(path, '{"name":"kept"}\n');
   writeFileSync(swapped, '{"name":"other"}\n');
+  assert.deepEqual(readStatusResult(path), { text: '{"name":"kept"}\n' }, 'an unchanged file returns its text');
   assert.equal(readStatusText(path), '{"name":"kept"}\n', 'an unchanged file returns its text');
   let openFlags = 0;
-  assert.equal(
-    readStatusText(path, (_, flags) => {
-      openFlags = flags;
-      return openSync(swapped, flags);
-    }),
-    null,
-    'the file at open time is not the file at list time',
-  );
+  const swappedResult = readStatusResult(path, (_, flags) => {
+    openFlags = flags;
+    return openSync(swapped, flags);
+  });
+  assert.deepEqual(swappedResult, { refused: 'changed while it was read' }, 'a swap at open time is refused');
+  assert.equal(readStatusText(path, (_, flags) => openSync(swapped, flags)), null);
   const nonblock = constants.O_NONBLOCK ?? 0;
   assert.equal(openFlags & nonblock, nonblock, 'the open does not wait on a pipe');
   writeFileSync(path, 'x'.repeat(STATUS_TEXT_LIMIT));
-  assert.equal(readStatusText(path)?.length, STATUS_TEXT_LIMIT, 'a file at the size cap is read');
+  const atCap = readStatusResult(path);
+  assert.ok('text' in atCap);
+  assert.equal(atCap.text.length, STATUS_TEXT_LIMIT, 'a file at the size cap is read');
   writeFileSync(path, 'y'.repeat(STATUS_TEXT_LIMIT + 1));
+  assert.deepEqual(readStatusResult(path), { refused: 'too large' }, 'a file over the size cap is refused');
   assert.equal(readStatusText(path), null, 'a file over the size cap is not read');
   if (existsSync('/dev/zero')) {
     const openedAt = Date.now();
+    assert.deepEqual(readStatusResult(path, () => openSync('/dev/zero', constants.O_RDONLY)), { refused: 'changed while it was read' }, 'a device opened in place of the file is refused');
     assert.equal(readStatusText(path, () => openSync('/dev/zero', constants.O_RDONLY)), null, 'a device opened in place of the file is not read');
     assert.ok(Date.now() - openedAt < 1000, 'a device is refused before it is read');
   }
@@ -521,4 +812,18 @@ setInterval(() => {}, 1000);
       }
     }
   }
+});
+
+// #621: the stop log is capped, and the oldest lines go first.
+test('stop log: the cap drops the oldest lines (#621)', () => {
+  const sandbox = makeSandbox();
+  const file = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  mkdirSync(dirname(file), { recursive: true });
+  const line = (n: number) => JSON.stringify({ time: '2026-10-23T00:00:00.000Z', vendor: 'codex', role: 'lead', rule: 'release', answer: 'refused', command: `echo ${n}` });
+  const lines = [0, 1, 2, 3, 4].map(line);
+  writeFileSync(file, lines.map((one) => `${one}\n`).join(''));
+  const cap = Buffer.byteLength(`${lines[3]}\n${lines[4]}\n`);
+  trimStopsLog(file, cap);
+  assert.deepEqual(readFileSync(file, 'utf8').trim().split('\n'), [lines[3], lines[4]]);
+  assert.equal(STOPS_MAX_BYTES, 5 * 1024 * 1024);
 });

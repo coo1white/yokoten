@@ -28,6 +28,11 @@ export interface Finding {
   grade?: FindingGrade;
   /** Why a reviewer may let this finding through. An ignored finding stays in the output. */
   ignored?: string;
+  /**
+   * A question before an action, not a refusal (#401): the owner may let it run. The
+   * hook asks where its runtime can ask, and says the finding anywhere else.
+   */
+  ask?: boolean;
 }
 
 /** A rule as `explain` tells it: the rule, its reason, and the check that holds it. */
@@ -79,7 +84,7 @@ export const RULES = {
   'hooks-path': {
     rule: 'never turn off the commit check (core rule 6)',
     why: 'git runs the commit check from core.hooksPath, so a folder whose pre-commit does not run it turns the check off',
-    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c`, `--config-env` and GIT_CONFIG_KEY_n. The commit-check step looks at the setting',
+    check: 'the tool-call guard lets every read of core.hooksPath through. In the repo\'s own config, `git config` may set .githooks, the value already set, or a folder whose pre-commit runs `yokoten check` (husky: .husky/pre-commit). It stops any other change: `--unset`, `--global`, `git -c` and `--config-env`. It stops GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, and a shell write to .git/config, .git/hooks or .githooks (a redirect, cp, mv, tee, sed -i, rm, chmod, ln, install, truncate); reading them passes. The commit-check step looks at the setting',
     docs: guide('the-core-rules'),
   },
   alias: {
@@ -90,7 +95,7 @@ export const RULES = {
   'remove-git': {
     rule: 'no removing the .git folder',
     why: 'the .git folder holds the repo history, so removing it throws away every commit',
-    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git; delete only the files you mean, or clone the repo again to start over',
+    check: 'the tool-call guard stops `rm`, `rmdir`, `unlink` and `shred` on a path that can be .git, and a `find` that deletes when nothing keeps it out of .git (no test, or only tests that can match it, or a name or path whose characters name git storage such as objects, refs or a pack index and match no sample); a prune of .git, `-not -path \'*/.git/*\'`, or a start folder that cannot hold .git still passes; delete only the files you mean, or clone the repo again to start over',
   },
   'delete-default-branch': {
     rule: 'no deleting the default branch',
@@ -98,9 +103,20 @@ export const RULES = {
     check: 'the tool-call guard stops `git branch -d`, `-D` and `--delete`, `git update-ref -d` and `git push --delete` (or `:<branch>`) on the default branch: refs/remotes/origin/HEAD when git names it, else main and master; delete only the branch you mean',
   },
   'pipe-to-shell': {
-    rule: 'no piping a download into a shell',
+    rule: 'no piping a download into a shell or a program named by a variable',
     why: 'a download piped into a shell runs code nobody read, so the guard cannot check what it runs',
-    check: 'the tool-call guard stops a pipeline that feeds `curl` or `wget` into a shell; save the file first, read it, then run it',
+    check: 'the tool-call guard stops a pipeline that feeds a download into a shell, into `eval`, into a substitution that can run it, or into a program word that is not plain text, including a name that starts with `$`. A `$` argument of a plain program passes. Save the file first, read it, then run it',
+  },
+  'gh-token': {
+    rule: "an agent does not see or send gh's token",
+    why: "with gh's token, curl or a script calls the host directly, around every rule the guard keeps for gh",
+    check: "the tool-call guard stops, for every agent, the gh commands that print the token (`gh auth token`, `gh auth status --show-token`, `gh auth git-credential`, `gh config get oauth_token`), git's and the system's credential reads (`git credential fill`, a credential helper's `get`, `-c credential.*`, `~/.git-credentials`, gh's hosts.yml, `security find-…-password -w`, `secret-tool lookup`), GIT_TRACE_REDACT turned off, the token's variables (GH_TOKEN, GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN) expanded in bash, PowerShell or cmd or named to a program that runs code, and `-c` or git settings in the environment for the bot's git; run gh itself, which uses the token without showing it",
+    docs: guide('what-it-doesnt-do'),
+  },
+  'workflow-disable': {
+    rule: 'an agent does not turn a workflow off',
+    why: 'a workflow that is off runs no checks, on any pull request, until someone turns it on again',
+    check: 'the tool-call guard stops `gh workflow disable` for every agent; only the owner turns a workflow off',
   },
   'run-remove': {
     rule: 'no agent cancels or deletes an Actions run',
@@ -119,6 +135,12 @@ export const RULES = {
     why: 'the guard reads command text, and a command it cannot read could hide anything',
     check: 'the tool-call guard refuses a tool call, with exit 2, when reading it fails or takes longer than its deadline (5 seconds; YOKOTEN_GUARD_DEADLINE_MS changes it)',
     docs: guide('what-it-doesnt-do'),
+  },
+  'repeat-stop': {
+    rule: 'a session stops after the same step fails three times (#711)',
+    why: 'a loop does not find a way through, and every extra try costs the team time and money',
+    check: 'the tool-call guard counts, per session, the same refusal for the same command shape and the same failing command; at the third repeat it stops with a stop message; a call that succeeds resets the count. The worker stop check stops a task after its time limit',
+    docs: guide('the-core-rules'),
   },
   'test-file': {
     rule: 'a fix task changes code, never tests (core rule 4)',
@@ -174,6 +196,12 @@ export const RULES = {
     check: '`check --pr` lists each `yokoten-ignore` comment on a line the pull request adds, and each line it adds to `.yokotenignore`, as a notice on the pull request page; it never fails the check',
     docs: guide('privacy'),
   },
+  'home-folder': {
+    rule: 'an agent does not change the home folder for a command (core rule 11)',
+    why: 'the commit check and the gh post guard read your private marks from your home folder, so another home finds no marks and lets them through',
+    check: 'the tool-call guard stops a command that sets HOME or USERPROFILE for git, gh, yokoten or a shell, or for the rest of the line (export, declare, read, printf -v, a for loop, ${HOME:=x}); it also stops unsetting HOME or USERPROFILE, and env -u HOME before git, gh, yokoten or a shell; before another program, and reading $HOME, it passes; a worker is also stopped from setting or unsetting HOME, USERPROFILE or XDG_CONFIG_HOME before git commit, yokoten check or a shell, and from running a shell script file (bash script, sh script) or a shell option that may name a file, because the guard cannot read that file; the commit check reads the marks file in the real home, from the password database, when HOME is missing or the file under it is missing or holds no marks: a file it cannot read stops the check, and a file it can read is used',
+    docs: guide('privacy'),
+  },
   secret: {
     rule: 'no secret in the repo: no token and no private key (core rule 11)',
     why: 'a secret opens your accounts to anyone who can read the repo, and git keeps it after the file is gone',
@@ -214,6 +242,12 @@ export const RULES = {
     why: "a reviewer can't read it, and it may not match the source",
     check: 'the commit check refuses a file git sees as binary, and a built file by its name (.exe, .zip, .wasm and others); images and fonts pass',
   },
+  borrowed: {
+    rule: 'borrowed code carries its source, upstream commit, license and copyright notice (record 0024)',
+    why: 'copied code is only safe and legal when its source, license and notice are kept, and when upstream fixes reach it',
+    check: '`yokoten check` reads the header at the top of every file in `src/borrowed/`; a license outside MIT, BSD-2-Clause, BSD-3-Clause, ISC and Apache-2.0 is refused. `yokoten borrowed` compares each upstream commit with the default branch and opens one issue per source that moved',
+    docs: guide('borrowed-code'),
+  },
   'pr-title': {
     rule: 'a pull request title has the commit form, `type(area): summary`, in at most 72 characters (core rule 8)',
     why: 'the title becomes the one commit on main',
@@ -245,8 +279,8 @@ export const RULES = {
     docs: guide('the-core-rules'),
   },
   'pr-made-with': {
-    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs (core rule 8)',
-    why: 'every pull request names each AI and model that made it',
+    rule: 'a pull request body ends with `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, and optionally one `reviewed by <agent> (<model>)` or `reviewed by <agent> (<model>) and <agent> (<model>)` part, at most two reviewers (core rule 8)',
+    why: 'every pull request names each AI and model that made it, and the ones that reviewed it',
     check: PR_CHECK,
     docs: guide('the-core-rules'),
   },
@@ -373,6 +407,12 @@ export const RULES = {
     check: "`doctor` looks for this folder, or a folder above it, in `trustedFolders` in Copilot's config.json (read-only); a note, not a missing step",
     docs: guide('works-with'),
   },
+  'copilot-user-hook': {
+    rule: "Copilot CLI runs yokoten's command guard in every folder",
+    why: 'without it, a tag push, force push or skipped check by Copilot CLI in a repo without yokoten is not stopped',
+    check: "when ~/.copilot (or $COPILOT_HOME) is a folder, `doctor` compares the PreToolUse hook in ~/.copilot/hooks/yokoten.json with what `yokoten install` writes; a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
+    docs: guide('works-with'),
+  },
   'codex-hook': {
     rule: "the project has Codex's tool-call guard and stop check, and Codex trusts the folder and both hooks",
     why: "without them, Codex's commands and edits in this project are not checked, and its turn can end with a bad file. Codex skips an untrusted hook without a word",
@@ -390,6 +430,12 @@ export const RULES = {
     rule: "the project has Antigravity CLI's tool-call guard",
     why: "without it, Antigravity CLI's commands and edits in this project are not checked",
     check: '`doctor` reads .agents/hooks.json for the `yokoten` PreToolUse hook that runs `yokoten hook --agent antigravity`; a note, not a missing step',
+    docs: guide('works-with'),
+  },
+  'antigravity-user-hook': {
+    rule: "Antigravity CLI runs yokoten's command guard in every workspace",
+    why: 'without it, a tag push, force push or skipped check in a workspace without yokoten is not stopped',
+    check: "when ~/.gemini/config is a folder, `doctor` compares the PreToolUse hook in ~/.gemini/config/hooks.json with what `yokoten install` writes; a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
   'muse-hook': {
@@ -435,6 +481,18 @@ export const RULES = {
     check: "when ~/.grok is a folder, `doctor` compares the PreToolUse hook in ~/.grok/hooks/yokoten.json with what `yokoten install` writes (command, matcher, timeout, runtime path); a missing or out-of-date hook, or a file it can't read, is a note, not a missing step",
     docs: guide('works-with'),
   },
+  'opencode-hook': {
+    rule: "the project that uses OpenCode has yokoten's plugin",
+    why: "without the plugin, OpenCode's commands and edits in this project are not checked",
+    check: "`doctor` looks for `.opencode/` or `opencode.json`. It then reads `.opencode/plugins/yokoten.ts` and compares it with what `init` writes. A missing or old plugin is a note, not a missing step. A project with no OpenCode file is quiet",
+    docs: guide('works-with'),
+  },
+  'opencode-user-hook': {
+    rule: "OpenCode runs yokoten's command guard in every repo",
+    why: 'without it, a tag push, force push or skipped check by OpenCode in a repo without yokoten is not stopped',
+    check: "when ~/.config/opencode is a folder, `doctor` compares the plugin in its plugins folder with what `install` writes. A missing or old plugin is a note, not a missing step. `$XDG_CONFIG_HOME/opencode` counts when that variable is set",
+    docs: guide('works-with'),
+  },
   'core-rules': {
     rule: 'the core rules in AGENTS.md are the ones in the kit of the yokoten you run',
     why: 'a lesson added to the core rules reaches a project only when its AGENTS.md gets the new text',
@@ -473,7 +531,7 @@ export const RULES = {
   'disk-space': {
     rule: 'the disk that holds the repo has room left (record 0012)',
     why: 'on a full disk, every agent session stops, and the agent cannot tell you why',
-    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading; a note, never a failure',
+    check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading. When a heavy job starts and that reading is low, the tool-call guard asks first; it never refuses',
     docs: guide('machine-notes'),
   },
   'agent-temp-dir': {
@@ -518,6 +576,12 @@ export const RULES = {
     check: '`doctor` reads the global git setting mailmap.file; `install` points it at ~/.config/yokoten/mailmap unless you set your own',
     docs: guide('privacy'),
   },
+  'muse-claude-rules': {
+    rule: "Muse Code does not send ~/.claude/CLAUDE.md to Muse's model",
+    why: 'the file was written for one vendor',
+    check: 'when .muse/hooks.json and ~/.claude/CLAUDE.md are both there, full `doctor` and a session note it. Outside a desk, the note says to run Muse in a desk. When YOKOTEN_DESK or YOKOTEN_TEAM is set and the file is still visible, the note says the home folder is visible and the desk needs attention. No note when the file is hidden. A note, never a failure (#681)',
+    docs: guide('works-with'),
+  },
   'server-settings': {
     rule: 'doctor reads the settings the owner sets on the server, and never changes them',
     why: 'the server is the lock: its settings hold even when a hook is off',
@@ -557,6 +621,22 @@ export const RULES = {
     why: 'only the owner decides when to release, whatever an agent\'s token can do',
     check: `${SERVER_CHECK}: an active tag ruleset on v* with creation, update and deletion restricted`,
     docs: guide('the-core-rules'),
+  },
+  'tag-bypass': {
+    rule: 'each v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and names no bot (core rule 3)',
+    why: 'the owner must be able to push a release tag, and no agent must be able to',
+    check: `${SERVER_CHECK}: every active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and none names a GitHub App`,
+    docs: guide('the-core-rules'),
+  },
+  'release-reviewer': {
+    rule: 'the release environment asks for your approval before it deploys (core rule 3)',
+    why: 'without it, a publish job that a tag starts runs with no one approving it',
+    check: `${SERVER_CHECK}: the release environment has a required reviewer`,
+  },
+  'release-tag-rule': {
+    rule: 'the release environment deploys only from v* tags, and not from a branch named v*',
+    why: 'a branch rule named v* matches no tag, and with both rules a branch named v* can still publish',
+    check: `${SERVER_CHECK}: the release environment has a deployment rule of type tag named v*, and no branch rule named v*`,
   },
   'security-switches': {
     rule: 'secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on',
@@ -616,6 +696,54 @@ export const RULES = {
     check: `${UNSAVED_CHECK}: each worktree's real path against the temp folders: YOKOTEN_TEMP_DIRS (empty turns it off), else the system's temp folder and /tmp. The repo itself always gets a note; a worktree only when it holds work at risk, in that work's note; the rest get one line in full doctor`,
     docs: guide('work-only-on-this-machine'),
   },
+  'mcp-schema': {
+    rule: 'an MCP tool schema works in Claude, Gemini and OpenAI strict mode (core rule 8)',
+    why: 'a client that cannot read a schema drops the tool or refuses the server, and the user sees a missing tool, not a reason',
+    check: '`yokoten mcp` reads `tools/list` and rejects a root anyOf, oneOf or allOf (Claude), a `$ref` or `$defs`, a list of types, or an array with no items (Gemini), and a property left out of required (OpenAI strict)',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-name': {
+    rule: 'an MCP tool name is 64 characters or fewer and a property name uses letters, digits, _ . or -',
+    why: 'a client drops a tool whose name or property name it cannot read, so the user sees a missing tool',
+    check: '`yokoten mcp` reads every property name at any depth and every tool name in `tools/list`',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-annotations': {
+    rule: 'every MCP tool sets readOnlyHint, destructiveHint, idempotentHint and openWorldHint',
+    why: 'ChatGPT apps and other clients ask before a call only when the hints are there, so an unset hint hides a destructive tool',
+    check: '`yokoten mcp` reads all four hints on every tool, and each must be true or false',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-count': {
+    rule: 'an MCP server lists fewer than 40 tools',
+    why: 'Cursor uses only about the first 40, so the tools after them look broken',
+    check: '`yokoten mcp` counts the tools in `tools/list` and fails at 40 or more',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-output': {
+    rule: 'a tool with an outputSchema returns structuredContent and a text content item',
+    why: 'Cursor drops a result that is only structuredContent, so the user sees an empty answer',
+    check: '`yokoten mcp` calls each read-only tool with no required arguments, and reads both forms in its result',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-stdout': {
+    rule: 'an MCP server writes only JSON-RPC to stdout',
+    why: 'a client reads stdout as JSON-RPC, so one log line or a CRLF breaks the session',
+    check: '`yokoten mcp` starts the server, reads stdout through initialize and tools/list, and reports every line that is not a JSON-RPC message, is not UTF-8, or ends with CRLF',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-windows': {
+    rule: 'a Windows MCP config starts npx and .cmd files through cmd /c',
+    why: 'Windows cannot start npx or a .cmd file without a shell, so the server never connects',
+    check: '`yokoten mcp` reads each stdio entry and warns when its command needs a shell on Windows',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
+  'mcp-server': {
+    rule: 'an MCP server starts and answers initialize and tools/list',
+    why: 'a server that does not answer has no tools, so a check of its tools must say that instead of passing',
+    check: '`yokoten mcp` starts each stdio server in the project config and stops with this finding when it cannot start or does not answer in time',
+    docs: docsLink('guide.md', 'shipping-an-mcp-server-that-works-in-every-agent'),
+  },
   'not-a-repo': {
     rule: 'yokoten runs inside a git repo',
     why: 'the checks read commits, so yokoten needs git history',
@@ -674,3 +802,33 @@ export const formatFindingMarks = (f: Finding): string => {
  */
 export const formatFinding = (f: Finding): string =>
   `${place(f)}${f.what}${formatFindingMarks(f)}. ${sentence(f.why)}. ${sentence(f.fix)}.${f.docs === undefined ? '' : `\n  docs: ${f.docs}`}`;
+
+// ---- Steps a scan takes (#754) ----
+//
+// The linear tests read this count, not the clock. A busy runner made an 8-times longer
+// text look 28 times slower, and eleven clock limits failed that way. Counting stays off
+// until a test asks, so a real read pays one check. The count only sees a call to noteWork.
+
+/** The steps counted while a test is measuring. Null the rest of the time. */
+let workCounter: { count: number } | null = null;
+
+/** Counts `amount` steps of a scan. Nothing while no test is measuring. */
+export function noteWork(amount: number): void {
+  if (workCounter !== null) workCounter.count += amount;
+}
+
+/**
+ * The steps `read` counts, from zero. Counting is off again after it. A measure inside a
+ * measure counts on its own, then the outer count resumes. A throw does not leave counting on.
+ */
+export function measureWork(read: () => void): number {
+  const previous = workCounter;
+  const counter = { count: 0 };
+  workCounter = counter;
+  try {
+    read();
+    return counter.count;
+  } finally {
+    workCounter = previous;
+  }
+}

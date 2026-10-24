@@ -8,12 +8,12 @@ import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { BWRAP } from './bwrap.ts';
 import type { DeskBackend, DeskPlan } from './desk.ts';
-import { type ProxyEvent, startProxy } from './proxy.ts';
+import { type ProxyEvent, startProxy } from './network/proxy.ts';
 import { SEATBELT } from './seatbelt.ts';
 
 /** The backend for a system, or the plain reason there is none. */
 export function chooseBackend(platform: NodeJS.Platform, env: Env): DeskBackend | string {
-  if (platform === 'win32') return 'a desk on native Windows is not built yet (#669). Run yokoten in WSL2, where the Linux desk works. On native Windows, the guard alone holds the rules.';
+  if (platform === 'win32') return 'a desk on native Windows is experimental and not ready yet (#669): it needs a restricted-token helper, ACLs and a firewall rule that pass the #637 contract test on real Windows. Until then run yokoten in WSL2, where the Linux desk works. On native Windows, the guard alone holds the rules.';
   const backend = platform === 'linux' ? BWRAP : platform === 'darwin' ? SEATBELT : null;
   if (!backend) return `a desk runs on Linux, WSL2 and macOS; not on ${platform} yet.`;
   return backend.problem(env) ?? backend;

@@ -2,7 +2,7 @@
 
 import '../repo/home.ts';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdirSync,
@@ -44,6 +44,7 @@ import {
   repoKey,
   repoMarkKinds,
   scanText,
+  useRealHome,
   withHome,
 } from '../../src/rules/privacy.ts';
 
@@ -250,6 +251,122 @@ test('private marks file: a default file that can not be read throws, whatever t
     assert.throws(() => loadMarkKinds({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), { code: 'EACCES' });
   } finally {
     chmodSync(own, 0o600);
+  }
+});
+
+test('private marks file: a missing default file fails closed when the real home has one it cannot read (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'mycity\n');
+  chmodSync(hidden, 0o000);
+  const extra = join(home, 'extra');
+  writeFileSync(extra, 'otherword\n');
+  const restore = useRealHome(() => real);
+  try {
+    assert.throws(() => loadMarks({ HOME: home }), /cannot be read/);
+    assert.throws(() => loadMarkKinds({ HOME: home }), /cannot be read/);
+    // No HOME is the same file. A process started without HOME cannot skip it.
+    assert.throws(() => loadMarks({}), /cannot be read/);
+    assert.throws(() => loadMarkKinds({}), /cannot be read/);
+    // The setting only adds. It does not hide an unreadable file in the real home.
+    assert.throws(() => loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), /cannot be read/);
+    assert.throws(() => repoMarkKinds({ HOME: home }, home), /cannot be read/);
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
+  }
+});
+
+// The preload is --require, not --import (#750). A child must still get an empty real home,
+// and useRealHome must stack on that same slot. Nothing here prints a path or a mark.
+test('private marks: a node child keeps the empty real-home stand-in (#739)', () => {
+  const root = join(import.meta.dirname, '..', '..');
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', [
+    "import { mkdtempSync } from 'node:fs';",
+    "import { tmpdir } from 'node:os';",
+    "import { join } from 'node:path';",
+    "import { loadMarks, useRealHome } from './src/rules/privacy.ts';",
+    "const key = Symbol.for('yokoten.readRealHome');",
+    "const preload = globalThis[key];",
+    "if (typeof preload !== 'function' || preload() !== '') process.exit(2);",
+    "const home = mkdtempSync(join(tmpdir(), 'yokoten-child-home-'));",
+    "if (loadMarks({ HOME: home }).length !== 0) process.exit(3);",
+    "const restore = useRealHome(() => join(tmpdir(), 'not-a-home'));",
+    "const swapped = globalThis[key]() !== '';",
+    "restore();",
+    "if (!swapped || globalThis[key] !== preload) process.exit(4);",
+    "process.stdout.write('ok');",
+  ].join('\n')], { cwd: root, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, 'ok');
+});
+
+test('private marks file: a missing real-home file stays empty, and a readable one is used (#739)', () => {
+  const home = makeTempDir();
+  const real = makeTempDir();
+  const restore = useRealHome(() => real);
+  try {
+    assert.deepEqual(loadMarks({ HOME: home }), []);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), []);
+    assert.deepEqual(loadMarks({}), []);
+    assert.deepEqual(loadMarkKinds({}), []);
+    mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(real, '.config', 'yokoten', 'private-marks'), 'MyCity\n# added by yokoten from this machine: forge login\nOcto-Jdoe\n');
+    // A changed HOME must not skip a marks file the check can read. The role does not matter.
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_ROLE: 'worker' }), ['mycity', 'octo-jdoe']);
+    // No HOME, or an empty one, still has the real home. The role does not matter.
+    assert.deepEqual(loadMarks({}), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: '' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ HOME: 'relative' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarks({ YOKOTEN_ROLE: 'worker' }), ['mycity', 'octo-jdoe']);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), [
+      { value: 'mycity', kind: null },
+      { value: 'octo-jdoe', kind: 'forge login' },
+    ]);
+    assert.deepEqual(loadMarkKinds({}), [
+      { value: 'mycity', kind: null },
+      { value: 'octo-jdoe', kind: 'forge login' },
+    ]);
+    // The setting only adds. It does not replace the real home's marks.
+    const extra = join(home, 'extra');
+    writeFileSync(extra, 'otherword\n');
+    assert.deepEqual(loadMarks({ HOME: home, YOKOTEN_PRIVATE_MARKS: extra }), ['mycity', 'octo-jdoe', 'otherword']);
+    assert.deepEqual(loadMarks({ YOKOTEN_PRIVATE_MARKS: extra }), ['mycity', 'octo-jdoe', 'otherword']);
+    // An empty stand-in file is still no marks of its own, so the real file is used.
+    mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+    writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), '\n# none\n');
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity', 'octo-jdoe']);
+    // The same folder is the one $HOME already names: there is nothing further to read.
+    const same = useRealHome(() => home);
+    try {
+      assert.deepEqual(loadMarks({ HOME: home }), []);
+    } finally {
+      same();
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('private marks file: a readable default file does not read the real home (#739)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const home = makeTempDir();
+  mkdirSync(join(home, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(join(home, '.config', 'yokoten', 'private-marks'), 'mycity\n');
+  const real = makeTempDir();
+  const hidden = join(real, '.config', 'yokoten', 'private-marks');
+  mkdirSync(join(real, '.config', 'yokoten'), { recursive: true });
+  writeFileSync(hidden, 'otherword\n');
+  chmodSync(hidden, 0o000);
+  const restore = useRealHome(() => real);
+  try {
+    assert.deepEqual(loadMarks({ HOME: home }), ['mycity']);
+    assert.deepEqual(loadMarkKinds({ HOME: home }), [{ value: 'mycity', kind: null }]);
+  } finally {
+    chmodSync(hidden, 0o600);
+    restore();
   }
 });
 
@@ -587,6 +704,40 @@ test('API reads pass; API writes and GraphQL mutations are read (#391 review)', 
   assert.equal(post(`gh api -X POST repos/o/r/labels -f description="${email}"`)?.id, 'email');
   assert.equal(post(`gh api --method=PATCH repos/o/r/issues/1 -f body="${email}"`)?.id, 'email');
   assert.equal(post(`gh api repos/o/r/issues/1/comments -F body=@- <<'EOF'\nmail ${email}\nEOF`)?.id, 'email');
+});
+
+// #659: gh takes the next word as any option's value, so `-H -f` sends a header "-f". The
+// guard read that -f as a field and its value as the next word, and missed the real body.
+test('checkPost: an option value that looks like an option hides no body (#659)', () => {
+  const comments = 'gh api repos/o/r/issues/1/comments';
+  for (const option of ['-H', '--header', '-q', '--jq', '-t', '--template', '-p', '--preview', '--hostname', '--cache']) {
+    assert.equal(post(`${comments} ${option} -f -f body="${email}"`)?.id, 'email', `${option} -f`);
+    assert.equal(post(`${comments} ${option} -F -F body="${email}"`)?.id, 'email', `${option} -F`);
+    assert.equal(post(`${comments} ${option} --raw-field --raw-field body="${email}"`)?.id, 'email', `${option} --raw-field`);
+  }
+  // A fake method after a real one, or a method read from another option's value.
+  assert.equal(post(`gh api -X POST repos/o/r/labels -H -X -H GET -f description="${email}"`)?.id, 'email');
+  assert.equal(post(`${comments} -H -X -f body="${email}"`)?.id, 'email');
+  // gh 2.103 takes `-XGET` here as the jq filter, the template or the host, and sends a POST.
+  for (const fake of ['-q -XGET', '--jq -XGET', '-t -XGET', '--template --method=GET', '-p -XGET', '-H --method=GET', '--hostname -XGET', '--cache -X GET']) {
+    assert.equal(post(`${comments} ${fake} -f body="${email}"`)?.id, 'email', fake);
+  }
+  // Fields with no sure method are a POST to any path, a label or a git blob too.
+  assert.equal(post(`gh api repos/o/r/labels -H -XGET -f description="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api repos/o/r/git/blobs -f content="${email}"`)?.id, 'email');
+  assert.equal(post(`gh api search/issues -q -XGET -f q="${email}"`), null, 'a search reads');
+  // A method after a value that is no option, or after a switch, is sure: the call reads.
+  for (const sure of ['-X GET', '-H "Accept: x" -X GET', '--paginate -X GET', '-i --method=GET']) {
+    assert.equal(post(`gh api ${sure} repos/o/r/issues -f creator="${email}"`), null, sure);
+  }
+  // A mutation stays one when a fake query follows.
+  assert.equal(post(`gh api graphql -f query='mutation { addComment(input: {body: "${email}"}) { clientMutationId } }' -H -f -f query=x`)?.id, 'email');
+  // The other gh posts: a text option's value read as an option.
+  assert.equal(post(`gh issue comment 3 --body --body "${email}"`)?.id, 'email');
+  assert.equal(post(`gh pr create --title "feat: add t" --label --body --body "${email}"`)?.id, 'email');
+  // Reads and clean posts still pass.
+  assert.equal(post(`gh api -X GET repos/o/r/issues -H "Accept: x" -f creator="${email}"`), null);
+  assert.equal(post(`${comments} -H -f -f body="all clean"`), null);
 });
 
 test('a stdin body: only the heredoc is read, not the rest of the command (#391 review)', () => {
@@ -1557,7 +1708,7 @@ test('normalizeRemote: linear on long input (#447)', () => {
     ['colons', (n) => `${'a:'.repeat(n / 2)}`],
     ['no colon', (n) => 'a'.repeat(n)],
   ];
-  // One call for every shape: a noisy first round grows to a 20 ms base (#594).
+  // One call for every shape, at this size and at 8 times that.
   assertLinearEach(inputs.map(([name, make]) => ({ name, make, read: (text: string) => normalizeRemote(text, '/base') })), 1 << 16);
 });
 

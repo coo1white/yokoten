@@ -138,6 +138,15 @@ export async function installationToken(config: BotConfig, repo: string): Promis
 
 // `node --test` sets NODE_TEST_CONTEXT for the test files it starts. A `node --test` that
 // inherits it reports to that parent run instead, and exits 0 even when a test fails (#168).
+// The name sits on ProcessEnv (#712). A spread of process.env that sets other keys drops
+// the index signature. delete then cannot see NODE_TEST_CONTEXT unless the name is declared.
+declare global {
+  namespace NodeJS {
+    interface ProcessEnv {
+      NODE_TEST_CONTEXT?: string;
+    }
+  }
+}
 
 /** A copy of `env` that a child `node --test` cannot mistake for a parent test run's. */
 export function cleanChildEnv(env: Env): Env {
@@ -170,5 +179,12 @@ export function botEnv(env: Env, token: string): Env {
   };
   delete clean.GH_REPO;
   delete clean.GH_HOST;
-  return clean;
+  // A pager, an editor, a browser, an ssh or askpass program named here would run with the
+  // token in its environment, and a trace or debug log would print it (#668). So they go,
+  // and gh and git page through cat, never prompt, and redact their traces.
+  for (const name of Object.keys(clean)) if (BOT_DROPPED.test(name)) delete clean[name];
+  return { ...clean, GH_PAGER: 'cat', GIT_PAGER: 'cat', PAGER: 'cat', GH_PROMPT_DISABLED: '1', GIT_TRACE_REDACT: '1' };
 }
+
+// The variables the bot never passes on: programs gh or git would run, and their logs.
+const BOT_DROPPED = /^(?:PAGER|GH_PAGER|GIT_PAGER|EDITOR|VISUAL|GH_EDITOR|GIT_EDITOR|GIT_SEQUENCE_EDITOR|BROWSER|GH_BROWSER|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|SSH_ASKPASS|GH_DEBUG|DEBUG|GIT_CURL_VERBOSE|GIT_TRACE\w*)$/;

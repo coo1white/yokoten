@@ -5,9 +5,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
+import { releaseFix } from '../../rules/guards.ts';
 import { homeIn, homeOf } from '../../rules/privacy.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType, readStopFields, type StopEvent } from '../../run/hook.ts';
+import type { AgentAdapter } from './runtime.ts';
 import { type Added, addHook, checkHooksFile, hasHook, isObject, type Problem, readTable, removeHook, type Settings, UnreadableHooksFile, writeSettings } from '../hooks-file.ts';
 import type { RuntimeEnv } from '../desk/agent-env.ts';
 import type { RuntimeDesk } from '../desk/desk.ts';
@@ -38,6 +40,19 @@ export function readToolCall(input: unknown): Action {
 export const formatDenial = (reason: string): { stdout: string; exitCode: number } => ({ stdout: JSON.stringify({ permissionDecision: 'deny', permissionDecisionReason: reason }), exitCode: 2 });
 
 /**
+ * How a question reaches the person before the call runs (#401): PreToolUse's `ask`
+ * decision, on exit 0. Claude Code shows the reason and runs the call only after a yes.
+ * A runtime that has no such question gets the ask from commands/hook.ts as a note.
+ */
+export const formatAsk = (reason: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', permissionDecisionReason: reason } });
+
+/**
+ * Text added to the agent's context by an allowed PreToolUse call (#674): `additionalContext`
+ * on exit 0, with no decision, so Claude Code's own permission rules still decide the call.
+ */
+export const formatContext = (text: string): string => JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
+
+/**
  * How the hook changes a shell command before it runs (#390): PreToolUse's
  * `updatedInput`, on exit 0. It replaces the whole tool input, so the other fields
  * (description, timeout) are copied. Claude Code applies `updatedInput` only with a
@@ -53,14 +68,17 @@ export function formatRewrite(input: unknown, command: string, reason: string): 
 
 /**
  * A SessionStart event, or null when the input is not one or has no usable session id
- * (#405). `source` is startup, resume, clear or compact. The id names a file, so only
- * letters, digits, `-` and `_` pass.
+ * (#405). `source` is startup, resume, clear or compact; `model`, when there, is the session's model. The id names a file, so only
+ * letters, digits, `-` and `_` pass. `transcriptPath`, when there, is the session log.
  */
-export function readSessionStart(input: unknown): { sessionId: string; source: string } | null {
+export function readSessionStart(input: unknown): { sessionId: string; source: string; model?: string; transcriptPath?: string } | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const event = input as { session_id?: unknown; source?: unknown };
+  const event = input as { session_id?: unknown; source?: unknown; model?: unknown; transcript_path?: unknown };
   if (typeof event.session_id !== 'string' || !/^[\w-]{1,128}$/.test(event.session_id)) return null;
-  return { sessionId: event.session_id, source: typeof event.source === 'string' ? event.source : '' };
+  // The model names the session on the board only (#685): a plain short name, or nothing.
+  const model = typeof event.model === 'string' && /^[\w.:\[\]-]{1,64}$/.test(event.model) ? event.model : '';
+  const transcriptPath = typeof event.transcript_path === 'string' ? event.transcript_path : '';
+  return { sessionId: event.session_id, source: typeof event.source === 'string' ? event.source : '', ...(model ? { model } : {}), ...(transcriptPath ? { transcriptPath } : {}) };
 }
 
 /**
@@ -349,4 +367,26 @@ export const DESK: RuntimeDesk = {
   starter: { '.claude.json': '{"hasCompletedOnboarding": true}\n' },
   stateEnv: (state) => ({ CLAUDE_CONFIG_DIR: state }),
   hosts: ['api.anthropic.com', 'platform.claude.com'],
+};
+
+const approve = (start: string) => `\`YOKOTEN_RELEASE_APPROVAL=1 ${start}\``;
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'claude-code',
+  label: 'Claude Code',
+  projectHook: '`.claude/settings.json`: PreToolUse, Stop and SubagentStop',
+  userHook: '~/.claude/settings.json',
+  blocking: 'exit 2, the reason on stderr',
+  capabilities: { canRewrite: true, hasStopHook: true, needsTrust: true, failsOpen: false, passesRole: true },
+  readToolCall,
+  readStop,
+  formatDenial,
+  formatAsk,
+  formatContext,
+  formatRewrite,
+  releaseFix: releaseFix(`${approve('claude')} (or your agent's command)`),
+  agentEnv: AGENT_ENV,
+  desk: DESK,
+  call: (command) => ({ cwd: '/repo', tool_name: 'Bash', tool_input: { command } }),
 };

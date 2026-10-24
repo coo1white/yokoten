@@ -84,13 +84,41 @@ export const MISSING_NODE = 'yokoten: the guard cannot run, because node is not 
  *   its stdout goes straight to the hook's own, through fd 3.
  * - The subshell's stderr is /dev/null, so the shell's job line for a killed node
  *   ("Killed", or bash's line with the whole command and its paths) never shows.
- * The plugin's PreToolUse hook in .claude-plugin/plugin.json is this text; a test holds them equal.
+ * install's tool-call guard is this text. The plugin's tool guard fails closed inside
+ * bin/launch.mjs, so its hook command stays one short line (#706).
  */
 export const refuseOnFailure = (path: string, args: string): string =>
   `command -v node >/dev/null 2>&1 || { echo '${MISSING_NODE}' >&2; exit 1; }; ` +
   `{ err=$( ( node ${GUARD_HEAP} ${path} ${args} 2>&1 1>&3 3>&-; c=$?; printf x; exit $c ) 2>/dev/null ); code=$?; } 3>&1; ` +
   'case $code in 0|2) printf %s "${err%x}" >&2;; ' +
   '*) echo "yokoten\'s guard failed (exit $code), so the command is refused; run \\`yokoten doctor\\`" >&2; code=2;; esac; exit $code';
+
+/** What PreToolUse says when no safe plugin copy remains. It names no path. `bin/launch.mjs` says the same line. */
+export const PLUGIN_GUARD_MISSING = 'yokoten: the guard cannot run, because no safe plugin copy was found, so the command is refused';
+
+/** What SessionStart says when no safe plugin copy remains. It names no path, and the session still starts. `bin/launch.mjs` says the same line. */
+export const PLUGIN_SESSION_MISSING = 'yokoten: the session check cannot run, because no safe plugin copy was found';
+
+/** What the plugin hook says when `bin/launch.mjs` is not in this session's plugin folder. A tool call is refused. Session start still goes on. */
+export const PLUGIN_COPY_GONE = 'yokoten: this plugin copy is gone; restart Claude Code';
+
+/**
+ * The Claude Code plugin hook (#706). The command is one short line, so a refusal
+ * does not show a long program in front of the message. It runs `bin/launch.mjs`
+ * when that file is there. When the file is gone, it says `PLUGIN_COPY_GONE` and
+ * refuses a tool call (exit 2), or prints the line and exits 0 at session start.
+ * The fallback path stays in the command, so the file scan still sees
+ * `${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs`. The launcher reads every other path.
+ */
+export function pluginHookCommand(isSessionStart: boolean): string {
+  if (/['"\\]/.test(PLUGIN_COPY_GONE)) throw new Error('the gone line has a quote or a backslash');
+  const launch = '"${CLAUDE_PLUGIN_ROOT}/bin/launch.mjs"';
+  const fallback = '"${CLAUDE_PLUGIN_ROOT}/bin/yokoten.mjs"';
+  const mode = isSessionStart ? 'session' : 'tool';
+  const yokotenArgs = isSessionStart ? 'doctor --session' : 'hook --commands-only';
+  const say = isSessionStart ? `echo '${PLUGIN_COPY_GONE}'; exit 0` : `echo '${PLUGIN_COPY_GONE}' >&2; exit 2`;
+  return `[ -f ${launch} ] 2>/dev/null || { ${say}; }; node ${launch} ${mode} ${fallback} ${yokotenArgs}`;
+}
 
 /**
  * The line that runs the commit check from a project's own pre-commit, by `cli`'s path.
@@ -128,6 +156,8 @@ export interface Command {
   argument?: string;
   /** The positional arguments it takes, in order, when it takes more than one: an action, then its word (#447). */
   arguments?: string[];
+  /** It takes any number of positional arguments, in the order given: a merge train's queue (#320). */
+  many?: boolean;
   example: string;
 }
 
@@ -216,6 +246,39 @@ export const COMMANDS: Command[] = [
     example: 'yokoten check --staged',
   },
   {
+    name: 'mcp',
+    summary: 'start the project MCP server and check its tools for every agent client',
+    usage: '[dir] [--command "<command>"] [--json]',
+    text: [
+      'Starts each stdio server in .mcp.json, .vscode/mcp.json or mcp.json and calls tools/list.',
+      'It checks each tool schema for Claude, Gemini and OpenAI strict mode, the tool and',
+      'property names, all four annotations, the count under 40, and an outputSchema result',
+      'that carries both structuredContent and text. It also reports any non-JSON-RPC line on',
+      'stdout, and warns when a Windows config needs cmd /c for npx or a .cmd file.',
+      'Use --command to check a server that has no config entry.',
+    ],
+    options: [
+      { name: '--command', value: 'command', text: 'start this command instead of a config entry, such as "node server.ts"' },
+      { name: '--json', text: 'the findings as JSON on stdout' },
+    ],
+    argument: 'dir',
+    example: 'yokoten mcp',
+  },
+  {
+    name: 'borrowed',
+    summary: 'compare borrowed code with its upstream, and open issues when it moved',
+    usage: '[--dry-run] [--json]',
+    text: [
+      "Compares each file in src/borrowed/ with upstream's default branch, through gh.",
+      'It opens one issue per source that changed, and calls out a security fix.',
+    ],
+    options: [
+      { name: '--dry-run', text: 'show the report and the issues it would open, and write nothing' },
+      { name: '--json', text: 'the report as JSON on stdout' },
+    ],
+    example: 'yokoten borrowed --dry-run',
+  },
+  {
     name: 'redact',
     summary: 'command output with your name, emails, logins and private hosts hidden',
     usage: '',
@@ -290,12 +353,36 @@ export const COMMANDS: Command[] = [
     usage: '[--agent <name>] [--commands-only] [--stop] [--json]',
     text: ['Reads one tool call on stdin. It exits 2, with the reason on stderr, when it blocks the call.', 'With --agent antigravity, it says deny on stdout and exits 0, as Antigravity CLI asks.'],
     options: [
-      { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness or grok' },
+      { name: '--agent', value: 'name', text: 'the runtime that sends the call: claude-code (the default), codex, gemini, antigravity, muse, deepseek-harness, grok or opencode' },
       { name: '--commands-only', text: 'judge commands only, and leave files to the project' },
       { name: '--stop', text: 'read the end-of-turn event (Claude Code Stop or SubagentStop, Codex, Muse Code or Grok CLI Stop, Gemini AfterAgent) and check the changed files; a worker also runs the done-when command' },
       { name: '--json', text: 'the result as JSON on stdout' },
     ],
     example: `echo '{"tool_input":{"command":"git status"}}' | yokoten hook`,
+  },
+  {
+    name: 'anchor',
+    summary: "list a worker's checkpoints: commits whose checks passed",
+    usage: '[--json]',
+    text: [
+      'Lists the anchors recorded in this checkout, newest first. A worker records one when',
+      'its checks pass and its tree is clean. An anchor is a commit, so going back is a new',
+      'branch from it: `git switch -c try-2 <commit>`. Nothing is reset or deleted.',
+    ],
+    options: [{ name: '--json', text: 'the anchors as JSON on stdout' }],
+    example: 'yokoten anchor',
+  },
+  {
+    name: 'stops',
+    summary: 'the log of the guard stops on this computer, or turn it off and on',
+    usage: '[off | on]',
+    text: [
+      'Shows where the stop log is, and whether yokoten writes it. `off` stops the writing',
+      'and deletes the log; `on` starts it again. The log stays on this computer.',
+    ],
+    options: [],
+    arguments: ['action'],
+    example: 'yokoten stops off',
   },
   {
     name: 'worker',
@@ -309,7 +396,9 @@ export const COMMANDS: Command[] = [
       "The guard refuses a worker's plain ways to remove it; the server and credentials kept",
       'from the worker are the real lock. Given a subfolder, it marks the worktree it is in, and names it.',
       '`git worktree remove <dir>` removes the file with the worktree; `yokoten worker unmark <dir>`',
-      'clears the list entry, and only the lead runs it. The main checkout and a submodule are never marked.',
+      'clears the list entry, and only the lead runs it. A plain clone (a desk) is marked in its own `.git` (#672).',
+      'Run it from your own checkout. The main checkout (the clone the lead runs in, or one with worktrees)',
+      "and a submodule are never marked. A worker can't mark or unmark.",
       '`yokoten worker env [runtime]` lists the names an agent that yokoten starts would get from this shell.',
       'It never shows a value. Tokens, keys and passwords stay out (#613).',
     ],
@@ -320,7 +409,7 @@ export const COMMANDS: Command[] = [
   {
     name: 'desk',
     summary: "start a worker's agent in its own fenced desk: its clone, no network but its API",
-    usage: '<agent> <folder> [--read <paths>] [--host <hosts>] [--marks] -- <command>',
+    usage: '<agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>',
     text: [
       'Starts the command after -- in a sandbox around <folder>, which must be its own git clone.',
       "The agent writes only in the folder and the desk's own state folder, <folder>.state, which",
@@ -329,14 +418,32 @@ export const COMMANDS: Command[] = [
       '.git/config and .git/hooks stay read-only. YOKOTEN_ROLE=worker and TZ=UTC; tokens stay out.',
       'Agents: claude-code, codex (DeepSeek too), grok, muse. Linux and WSL2 use bwrap; macOS',
       'uses sandbox-exec; native Windows is not built yet. Run the commit check outside until #665.',
+      'The agent joins the team of the project you run it from, by the desk folder\'s name or --name: see `yokoten msg`.',
     ],
     options: [
+      { name: '--name', value: 'name', text: "the agent's name on the team (default: the desk folder's name)" },
       { name: '--read', value: 'paths', text: 'more paths to show read-only, joined by commas' },
       { name: '--host', value: 'hosts', text: "more API hosts the agent may reach, joined by commas" },
       { name: '--marks', text: 'show the private-marks file read-only (off: the agent could read it until #665)' },
     ],
     arguments: ['agent', 'folder'],
     example: 'yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"',
+  },
+  {
+    name: 'msg',
+    summary: 'agents of every vendor message each other: send, inbox, who, and the lead\'s log',
+    usage: 'send <to> [<text>] | inbox | who | log',
+    text: [
+      'Each agent writes only its own outbox, in the team folder next to your checkout (<repo>.team).',
+      'In a desk the rest of the team folder is read-only, so no agent can fake a sender.',
+      'The text comes after the name, or on stdin. It gets the same privacy scan as posted text.',
+      'Hooks add unread messages to the agent\'s context, marked as data that grants no approval.',
+      'Claude Code and Grok get them before a tool call; every agent gets them at the end of a turn.',
+      '`inbox` shows yours and marks them read. `who` lists the team. `log` shows every message; only the lead runs it.',
+    ],
+    options: [],
+    arguments: ['action', 'to', 'text'],
+    example: 'yokoten msg send lead "tests pass; ready for review"',
   },
   {
     name: 'explain',
@@ -346,6 +453,21 @@ export const COMMANDS: Command[] = [
     options: [{ name: '--json', text: 'the explanation, or the ids, as JSON on stdout' }],
     argument: 'id',
     example: 'yokoten explain release',
+  },
+  {
+    name: 'pr',
+    summary: 'keep open pull requests up to date and resolve mechanical conflicts',
+    usage: 'sync',
+    text: [
+      'For each open pull request whose branch is behind its base branch, merges the base',
+      'in, resolves only the mechanical conflicts (two added blocks, or two changed import',
+      'lists), runs typecheck and the tests of the touched files, and pushes as the bot.',
+      'Anything else stops with the files, the hunks and a dispatch brief. It never',
+      'force-pushes, rebases or resolves on GitHub. Run it after every merge.',
+    ],
+    options: [],
+    argument: 'action',
+    example: 'yokoten pr sync',
   },
   {
     name: 'bot',
@@ -360,17 +482,44 @@ export const COMMANDS: Command[] = [
     example: 'yokoten bot -- gh pr create --fill',
   },
   {
+    name: 'train',
+    summary: 'merge an approved queue one pull request at a time, with a gate between each',
+    usage: '<pr>... [--wait <seconds>]',
+    text: [
+      'Merges each pull request in the order given, as the bot, and stops at the first one',
+      'that needs a person. Only the lead runs it.',
+      'Before the first merge it records every base branch, because GitHub forgets a base',
+      'when it deletes the branch. A pull request stacked on a squash-merged branch then',
+      'merges from the base it really shares with its old branch, not an older one.',
+      'A conflict that is only import lines is resolved by taking the union. Any other',
+      'conflict, a failing test or a missing approval stops the train.',
+      'Each merged tree runs the project\'s tests and `check` before it is pushed, and CI',
+      'must pass on the pushed merge before the squash.',
+    ],
+    options: [{ name: '--wait', value: 'seconds', text: 'how long to wait for CI after a push (default 1800)' }],
+    many: true,
+    example: 'yokoten train 1207 1209 1211',
+  },
+  {
     name: 'board',
     summary: 'the team at a glance: agents, pull requests and worktrees, live on a page',
-    usage: '[--text]',
+    usage: '[--text] [--no-open] [--role name] [--vendor name]',
     text: [
-      'Serves a live page on this machine only (127.0.0.1): the agents on the left,',
-      'the picked one in the middle, and each pull request stage on the right. It',
-      'prints the link and runs until you stop it. The page refreshes every 15 seconds.',
-      'An agent joins by writing .yokoten-agent.json at its worktree root, and leaves',
-      'by removing it; the guide shows the format.',
+      'Serves a live page on this machine only, at http://<repo>.localhost:<port>/.',
+      'The folder name is the host. The port stays with this repo. The first visit',
+      'sets a cookie and opens the page without the token. Agents sit on the left.',
+      'The picked one fills the rest. Needs you is a bell next to Live. The',
+      'board opens the page in your browser, prints the link, and runs until you stop it.',
+      'Chrome and Edge can install it as its own window. The page refreshes every 15',
+      'seconds. Agents in this repo, its worktrees and its desks show by themselves:',
+      'the hooks write .yokoten-agent.json for them.',
     ],
-    options: [{ name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' }],
+    options: [
+      { name: '--text', text: 'print the agents, pull requests and worktrees as plain text and exit' },
+      { name: '--no-open', text: 'only print the link; do not open the browser' },
+      { name: '--role', value: 'name', text: 'with --text: only this role in the usage view: engineer, reviewer or checker' },
+      { name: '--vendor', value: 'name', text: 'with --text: only this vendor in the usage view, such as claude or muse' },
+    ],
     example: 'yokoten board --text',
   },
   {

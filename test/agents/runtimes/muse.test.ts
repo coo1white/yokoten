@@ -2,11 +2,11 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { addProjectHooks, addUserHooks, hasUserDir, isGuardOff, projectHooksState, readToolCall, readTrust, userHooksState, userSettingsFile } from '../../../src/agents/runtimes/muse.ts';
-import { makeSandbox } from '../../repo/helpers.ts';
+import { CLI, makeSandbox, makeTempDir, runChild } from '../../repo/helpers.ts';
 
 /** Write Muse's trust store in `home`, in the shape Muse Code 1.4.11 writes it (#341). */
 function trustFolder(home: string, ...folders: string[]): string {
@@ -74,7 +74,8 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match(result.stdout, /added the Muse Code tool-call hook in \.muse\/hooks\.json/);
   assert.match(result.stdout, /added the Muse Code stop check in \.muse\/hooks\.json/);
   assert.match(result.stdout, /added the Muse Code session doctor in \.muse\/hooks\.json/);
-  assert.match(result.stdout, /Muse Code runs the hooks in \.muse\/hooks\.json only after you trust this folder/);
+  // No Muse home: init writes the hooks and leaves the trust step out (#654).
+  assert.doesNotMatch(result.stdout, /Muse Code runs the hooks/);
   const written = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(written.hooks.PreToolUse.length, 2, "another hook's group stays");
   assert.equal(written.hooks.PreToolUse[1].matcher, 'bash|write_file|edit_file|apply_patch', 'named tools: "*" would also match read_skill');
@@ -89,7 +90,9 @@ test('muse project hooks: init writes the guard and the stop check, keeps other 
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook: \.muse\/hooks\.json is in place; trust not checked, no ~\/\.config\/muse\n/);
   trustFolder(sandbox.home, realpathSync(sandbox.repo));
   assert.match((await sandbox.call(['doctor'])).stdout, /ok +muse-hook/);
-  assert.match((await sandbox.call(['init'])).stdout, /same the Muse Code tool-call hook/);
+  const trusted = await sandbox.call(['init']);
+  assert.match(trusted.stdout, /kept the Muse Code tool-call hook/);
+  assert.match(trusted.stdout, /Muse Code runs the hooks in \.muse\/hooks\.json only after you trust this folder/);
   written.hooks.Stop[0].hooks[0].command = 'node old/yokoten.ts hook --stop --agent muse';
   sandbox.write('.muse/hooks.json', JSON.stringify(written));
   assert.equal(projectHooksState(sandbox.repo, cli).stop, 'updated');
@@ -192,10 +195,64 @@ test('muse user hooks (#557): install writes the doctor and the guard in its set
   const explainUser = (await sandbox.call(['explain', 'muse-user-hook'])).stdout;
   assert.match(explainUser, /session-start doctor and command guard/);
   assert.match(explainUser, /compares the SessionStart and PreToolUse hooks in its settings\.json/);
-  assert.match((await sandbox.call(['install'])).stdout, /^same the Muse Code command guard in ~\/\.config\/muse\/settings\.json$/m);
+  assert.match((await sandbox.call(['install'])).stdout, /^kept the Muse Code command guard in ~\/\.config\/muse\/settings\.json$/m);
   // The positive control: another runtime path is out of date, for both hooks.
   const env = { HOME: sandbox.home };
   assert.deepEqual(userHooksState(env, '/elsewhere/bin/yokoten.ts', 'gone'), { doctor: 'updated', guard: 'updated' });
   assert.deepEqual(addUserHooks(env, '/elsewhere/bin/yokoten.ts', 'gone'), { doctor: 'updated', guard: 'updated' });
   assert.match((await sandbox.call(['doctor'])).stdout, /note +muse-user-hook: the session-start doctor and the command guard in ~\/\.config\/muse\/settings\.json are out of date/);
+});
+
+// #672: a desk is a plain `git clone`. Muse runs its hooks with a short env (HOME, PATH, LANG,
+// USER, MUSE_SESSION_ID...): no YOKOTEN_ROLE and no XDG_*, as a real Muse Code 1.4.11 run
+// showed. So the mark in the clone's own `.git` is what makes Muse a worker there.
+test("Muse's hook entry point in a marked clone sees a worker and refuses a lead-only edit (#672)", async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const desk = join(makeTempDir('yokoten-desk-'), 'desk');
+  runChild('git', ['clone', '-q', sandbox.repo, desk], { env: sandbox.env });
+  // The hooks yokoten writes for Muse, run from the clone's own bin/yokoten.ts.
+  addProjectHooks(desk, 'bin/yokoten.ts');
+  mkdirSync(join(desk, 'bin'));
+  symlinkSync(CLI, join(desk, 'bin', 'yokoten.ts'));
+  const hooks = JSON.parse(readFileSync(join(desk, '.muse', 'hooks.json'), 'utf8'));
+  const command = (event: string) => hooks.hooks[event][0].hooks[0].command as string;
+  // The desk's view: its own empty home and state, and only the names Muse passes a hook.
+  const deskHome = makeTempDir('yokoten-desk-home-');
+  const museEnv = { PATH: process.env.PATH ?? '', HOME: deskHome, LANG: 'C.UTF-8', USER: 'worker', SHELL: '/bin/bash', PWD: desk, MUSE_SESSION_ID: 's1', MUSE_THREAD_ID: 't1' };
+  const hook = (event: string, input: string) => runChild('/bin/bash', ['-c', command(event)], { cwd: desk, env: museEnv, input });
+  const edit = (path: string) => hook('PreToolUse', payload(desk, 'write_file', { path, content: 'x\n' }));
+  // Negative control: unmarked, Muse in the clone looks like the lead. This is the gap #672 closes.
+  assert.equal(edit(join(desk, 'AGENTS.md')).status, 0);
+  assert.doesNotMatch(hook('SessionStart', '{}').stdout, /this session is a worker/);
+  // The lead can't mark the clone it works in.
+  let result = await sandbox.call(['worker', 'mark', desk], { cwd: desk });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /is the main checkout, the lead's/);
+  // The lead marks the desk from its own checkout.
+  result = await sandbox.call(['worker', 'mark', desk]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /marked the clone at .*Removing the clone removes the mark\./);
+  assert.ok(existsSync(join(desk, '.git', 'yokoten-worker')));
+  // The session start says worker, and the guard refuses a lead-only edit and a push.
+  assert.match(hook('SessionStart', '{}').stdout, /this session is a worker, because its worktree or clone carries the worker mark/);
+  const refused = edit(join(desk, 'AGENTS.md'));
+  assert.equal(refused.status, 2, refused.stderr);
+  assert.match(refused.stderr, /AGENTS\.md is lead-only/);
+  assert.match(refused.stderr, /This clone \(.*\) carries the worker mark/);
+  const pushed = hook('PreToolUse', payload(desk, 'bash', { command: 'git push origin HEAD', workdir: desk }));
+  assert.equal(pushed.status, 2);
+  assert.match(pushed.stderr, /worker does not push/);
+  // Work goes on: a code edit passes.
+  assert.equal(edit(join(desk, 'src', 'a.ts')).status, 0);
+  // The lead's own checkout stays the lead's.
+  assert.equal((await sandbox.call(['hook', '--agent', 'muse'], { input: payload(sandbox.repo, 'write_file', { path: join(sandbox.repo, 'AGENTS.md') }) })).status, 0);
+  // A checkout with worktrees hanging off it is a main checkout, never marked.
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', join(makeTempDir('yokoten-tree-'), 'wt'));
+  result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: deskHome });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /is the main checkout, the lead's/);
 });

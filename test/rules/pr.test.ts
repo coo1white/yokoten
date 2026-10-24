@@ -22,18 +22,21 @@ import {
   checkIssueTitle,
   checkOwnedTier,
   hasMadeWith,
+  parseMadeWith,
   checkPullRequest,
   checkPullRequestBody,
   checkPullRequestTitle,
   isChangeFile,
   largeDiff,
   longSentences,
+  madeWithModelNote,
   ownersOf,
   parseCodeOwners,
   noMilestoneFinding,
   prTier,
   readCommandBody,
   readCommandIssueLabels,
+  readCommandLabels,
   readCommandMilestone,
   readLinkedIssues,
   type PullRequest,
@@ -140,9 +143,19 @@ test('pull request: one type label and one tier label that matches the body (#22
   assert.match(wrong[0], /^labels: `tier A` does not match the body's `tier: B`\. .*Change the label to `tier B`, or the first line of the body to `tier: A`/);
   assert.match(labelProblems(['feat', 'tier A', 'tier B'])[0], /^labels: 2 tier labels\. .*Keep one tier label: `tier B`/);
   // Both right, in each form and with each name a project may use for the type.
-  for (const labels of [['feat', 'tier B'], ['bug', 'tier: B'], ['fix', 'Tier B'], ['enhancement', 'tier:B'], ['docs', 'owner', 'tier B']]) {
+  for (const labels of [['feat', 'tier B'], ['bug', 'tier: B'], ['fix', 'Tier B'], ['enhancement', 'tier:B'], ['security', 'tier B'], ['docs', 'owner', 'tier B']]) {
     assert.deepEqual(labelProblems(labels), [], labels.join(', '));
   }
+  // The bot never picks `security` for a fix: it says more than the type, like `hotfix` (#738).
+  assert.deepEqual(readCommandLabels(['gh', 'pr', 'create', '-t', 'fix: a'], 'tier: B\n')!.missing[0], ['bug', 'fix']);
+  // An edit adds only what its new title or body asks for, and names the pull request and the tier it sets (#422).
+  const edit = readCommandLabels(['gh', 'pr', 'edit', '7', '-t', 'fix: a'], 'tier: C\n')!;
+  assert.deepEqual(edit.missing, [['bug', 'fix'], ['tier C', 'tier: C']]);
+  assert.deepEqual(edit.edit, { selector: '7', tier: 'C' });
+  assert.equal(edit.hasTierLabel, false);
+  assert.deepEqual(readCommandLabels(['gh', 'pr', 'edit', '7', '--add-label', 'tier C'], 'tier: C\n')!.missing, []);
+  assert.equal(readCommandLabels(['gh', 'pr', 'edit', '7', '--add-label', 'tier C'], 'tier: C\n')!.hasTierLabel, true);
+  assert.equal(readCommandLabels(['gh', 'pr', 'edit', '7', '--add-label', 'bug'], null), null, 'a label edit has nothing to add');
   // No tier line in the body: pr-tier says so, and the labels do not say it again.
   const noTier = checkPullRequest({ ...goodPr(), body: goodPr().body.replace('tier: B\n', '') }, DEFAULTS).map((p) => p.id);
   assert.deepEqual(noTier, ['pr-tier']);
@@ -186,6 +199,76 @@ test('pull request body: the last line is `Made with <agent> (<model>)` (#570)',
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides it');
   assert.deepEqual(bodies(goodPr().body.replace(made, '\n<!-- 🤖 Made with worker (opus) -->\n')), ['pr-made-with'], 'a comment hides the emoji line');
   assert.deepEqual(bodies(`${goodPr().body}<!-- a note -->\n`), [], 'a trailing comment is set aside');
+});
+
+// #748: the `Made with` line names the model the worker ran. The worker's own checkout
+// filed that model in its status file; a harness's prompt can make the agent guess another.
+test('Made with: the worker model matches its status file, or a note says so (#748)', () => {
+  const body = (line: string) => `tier: B\nCloses #47\n\n## Why\nw\n\n## What changed\n- a\n\n## How tested\nthe tests pass\n\n${line}\n`;
+  const note = madeWithModelNote(body('Made with lead Codex (opus), worker (gpt-6.1-sol)'), 'deepseek-flash', '748-a-desk');
+  assert.equal(note?.id, 'pr-made-with');
+  assert.match(note?.what ?? '', /names worker gpt-6\.1-sol, but the status file of 748-a-desk says the worker ran deepseek-flash/);
+  assert.match(note?.fix ?? '', /name the model the worker ran \(deepseek-flash\)/);
+  // Positive controls: the worker's model, whatever its case or spacing, gives no note.
+  assert.equal(madeWithModelNote(body('Made with worker (deepseek-flash)'), 'deepseek-flash', 'b'), null, 'the short form');
+  assert.equal(madeWithModelNote(body('Made with worker DeepSeek (DeepSeek-Flash), reviewed by Grok (grok-5), lead Codex (gpt-6.1-sol)'), 'deepseek-flash', 'b'), null, 'the worker model matches, and case does not');
+  // A lead, a reviewer or another agent that names the status model does not hide a wrong worker model.
+  for (const line of [
+    'Made with worker Codex (opus), lead DeepSeek (deepseek-flash)',
+    'Made with worker Codex (opus), reviewed by DeepSeek (deepseek-flash)',
+    'Made with worker Codex (opus), DeepSeek (deepseek-flash)',
+  ]) assert.match(madeWithModelNote(body(line), 'deepseek-flash', 'b')?.what ?? '', /names worker opus, but/);
+  // A line with no worker role has no worker model to compare, even when the lead names it.
+  assert.equal(madeWithModelNote(body('Made with lead DeepSeek (deepseek-flash), Grok (grok-5)'), 'deepseek-flash', 'b'), null, 'no worker role');
+  // Nothing to compare, or no good line: no note.
+  assert.equal(madeWithModelNote(body('Made with worker (opus)'), '', 'b'), null, 'no status model');
+  assert.equal(madeWithModelNote(body('Made with worker (opus)'), '  ', 'b'), null, 'a blank status model');
+  assert.equal(madeWithModelNote('no Made with line', 'deepseek-flash', 'b'), null, 'no line');
+});
+
+// #673: the line may name the reviewers; the roles can be read back.
+test('pull request body: the Made with line may name one or two reviewers (#673)', () => {
+  const made = '\nMade with worker (opus)\n';
+  const bodies = (line: string) => checkPullRequestBody({ body: goodPr().body.replace(made, `\n${line}\n`), files: goodPr().files }, DEFAULTS);
+  const full = '🤖 Made with worker Claude Code (Opus 5.5), reviewed by Grok (grok-5) and Muse (Spark), lead Claude Code (Opus 5.5)';
+  // Positive controls: with two reviewers, with one, and the old forms without any.
+  assert.deepEqual(bodies(full), []);
+  assert.deepEqual(bodies('🤖 Made with worker Claude Code (Opus 5.5), reviewed by Grok (grok-5), lead Claude Code (Opus 5.5)'), []);
+  assert.deepEqual(bodies('🤖 Made with worker Claude Code (Opus 5.5), lead Claude Code (Opus 5.5)'), []);
+  assert.deepEqual(bodies('Made with worker (opus)'), []);
+  // The roles come back for a later count.
+  assert.deepEqual(parseMadeWith(full)?.roles, {
+    writers: [{ vendor: 'Claude Code', model: 'Opus 5.5' }],
+    reviewers: [{ vendor: 'Grok', model: 'grok-5' }, { vendor: 'Muse', model: 'Spark' }],
+    leads: [{ vendor: 'Claude Code', model: 'Opus 5.5' }],
+    others: [],
+  });
+  assert.deepEqual(parseMadeWith('Made with worker Claude Code (Opus 5.5), lead Claude Code (Opus 5.5)')?.roles?.reviewers, []);
+  assert.deepEqual(parseMadeWith('Made with worker X (a), reviewed by Grok (grok-5), lead Z (c)')?.roles, { writers: [{ vendor: 'X', model: 'a' }], reviewers: [{ vendor: 'Grok', model: 'grok-5' }], leads: [{ vendor: 'Z', model: 'c' }], others: [] });
+  // Two workers or two leads are all kept.
+  const twin = parseMadeWith('Made with worker A (a), worker B (b), lead C (c), lead D (d)')?.roles;
+  assert.deepEqual([twin?.writers.map((x) => x.vendor), twin?.leads.map((x) => x.vendor)], [['A', 'B'], ['C', 'D']]);
+  // Role words ignore case and extra spaces; names are trimmed.
+  assert.deepEqual(parseMadeWith('Made with Worker  X (a),  Reviewed  by  Y (b)  and  Z (c),  LEAD W (d)')?.roles, { writers: [{ vendor: 'X', model: 'a' }], reviewers: [{ vendor: 'Y', model: 'b' }, { vendor: 'Z', model: 'c' }], leads: [{ vendor: 'W', model: 'd' }], others: [] });
+  assert.deepEqual(parseMadeWith('Made with lead (opus), worker (sonnet)')?.roles?.others, [{ vendor: 'lead', model: 'opus' }, { vendor: 'worker', model: 'sonnet' }]);
+  assert.equal(parseMadeWith('nothing here'), null);
+  // A malformed reviewed-by part is reported with a fix line.
+  for (const bad of [
+    'Made with worker X (a), reviewed by Y, lead Z (c)',
+    'Made with worker X (a), reviewed by Y (b) and, lead Z (c)',
+    'Made with worker X (a), reviewed by Y (b) and Z (c) and W (d), lead Z (c)',
+    'Made with worker X (a), reviewed by (b), lead Z (c)',
+    'Made with worker X (a), reviewed by Y (b), reviewed by Z (c), reviewed by W (d), lead L (e)',
+    'Made with worker X (a), reviewed by Y (b) and Z (c), reviewed by W (d), lead L (e)',
+    'Made with worker X (a), reviewed by Y (b), and Z (c), lead L (e)',
+    'Made with worker X (a), reviewed by Y (b) and Z (c) and W (d), not-a-pair',
+  ]) {
+    const found = bodies(bad);
+    assert.deepEqual(found.map((p) => p.id), ['pr-made-with'], bad);
+    assert.match(found[0].what, /reviewed by/, bad);
+    assert.match(found[0].fix, /^write `reviewed by <agent> \(<model>\)`/, bad);
+    assert.equal(hasMadeWith(bad), false, bad);
+  }
 });
 
 test('pull request: docs, tests and CI need no changelog line; a reason lets code through (#47)', () => {
@@ -358,6 +441,8 @@ test('issue labels: one type and one tier, only the kinds the repo has (#544)', 
   // A name the repo uses for the kind counts: an alias, `tier:` with a colon, any case.
   assert.deepEqual(checkIssueLabels(['enhancement', 'tier: B'], repo), []);
   assert.deepEqual(checkIssueLabels(['incident', 'Tier C'], repo), []);
+  // `security` is a type label, like `bug`: a hole in the guard is a fix (#738).
+  assert.deepEqual(checkIssueLabels(['security', 'tier B'], [...repo, 'security']), []);
   // A repo without a kind gets no line for it, even when the issue lacks it too.
   assert.deepEqual(checkIssueLabels(['bug'], ['bug', 'feat']), [], 'the repo has no tier labels');
   assert.deepEqual(checkIssueLabels(['tier A'], ['tier A', 'tier B']), [], 'the repo has no type labels');

@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { type Config, type Env, loadConfig } from '../rules/config.ts';
 import { matcher } from '../rules/config.ts';
-import { docsLink, type Finding, finding, type RuleId } from '../rules/message.ts';
+import { docsLink, type Finding, finding, noteWork, type RuleId } from '../rules/message.ts';
 import { CHANGES_DIR, parseCodeOwners } from '../rules/pr.ts';
 import { BUILD_DIRS, isBuildOutput } from '../rules/layout.ts';
 import { homeOf } from '../rules/privacy.ts';
@@ -29,9 +29,10 @@ import { isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
-import { gitConfig } from '../run/check.ts';
+import { gitConfig, remembered } from '../run/check.ts';
 import { indexFiles } from '../run/check.ts';
 import { FIRST_MILESTONE, lackingLabels, pickNewMilestone } from './plan.ts';
+import { nodeTestsFix } from './advice/tests-job.ts';
 import { commands, FALLBACK_RUNNERS, orList, runLines, runsTests, scriptedRuns, testLanguages } from './advice/test-commands.ts';
 import { skillFiles, skillsDir } from './install.ts';
 
@@ -185,7 +186,10 @@ const isWorkspaces = (root: string) => Boolean(packageJson(root)?.workspaces) ||
  * Whether the workflows run a yokoten command: anywhere in the text by its path, or as a
  * command in a `run:` step, where `- run: npx yokoten check` starts after the key (#298).
  */
-const ciRuns = (ci: string, command: CommandTest) => command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+const ciRuns = (ci: string, command: CommandTest) => {
+  noteWork(ci.length);
+  return command.test(ci) || runLines(ci).flatMap(commands).some((c) => command.test(c));
+};
 const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].length;
 // A step that uses yokoten's own Action, at any ref (even the guide's "<full commit SHA>"), quoted or not, with a comment or not.
 // The ref is read one word at a time, so a long line takes linear time and no RangeError (#322).
@@ -197,11 +201,14 @@ const usesYokoten = (line: string) => {
   const head = USES_HEAD.exec(line);
   if (!head) return false;
   REF_WORD.lastIndex = head[0].length;
-  if (!REF_WORD.exec(line)) return false;
+  const first = REF_WORD.exec(line);
+  if (!first) return false;
+  noteWork(first[0].length);
   let at = REF_WORD.lastIndex;
   for (REF_GAP.lastIndex = at; REF_GAP.exec(line); REF_GAP.lastIndex = at) {
     REF_WORD.lastIndex = REF_GAP.lastIndex;
-    REF_WORD.exec(line);
+    const word = REF_WORD.exec(line);
+    noteWork(word ? word[0].length : 1);
     at = REF_WORD.lastIndex;
   }
   const quote = head[1];
@@ -218,12 +225,16 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
   const found: { prCheck: boolean }[] = [];
   const text = workflow.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const item = /^([ \t]*)-[ \t]+(.*)$/.exec(text[i]);
     if (!item) continue;
     // The item's keys sit two past the dash; its first key is on the dash line.
     const keyIndent = item[1].length + 2;
     const lines = [' '.repeat(keyIndent) + item[2]];
-    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) lines.push(text[i + 1]);
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || indentOf(text[i + 1]) > item[1].length); i++) {
+      noteWork(text[i + 1].length + 1);
+      lines.push(text[i + 1]);
+    }
     const keys = lines.filter((l) => l.trim() !== '' && indentOf(l) === keyIndent);
     if (!keys.some(usesYokoten)) continue;
     let inWith = false;
@@ -241,10 +252,14 @@ export const yokotenActions = (workflow: string): { prCheck: boolean }[] => {
 export const onPullRequest = (workflow: string): boolean => {
   const text = workflow.split(/\r?\n/);
   for (let i = 0; i < text.length; i++) {
+    noteWork(text[i].length + 1);
     const on = /^(?:on|"on"|'on'):(.*)$/.exec(text[i]);
     if (!on) continue;
     const block = [on[1]];
-    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) block.push(text[i + 1]);
+    for (; i + 1 < text.length && (text[i + 1].trim() === '' || /^[ \t#]/.test(text[i + 1])); i++) {
+      noteWork(text[i + 1].length + 1);
+      block.push(text[i + 1]);
+    }
     if (block.some((l) => /(?:^|[\s[,{])pull_request(?:_target)?(?=[\s:,\]}]|$)/.test(l.replace(/#.*/, '')))) return true;
   }
   return false;
@@ -286,15 +301,17 @@ const noTests = (root: string) => {
   return describeNoTestRun(root);
 };
 /**
- * The fix for the tests step (#501): the file, the job to add, and the `needs` list of `ci`.
- * The job is one line of YAML, so the session start can show it. The command is `npm test`
- * when package.json has a test script, the workspaces command in a workspaces repo, else a
- * placeholder for the user's own.
+ * The fix for the tests step (#501, #653). The job stays one line, so a session start
+ * can show it. A Node project with a test script gets real YAML. Another project gets
+ * a placeholder for its own command.
  */
 const testsFix = (root: string) => {
+  const node = nodeTestsFix(root);
+  if (node) return node;
   const file = '.github/workflows/yokoten.yml';
-  const isNode = testScript(root) !== '' || isWorkspaces(root);
-  const command = isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : testScript(root) ? 'npm test' : '<your test command>';
+  // A test script does not make this Node when another language is already detected.
+  const isNode = testLanguages(root).length === 0 && (testScript(root) !== '' || isWorkspaces(root));
+  const command = !isNode ? '<your test command>' : isWorkspaces(root) ? workspacesTest(root).replaceAll('`', '') : 'npm test';
   const install = isNode && existsSync(join(root, 'package-lock.json')) ? ', {run: npm ci}' : '';
   const uses = isNode ? 'the checkout and setup-node steps of the other jobs' : 'the checkout step of the other jobs';
   const steps = `[<${uses}>${install}, {run: ${command}}]`;
@@ -378,6 +395,9 @@ export interface ServerCheck {
 }
 
 const RULESET = 'in Settings, Rules, Rulesets, edit the ruleset on the default branch';
+const TAG_BYPASS_FIX = 'in Settings, Rules, Rulesets, edit the v* tag ruleset that blocks tag creation, and add Repository admin to its bypass list and remove any bot';
+const RELEASE_REVIEWER_FIX = 'in Settings, Environments, create "release" if it is missing, then turn on "Required reviewers" and add yourself';
+const RELEASE_TAG_RULE_FIX = 'in Settings, Environments, release, under "Deployment branches and tags", choose "Selected branches and tags", then add a Tag rule named v* and remove any Branch rule named v*';
 
 /**
  * Each server setting, judged. `settings` is what the host adapter read, or why it could not.
@@ -399,13 +419,34 @@ export function serverChecks(settings: ServerSettings | Unread, { isCiOff: isOff
   const off = ([['secret scanning', sec.secretScanning], ['push protection', sec.pushProtection], ['private vulnerability reporting', sec.privateReporting], ['Dependabot alerts', sec.dependabotAlerts]] as const)
     .filter(([, on]) => on === false).map(([name]) => name);
   const unknown = Object.values(sec).some((on) => on === null);
+  const bypass = settings.tagBypass;
+  // Two faults can hold at once: you cannot push the tag, and a bot can. Say both, so one
+  // sentence does not hide the other (#850).
+  const bypassFaults = 'unread' in bypass ? [] : [
+    bypass.admin ? '' : 'the v* tag ruleset\'s bypass list does not name Repository admin, so you cannot push a release tag',
+    bypass.bot ? 'the v* tag ruleset\'s bypass list names the bot, so the bot can push a release tag' : '',
+  ].filter(Boolean);
+  const bypassOk = 'unread' in bypass ? bypass : bypassFaults.length === 0;
+  const bypassWhat = 'unread' in bypass ? '' : bypassFaults.join('; ');
+  const release = settings.release;
+  const reviewerOk = 'unread' in release ? release : release.reviewer;
+  // A tag rule alone is not the lock: with a branch rule named v* too, a branch can deploy (#537).
+  const tagRuleOk = 'unread' in release ? release : release.tagRule && !release.branchRule;
+  const tagRuleWhat = 'unread' in release ? '' : release.tagRule
+    ? 'the release environment also accepts a branch named v*, so a branch can deploy'
+    : release.branchRule
+      ? 'the release environment\'s v* rule is a branch rule, so it never matches a tag'
+      : 'the release environment has no tag rule for v*';
   const checks = [
     judge('main-rules', rules ? !lacking.length : branch as Unread, `the default branch (${settings.defaultBranch}) has no rule for ${lacking.join(', ')}`, `${RULESET}, or add one, and turn those rules on`),
     ...(isOff ? [] : [judge('required-checks', rules ? rules.requiredChecks.length > 0 : branch as Unread, 'no CI check must pass before a merge', `${RULESET}: require status checks, and add the CI check by name (yokoten's kit names it \`ci\`)`)]),
     judge('code-owner-review', rules ? rules.codeOwnerReview : branch as Unread, 'code owner review is not required', `${RULESET}: in "Require a pull request", turn on "Require review from Code Owners"`),
     judge('squash-only', squash, 'pull requests can merge by merge commit or rebase, not only by squash', 'in Settings, General, Pull Requests, allow squash merging only'),
     judge('delete-branch', settings.deleteBranchOnMerge, 'merged branches are not deleted', 'in Settings, General, Pull Requests, turn on "Automatically delete head branches"'),
-    judge('tag-rules', settings.tags, 'no active tag ruleset on v* that restricts creation, update and deletion', 'in Settings, Rules, Rulesets, add a tag ruleset on v* with those three rules, and you on the bypass list'),
+    judge('tag-rules', settings.tags, 'no active tag ruleset on v* that restricts creation, update and deletion', 'in Settings, Rules, Rulesets, add an active tag ruleset on v* with those three rules'),
+    judge('tag-bypass', bypassOk, bypassWhat, TAG_BYPASS_FIX),
+    judge('release-reviewer', reviewerOk, 'the release environment has no required reviewer, so the publish job runs without your approval', RELEASE_REVIEWER_FIX),
+    judge('release-tag-rule', tagRuleOk, tagRuleWhat, RELEASE_TAG_RULE_FIX),
     judge('security-switches', off.length ? false : unknown ? null : true, `${off.join(', ')} ${off.length > 1 ? 'are' : 'is'} off`, 'in Settings, Advanced Security, turn them on'),
   ];
   const { forgotten } = settings;
@@ -422,6 +463,9 @@ const SERVER_STEPS: Record<string, RuleId[]> = {
   protection: ['main-rules', 'required-checks', 'code-owner-review', 'tag-rules'],
   'merge-settings': ['squash-only', 'delete-branch'],
   'security-settings': ['security-switches'],
+  'tag-bypass': ['tag-bypass'],
+  'release-reviewer': ['release-reviewer'],
+  'release-tag-rule': ['release-tag-rule'],
 };
 
 /** Every server check that a road step reports. */
@@ -630,6 +674,19 @@ const keptWorkflow = (root: string, name: string, args: string, after: string): 
   return `add this step to ${file}, after ${after} (\`yokoten init\` keeps your file as it is): \`- run: node ${cliPath(root)} ${args}\``;
 };
 
+/** True when origin has a branch from this repo: a push put one there. Reads local refs, never the network. */
+const hasPushedOrigin = (root: string, env: Env): boolean => {
+  if (!gitConfig(root, 'remote.origin.url', env)) return false;
+  // Only origin's own refs count: a branch pushed to another remote is not this repo on origin (#655).
+  return remembered('remote:origin:refs', () => {
+    try {
+      return execFileSync('git', ['--no-optional-locks', 'for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/origin'], { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== '';
+    } catch {
+      return false;
+    }
+  });
+};
+
 /** The road, in order. Step names never change: they are the keys for "not now". */
 export const ROAD: Step[] = [
   {
@@ -726,6 +783,17 @@ export const ROAD: Step[] = [
     withoutCi: 'run the tests yourself before each merge',
   },
   {
+    // One order for a new project (#655): make the repo, add the remote, push, then the
+    // CODEOWNERS handle and the labels. This step is the first of those, so it is next.
+    stage: 2,
+    key: 'remote',
+    check: (root, env) => hasPushedOrigin(root, env),
+    what: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'the origin remote has no branch from this repo, so the work is only on this machine' : 'there is no origin remote, so the work is only on this machine'),
+    fix: (root, env) => (gitConfig(root, 'remote.origin.url', env) ? 'push it: `git push -u origin --all`' : 'make the repo on your code host, add it as origin (`git remote add origin <url>`), and push (`git push -u origin --all`)'),
+    why: 'the code host keeps a copy, so a lost machine does not lose the work',
+    how: 'git has an origin remote, and a branch from this repo is on it',
+  },
+  {
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
@@ -768,7 +836,7 @@ export const ROAD: Step[] = [
     fix: () => '`yokoten init` shows what it would add, and `yokoten init --github --yes` adds them',
     byHand: `the repo has the labels ${lackingLabels([]).map((l) => l.name).join(', ')}`,
     why: 'a label says what kind of change a pull request is, and the pull request check asks for one',
-    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, tier A, tier B and tier C',
+    how: 'through the code host\'s API, in full doctor only: the repo has the labels bug, feat, docs, refactor, ci, owner, incident, good first issue, hotfix, security, tier A, tier B and tier C',
   }),
   planningStep('milestone', (planning) => pickNewMilestone(planning.milestones) === null, {
     what: () => 'no open milestone on the server',
@@ -917,6 +985,27 @@ export const ROAD: Step[] = [
     byHand: 'the host stops a pushed secret, people can report a security hole in private, and you hear of a dependency with a known hole, as far as your host can do these',
     why: 'the host then stops a pushed secret, and people can report a hole in private',
     how: 'through the code host\'s API, in full doctor only: secret scanning, push protection, private vulnerability reporting and Dependabot alerts are on; some are visible only to a repo admin',
+  }),
+  serverStep('tag-bypass', {
+    lacking: 'the v* tag ruleset\'s bypass list does not let you push a release tag, or names a bot',
+    fix: TAG_BYPASS_FIX,
+    byHand: 'the v* tag ruleset lets you, and no bot, create, move or delete a release tag',
+    why: 'a tag that nobody can push blocks a release, and a bot on the list can push one',
+    how: 'through the code host\'s API, in full doctor only: every active v* tag ruleset that blocks tag creation names Repository admin in its bypass list, and none names a bot',
+  }),
+  serverStep('release-reviewer', {
+    lacking: 'the release environment has no required reviewer',
+    fix: RELEASE_REVIEWER_FIX,
+    byHand: 'the release environment asks for your approval before it deploys',
+    why: 'without it, a publish job that a tag starts runs without anyone approving it',
+    how: 'through the code host\'s API, in full doctor only: the release environment lists a required reviewer',
+  }),
+  serverStep('release-tag-rule', {
+    lacking: 'the release environment does not deploy only from v* tags',
+    fix: RELEASE_TAG_RULE_FIX,
+    byHand: 'the release environment deploys only from v* tags, and not from a branch named v*',
+    why: 'a branch rule named v* matches no tag, and with both rules a branch named v* can still publish',
+    how: 'through the code host\'s API, in full doctor only: the release environment has a deployment rule of type tag named v*, and no branch rule named v*',
   }),
 ];
 

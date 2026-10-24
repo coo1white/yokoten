@@ -11,15 +11,21 @@
 //    run (Node, its own program, yokoten's runtime) is shown again, read-only.
 // 4. Child processes work, with pipes (tests start programs).
 // 5. Commands have no network. The agent reaches only its model's API hosts, through
-//    the proxy in proxy.ts, which runs outside.
+//    the proxy in network/proxy.ts, which runs outside.
 // 6. YOKOTEN_ROLE=worker and TZ=UTC are set, and no token or key is passed in (agent-env.ts).
+// 7. On a team (#674), the team folder is read-only and only the agent's own outbox in it
+//    is writable, so no agent writes, changes or deletes another's messages. The file
+//    `.git/yokoten-desk.json`, which names the agent, is locked, and YOKOTEN_DESK and
+//    YOKOTEN_TEAM say where the agent is (team/who.ts).
 //
 // This file turns a request into a `DeskPlan`: plain lists of paths, hosts and names. A
 // backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
-// seatbelt.ts on macOS. Native Windows has no backend; WSL2 is the way there (#669).
+// seatbelt.ts on macOS. Native Windows has no backend yet (#669), but its plan is built
+// here: no case in a path, every profile folder and other drive hidden, and a command
+// found with PATHEXT. Those rules stay testable on every system.
 
 import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Env } from '../../rules/config.ts';
 import { homeIn } from '../../rules/privacy.ts';
@@ -28,6 +34,7 @@ import { DESK as CODEX } from '../runtimes/codex.ts';
 import { DESK as GROK } from '../runtimes/grok.ts';
 import { DESK as MUSE } from '../runtimes/muse.ts';
 import { buildAgentEnv } from './agent-env.ts';
+import { DESK_FILE, modelOf, prepareDeskTeam, vendorOf } from './team/team.ts';
 
 /** What a runtime's own file tells the desk: where its state is, how to move it, and its API hosts. */
 export interface RuntimeDesk {
@@ -43,6 +50,8 @@ export interface RuntimeDesk {
   programParts?: (env: Env) => string[];
   /** The API hosts the agent program may reach, on port 443. */
   hosts: readonly string[];
+  /** The model and provider the agent's own config names (#748), or null when it names none. */
+  identity?: (env: Env) => { model: string; provider: string } | null;
 }
 
 /** The runtimes a desk can start, by the name `--agent` takes elsewhere. DeepSeek runs through Codex. */
@@ -89,14 +98,36 @@ export interface DeskRequest {
   marks?: string;
   /** The system the plan is for: its hidden folders differ. */
   platform?: NodeJS.Platform;
+  /** The team the agent joins (#674): the team folder, and the agent's name on it. */
+  team?: { folder: string; name: string };
+  /**
+   * Writes the worker mark into the desk clone, as `yokoten worker mark` does from the
+   * lead's checkout (#672), and returns the plain reason when it can't. Muse Code passes
+   * its hooks no YOKOTEN_ROLE, so in a desk the mark is what makes it a worker.
+   */
+  markDesk: (desk: string) => { fail: string } | { top: string };
 }
 
 /** The parts of this yokoten that run in a desk: the guard, the commit check and the bridge. */
 const OWN_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 export const OWN_RUNTIME = ['bin', 'src', 'kit', 'dist', 'package.json'].map((part) => join(OWN_ROOT, part));
 
-/** Whether `path` is `folder` or inside it. */
-export const isInside = (path: string, folder: string): boolean => path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
+/** Windows, and the names its plan needs: the drive letters to hide and the folder of the profiles. */
+const WINDOWS_PLATFORM: NodeJS.Platform = 'win32';
+const WINDOWS_DRIVES = 'CDEFGHIJKLMNOPQRSTUVWXYZ';
+const WINDOWS_PROFILES = 'Users';
+
+/**
+ * Whether `path` is `folder` or inside it. Windows names folders without case, so the
+ * comparison there ignores case; a system that keeps case compares it as written.
+ */
+export const isInside = (path: string, folder: string, platform: NodeJS.Platform = process.platform): boolean => {
+  const { sep: separator } = platform === 'win32' ? win32 : posix;
+  const same = platform === 'win32' ? path.toLowerCase() === folder.toLowerCase() : path === folder;
+  const prefix = folder.endsWith(separator) ? folder : folder + separator;
+  if (platform === 'win32') return same || path.toLowerCase().startsWith(prefix.toLowerCase());
+  return same || path.startsWith(prefix);
+};
 
 /** The real path, or the path itself when it is not there. */
 function realOr(path: string): string {
@@ -117,16 +148,27 @@ function isLink(path: string): boolean {
 }
 
 /** The file a command name runs, found on PATH like a shell would, or null. */
-export function findProgram(name: string, path: string | undefined): string | null {
-  if (name.includes('/')) return existsSync(name) ? resolve(name) : null;
+export function findProgram(name: string, path: string | undefined, extensions: readonly string[] = ['']): string | null {
+  if (name.includes('/') || name.includes('\\')) return existsSync(name) ? resolve(name) : null;
   for (const folder of (path ?? '').split(delimiter)) {
     if (!isAbsolute(folder)) continue;
-    const file = join(folder, name);
-    try {
-      if (statSync(file).isFile()) return file;
-    } catch {}
+    for (const extension of extensions) {
+      const file = join(folder, name + extension);
+      try {
+        if (statSync(file).isFile()) return file;
+      } catch {}
+    }
   }
   return null;
+}
+
+/**
+ * The extensions a system tries after a command name. Windows reads PATHEXT (`.CMD` and
+ * `.EXE` are the usual ones); every other system runs the name as it is.
+ */
+export function programExtensions(platform: NodeJS.Platform, env: Env): string[] {
+  if (platform !== 'win32') return [''];
+  return ['', ...(env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map((extension) => extension.trim()).filter(Boolean)];
 }
 
 /**
@@ -149,11 +191,25 @@ export function programFolders(file: string): string[] {
 /**
  * The folders that are never shown: every home, other drives and mounts, and the desk's
  * parent folder. On Linux also /run, which holds sockets to the host: on WSL2 the one that
- * starts Windows programs outside any fence, the session bus, and Docker's.
+ * starts Windows programs outside any fence, the session bus, and Docker's. On Windows the
+ * parent of the home folder (`C:\Users`) hides every other profile, and any other drive
+ * root is hidden like /Volumes on macOS. The desk's own drive stays walkable: a hidden
+ * drive root would be too wide to show the system folders again.
  */
-export function hiddenFolders(platform: NodeJS.Platform, home: string, desk: string): string[] {
+export function hiddenFolders(platform: NodeJS.Platform, home: string, desk: string, exists: (path: string) => boolean = existsSync): string[] {
+  if (platform === WINDOWS_PLATFORM) {
+    const profileFolder = win32.dirname(home);
+    const roots = [home, win32.dirname(desk)];
+    if (win32.basename(profileFolder).toLowerCase() === WINDOWS_PROFILES.toLowerCase()) roots.push(profileFolder);
+    const ownDrive = win32.parse(desk).root.toLowerCase();
+    for (const letter of WINDOWS_DRIVES) {
+      const root = `${letter}:\\`;
+      if (root.toLowerCase() !== ownDrive) roots.push(root);
+    }
+    return [...new Set(roots.filter((folder) => exists(folder)))];
+  }
   const roots = platform === 'darwin' ? ['/Users', '/Volumes'] : ['/home', '/root', '/mnt', '/media', '/run'];
-  return [...new Set([...roots, home, dirname(desk)])].filter((folder) => existsSync(folder));
+  return [...new Set([...roots, home, dirname(desk)])].filter((folder) => exists(folder));
 }
 
 /** Throw when `path` is a link or not of the kind wanted: a worker could point it at the lead's files. */
@@ -201,6 +257,17 @@ export function planDesk(request: DeskRequest): DeskPlan {
   if (!runtime) throw new Error(`a desk starts ${Object.keys(DESK_RUNTIMES).join(', ')}; not "${request.runtime}". DeepSeek runs through codex.`);
   if (!request.command.length) throw new Error('no agent command after --');
   const { env } = request;
+  const platform = request.platform ?? process.platform;
+  // Who the agent really is (#748): the agent's own config may name a model of another
+  // vendor than the harness's. The command line wins, as the runtime does: `--model X`
+  // names the model for the board's roster and for the desk's env alike. The model goes to
+  // the board; when the vendor differs, the brief also starts with one line saying so
+  // (identity.ts).
+  const named = runtime.identity?.(env) ?? null;
+  const asked = modelOf(request.command);
+  const model = asked !== 'model not named' && asked.trim() ? asked.trim() : named?.model ?? '';
+  const vendor = model ? vendorOf(request.runtime, model, named?.provider) : '';
+  const identity = model && vendor !== vendorOf(request.runtime, '') ? { model, vendor } : null;
   const home = realOr(homeIn(env));
   const desk = realOr(resolve(request.desk));
   if (!existsSync(join(desk, '.git'))) throw new Error(`${desk} is not a git clone. Make the desk with \`git clone <repo> <folder>\`.`);
@@ -208,10 +275,10 @@ export function planDesk(request: DeskRequest): DeskPlan {
   requireReal(join(desk, '.git'), 'folder');
   // The lead's own state is hidden too, where it lives outside the home folder.
   const leadState = runtime.leadState(env).map(realOr).filter((path) => existsSync(path));
-  const hidden = [...new Set([...hiddenFolders(request.platform ?? process.platform, home, desk), ...leadState.filter((path) => statSync(path).isDirectory())])];
+  const hidden = [...new Set([...hiddenFolders(platform, home, desk), ...leadState.filter((path) => statSync(path).isDirectory())])];
   // A path the agent may see must not open a whole hidden folder, or the desk itself.
-  const isTooWide = (path: string) => hidden.some((folder) => isInside(folder, path)) || isInside(desk, path) || path === '/';
-  const program = findProgram(request.command[0], env.PATH);
+  const isTooWide = (path: string) => hidden.some((folder) => isInside(folder, path, platform)) || isInside(desk, path, platform);
+  const program = findProgram(request.command[0], env.PATH, programExtensions(platform, env));
   if (!program) throw new Error(`can't find ${request.command[0]} on PATH`);
   const node = dirname(dirname(realOr(process.execPath)));
   const wanted = [node, ...programFolders(program), ...(runtime.programParts?.(env) ?? []), ...OWN_RUNTIME, ...(request.runtimes ?? []), join(home, '.gitconfig'), join(home, '.config', 'git')];
@@ -219,7 +286,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
   const readable: string[] = [];
   // Nothing of the lead's state but the program parts the runtime names.
   const parts = (runtime.programParts?.(env) ?? []).map(realOr);
-  const isLeadState = (path: string) => leadState.some((folder) => isInside(path, folder) || isInside(folder, path)) && !parts.some((part) => isInside(path, part));
+  const isLeadState = (path: string) => leadState.some((folder) => isInside(path, folder, platform) || isInside(folder, path, platform)) && !parts.some((part) => isInside(path, part, platform));
   for (const path of wanted.map(realOr)) {
     if (!existsSync(path) || isTooWide(path) || isLeadState(path) || readable.includes(path)) continue;
     readable.push(path);
@@ -231,6 +298,10 @@ export function planDesk(request: DeskRequest): DeskPlan {
     if (isLeadState(real)) throw new Error(`--read ${path} would show the lead's own ${request.runtime} state`);
     if (!readable.includes(real)) readable.push(real);
   }
+  // The worker mark first, so it is locked with the rest; a desk that can't be marked doesn't start.
+  const marked = request.markDesk(desk);
+  if ('fail' in marked) throw new Error(`can't mark the desk as a worker's: ${marked.fail}`);
+  if (!existsSync(join(desk, '.git', 'yokoten-worker'))) throw new Error(`can't mark the desk as a worker's: no mark in ${join(desk, '.git')}`);
   // Git's config and hooks, and the worker mark, stay read-only: a worker can't plant a
   // hook or an alias that the lead would run later. A link there is refused.
   const locked: string[] = [];
@@ -241,14 +312,28 @@ export function planDesk(request: DeskRequest): DeskPlan {
     locked.push(path);
   }
   const state = prepareDeskState(runtime, request.runtime, desk, env);
+  // The team (#674): its folder read-only, the agent's own outbox writable, and the desk file that names the agent locked.
+  const writable = [state];
+  const teamEnv: Env = {};
+  rmSync(join(desk, '.git', DESK_FILE), { force: true });
+  if (request.team) {
+    const folder = realOr(resolve(request.team.folder));
+    if (isTooWide(folder) || isInside(desk, folder, platform) || isInside(folder, desk, platform)) throw new Error(`the team folder ${folder} would open a hidden folder or the desk`);
+    const team = prepareDeskTeam({ team: folder, name: request.team.name, runtime: request.runtime, model: model || 'model not named', desk });
+    if (!readable.includes(team.readable)) readable.push(team.readable);
+    writable.push(team.writable);
+    locked.push(team.locked);
+    // Who the agent is (team/who.ts): the lead's own env never has these.
+    Object.assign(teamEnv, { YOKOTEN_DESK: desk, YOKOTEN_TEAM: folder });
+  }
   return {
     desk,
-    state: [state],
+    state: writable,
     readable,
     hidden,
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker' } }), ...runtime.stateEnv(state), TZ: 'UTC' },
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }

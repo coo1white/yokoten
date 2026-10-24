@@ -4,6 +4,10 @@ description: Hand one task to a worker agent and take its result back. Use when 
 ---
 <!-- managed by yokoten; `yokoten install` replaces this file -->
 
+> **Skills-only copy?** `npx skills add` copies the skills alone: no guard and no session
+> doctor. When `yokoten` is not on PATH and the Claude Code plugin is not enabled, say one
+> line. Then carry on: "This copy has the skills only; run `npx yokoten install` to add the guard."
+
 # Dispatch a task to a worker
 
 The lead plans and reviews; a worker changes code. Treat the worker like a new
@@ -44,8 +48,16 @@ Fix task: yes|no   (yes = make the existing test pass; never change the test)
 Your way: if you see a better way to reach the goal, say so or take it, and say why.
 Stuck: if the task can't be done, or the brief looks wrong, stop and say so in the report.
        That is a good report, not a failure.
+Anchors: when the tests you touch pass, commit. That commit is your anchor.
+         To go back: `git switch -c try-2 <anchor>`. Nothing is reset or deleted.
+Stop: after the same step fails three times, or the guard refuses three times, stop.
+      Go back to your last anchor, or write your report. Stopping is good work.
 Report: what you changed, the commands you ran with their output, what you are unsure of.
 ```
+
+The runner or the board gives every worker a time limit, three hours unless
+yokoten.json sets `worker.timeLimitMinutes`. Before it ends, commit and write the
+report, so the lead always hears.
 
 Keep the hard lines few: only what the guard can't catch. A long list of warnings
 makes a worker anxious, not careful.
@@ -93,8 +105,16 @@ never changes lead-only files (the guard stops it).
    the guard treats you as a worker. End the body with one line that names the agent
    and the model that made it, for example `🤖 Made with Claude Code (Claude Opus 5.5)`;
    `yokoten bot` refuses a body without it. When workers ran on another model, name both.
+   Add each reviewer from the `inspect` skill too, after the worker and before the lead:
+   `🤖 Made with worker <X> (<model>), reviewed by <Y> (<model>) and <Z> (<model>), lead Claude Code (<model>)`.
+   One reviewer is `reviewed by <Y> (<model>)`.
 5. After 3 review rounds on one task, stop before the next one. Decide whether the
    task, the brief or the worker is the problem, and change that. Don't just send
    round 4.
 6. Remove the worktree once the pull request is merged: `git worktree remove <dir>`.
    That removes the mark too.
+
+## When several pull requests wait
+
+With two or more pull requests open, name a merge order before you merge one.
+After each merge, update the order for the rest.

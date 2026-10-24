@@ -17,12 +17,13 @@
 // They pass only to that runtime's agent. YOKOTEN_NAMES skip the first.
 
 import type { Env } from '../../rules/config.ts';
-import { findSecrets } from '../../rules/secrets.ts';
+import { findSecrets } from '../../rules/privacy/secrets.ts';
 import { AGENT_ENV as COPILOT } from '../copilot.ts';
-import { AGENT_ENV as ANTIGRAVITY } from '../runtimes/antigravity.ts';
+import { AGENT_ENV as ANTIGRAVITY } from '../runtimes/small/antigravity.ts';
 import { AGENT_ENV as CLAUDE_CODE } from '../runtimes/claude-code.ts';
 import { AGENT_ENV as CODEX } from '../runtimes/codex.ts';
-import { AGENT_ENV as DEEPSEEK_HARNESS } from '../runtimes/deepseek-harness.ts';
+import { AGENT_ENV as DEEPSEEK_HARNESS } from '../runtimes/small/deepseek-harness.ts';
+import { AGENT_ENV as OPENCODE } from '../runtimes/small/opencode.ts';
 import { AGENT_ENV as GEMINI } from '../runtimes/gemini.ts';
 import { AGENT_ENV as GROK } from '../runtimes/grok.ts';
 import { AGENT_ENV as MUSE } from '../runtimes/muse.ts';
@@ -44,6 +45,7 @@ export const RUNTIME_ENVS: Readonly<Record<string, RuntimeEnv>> = {
   muse: MUSE,
   'deepseek-harness': DEEPSEEK_HARNESS,
   grok: GROK,
+  opencode: OPENCODE,
   copilot: COPILOT,
 };
 
@@ -97,7 +99,7 @@ const SHARED_NAMES = new Set([
 const YOKOTEN_NAMES = new Set(['YOKOTEN_ROLE', 'YOKOTEN_FIX_TASK', 'YOKOTEN_PRIVATE_MARKS', 'YOKOTEN_TEMP_DIRS', 'YOKOTEN_GUARD_DEADLINE_MS', 'YOKOTEN_MIN_FREE_GB']);
 
 // A name that says it holds a secret.
-const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|PRIVATE/;
+export const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|PRIVATE/;
 
 // Values shaped like a known key or token. They are looser than the commit check's
 // patterns in secrets.ts: a false hit here only drops a name an agent did not need.

@@ -14,9 +14,11 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import {
+  delimiter,
   dirname,
   join,
   resolve,
@@ -217,6 +219,7 @@ test('hook --agent: the release refusal names the agent\'s own command (#350)', 
     antigravity: [{ toolCall: { name: 'run_command', args: { CommandLine: command, Cwd: cwd } }, workspacePaths: [cwd] }, /they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 agy`; do not look/],
     muse: [shell('bash', { workdir: cwd }), /Muse Code is not known to pass YOKOTEN_RELEASE_APPROVAL to its hooks: it passes them only a short list of variables\. If the owner asked for this, stop and tell them to release outside Muse Code; do not look/],
     'deepseek-harness': [shell('bash'), /they start a new session with `YOKOTEN_RELEASE_APPROVAL=1 dsh tui --patch \.dsh\/yokoten\.patch\.yml`; do not look/],
+    opencode: [{ tool: 'shell', args: { command }, directory: cwd }, /OpenCode is not known to pass YOKOTEN_RELEASE_APPROVAL to its plugin/],
   };
   for (const [agent, [input, fix]] of Object.entries(agents)) {
     const result = await sandbox.call(['hook', '--agent', agent], { input: JSON.stringify(input) });
@@ -388,9 +391,20 @@ test('hook --stop: a worker is done only when the done-when check passes (#614)'
   const event = (extra: object = {}) => JSON.stringify({ session_id: 'task-614', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false, ...extra });
   const stop = (doneWhen: string, extra: Record<string, string> = {}, input = event()) =>
     sandbox.call(['hook', '--stop'], { input, extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: doneWhen, ...extra } });
-  // A passing check lets the worker stop.
+  // A passing check lets the worker stop, and names the anchor it just saved (#711).
   let result = await stop('true');
-  assert.deepEqual([result.status, result.stdout, result.stderr], [0, '', '']);
+  assert.deepEqual([result.status, result.stdout], [0, '']);
+  assert.match(result.stderr, /^yokoten: tests pass\. Anchor [0-9a-f]{12} saved; go back with: git switch -c try-2 [0-9a-f]{40}\n$/);
+  // The same clean HEAD is already an anchor: no second anchor, and no second commit asked
+  // for (#792). A dirty tree is the one case that asks for the checkpoint commit.
+  result = await stop('true');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /^yokoten: tests pass\. HEAD [0-9a-f]{12} is already your anchor; go back with: git switch -c try-2 [0-9a-f]{40}\n$/);
+  assert.doesNotMatch(result.stderr, /Make a checkpoint commit/);
+  sandbox.write('b.md', 'changed\n');
+  result = await stop('true');
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /Make a checkpoint commit now/);
   // A failing check refuses, with the reason in short.
   result = await stop('echo fail-614 >&2; exit 1');
   assert.equal(result.status, 2);
@@ -691,6 +705,40 @@ test('hook --stop: a subagent runs the done-when command only in the worktree th
   assert.equal(realpathSync(readFileSync(leadMarker, 'utf8')), realpathSync(nested), 'a subagent in the lead folder runs in the event folder');
 });
 
+// #746: a desk whose `.git` lost what git needs is broken, but its own done-when is still on
+// disk: the stop runs it in the desk, never the parent's, and never skips it.
+test('hook --stop: a partial desk runs its own done-when in the desk (#746)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const desk = join(sandbox.repo, 'desk');
+  // `HEAD` and `objects` alone are not a checkout: git walks up to the parent, so does yokoten.
+  mkdirSync(join(desk, '.git', 'objects'), { recursive: true });
+  writeFileSync(join(desk, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  writeFileSync(join(desk, '.git', 'yokoten-worker'), 'x');
+  mkdirSync(join(desk, 'src'));
+  const record = join(sandbox.repo, 'record.mjs');
+  writeFileSync(record, 'import { writeFileSync } from "node:fs";\nwriteFileSync(process.argv[2], process.cwd());\n');
+  const marker = join(sandbox.repo, 'desk-ran');
+  writeFileSync(join(sandbox.repo, '.git', 'yokoten-done-when'), 'exit 1\n');
+  writeFileSync(join(desk, '.git', 'yokoten-done-when'), `${process.execPath} ${record} ${marker}\n`);
+  const stop = (session: string) =>
+    sandbox.call(['hook', '--stop'], {
+      cwd: join(desk, 'src'),
+      input: JSON.stringify({ session_id: session, cwd: join(desk, 'src'), hook_event_name: 'Stop', stop_hook_active: false }),
+    });
+  let result = await stop('desk-partial-746');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(realpathSync(readFileSync(marker, 'utf8')), realpathSync(desk), 'the command ran in the desk, not the parent');
+  // A failing one refuses the stop: the check is kept, not skipped.
+  rmSync(marker);
+  writeFileSync(join(desk, '.git', 'yokoten-done-when'), 'echo desk-failed >&2; exit 1\n');
+  result = await stop('desk-partial-746-fail');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /desk-failed/);
+});
+
 // #555: Muse Code passes its hooks no YOKOTEN_ROLE. A worktree the lead marks makes every
 // agent in it a worker, whatever env reaches the hook; the lead's main checkout is not affected.
 // Every call here is Muse-shaped, piped to `hook --agent muse`, with YOKOTEN_ROLE unset.
@@ -861,7 +909,7 @@ test('worker mark: the stop check, the commit check and the session start see a 
   result = await commit();
   assert.equal(result.status, 1);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
-  assert.match((await start()).stdout, /this session is a worker, because its worktree carries the worker mark/);
+  assert.match((await start()).stdout, /this session is a worker, because its worktree or clone carries the worker mark/);
   // The main checkout stays the lead's.
   sandbox.write('AGENTS.md', '# lead\n');
   sandbox.git('add', 'AGENTS.md');
@@ -870,6 +918,46 @@ test('worker mark: the stop check, the commit check and the session start see a 
 });
 
 // #555 (L3): `worker mark` says plainly what it can't do.
+// #672 (review): a clone is marked only by the lead, from the lead's own checkout, and
+// always in the clone's own `.git`, whatever GIT_DIR the caller has.
+test("worker mark: a clone is marked only by the lead, from its own checkout, in the clone's own .git (#672)", async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('a.md', 'a\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const desk = join(makeTempDir('yokoten-desk-'), 'desk');
+  runChild('git', ['clone', '-q', sandbox.repo, desk], { env: sandbox.env });
+  const leadMark = join(sandbox.repo, '.git', 'yokoten-worker');
+  const deskMark = join(desk, '.git', 'yokoten-worker');
+  // The lead's checkout, from a folder outside every checkout: refused, nothing written.
+  const elsewhere = makeTempDir('yokoten-elsewhere-');
+  let result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: elsewhere });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /from your own checkout, the lead's/);
+  assert.ok(!existsSync(leadMark));
+  // A worker may not mark: by YOKOTEN_ROLE.
+  result = await sandbox.call(['worker', 'mark', desk], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /only the lead marks a worktree or a clone: this session is a worker/);
+  assert.ok(!existsSync(deskMark));
+  // GIT_DIR and GIT_WORK_TREE that name the lead's checkout don't move the mark there.
+  result = await sandbox.call(['worker', 'mark', desk], { extra: { GIT_DIR: join(sandbox.repo, '.git'), GIT_WORK_TREE: sandbox.repo, GIT_COMMON_DIR: join(sandbox.repo, '.git') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /marked the clone at /);
+  assert.ok(existsSync(deskMark), "the mark is in the clone's own .git");
+  assert.ok(!existsSync(leadMark), "the lead's .git has no mark");
+  // In the marked clone every session is a worker: mark and unmark say to run them from outside.
+  for (const action of ['mark', 'unmark']) {
+    result = await sandbox.call(['worker', action, desk], { cwd: desk });
+    assert.equal(result.status, 1, action);
+    assert.match(result.stderr, /this session is a worker\. .*The lead runs this from its own checkout, outside the marked one\./, action);
+  }
+  // Negative control: the lead, from its own checkout, unmarks with GIT_DIR set too.
+  result = await sandbox.call(['worker', 'unmark', desk], { extra: { GIT_DIR: join(sandbox.repo, '.git') } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(deskMark));
+});
+
 test('worker mark: a missing folder, a submodule and an unwritable git folder each get one plain line (#555)', async () => {
   const sandbox = makeSandbox();
   sandbox.write('a.md', 'a\n');
@@ -1018,4 +1106,225 @@ test('desk: names what is missing, refuses a worker, and refuses a folder that i
   const plain = await invoke(['desk', 'claude-code', cwd, '--', 'node'], { env, cwd });
   assert.equal(plain.code, 1);
   assert.match(plain.stderr, /not a git clone|not built yet|not installed|can't make a sandbox|sandbox-exec/);
+});
+
+/** The named fields of a status file, for a short compare. */
+const fieldsOf = (status: Record<string, string>, names: string[]) => Object.fromEntries(names.map((name) => [name, status[name]]));
+
+/** A repo that uses yokoten, with one commit and a linked worktree for a worker (#685). */
+function makeBoardRepo() {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(realpathSync(makeTempDir('yokoten-tree-')), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'board-685', tree);
+  const status = (folder: string) => (existsSync(join(folder, '.yokoten-agent.json')) ? (JSON.parse(readFileSync(join(folder, '.yokoten-agent.json'), 'utf8')) as Record<string, string>) : null);
+  // The throttle skips a write within a few seconds; a test moves the file's time back.
+  const age = (folder: string) => {
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(folder, '.yokoten-agent.json'), past, past);
+  };
+  return { sandbox, tree, status, age };
+}
+
+/** One shell call in each runtime's own shape. */
+const SHELL_CALLS: Record<string, (cwd: string, command: string) => unknown> = {
+  'claude-code': (cwd, command) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }),
+  grok: (cwd, command) => ({ cwd, hookEventName: 'PreToolUse', toolName: 'run_terminal_command', toolInput: { command } }),
+  muse: (cwd, command) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command } }),
+  'deepseek-harness': (cwd, command) => ({ cwd, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } }),
+};
+
+// #685: the hooks keep a worker's status file by themselves, for every vendor: the session
+// start, an allowed call (throttled), a refusal, and the stop. Fields the agent wrote stay.
+test('hook: the session start, a call, a refusal and the stop keep the status file, for each vendor (#685)', { skip: process.platform === 'win32' && 'the done-when command uses sh syntax' }, async () => {
+  for (const agent of ['claude-code', 'grok', 'muse', 'deepseek-harness']) {
+    const { sandbox, tree, status, age } = makeBoardRepo();
+    const worker = { YOKOTEN_ROLE: 'worker', YOKOTEN_MODEL: 'model-a' };
+    const call = (command: string) => sandbox.call(['hook', '--agent', agent], { cwd: tree, input: JSON.stringify(SHELL_CALLS[agent](tree, command)), extra: worker });
+    // Grok has no session-start hook: its first call writes the start fields.
+    if (agent !== 'grok') {
+      assert.equal((await sandbox.call(['doctor', '--session', '--agent', agent], { cwd: tree, extra: worker })).status, 0);
+      assert.deepEqual(fieldsOf(status(tree) ?? {}, ['vendor', 'model', 'role', 'state', 'worktree', 'doing']), { vendor: agent, model: 'model-a', role: 'engineer', state: 'working', worktree: tree, doing: 'started' }, `${agent}: the session start`);
+      writeFileSync(join(tree, '.yokoten-agent.json'), JSON.stringify({ ...status(tree), task: 'issue 685 the board', question: 'which port?' }));
+      age(tree);
+    }
+    assert.equal((await call('npm test')).status, 0);
+    const called = status(tree) ?? {};
+    assert.equal(called.doing, 'running npm test', `${agent}: an allowed call says what it does`);
+    assert.equal(called.vendor, agent);
+    assert.equal(called.role, 'engineer');
+    assert.match(called.updated ?? '', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    if (agent !== 'grok') assert.deepEqual([called.task, called.question], ['issue 685 the board', 'which port?'], `${agent}: the agent's own fields stay`);
+    assert.equal((await call('npm run lint')).status, 0);
+    assert.equal(status(tree)?.doing, 'running npm test', `${agent}: a second call within seconds is not written`);
+    const refused = await call('git push origin board-685');
+    assert.notEqual(refused.status, 0, `${agent}: a worker's push is refused`);
+    assert.match(status(tree)?.blocked ?? '', /^the guard stopped this: /, `${agent}: a refusal sets blocked`);
+    age(tree);
+    assert.equal((await call('npm test')).status, 0);
+    assert.equal(status(tree)?.blocked, undefined, `${agent}: the next allowed call clears blocked`);
+    if (agent === 'deepseek-harness') continue;
+    const stop = await sandbox.call(['hook', '--stop', '--agent', agent], { cwd: tree, input: JSON.stringify({ cwd: tree, session_id: `s-${agent}`, hook_event_name: 'Stop', stop_hook_active: false }), extra: { ...worker, YOKOTEN_DONE_WHEN: 'true' } });
+    assert.equal(stop.status, 0, stop.stderr);
+    assert.deepEqual(fieldsOf(status(tree) ?? {}, ['state', 'checks']), { state: 'done', checks: 'passing' }, `${agent}: the stop`);
+    // The file is git-ignored by the repo's own exclude list, so a worker never commits it.
+    assert.equal(sandbox.git('-C', tree, 'status', '--porcelain').stdout, '', `${agent}: git status stays clean`);
+    assert.match(readFileSync(join(sandbox.repo, '.git', 'info', 'exclude'), 'utf8'), /^\.yokoten-agent\.json$/m);
+  }
+});
+
+// #685: the main checkout's file is the lead's. The lead's session start and calls write
+// it, with role lead, and its stop says it waits for the owner. A worker there never
+// writes it. A repo without yokoten.json never gets the file.
+test('hook: the lead keeps the main checkout\'s file; a worker and a repo without yokoten do not (#685)', async () => {
+  const { sandbox, status } = makeBoardRepo();
+  const lead = { YOKOTEN_ROLE: '' };
+  assert.equal((await sandbox.call(['hook'], { input: JSON.stringify(SHELL_CALLS['claude-code'](sandbox.repo, 'npm test')), extra: { YOKOTEN_ROLE: 'worker' } })).status, 0);
+  assert.equal(status(sandbox.repo), null, 'a worker leaves the main checkout alone');
+  assert.equal((await sandbox.call(['doctor', '--session'], { extra: lead })).status, 0);
+  assert.deepEqual(fieldsOf(status(sandbox.repo) ?? {}, ['vendor', 'role', 'state']), { vendor: 'claude-code', role: 'lead', state: 'working' });
+  const stop = await sandbox.call(['hook', '--stop'], { input: JSON.stringify({ cwd: sandbox.repo, session_id: 'lead-685', hook_event_name: 'Stop', stop_hook_active: false }), extra: lead });
+  assert.equal(stop.status, 0, stop.stderr);
+  assert.equal(status(sandbox.repo)?.state, 'waiting', 'a lead whose turn ended waits for the owner');
+  assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'git status stays clean');
+  const plain = makeSandbox();
+  assert.equal((await plain.call(['doctor', '--session'], { extra: lead })).status, 0);
+  assert.equal((await plain.call(['hook'], { input: JSON.stringify(SHELL_CALLS['claude-code'](plain.repo, 'npm test')), extra: lead })).status, 0);
+  assert.equal(existsSync(join(plain.repo, '.yokoten-agent.json')), false, 'no yokoten.json, no file');
+});
+
+// #700: a lead session records its log path in the repo's git folder. A worker never does.
+// A later lead session replaces the path. The file is one line and readable only by this user.
+test('session start: a lead registers its log path; a worker does not (#700)', async () => {
+  const { sandbox, tree } = makeBoardRepo();
+  const file = join(sandbox.repo, '.git', 'yokoten-lead-session');
+  const start = (cwd: string, transcriptPath: string, extra: Record<string, string> = {}) =>
+    sandbox.call(['doctor', '--session'], {
+      cwd,
+      input: JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'lead-700', source: 'startup', transcript_path: transcriptPath }),
+      extra: { CLAUDE_PROJECT_DIR: cwd, ...extra },
+    });
+  assert.equal((await sandbox.call(['doctor', '--session'])).status, 0);
+  assert.equal(existsSync(file), false, 'no transcript path, no registration');
+  const workerLog = join(sandbox.home, '.claude', 'projects', 'worker', 'w.jsonl');
+  assert.equal((await start(sandbox.repo, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
+  assert.equal((await start(tree, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
+  assert.equal(existsSync(file), false, 'a worker does not register');
+  const live = join(sandbox.home, '.claude', 'projects', 'parent', 'live.jsonl');
+  assert.equal((await start(sandbox.repo, live)).status, 0);
+  assert.equal(readFileSync(file, 'utf8'), `${live}\n`);
+  assert.equal(lstatSync(file).mode & 0o777, 0o600);
+  const next = join(sandbox.home, '.claude', 'projects', 'parent', 'next.jsonl');
+  assert.equal((await start(sandbox.repo, next)).status, 0);
+  assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a new lead session overwrites it');
+  assert.equal(lstatSync(file).mode & 0o777, 0o600);
+  assert.equal((await start(sandbox.repo, workerLog, { YOKOTEN_ROLE: 'worker' })).status, 0);
+  assert.equal(readFileSync(file, 'utf8'), `${next}\n`, 'a worker leaves the lead path in place');
+  assert.equal(sandbox.git('status', '--porcelain').stdout, '', 'the path stays in the git folder');
+});
+
+// #621: a stop writes one line to the stop log on this computer, with the command masked.
+test('hook: a stop writes a masked line to the stop log (#621)', async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  // A fake token, built from pieces so this file passes the repo's own privacy check.
+  const token = ['gh', 'p_', 'a'.repeat(36)].join('');
+  const command = `GH_TOKEN=${token} git push --tags`;
+  const result = await sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command } }) });
+  assert.equal(result.status, 2);
+  const text = readFileSync(log, 'utf8');
+  assert.ok(!text.includes(token), 'the token is not in the log');
+  const lines = text.trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  const [line] = lines;
+  assert.equal(line.vendor, 'claude-code');
+  assert.equal(line.role, 'lead');
+  assert.ok(line.rule);
+  assert.equal(line.answer, 'refused');
+  assert.match(line.time, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  assert.match(line.command, /<secret>/);
+  assert.ok(!line.command.includes(token), 'the command holds no secret');
+  // An edit writes no path and no file text.
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# the private file text\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const edit = await sandbox.call(['hook'], {
+    input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Edit', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }),
+    extra: { YOKOTEN_ROLE: 'worker' },
+  });
+  assert.equal(edit.status, 2);
+  const second = JSON.parse(readFileSync(log, 'utf8').trim().split('\n')[1]);
+  assert.equal(second.rule, 'lead-only');
+  assert.equal(second.role, 'worker');
+  assert.equal(second.command, undefined, 'an edit writes no command or path');
+  assert.ok(!readFileSync(log, 'utf8').includes('the private file text'), 'no file text goes in the log');
+});
+
+// #621: the stop log says what the stop check did, including the let-through after the tries.
+test('hook --stop: refusals and the let-through are in the stop log (#621)', { skip: process.platform === 'win32' && 'the done-when command uses sh syntax' }, async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  sandbox.write('a.md', 'fine\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const event = JSON.stringify({ session_id: 'stop-621', cwd: sandbox.repo, hook_event_name: 'Stop', stop_hook_active: false });
+  const stop = () => sandbox.call(['hook', '--stop'], { input: event, extra: { YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'exit 1' } });
+  for (let tryNumber = 1; tryNumber <= 3; tryNumber += 1) assert.equal((await stop()).status, 2);
+  assert.equal((await stop()).status, 0, 'the next stop is let through');
+  const lines = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(lines.map((line) => line.answer), ['refused', 'refused', 'refused', 'allowed once']);
+  for (const line of lines) {
+    assert.equal(line.vendor, 'claude-code');
+    assert.equal(line.role, 'worker');
+    assert.equal(line.rule, 'done-when');
+    assert.equal(line.command, undefined);
+  }
+});
+
+// #621: `stops off` deletes the log and stops the writing; `on` starts it again.
+test('stops: off and on work, and the state says where the log is (#621)', async () => {
+  const sandbox = makeSandbox();
+  const log = join(sandbox.home, '.config', 'yokoten', 'stops.jsonl');
+  const off = join(sandbox.home, '.config', 'yokoten', 'stops-off');
+  const refused = () => sandbox.call(['hook'], { input: JSON.stringify({ cwd: sandbox.repo, tool_input: { command: 'git push --tags' } }) });
+  assert.equal((await refused()).status, 2);
+  assert.ok(existsSync(log));
+  let result = await sandbox.call(['stops', 'off']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(log), 'off deletes the log');
+  assert.ok(existsSync(off));
+  assert.equal((await refused()).status, 2, 'the guard still stops the call');
+  assert.ok(!existsSync(log), 'nothing is written while the log is off');
+  result = await sandbox.call(['stops', 'on']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!existsSync(off));
+  assert.equal((await refused()).status, 2);
+  assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 1);
+  const state = await sandbox.call(['stops']);
+  assert.equal(state.status, 0, state.stderr);
+  assert.match(state.stdout, /stops\.jsonl/);
+  assert.match(state.stdout, /on:/);
+  assert.match(state.stdout, /Nothing is sent anywhere/);
+});
+
+// The guard read the session's root twice: once for the call, and once more for the team
+// messages an allowed Claude Code call carries (#821). One git call, not two.
+test('hook: an allowed call asks git for the root once (#821)', { skip: process.platform === 'win32' && 'the fake git is a node script with no .cmd shim' }, async () => {
+  const sandbox = makeSandbox();
+  const bin = makeTempDir('yokoten-fake-git-');
+  const log = join(bin, 'git.log');
+  const realGit = (process.env.PATH ?? '').split(delimiter).map((dir) => join(dir, 'git')).find((file) => existsSync(file));
+  assert.ok(realGit, 'git is on PATH');
+  // A git that writes down its arguments, then runs the real one.
+  writeFileSync(join(bin, 'git'), `#!/usr/bin/env node\nimport { spawnSync } from 'node:child_process';\nimport { appendFileSync } from 'node:fs';\nappendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n');\nconst done = spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: 'inherit', env: process.env });\nprocess.exit(done.status ?? 1);\n`);
+  chmodSync(join(bin, 'git'), 0o755);
+  const input = JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command: 'ls -la' } });
+  const result = await sandbox.call(['hook'], { input, extra: { PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.status, 0);
+  assert.ok(existsSync(log), 'the guard asked git');
+  const asked = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
+  assert.equal(asked.filter((args) => args.join(' ') === 'rev-parse --show-toplevel').length, 1);
 });
