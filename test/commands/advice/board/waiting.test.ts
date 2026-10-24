@@ -75,6 +75,7 @@ test('board waiting: the snapshot hides the latch time and the home folder', () 
     handles: new Map(),
     logPath: '',
     spawner: () => ({ pid: null, kill: () => undefined }),
+    timeLimitMs: 60_000,
   };
   const snapshot = readBoardSnapshot({ HOME: home }, controls, board, [], [{ number: 9, title: 'open', url: '', createdAt: '', updatedAt: '', dependsOn: [] }]);
   assert.equal('latchedAt' in snapshot.waiting[0], false, 'the latch time stays on the server');

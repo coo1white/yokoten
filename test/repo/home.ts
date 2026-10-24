@@ -8,7 +8,7 @@
 // Yokoten's own variables are removed too (#712). A test must not see the session that
 // started the suite: YOKOTEN_ROLE, YOKOTEN_DESK and the rest. The architecture test checks it.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,8 +77,14 @@ useRealHome(() => '');
 // does not know, such as the fake gh.exe (#750). --require runs CommonJS, sets the same
 // slot as useRealHome, and leaves the program's own format alone. The script is in the
 // temp folder, so test/repo stays at 7 files (#739, #356).
+// test files run side by side, and every one of them writes this same file. writeFileSync
+// empties it first, so a child that started in that moment read an empty script, found no
+// slot and failed the privacy test. Write a private copy and rename it into place:
+// rename is atomic, so a reader always sees the whole file.
 const preloadFile = join(tmpdir(), 'yokoten-real-home.cjs');
-writeFileSync(preloadFile, "globalThis[Symbol.for('yokoten.readRealHome')] = () => '';\n");
+const preloadDraft = join(tmpdir(), `yokoten-real-home-${process.pid}.cjs`);
+writeFileSync(preloadDraft, "globalThis[Symbol.for('yokoten.readRealHome')] = () => '';\n");
+renameSync(preloadDraft, preloadFile);
 const flag = `--require ${JSON.stringify(preloadFile)}`;
 if (!process.env.NODE_OPTIONS?.includes(flag)) {
   process.env.NODE_OPTIONS = process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${flag}` : flag;

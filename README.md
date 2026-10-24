@@ -42,10 +42,17 @@ You need [Node](https://nodejs.org/) 22.23.4 or later (24.22.1 or later on Node 
 or later on Node 26). Nothing else.
 
 ```sh
-npx yokoten install      # once per computer
 cd your-project
-npx yokoten init         # once per project
-npx yokoten doctor       # where you are, and the one next step
+npx yokoten             # once: installs yokoten, adds the rules, shows the next step
+```
+
+That is the whole start. Run `npx yokoten` again in any project, and it does only what is
+still missing. If you would rather do one step at a time:
+
+```sh
+npx yokoten install     # once per computer
+npx yokoten init        # once per project
+npx yokoten doctor      # where you are, and the one next step
 ```
 
 In Claude Code you can use the plugin instead: `/plugin marketplace add yokoten-labs/yokoten`,
