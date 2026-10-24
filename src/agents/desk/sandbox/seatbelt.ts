@@ -21,8 +21,8 @@
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Env } from '../../rules/config.ts';
-import { type DeskBackend, type DeskPlan, type FencedCommand, proxyEnv } from './desk.ts';
+import type { Env } from '../../../rules/config.ts';
+import { type DeskBackend, type DeskPlan, type FencedCommand, proxyEnv } from '../desk.ts';
 
 /** The system folders every program reads: its libraries, tools, settings and time zones. */
 const SYSTEM_READS = ['/usr', '/bin', '/sbin', '/System', '/Library', '/opt', '/private/etc', '/private/var/db/timezone', '/private/var/select', '/dev'];

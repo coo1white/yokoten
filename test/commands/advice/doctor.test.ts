@@ -2,9 +2,9 @@
 
 import '../../repo/home.ts';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { CLI, makeSandbox, pick } from '../../repo/helpers.ts';
@@ -133,4 +133,62 @@ test('doctor: one progress line on a terminal; none off it, in a session, or wit
   const json = run(true, ['--json']);
   assert.ok(!json.stdout.includes('reading GitHub settings'), 'stdout holds only the report');
   JSON.parse(json.stdout);
+});
+
+// #708: `gc` is the desk sweep. The marker itself is tested in agents/desk/gc.test.ts.
+test('gc: a dry run says what would go and leaves the checkout alone', async () => {
+  const sandbox = makeSandbox();
+  const dry = sandbox.run(['gc', '--dry-run']);
+  assert.equal(dry.status, 0, dry.stderr);
+  assert.match(dry.stdout, /^yokoten gc: 0 to remove, 1 kept, 0 to check by hand\. Nothing is removed: this is a dry run\./);
+  assert.match(dry.stdout, /kept .*: the checkout this session runs in/);
+
+  const help = sandbox.run(['gc', '--help']);
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /--dry-run\s+print what would go; remove nothing/);
+});
+
+test('gc: only the lead sweeps desks', async () => {
+  const sandbox = makeSandbox();
+  const worker = await sandbox.call(['gc'], { extra: { YOKOTEN_ROLE: 'worker' } });
+  assert.equal(worker.status, 1);
+  assert.match(worker.stderr, /only the lead sweeps desks: this session is a worker/);
+});
+
+/** git in a folder of a sandbox, with the sandbox's home and config. */
+const gitIn = (folder: string, env: NodeJS.ProcessEnv, args: string[]): string => execFileSync('git', args, { cwd: folder, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+
+// #708: doctor reads. It says what `yokoten gc` would remove, and only gc removes it.
+test('doctor: a finished desk is listed, and only gc removes it', async () => {
+  const sandbox = makeSandbox();
+  const base = join(sandbox.repo, '..');
+  const origin = join(base, 'origin.git');
+  const worktree = join(base, 'desks', 'done');
+  mkdirSync(dirname(worktree), { recursive: true });
+  gitIn(sandbox.repo, sandbox.env, ['init', '-q', '--bare', '-b', 'main', origin]);
+  sandbox.git('remote', 'add', 'origin', origin);
+  sandbox.write('seed.txt', 'seed\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-q', '-m', 'start');
+  sandbox.git('push', '-q', 'origin', 'main');
+  sandbox.git('worktree', 'add', '-q', '-b', '708-done', worktree);
+  writeFileSync(join(worktree, 'work.txt'), 'work\n');
+  gitIn(worktree, sandbox.env, ['add', '.']);
+  gitIn(worktree, sandbox.env, ['commit', '-q', '-m', 'work']);
+  gitIn(worktree, sandbox.env, ['push', '-q', 'origin', '708-done']);
+  sandbox.git('merge', '-q', '--ff-only', 'origin/708-done');
+  sandbox.git('push', '-q', 'origin', 'HEAD:main');
+
+  const doctor = await sandbox.call(['doctor']);
+  assert.ok(existsSync(worktree), 'doctor removes nothing');
+  assert.match(doctor.stdout, /would remove/);
+  assert.match(doctor.stdout, /desks\/done: it is merged and on the remote/);
+
+  const json = JSON.parse((await sandbox.call(['doctor', '--json'])).stdout) as { desks?: Array<{ path: string; decision: string }> };
+  assert.ok(Array.isArray(json.desks), '--json holds the desk list');
+  assert.ok(json.desks.some((entry) => entry.decision === 'remove' && entry.path.endsWith(join('desks', 'done'))));
+
+  const gc = await sandbox.call(['gc']);
+  assert.equal(gc.status, 0, gc.stderr);
+  assert.ok(!existsSync(worktree), 'gc removes it');
 });

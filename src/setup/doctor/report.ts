@@ -230,6 +230,8 @@ export interface DoctorReport {
   server?: { id: string; mark: ServerCheck['mark'] }[];
   /** The kit's lessons, run against this project (#147). Their findings are in `notes`. */
   lessons?: { id: string; mark: LessonCheck['mark']; reason?: string; isNew?: boolean }[];
+  /** The desks a read-only sweep would remove or list, for `yokoten gc` (#708). */
+  desks?: Array<{ path: string; isMain: boolean; decision: 'remove' | 'keep' | 'list'; reason: string }>;
 }
 
 /** What doctor says when HOME is empty or not a full path, and the system names no home either (#404). */
