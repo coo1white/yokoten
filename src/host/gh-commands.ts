@@ -94,6 +94,8 @@ const ORG = 'orgs/[^/]+';
 // A GitHub Enterprise server serves the same call at `api/graphql`.
 const GRAPHQL_ROUTE = /^(?:api\/)?graphql$/i;
 const MUTATION = /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*mutation\b/i;
+// The first field of a mutation, after its optional name and variable declarations.
+const MUTATION_FIELD = /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*mutation\b(?:\s+[A-Za-z_]\w*)?(?:\s*\([^)]*\))?\s*\{\s*([A-Za-z_]\w*)/i;
 // A document the shell builds is not one the guard can read: a variable, a substitution or
 // a backtick. A GraphQL variable declaration (`query($id: ID!)`) is none of these.
 const SHELL_DOCUMENT = /^\$|\$\(|\$\{|`/;
@@ -118,11 +120,59 @@ const SETTINGS_ROUTES = [
 ];
 
 /**
- * Whether a `gh api graphql` call sends a mutation (#825). A document the guard cannot read,
- * an `@file`, a shell variable or substitution, `--input`, or none at all, counts as one it
- * cannot vouch for.
+ * Whether a GraphQL mutation only adds a comment, the one write the bot needs. It must be one
+ * top-level `addComment` field and nothing else, because another field could change a setting
+ * (#825). Anything that does not read as exactly that is refused.
  */
-function isGraphqlMutation(args: string[]): boolean {
+function isCommentMutation(document: string): boolean {
+  const start = MUTATION_FIELD.exec(document);
+  if (start?.[1].toLowerCase() !== 'addcomment') return false;
+  let index = start[0].length;
+  let braces = 1;
+  let parens = 0;
+  let isClosed = false;
+  while (index < document.length) {
+    const char = document[index];
+    if (char === '"') {
+      if (document.startsWith('"""', index)) {
+        const block = document.indexOf('"""', index + 3);
+        index = block === -1 ? document.length : block + 3;
+        continue;
+      }
+      index++;
+      while (index < document.length && document[index] !== '"') index += document[index] === '\\' ? 2 : 1;
+      index++;
+      continue;
+    }
+    if (char === '#') {
+      while (index < document.length && document[index] !== '\n') index++;
+      continue;
+    }
+    if (char === '(') parens++;
+    else if (char === ')') parens = Math.max(0, parens - 1);
+    else if (parens === 0 && char === '{') braces++;
+    else if (parens === 0 && char === '}') {
+      braces--;
+      if (braces === 0) {
+        index++;
+        isClosed = true;
+        break;
+      }
+    } else if (braces === 1 && parens === 0 && /[A-Za-z_]/.test(char)) {
+      // A second top-level field: this mutation does more than comment.
+      return false;
+    }
+    index++;
+  }
+  return isClosed && /^(?:[\s\ufeff]|#[^\n]*(?:\n|$))*$/.test(document.slice(index));
+}
+
+/**
+ * Whether a `gh api graphql` call sends a mutation that may change settings (#825). A document
+ * the guard cannot read, an `@file`, a shell variable or substitution, `--input`, or none at
+ * all, counts as one it cannot vouch for. A mutation that only adds a comment passes.
+ */
+function isGraphqlSettingsWrite(args: string[]): boolean {
   let hasDocument = false;
   for (let index = 0; index < args.length; index++) {
     if (optionValue(args, index, GRAPHQL_INPUT)) return true;
@@ -133,7 +183,7 @@ function isGraphqlMutation(args: string[]): boolean {
     const document = equals === -1 ? value : value.slice(equals + 1);
     if (document.startsWith('@') || SHELL_DOCUMENT.test(document)) return true;
     hasDocument = true;
-    if (MUTATION.test(document)) return true;
+    if (MUTATION.test(document) && !isCommentMutation(document)) return true;
     index = field.next - 1;
   }
   return !hasDocument;
@@ -153,7 +203,7 @@ export function hostSettingsWrite(words: string[]): Finding | undefined {
   const method = call.method || (call.hasFields ? 'POST' : 'GET');
   if (method === 'GET') return undefined;
   if (GRAPHQL_ROUTE.test(call.path)) {
-    if (isGraphqlMutation(args)) return finding('repo-settings', 'this `gh api graphql` call sends a mutation, which can change repository or organization settings', SETTINGS_FIX);
+    if (isGraphqlSettingsWrite(args)) return finding('repo-settings', 'this `gh api graphql` call sends a mutation, which can change repository or organization settings', SETTINGS_FIX);
     return undefined;
   }
   if (!SETTINGS_ROUTES.some((route) => route.test(call.path))) return undefined;

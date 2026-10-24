@@ -145,6 +145,9 @@ test('repo settings: a graphql mutation is a settings write, a query passes (#82
   const refused = [
     'gh api graphql -f query=mutation { changeVisibility(input: {visibility: PUBLIC}) { clientMutationId } }',
     'gh api -X POST /graphql -f query=mutation{ updateRepository(input: {}) { clientMutationId } }',
+    'gh api graphql -f query=mutation { x }',
+    // A comment is the bot's own write, unless the same mutation does more.
+    "gh api graphql -f query='mutation { addComment(input: {body: x}) { clientMutationId } changeVisibility(input: {visibility: PUBLIC}) { clientMutationId } }'",
     'gh api -X POST /api/graphql -f query=mutation { x }',
     'gh api -X POST https://api.github.com/graphql -f query=mutation { x }',
     'gh api graphql --raw-field query=mutation { changeVisibility(input: {}) { clientMutationId } }',
@@ -171,6 +174,8 @@ test('repo settings: a graphql mutation is a settings write, a query passes (#82
     'gh api -X POST graphql -f query={ viewer { login } }',
     // The word only inside a string, in an operation that reads.
     'gh api graphql -f query=query { search(query: "mutation") { issueCount } }',
+    // A comment is the one mutation the bot needs, and text with a brace is still text.
+    "gh api graphql -f query='mutation { addComment(input: {body: \"a } brace\"}) { clientMutationId } }'",
   ];
   for (const command of reads) assert.equal(checkCommand(command, { cwd: process.cwd(), env: lead }), null, command);
 });
