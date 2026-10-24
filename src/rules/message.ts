@@ -575,6 +575,12 @@ export const RULES = {
     check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading. When a heavy job starts and that reading is low, the tool-call guard asks first; it never refuses',
     docs: guide('machine-notes'),
   },
+  'guard-cost': {
+    rule: 'the guard runs on every tool call, so it stays cheap (#461)',
+    why: 'a guard that costs more than the command it checks slows every session down',
+    check: 'full `doctor` runs the guard once on a trivial command and prints that call\'s wall time and CPU time in one line; a report line, never a failure, and a session does not run it',
+    docs: guide('machine-notes'),
+  },
   'agent-temp-dir': {
     rule: "the agent's temp folder belongs to you (record 0012)",
     why: 'Claude Code will not start when another user, such as root, owns its temp folder',

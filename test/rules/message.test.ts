@@ -236,6 +236,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   for (const c of diskSpaceChecks(dir, { HOME: dir }, fullMachine, false)) add(c.finding);
   add(agentTempDirCheck({}, fullMachine)?.finding);
   for (const nodeVersion of ['24.21.0', '23.11.1']) add(nodeSecurityCheck({ nodeVersion }).finding);
+  // The guard's own cost, a reading doctor prints as a line (#461).
+  add(finding('guard-cost', 'one guard call costs 90 ms', 'nothing to fix: this is a reading of the machine'));
   // An old test folder in the temp folder (#400): seen from two days on.
   const temp = makeTempDir();
   mkdirSync(join(temp, 'yokoten-old'));

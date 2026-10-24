@@ -1812,7 +1812,7 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
       const targets = plainArgs(args);
       const target = targets.find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
       if (target !== undefined) {
-        return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+        return finding('remove-git', `\`${name}\` would delete \`${target}\``, REMOVE_GIT_FIX);
       }
       // `.` is the checkout and `..` holds it: one word removes every file and every commit (#828).
       const whole = targets.find((word) => isCheckoutPath(word, cwd));
@@ -1822,7 +1822,7 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
     }
     if (name === 'find') {
       if (findRemovesGit(args, cwd, home)) {
-        return finding('remove-git', '`find` deletes files, and nothing keeps it out of the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+        return finding('remove-git', '`find` would delete files, and nothing keeps it out of `.git`', REMOVE_GIT_FIX);
       }
       coveredUntil = words.length;
     }

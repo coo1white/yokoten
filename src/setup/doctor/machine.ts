@@ -7,6 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Env } from '../../rules/config.ts';
+import { type GuardCost, measureRun } from '../../host/light.ts';
+import { GUARD_HEAP } from '../../run/cli.ts';
 import { type Finding, finding } from '../../rules/message.ts';
 import { tempDir as claudeTempDir } from '../../agents/runtimes/claude-code.ts';
 import { findTempDirs } from '../advice/unsaved.ts';
@@ -31,6 +33,8 @@ export interface MachineProbe {
   readText(path: string): string | null;
   /** Write a file, making its folder. Throws when it can't. */
   writeText(path: string, text: string): void;
+  /** Runs the tool-call guard once on a trivial command and measures it. Null when it can't run. Left out by a fake machine: then doctor says nothing about it. */
+  measureGuard?(cli: string, root: string, env: Env): GuardCost | null;
   /** This process's uid, or null where there is none (Windows). */
   uid: number | null;
   now(): Date;
@@ -60,6 +64,8 @@ export const REAL_MACHINE: MachineProbe = {
     }
   },
   writeText: writeFileAtomic,
+  measureGuard: (cli, root, env) =>
+    measureRun([process.execPath, GUARD_HEAP, cli, 'hook'], JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'true' }, cwd: root, hook_event_name: 'PreToolUse' }), { cwd: root, env }),
   uid: process.getuid?.() ?? null,
   now: () => new Date(),
   nodeVersion: process.versions.node,
