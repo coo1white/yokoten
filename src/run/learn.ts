@@ -14,8 +14,8 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { type Finding, finding } from '../rules/message.ts';
-import { homeOf, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
+import { type Finding, finding, formatFinding } from '../rules/message.ts';
+import { homeOf, loadMarks, makeRedactor, NO_HOME, PLACEHOLDERS, scanText } from '../rules/privacy.ts';
 
 /** An incident issue, as the code host gives it. */
 export interface Incident {
@@ -287,9 +287,36 @@ export function formatDraft(incident: Incident, draft: Draft): string[] {
  * never overwrites a reviewer's work.
  */
 export function writeDraft(root: string, draft: Draft): { written: string[]; kept: string[] } {
+  return writeLessonFiles(root, draft.files);
+}
+
+/** The first part of `relative` that is a symlink in `root`, a folder or the file itself; null when none is. */
+function findLessonLink(root: string, relative: string): string | null {
+  const parts = relative.split('/');
+  for (let depth = 1; depth <= parts.length; depth++) {
+    const part = parts.slice(0, depth).join('/');
+    try {
+      if (lstatSync(join(root, part)).isSymbolicLink()) return part;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * The files in the repo, adds only: one that is there is kept, so a review is never overwritten.
+ * Every path is checked for a link before the first write, so text from another project never
+ * lands outside `lessons/<id>/`.
+ */
+export function writeLessonFiles(root: string, files: DraftFile[]): { written: string[]; kept: string[] } {
+  for (const file of files) {
+    const link = findLessonLink(root, file.path);
+    if (link) throw new Error(`${link} is a link: a lesson writes only inside its own folder. Remove the link, then run the command again.`);
+  }
   const written: string[] = [];
   const kept: string[] = [];
-  for (const file of draft.files) {
+  for (const file of files) {
     const path = join(root, file.path);
     if (existsSync(path)) {
       kept.push(file.path);
@@ -301,6 +328,134 @@ export function writeDraft(root: string, draft: Draft): { written: string[]; kep
   }
   return { written, kept };
 }
+
+// A lesson travels as one small JSON file (#757): the incident, the check and its positive
+// control. Export reads a lesson from `lessons/` or the kit; import shows it for review, and
+// `--write` puts it in `lessons/` only. A lesson still runs nowhere until `--ship` moves it
+// into the kit, so another project never gets a check nobody read.
+
+/** The export format. A reader refuses a number it does not know. */
+export const LESSON_PACK_VERSION = 1;
+/** The two files a lesson is: the check, and its positive control. No other path is imported. */
+const LESSON_PACK_FILES = ['lesson.ts', 'lesson.test.ts'] as const;
+/** The most text one lesson file may hold, so an import stays small and a read stays fast. */
+const LESSON_PACK_LIMIT = 256 * 1024;
+
+/** One lesson as a file another project can import. */
+export interface LessonPack {
+  version: number;
+  id: string;
+  /** The incident issue the lesson came from. */
+  incident: string;
+  /** `lesson.ts` and `lesson.test.ts`, with the path from the lesson's folder. */
+  files: DraftFile[];
+}
+
+/** Where a lesson is in `root`: a draft, or a row of the kit's table. */
+function findLessonFolder(root: string, id: string): { folder: string; incident?: string } | null {
+  const draft = `${LESSONS_DIR}/${id}`;
+  if (existsSync(join(root, draft, 'lesson.ts'))) return { folder: draft };
+  const table = readText(join(root, KIT_LESSONS_DIR, LESSONS_TABLE));
+  const row = table === null ? undefined : readLessonTable(table).find((one) => one.id === id);
+  return row ? { folder: `${KIT_LESSONS_DIR}/${row.folder}`, incident: row.url } : null;
+}
+
+/** An id from an issue number or a lesson id, or null when it is neither. */
+const lessonIdOf = (reference: string): string | null => {
+  const id = /^\d+$/.test(reference) ? `incident-${reference}` : reference;
+  return LESSON_ID.test(id) ? id : null;
+};
+
+/**
+ * A lesson as the small file that leaves this project: the incident, the check and its test.
+ * It refuses a draft with a TODO left, a lesson with no incident, and any private detail the
+ * privacy check finds, by place and never by value. Nothing is written.
+ */
+export function exportLesson(root: string, reference: string, env: Env): { pack: LessonPack; text: string } | { problems: string[] } {
+  const id = lessonIdOf(reference);
+  if (id === null) return { problems: [`${reference} is not a lesson id: give its number or its id, for example incident-138`] };
+  const found = findLessonFolder(root, id);
+  if (found === null) return { problems: [`no lesson ${id} in ${LESSONS_DIR}/ or ${KIT_LESSONS_DIR}/: write it with \`yokoten learn <issue> --write\`, or ship it first`] };
+  const files: DraftFile[] = [];
+  for (const name of LESSON_PACK_FILES) {
+    const text = readText(join(root, found.folder, name));
+    if (text === null) return { problems: [`${found.folder} has no ${name}: a lesson is its check and its positive control`] };
+    if (text.length > LESSON_PACK_LIMIT) return { problems: [`${found.folder}/${name} is larger than ${LESSON_PACK_LIMIT / 1024} KiB: a lesson is small`] };
+    files.push({ path: name, text });
+  }
+  const problems: string[] = [];
+  for (const file of files) {
+    const count = file.text.split('TODO(reviewer)').length - 1;
+    if (count) problems.push(`${found.folder}/${file.path} still has ${count} TODO(reviewer): fill each one in`);
+  }
+  const incident = found.incident ?? readSourceUrl(files[0].text) ?? '';
+  if (!incident) problems.push(`${found.folder}/lesson.ts does not name its incident: put the issue URL on a line \`// https://...\` near the top`);
+  if (problems.length) return { problems };
+  // The check is code from this project, so a private detail would travel with it. Refuse it
+  // here, before anything leaves: the person can rewrite the lesson without it.
+  const marks = loadMarks(env);
+  const privateProblems = files.flatMap((file) => scanText(file.text, { file: `${found.folder}/${file.path}`, marks, env }));
+  if (privateProblems.length) {
+    return { problems: privateProblems.map((problem) => `${formatFinding(problem)} Remove it from the lesson before exporting it.`) };
+  }
+  const pack: LessonPack = { version: LESSON_PACK_VERSION, id, incident, files };
+  return { pack, text: `${JSON.stringify(pack, null, 2)}\n` };
+}
+
+/**
+ * A lesson file read back: the shape checked, its files limited to the two a lesson is, and
+ * its text scanned for a secret or a private detail. No file is written. `env` is there for
+ * the check, so an import is refused before it reaches `lessons/`.
+ */
+export function importLesson(text: string, env: Env): { pack: LessonPack; files: DraftFile[] } | { problems: string[] } {
+  if (text.length > LESSON_PACK_LIMIT * 2) return { problems: [`the file is larger than ${(LESSON_PACK_LIMIT * 2) / 1024} KiB: a lesson is small`] };
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { problems: ['the file is not JSON: export a lesson with `yokoten learn --export <id>`'] };
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return { problems: ['the file is not a lesson: it must be a JSON object'] };
+  const record = value as Record<string, unknown>;
+  if (record.version !== LESSON_PACK_VERSION) return { problems: [`the file says version ${String(record.version)}, but this yokoten reads version ${LESSON_PACK_VERSION}: update yokoten, or export it again`] };
+  const id = typeof record.id === 'string' ? lessonIdOf(record.id) : null;
+  if (id === null) return { problems: ['the file has no valid lesson id: give a lower-case id such as incident-138'] };
+  const incident = typeof record.incident === 'string' ? record.incident : '';
+  if (!/^https?:\/\/\S+$/.test(incident)) return { problems: ['the file does not name its incident: an http or https issue URL is required'] };
+  if (!Array.isArray(record.files)) return { problems: ['the file has no files: a lesson is its check and its positive control'] };
+  const files: DraftFile[] = [];
+  const seen = new Set<string>();
+  for (const entry of record.files) {
+    if (typeof entry !== 'object' || entry === null) return { problems: ['a file in the lesson is not an object with a path and text'] };
+    const file = entry as Record<string, unknown>;
+    const name = typeof file.path === 'string' ? file.path : '';
+    if (!(LESSON_PACK_FILES as readonly string[]).includes(name)) return { problems: [`${name || 'an empty path'} is not a lesson file: only lesson.ts and lesson.test.ts travel`] };
+    if (seen.has(name)) return { problems: [`the file has ${name} twice`] };
+    if (typeof file.text !== 'string') return { problems: [`${name} has no text`] };
+    if (file.text.length > LESSON_PACK_LIMIT) return { problems: [`${name} is larger than ${LESSON_PACK_LIMIT / 1024} KiB: a lesson is small`] };
+    seen.add(name);
+    files.push({ path: name, text: file.text });
+  }
+  for (const name of LESSON_PACK_FILES) if (!seen.has(name)) return { problems: [`the file has no ${name}: a lesson is its check and its positive control`] };
+  const problems: string[] = [];
+  for (const file of files) {
+    const count = file.text.split('TODO(reviewer)').length - 1;
+    if (count) problems.push(`${file.path} still has ${count} TODO(reviewer): a lesson travels with its check written`);
+  }
+  // The incident is the `// https://...` line in `lesson.ts`, the same line export reads: a pack
+  // whose JSON says one thing and whose file names no incident would lose the story on the way in.
+  const source = readSourceUrl(files.find((file) => file.path === 'lesson.ts')?.text ?? '');
+  if (!source) problems.push('lesson.ts does not name its incident: put the issue URL on a line `// https://...` near the top');
+  else if (source !== incident) problems.push(`lesson.ts names incident ${source}, but the file says ${incident}: make them the same URL`);
+  const marks = loadMarks(env);
+  for (const file of files) for (const problem of scanText(file.text, { file: file.path, marks, env })) problems.push(formatFinding(problem));
+  if (problems.length) return { problems };
+  const pack: LessonPack = { version: LESSON_PACK_VERSION, id, incident, files };
+  return { pack, files: files.map((file) => ({ path: `${LESSONS_DIR}/${id}/${file.path}`, text: file.text })) };
+}
+
+/** The line that says what an import found, before its files. */
+export const formatLessonPack = (pack: LessonPack): string => `a lesson ${pack.id} from ${pack.incident}, with ${pack.files.length} file(s): ${pack.files.map((file) => file.path).join(' and ')}. No TODO(reviewer) is left.`;
 
 // Shipped lessons (#147), the second half of the loop. A reviewed lesson moves from
 // `lessons/<id>/` into the kit, with a row in the kit's lessons table. `doctor` then runs

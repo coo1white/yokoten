@@ -9,6 +9,9 @@ its id to "notNow" in yokoten.json, with the reason.
 groups so no folder holds more than 7 entries: a group takes 5 lessons and 2 more groups.
 "Added in" is the version in package.json when the lesson shipped.
 
+A lesson also travels as one small file. `yokoten learn --export <id>` prints it, and
+`yokoten learn --import <file>` brings one from another project in for review.
+
 | Lesson | Folder | Incident | Added in |
 |---|---|---|---|
 | incident-138 | 1/incident-138 | https://github.com/yokoten-labs/yokoten/issues/138 | 0.1.0 |

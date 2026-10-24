@@ -317,6 +317,22 @@ export const COMMANDS: Command[] = [
     example: 'git log -1 2>&1 | yokoten redact',
   },
   {
+    name: 'test',
+    summary: 'run the tests light: niced, with few at once',
+    usage: '[--heavy] [--print] [-- <test runner words>]',
+    text: [
+      "Runs Node's test runner (node --test) under nice, with at most half the cores and one",
+      'file per GB of free memory at once, so tests do not starve a shared machine. Words',
+      'after -- go to the runner: test files, or its options. YOKOTEN_LIGHT_TESTS=0 turns',
+      'the light run off for every call; --heavy does it for this call.',
+    ],
+    options: [
+      { name: '--heavy', text: 'no nice and no cap on concurrency, for this call' },
+      { name: '--print', text: 'show the command and why it was chosen, and run nothing' },
+    ],
+    example: 'yokoten test -- test/run/cli.test.ts',
+  },
+  {
     name: 'marks',
     summary: 'count your private marks, add or remove one, turn a kind off, or allow one here',
     usage: '[add | remove | off <kind> | on <kind> | allow <mark> --here | allow --remove <mark> --here]',
@@ -352,11 +368,14 @@ export const COMMANDS: Command[] = [
   {
     name: 'learn',
     summary: 'a check draft from an incident issue, for a person to review',
-    usage: '<issue> [--write] | --ship <id> | --upstream "<what happened>" [--area <name>] [--fix <idea>] | --upstream --list | --upstream --done <id>',
+    usage: '<issue> [--write] | --ship <id> | --export <id> [--out <file>] | --import <file> [--write] | --upstream "<what happened>" [--area <name>] [--fix <idea>] | --upstream --list | --upstream --done <id>',
     text: [
       'Reads an incident issue (a number or a URL) through gh and drafts a check from it,',
       'for a person to review. It writes nothing without --write. In yokoten, --ship moves a',
       'reviewed lesson into kit/lessons/, where doctor runs it in every project.',
+      '--export writes a reviewed lesson as one small JSON file, with its incident and its',
+      'positive control, and no private detail; --import shows such a file from another',
+      'project, and --write adds it to lessons/ for review. It runs nowhere before --ship.',
       '--upstream keeps a note about a gap in yokoten itself, found in any project, in',
       '~/.config/yokoten/upstream/, outside every repo. The project name, its path, your',
       'home folder and your name are hidden first; a note with a known secret shape is refused.',
@@ -364,6 +383,9 @@ export const COMMANDS: Command[] = [
     options: [
       { name: '--write', text: 'put the draft in lessons/ (adds only, never overwrites)' },
       { name: '--ship', text: 'move a reviewed lesson into kit/lessons/; refused while a TODO is left' },
+      { name: '--export', value: 'id', text: 'a reviewed lesson as one small JSON file (prints it, or writes it with --out)' },
+      { name: '--out', value: 'file', text: 'with --export: write the lesson file here instead of printing it' },
+      { name: '--import', value: 'file', text: 'a lesson file from another project: show it, or add it with --write' },
       { name: '--upstream', text: 'a note for the yokoten repo: what happened, in a few words' },
       { name: '--area', value: 'name', text: 'with --upstream: the part of yokoten it is about, such as hook or doctor' },
       { name: '--fix', value: 'idea', text: 'with --upstream: how it could be fixed' },

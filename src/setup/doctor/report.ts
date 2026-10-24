@@ -1,19 +1,21 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { type Config, type Env } from '../../rules/config.ts';
 import { type Finding, finding, formatFinding } from '../../rules/message.ts';
 import { homeOf } from '../../rules/privacy.ts';
+import { guardLine } from '../../host/light.ts';
 import { check } from '../../run/check.ts';
 import { countNotes, waitingLine } from '../../run/learn.ts';
 import { type Gh, readServer, type ServerSettings, type Unread } from '../../host/github/index.ts';
 import { type Host, hostOf, isNoAdapter, noAdapter } from '../../host/hosts.ts';
 import { readUnsaved, unsavedNotes } from '../advice/unsaved.ts';
 import { VERSION } from '../files.ts';
-import { isSelf, withGitReads, workflowNotes } from '../init.ts';
+import { hookCliPath, isSelf, withGitReads, workflowNotes } from '../init.ts';
 import { gitConfig } from '../../run/check.ts';
 import { fillMarks, marksState, UNREADABLE_MARKS, UNREADABLE_MARKS_FIX, filledLines, trySafely, machineMarks, paths } from '../install.ts';
 import { type Mark, missingPaths, readDefaultBranchFiles, road, ROAD, ROAD_SERVER_IDS, type ServerCheck, serverChecks, type ServerRead, STAGES, stepFinding, stepText, uncheckedText, walk } from '../road.ts';
-import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, releaseChannel, userAgentHooks } from './checks.ts';
+import { agentHooks, allowedMarkCount, commandWording, coreRulesCheck, doubleInstallCheck, launcherCheck, machineChecks, mergeTimeZones, museClaudeRules, pluginAgeCheck, privacyNotes, releaseChannel, userAgentHooks, type Practice } from './checks.ts';
 import { findStateFile, formatLessonChecks, type LessonCheck, lessonChecks, readState, saveState, seenAfter, sessionLessonNote, stageFileFor, STATE_FILE } from './lessons.ts';
 import { agentTempDirCheck, diskSpaceChecks, leftoverTempCheck, nodeSecurityCheck, type MachineProbe, REAL_MACHINE } from './machine.ts';
 import { selfTest } from './self-test.ts';
@@ -271,6 +273,20 @@ function stageJumpText(marks: Mark[]): string {
   return parts.join(', ').replace(/, ([^,]*)$/, ' and $1');
 }
 
+/**
+ * What one guard call costs on this machine (#461): wall time and CPU time, from one real
+ * run of the guard on a trivial command. The project's own copy when it has one, else the
+ * copy that runs doctor. A report line, never a failure; null when there is nothing to run
+ * or the machine can't measure. Full doctor only: a session must start fast.
+ */
+export function guardCostCheck(root: string, probe: MachineProbe, env: Env): Practice | null {
+  if (!probe.measureGuard) return null;
+  const own = join(root, hookCliPath(root));
+  const cli = existsSync(own) ? own : fileURLToPath(new URL('../../../bin/yokoten.mjs', import.meta.url));
+  const cost = probe.measureGuard(cli, root, env);
+  return cost ? { name: 'guard', ok: true, finding: finding('guard-cost', '', ''), detail: guardLine(cost) } : null;
+}
+
 function doctorRun(
   root: string | null,
   { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
@@ -480,7 +496,8 @@ function doctorRun(
   // test folders left in the temp folder (#400), and a Node without the security fixes (#572).
   const agentTemp = agentTempDirCheck(env, probe);
   const leftovers = leftoverTempCheck(env, probe);
-  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : []), nodeSecurityCheck(probe)]) {
+  const guardCost = session || root === null ? null : guardCostCheck(root, probe, env);
+  for (const c of [...userAgentHooks(env), ...diskSpaceChecks(root, env, probe, false), ...(agentTemp ? [agentTemp] : []), ...(leftovers ? [leftovers] : []), nodeSecurityCheck(probe), ...(guardCost ? [guardCost] : [])]) {
     lines.push(`  ${c.ok ? 'ok     ' : 'note   '} ${c.name}${c.ok ? (c.detail ? `: ${c.detail}` : '') : `: ${stepText(c.finding)}`}`);
     if (!c.ok) notes.push(c.finding);
   }

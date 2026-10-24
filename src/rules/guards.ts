@@ -1799,12 +1799,12 @@ function checkRemoveGit(words: string[], cwd: string | null, env: Env): Finding 
     if (REMOVE_PROGRAMS.has(name)) {
       const target = plainArgs(args).find((word) => word.split(PATH_BREAKS).filter(Boolean).some(mayBeDotGit));
       if (target !== undefined) {
-        return finding('remove-git', `\`${name}\` on \`${target}\` can delete the .git folder, which holds the repo history`, REMOVE_GIT_FIX);
+        return finding('remove-git', `\`${name}\` would delete \`${target}\``, REMOVE_GIT_FIX);
       }
     }
     if (name === 'find') {
       if (findRemovesGit(args, cwd, home)) {
-        return finding('remove-git', '`find` deletes files, and nothing keeps it out of the .git folder, which holds the repo history', REMOVE_GIT_FIX);
+        return finding('remove-git', '`find` would delete files, and nothing keeps it out of `.git`', REMOVE_GIT_FIX);
       }
       coveredUntil = words.length;
     }
