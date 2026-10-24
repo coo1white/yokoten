@@ -904,6 +904,37 @@ test('doctor: a desk that can see ~/.claude/CLAUDE.md hears that the home folder
   }
 });
 
+// #758: a worker runs in a desk by default. Outside one, doctor says plainly that the
+// guard, not a fence, holds the rules; the explicit YOKOTEN_NO_DESK=1 says it was a choice.
+test('doctor: a worker outside a desk hears it, in a desk or by choice it says its own line (#758)', () => {
+  const sandbox = makeSandbox();
+  const base = { HOME: sandbox.home, YOKOTEN_TEMP_DIRS: '' };
+  const noGh = () => {
+    throw new Error('no network in this test');
+  };
+  const noteOf = (env: Record<string, string>) => privacyNotes(env, sandbox.repo).filter((note) => note.finding.id === 'worker-desk');
+  assert.deepEqual(noteOf(base), [], 'the lead is not a worker');
+  const outside = noteOf({ ...base, YOKOTEN_ROLE: 'worker' });
+  assert.equal(outside[0]?.finding.what, 'this worker runs outside a desk, so your home and the network are open to it');
+  assert.match(outside[0]?.finding.fix ?? '', /`yokoten desk`/);
+  assert.match(outside[0]?.finding.fix ?? '', /YOKOTEN_NO_DESK=1/);
+  assert.match(outside[0]?.finding.why ?? '', /not the boundary/);
+  const chosen = noteOf({ ...base, YOKOTEN_ROLE: 'worker', YOKOTEN_NO_DESK: '1' });
+  assert.equal(chosen[0]?.finding.what, 'this worker runs outside a desk by your choice, so your home and the network are open to it');
+  assert.match(chosen[0]?.finding.fix ?? '', /keep its brief small/);
+  // A desk says so itself. A desk started before YOKOTEN_DESK was always set has its state folder next to the clone.
+  const inDesk = { ...base, YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: join(sandbox.home, 'desk') };
+  assert.deepEqual(noteOf(inDesk), []);
+  mkdirSync(`${sandbox.repo}.state`, { recursive: true });
+  assert.deepEqual(noteOf({ ...base, YOKOTEN_ROLE: 'worker' }), [], 'the state folder says this is a desk');
+  rmSync(`${sandbox.repo}.state`, { recursive: true, force: true });
+  const session = doctor(sandbox.repo, { env: { ...base, YOKOTEN_ROLE: 'worker' }, config: DEFAULTS, session: true, gh: noGh });
+  const sessionLine = session.lines.find((text) => text.startsWith('yokoten: this worker runs outside a desk'));
+  assert.ok(sessionLine, session.lines.join('\n'));
+  assert.ok(session.report.notes?.some((note) => note.id === 'worker-desk'));
+  assert.ok(!session.report.findings.some((note) => note.id === 'worker-desk'), 'a note never fails doctor');
+});
+
 // #392: lessons from other projects wait in ~/.config/yokoten/upstream. Only yokoten's own
 // repo, found by its package name, hears about them; another repo hears nothing.
 test('doctor: in the yokoten repo, the session and doctor count the notes from other projects; elsewhere nothing', async () => {

@@ -499,6 +499,7 @@ Version 1. The line has no version field.
 ## The desk
 
 A desk is the worker's own clone, plus a fence around the agent.
+Every worker runs in a desk by default. A worker outside a desk has no `YOKOTEN_DESK`, and doctor reports it.
 Child processes and pipes work.
 The desk runs the command the lead gives.
 It does not add flags of its own.
@@ -513,7 +514,7 @@ On a team, the team folder is read-only, and only that agent's outbox is writabl
 | `hidden` | When they exist: `/home`, `/root`, `/mnt`, `/media`, `/run`, plus home and the desk's parent. On `darwin`: `/Users`, `/Volumes`, plus home and the parent. |
 | `locked` | `.git/config`, `.git/hooks` and `.git/yokoten-worker` stay read-only. On a team, `.git/yokoten-desk.json` is locked too. |
 | `hosts` | API hosts only, through a proxy that runs outside. CONNECT only. Port `443`, unless the host entry names a port. At most `64` tunnels. A quiet tunnel closes after `10 minutes`. The proxy does not read the tunnel. |
-| `env` | `YOKOTEN_ROLE` is `worker`. `TZ` is `UTC`. A team also sets `YOKOTEN_DESK` and `YOKOTEN_TEAM`. When the model is known, `YOKOTEN_MODEL` names it. `YOKOTEN_VENDOR` is set only when its vendor is not the runtime's own, so the agent knows what it really is. |
+| `env` | `YOKOTEN_ROLE` is `worker`, `YOKOTEN_DESK` is the desk folder, and `TZ` is `UTC`. A team also sets `YOKOTEN_TEAM`. When the model is known, `YOKOTEN_MODEL` names it. `YOKOTEN_VENDOR` is set only when its vendor is not the runtime's own, so the agent knows what it really is. The lead's `YOKOTEN_DONE_WHEN` passes; `YOKOTEN_LEAD_ONLY_OK` passes only when the lead named it. |
 | `command` | The command the lead passed. |
 
 `/run` is hidden because sockets there can start programs outside the fence.

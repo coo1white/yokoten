@@ -1,8 +1,9 @@
 # Server setup (the owner's part)
 
-The guards on your machine catch mistakes. The server is the lock: these settings hold
-even when a hook is off or a command slips past the guard. Do them once per repo. All
-steps are in the GitHub web UI and take about fifteen minutes.
+On the worker's machine, the desk is the boundary: it hides your home, your tokens and
+the network. The guards catch mistakes and explain the rules. The server is the lock:
+these settings hold even when a hook is off or a command slips past the guard. Do them
+once per repo. All steps are in the GitHub web UI and take about fifteen minutes.
 
 Then run `yokoten doctor`. It reads these settings through `gh` and says which ones are
 missing. It never changes a setting.

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Config, type Env } from '../../rules/config.ts';
+import { workerRole } from '../../rules/guards.ts';
 import { type Finding, finding, type RuleId } from '../../rules/message.ts';
 import { homeIn, homeOf, loadMarks, machineAllowed, notUtc, ownMarks, repoKey, sameNameMarks, skipsOwnName } from '../../rules/privacy.ts';
 import * as antigravity from '../../agents/runtimes/small/antigravity.ts';
@@ -267,6 +268,26 @@ export function museClaudeRules(env: Env, root: string | null): Practice | null 
   return practice('muse-claude-rules', 'muse-claude-rules', false, "outside a desk, Muse can send ~/.claude/CLAUDE.md to Muse's model", 'run Muse in a desk (`yokoten desk muse`) so the home folder stays hidden');
 }
 
+/** The note for a worker outside a desk: the guard alone holds the rules there (#758). */
+export const OUTSIDE_DESK = 'this worker runs outside a desk, so your home and the network are open to it';
+export const OUTSIDE_DESK_CHOSEN = 'this worker runs outside a desk by your choice, so your home and the network are open to it';
+export const OUTSIDE_DESK_FIX = 'start it with `yokoten desk`; if a desk can\'t hold it, set YOKOTEN_NO_DESK=1 and say why in the brief';
+export const OUTSIDE_DESK_CHOSEN_FIX = 'keep its brief small; a desk would hide your home and the network';
+
+/**
+ * A worker outside a desk hears that the guard, not a fence, holds the rules (#758).
+ * The desk sets YOKOTEN_DESK, so this process can tell. A worker mark in a plain
+ * worktree counts too, and so does a desk started before YOKOTEN_DESK was always set:
+ * its state folder sits next to its clone. `YOKOTEN_NO_DESK=1` is the lead's explicit
+ * choice; doctor still reports it, in plainer words.
+ */
+export function workerDeskNote(env: Env, root: string | null): Practice | null {
+  if (!root || workerRole(env, [root]) === null) return null;
+  if (hasDeskEnv(env) || existsSync(`${root}.state`)) return null;
+  if (env.YOKOTEN_NO_DESK === '1') return practice('worker-desk', 'worker-desk', false, OUTSIDE_DESK_CHOSEN, OUTSIDE_DESK_CHOSEN_FIX);
+  return practice('worker-desk', 'worker-desk', false, OUTSIDE_DESK, OUTSIDE_DESK_FIX);
+}
+
 /**
  * Notes that do not fail doctor (#390, #681): the git mailmap, the kinds of mark yokoten
  * can't find on its own, and Muse sending Claude Code's user rules to its model. Each is
@@ -289,6 +310,8 @@ export function privacyNotes(env: Env, root: string | null, output: Config['priv
   if (missing.length) notes.push(practice('private-mark-kinds', 'private-marks', false, offerMarkKinds(missing), OFFER_MARKS_FIX));
   const claudeRules = museClaudeRules(env, root);
   if (claudeRules) notes.push(claudeRules);
+  const workerDesk = workerDeskNote(env, root);
+  if (workerDesk) notes.push(workerDesk);
   return notes;
 }
 

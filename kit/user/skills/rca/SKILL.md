@@ -39,6 +39,10 @@ Two questions decide the countermeasure:
 
 ## 4. Countermeasure
 
+A guard hole that a desk already contains is a normal bug, not a stop-the-line. Ask
+whether the worker could reach what the hole exposes. If not, open an issue and fix it
+when it is cheap. A hole that reaches past the desk is an incident.
+
 Prefer, in this order:
 
 1. Make it impossible (a server rule, a token without the permission).

@@ -166,7 +166,7 @@ export const GUIDE_AGENTS: readonly GuideEntry[] = [
     adapter: 'muse',
     verified: 'yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor`',
     caveats:
-      'Runs the hooks only after you trust the folder: run `yokoten trust`. Muse passes no `YOKOTEN_ROLE` to a hook, so mark a worker\'s worktree with `yokoten worker mark <dir>`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on',
+      'Runs the hooks only after you trust the folder: run `yokoten trust`. Muse passes no `YOKOTEN_ROLE` to a hook, so run it in a desk (the desk carries the mark), or mark a worker\'s worktree with `yokoten worker mark <dir> --no-desk`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on',
   },
   {
     label: 'DeepSeek Harness (`dsh`)',

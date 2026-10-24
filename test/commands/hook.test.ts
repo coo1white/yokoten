@@ -35,6 +35,7 @@ import {
 import { invoke } from '../repo/invoke.ts';
 import { chooseDenial, redactCommand } from '../../src/commands/hook.ts';
 import { parseRefusal } from '../../src/rules/message.ts';
+import { workerMarkAt } from '../../src/rules/guards.ts';
 
 // A session started outside the repo, or a worker in a worktree elsewhere, loads no project
 // hook: the user-level guard applies the file's own repo's rules, if yokoten is set up there (#307).
@@ -899,13 +900,13 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
   // Before the mark, a Muse worker looks like the lead: the gap #555 closes.
   assert.equal((await muse({ path: join(tree, 'AGENTS.md') })).status, 0);
   // The main checkout is the lead's: it is never marked.
-  let result = await sandbox.call(['worker', 'mark', sandbox.repo]);
+  let result = await sandbox.call(['worker', 'mark', sandbox.repo, '--no-desk']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /main checkout/);
   assert.equal((await sandbox.call(['worker', 'mark'])).status, 1, 'no folder is a usage error');
   // A subfolder marks its worktree, and names the worktree's top folder.
   mkdirSync(join(tree, 'src'));
-  result = await sandbox.call(['worker', 'mark', join(tree, 'src')]);
+  result = await sandbox.call(['worker', 'mark', join(tree, 'src'), '--no-desk']);
   assert.equal(result.status, 0, result.stderr);
   const top = realpathSync(tree);
   assert.ok(result.stdout.includes(`marked the worktree at ${top}.`), result.stdout);
@@ -1019,6 +1020,30 @@ test('worker mark: a marked worktree is a worker for every agent; the plain ways
   assert.ok(!existsSync(mark));
 });
 
+// #758: a worker runs in a desk by default. Marking a worktree is the fallback, and it
+// needs the explicit flag, which says in plainer words what the worker loses.
+test('worker mark: a worker outside a desk needs --no-desk, and the line says why it is weaker (#758)', async () => {
+  const sandbox = makeSandbox();
+  sandbox.write('yokoten.json', '{}\n');
+  sandbox.write('AGENTS.md', '# rules\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  const tree = join(makeTempDir('yokoten-tree-'), 'wt');
+  sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
+  let result = await sandbox.call(['worker', 'mark', tree]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /runs in a desk by default/);
+  assert.match(result.stderr, /yokoten desk/);
+  assert.match(result.stderr, /--no-desk/);
+  assert.equal(workerMarkAt(tree, sandbox.env), null, 'the refused mark is not written');
+  result = await sandbox.call(['worker', 'mark', tree, '--no-desk']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /can read your home and reach the network/);
+  assert.match(result.stdout, /only the guard holds the rules/);
+  assert.match(result.stdout, /YOKOTEN_NO_DESK=1/);
+  assert.equal(workerMarkAt(tree, sandbox.env), 'mark');
+});
+
 // #555: the stop check, the commit check and the session start ask the same role question.
 test('worker mark: the stop check, the commit check and the session start see a marked worker (#555)', async () => {
   const sandbox = makeSandbox();
@@ -1037,7 +1062,7 @@ test('worker mark: the stop check, the commit check and the session start see a 
   assert.equal((await stop()).status, 0);
   assert.doesNotMatch((await commit()).stderr, /lead-only/);
   assert.doesNotMatch((await start()).stdout, /this session is a worker/);
-  assert.equal((await sandbox.call(['worker', 'mark', tree])).status, 0);
+  assert.equal((await sandbox.call(['worker', 'mark', tree, '--no-desk'])).status, 0);
   let result = await stop();
   assert.equal(result.status, 2);
   assert.match(result.stderr, /AGENTS\.md is lead-only/);
@@ -1069,17 +1094,17 @@ test("worker mark: a clone is marked only by the lead, from its own checkout, in
   const outside = makeTempDir('yokoten-outside-');
   const elsewhere = join(outside, 'elsewhere');
   mkdirSync(elsewhere);
-  let result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: elsewhere, extra: { GIT_CEILING_DIRECTORIES: outside } });
+  let result = await sandbox.call(['worker', 'mark', sandbox.repo, '--no-desk'], { cwd: elsewhere, extra: { GIT_CEILING_DIRECTORIES: outside } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /from your own checkout, the lead's/);
   assert.ok(!existsSync(leadMark));
   // A worker may not mark: by YOKOTEN_ROLE.
-  result = await sandbox.call(['worker', 'mark', desk], { extra: { YOKOTEN_ROLE: 'worker' } });
+  result = await sandbox.call(['worker', 'mark', desk, '--no-desk'], { extra: { YOKOTEN_ROLE: 'worker' } });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /only the lead marks a worktree or a clone: this session is a worker/);
   assert.ok(!existsSync(deskMark));
   // GIT_DIR and GIT_WORK_TREE that name the lead's checkout don't move the mark there.
-  result = await sandbox.call(['worker', 'mark', desk], { extra: { GIT_DIR: join(sandbox.repo, '.git'), GIT_WORK_TREE: sandbox.repo, GIT_COMMON_DIR: join(sandbox.repo, '.git') } });
+  result = await sandbox.call(['worker', 'mark', desk, '--no-desk'], { extra: { GIT_DIR: join(sandbox.repo, '.git'), GIT_WORK_TREE: sandbox.repo, GIT_COMMON_DIR: join(sandbox.repo, '.git') } });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /marked the clone at /);
   assert.ok(existsSync(deskMark), "the mark is in the clone's own .git");
@@ -1101,7 +1126,7 @@ test('worker mark: a missing folder, a submodule and an unwritable git folder ea
   sandbox.write('a.md', 'a\n');
   sandbox.git('add', '.');
   sandbox.git('commit', '-qm', 'start');
-  let result = await sandbox.call(['worker', 'mark', join(sandbox.repo, 'nowhere')]);
+  let result = await sandbox.call(['worker', 'mark', join(sandbox.repo, 'nowhere'), '--no-desk']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /is not a folder\. Make the worktree first: `git worktree add/);
   // A submodule's checkout is not the main checkout, and not a worktree.
@@ -1110,7 +1135,7 @@ test('worker mark: a missing folder, a submodule and an unwritable git folder ea
   other.git('add', '.');
   other.git('commit', '-qm', 'other');
   sandbox.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', other.repo, 'sub');
-  result = await sandbox.call(['worker', 'mark', join(sandbox.repo, 'sub')]);
+  result = await sandbox.call(['worker', 'mark', join(sandbox.repo, 'sub'), '--no-desk']);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /is a submodule's checkout, not a worktree/);
   assert.doesNotMatch(result.stderr, /main checkout/);
@@ -1121,7 +1146,7 @@ test('worker mark: a missing folder, a submodule and an unwritable git folder ea
   const gitDir = runChild('git', ['rev-parse', '--absolute-git-dir'], { cwd: tree }).stdout.trim();
   chmodSync(gitDir, 0o555);
   try {
-    result = await sandbox.call(['worker', 'mark', tree]);
+    result = await sandbox.call(['worker', 'mark', tree, '--no-desk']);
   } finally {
     chmodSync(gitDir, 0o755);
   }
@@ -1146,7 +1171,7 @@ test('worker list: mark keeps the role with .git moved away; unmark clears it (#
     return sandbox.call(['hook', '--agent', 'muse'], { cwd: folder, input: JSON.stringify({ cwd: folder, hook_event_name: 'PreToolUse', tool_name: name, tool_input: toolInput }), extra });
   };
   // `mark` writes the worktree's path outside the worktree, under yokoten's config folder.
-  let result = await sandbox.call(['worker', 'mark', tree]);
+  let result = await sandbox.call(['worker', 'mark', tree, '--no-desk']);
   assert.equal(result.status, 0, result.stderr);
   const top = realpathSync(tree);
   const workers = readFileSync(join(sandbox.home, '.config', 'yokoten', 'workers'), 'utf8');
@@ -1188,7 +1213,7 @@ test('worker list: a marked worker cannot unmark its own worktree, even after cd
   const tree = join(makeTempDir('yokoten-tree-'), 'wt');
   sandbox.git('worktree', 'add', '-q', '-b', 'task', tree);
   const top = realpathSync(tree);
-  assert.equal((await sandbox.call(['worker', 'mark', tree])).status, 0);
+  assert.equal((await sandbox.call(['worker', 'mark', tree, '--no-desk'])).status, 0);
   // A Muse call: no YOKOTEN_ROLE, the hook's cwd in the marked tree.
   const muse = (command: string, folder = tree) =>
     sandbox.call(['hook', '--agent', 'muse'], { cwd: folder, input: JSON.stringify({ cwd: folder, hook_event_name: 'PreToolUse', tool_name: 'bash', tool_input: { command } }) });

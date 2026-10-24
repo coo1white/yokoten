@@ -872,10 +872,14 @@ export function runWorker(invocation: Invocation): number | Promise<number> {
   if (workerRole(invocation.env, [invocation.cwd]) !== null) {
     return fail(`only the lead marks a worktree or a clone: this session is a worker. ${LEAD_OUTSIDE}`);
   }
+  if (action === 'mark' && !options.flags.has('--no-desk')) {
+    return fail('a worker runs in a desk by default: clone the repo and start it with `yokoten desk`. This command marks a worktree, so the worker runs outside a desk. Add --no-desk to accept that: it can read your home and reach the network, and only the guard holds the rules.');
+  }
   const marked = markWorktree(invocation.cwd, dir, invocation.env);
   if ('fail' in marked) return fail(marked.fail);
   const removes = marked.kind === 'clone' ? 'Removing the clone removes the mark.' : `\`git worktree remove ${marked.top}\` removes the mark.`;
-  print(invocation, [`yokoten worker: marked the ${marked.kind} at ${marked.top}. The guard now treats every agent there as a worker. ${removes} \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
+  const weaker = options.flags.has('--no-desk') ? ' This worker runs outside a desk, so it can read your home and reach the network; only the guard holds the rules. Start it with YOKOTEN_NO_DESK=1 so doctor knows you chose this.' : '';
+  print(invocation, [`yokoten worker: marked the ${marked.kind} at ${marked.top}. The guard now treats every agent there as a worker. ${removes}${weaker} \`yokoten worker unmark ${marked.top}\` clears it sooner.`]);
   return 0;
 }
 

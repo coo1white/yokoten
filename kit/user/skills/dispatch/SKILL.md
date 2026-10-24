@@ -23,15 +23,15 @@ instead (record 0019).
 
 1. There is an issue for the task. If not, open one.
 2. The task is small enough to review in one sitting. If not, split it.
-3. Give the worker its own worktree on its own branch, so two workers never share files.
-   The worktree lives in the project, where a restart can't wipe it. Then mark it,
-   so the guard treats every agent there as a worker:
-   `git worktree add .worktrees/<issue> -b <issue>-<slug>`, then
-   `yokoten worker mark .worktrees/<issue>`
-   Never under `/tmp`: the system may wipe it on restart, with every unpushed change.
-4. Start the worker in the worktree, so its sandbox covers it. The project
-   holds the sandbox settings. `yokoten init` writes them. `yokoten doctor`
-   checks them in the `sandbox` step.
+3. Give the worker its own clone, a desk. It runs in a fence: no tokens, no network
+   but its own API, and your home folder hidden. The clone lives in the project, where
+   a restart can't wipe it. Never under `/tmp`: the system may wipe it on restart, with
+   every unpushed change.
+   `git clone <main-checkout> ../desks/<issue>`, then
+   `git -C ../desks/<issue> switch -c <issue>-<slug>`.
+4. `yokoten doctor` checks the desk's settings in the `sandbox` step. The desk is the
+   default on Linux, WSL2 and macOS. On native Windows a desk is not ready (#669): run
+   the worker in WSL2.
 
 ## The brief
 
@@ -39,7 +39,7 @@ Write it so a stranger could do the task with nothing else:
 
 ```
 Issue: #<n> <title>
-Worktree: .worktrees/<n>   (never /tmp: the system may wipe it on restart)
+Desk: ../desks/<n>   (a clone, never /tmp: the system may wipe it on restart)
 Goal: <what is true when done, and why it matters>
 Done when: <the command to run and what it must print>
 Files: <where to look first>
@@ -65,34 +65,38 @@ makes a worker anxious, not careful.
 
 ## Start it
 
-The mark makes the worker a worker in every agent, even one that passes its hooks no
-`YOKOTEN_ROLE` (Muse Code). The worker runs on your model, unless the owner named
-another. Never guess a model name from another agent (`opus`, `sonnet`): it may not
-exist here. Also start it with its role in the environment:
+A worker runs in a desk by default, with `yokoten desk`. The desk sets the worker role
+and `TZ=UTC`, and it passes the brief's done-when check and a lead-only path. Run it
+from your own checkout, not from inside a desk. The worker runs on your model, unless
+the owner named another. Never guess a model name from another agent (`opus`,
+`sonnet`): it may not exist here.
 
-- A separate session in the worktree (add `YOKOTEN_FIX_TASK=1` for a fix task),
-  with `YOKOTEN_DONE_WHEN='<command>'`:
-  - Claude Code: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' claude -p "<brief>"`.
-    The sandbox is on from `.claude/settings.json`. No flag.
-  - Codex: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' codex exec --sandbox workspace-write -c approval_policy=on-request "<brief>"`.
-    This matches `.codex/config.toml`.
-  - Gemini: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' gemini -p "<brief>"` without `--yolo`.
-    The project blocks YOLO in `.gemini/settings.json`. Start at the worktree root.
-  - Grok: `YOKOTEN_ROLE=worker YOKOTEN_DONE_WHEN='<command>' grok --sandbox yokoten -p "<brief>"`.
-    This selects `[profiles.yokoten]` in `.grok/sandbox.toml`.
-  The stop hook runs that command when the worker ends the task. With no command,
-  it checks the changed files.
-- A subagent: use the `worker` agent. The guard counts a type as a worker only when it
-  is `worker`, or when it ends with `:worker`.
-- A subagent shares the lead's folder and environment. It does not get its own
-  `YOKOTEN_DONE_WHEN`. The stop check runs in the lead's folder. It runs in the
-  worker's worktree only when the stop event names that worktree. Then it reads
-  `yokoten-done-when` in that worktree's git folder.
-- A brief that changes a lead-only file: a separate session with
-  `YOKOTEN_LEAD_ONLY_OK=<path>,<path>` (paths from the repo root); a subagent can't get it.
+| Agent | Start it with |
+|---|---|
+| Claude Code | `YOKOTEN_DONE_WHEN='<command>' yokoten desk claude-code ../desks/<n> --name <n> -- claude -p "<brief>"` |
+| Codex (and DeepSeek) | `YOKOTEN_DONE_WHEN='<command>' yokoten desk codex ../desks/<n> --name <n> -- codex exec --sandbox danger-full-access "<brief>"` |
+| Grok | `YOKOTEN_DONE_WHEN='<command>' yokoten desk grok ../desks/<n> --name <n> -- grok -p "<brief>"` |
+| Muse | `YOKOTEN_DONE_WHEN='<command>' yokoten desk muse ../desks/<n> --name <n> -- muse exec "<brief>"` |
 
-The worker commits in its worktree. It never pushes, never opens a pull request, and
-never changes lead-only files (the guard stops it).
+Add `YOKOTEN_FIX_TASK=1` for a fix task. Add
+`YOKOTEN_LEAD_ONLY_OK=<path>,<path>` (paths from the repo root) when the brief changes a
+lead-only file; a desk passes it. A subagent can't get it.
+
+The stop hook runs the done-when command when the worker ends the task. With no command,
+it checks the changed files.
+
+Outside a desk is the fallback, and it is weaker: the worker can read your home and reach
+the network, and only the guard holds the rules. Say so in the brief, and keep the list
+short:
+
+- A subagent: use the `worker` agent. It shares your folder, so it cannot have a desk.
+  The guard counts a type as a worker only when it is `worker`, or ends with `:worker`.
+- An agent with no desk backend yet, or native Windows today (#669): mark a worktree with
+  `yokoten worker mark --no-desk <dir>`, and start it with `YOKOTEN_NO_DESK=1` and the
+  agent's own command. Prefer WSL2. `doctor` reports a worker outside a desk.
+
+The worker commits in its desk. It never pushes, never opens a pull request, and never
+changes lead-only files (the guard stops it).
 
 ## After
 
@@ -103,8 +107,8 @@ never changes lead-only files (the guard stops it).
    anchor; start the next run in the same worktree so it resumes from there.
 4. Push the branch and open the pull request as the bot, with `Closes #<n>`:
    `yokoten bot -- git push -u origin <branch>`, then `yokoten bot -- gh pr create`.
-   Never with the owner's login. Run them from the main checkout: in the marked worktree
-   the guard treats you as a worker. End the body with one line that names the agent
+   Never with the owner's login. Run them from the main checkout: in a desk the guard
+   treats you as a worker. End the body with one line that names the agent
    and the model that made it, for example `🤖 Made with Claude Code (Claude Opus 5.5)`;
    `yokoten bot` refuses a body without it. When workers ran on another model, name both.
    Add each reviewer from the `inspect` skill too, after the worker and before the lead:
@@ -113,8 +117,8 @@ never changes lead-only files (the guard stops it).
 5. After 3 review rounds on one task, stop before the next one. Decide whether the
    task, the brief or the worker is the problem, and change that. Don't just send
    round 4.
-6. Remove the worktree once the pull request is merged: `git worktree remove <dir>`.
-   That removes the mark too.
+6. Remove the desk once the pull request is merged: `rm -rf ../desks/<n>` and its
+   `../desks/<n>.state` folder.
 
 ## When several pull requests wait
 
