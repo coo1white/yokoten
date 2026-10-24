@@ -13,6 +13,7 @@ import { buildNeeds } from './feed/needs.ts';
 import { makeBoardMask, makeFeedMask } from './feed/route.ts';
 import { EMPTY_DESK, type LeadDesk, readLeadDesk, readLeadReply } from './feed/read/desk.ts';
 import { findAgentLog, lastAssistantLine, type LogCache } from './feed/read/logs.ts';
+import { type BoardUsage, collectUsage } from './feed/read/usage.ts';
 
 /** Characters that fit on the lead row. The side column is 312px and the line is 12px. */
 export const LEAD_ROW_CHARS = 40;
@@ -342,6 +343,8 @@ export interface BoardData {
   pulls: PullView[] | string;
   merged: MergedView[];
   worktrees: BoardWorktree[] | string;
+  /** What each agent used and what it would cost on the API, from its local log (#611). */
+  usage?: BoardUsage;
   /** The lead's desk: what it is doing, the decisions, and its last reply (#701). */
   desk: LeadDesk;
   /** When the data was read. */
@@ -357,14 +360,14 @@ export const BOARD_NO_REMOTE_ISSUES = 'this repo has no GitHub remote, so the bo
 /** What the lists say before the first read from GitHub finishes (#688). */
 export const BOARD_READING_GITHUB = 'reading GitHub…';
 /**
- * The most open issues the board reads. A list this long may be cut off, so it
- * cannot prove that an issue is closed (#693).
+ * The most open issues the board lists. It reads one more, so it can tell a complete
+ * list from a cut-off one: an issue missing from a cut-off list could look closed (#693).
  */
 export const BOARD_ISSUE_LIMIT = 30;
 
-/** The open issue numbers, or null when the list is missing or may be cut off. */
+/** The open issue numbers, or null when the list is missing or was actually cut off. */
 export function issueNumbersOf(issues: { number: number }[] | string): number[] | null {
-  if (!Array.isArray(issues) || issues.length >= BOARD_ISSUE_LIMIT) return null;
+  if (!Array.isArray(issues) || issues.length > BOARD_ISSUE_LIMIT) return null;
   return issues.map((issue) => issue.number);
 }
 
@@ -402,6 +405,20 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
     return agentView(item, env, now, nickname, realFolder(item.tree.path) === mainReal, cache, root, mask);
   });
   const rows = typeof pulls === 'string' ? [] : pulls;
+  const usage = collectUsage(
+    found.map(({ agent, tree }) => ({
+      agent: mask(agent.name),
+      tree: tree.path,
+      vendor: agent.vendor,
+      vendorName: vendorOf(agent.vendor, agent.model).name,
+      model: agent.model,
+      role: mask(agent.role),
+      log: agent.log,
+    })),
+    env,
+    now,
+    mask,
+  );
   return {
     repo: hideHome(root, env),
     repoName: basename(mainPath),
@@ -413,6 +430,7 @@ export function collectBoardWith(root: string, env: Env, remote: string | null, 
       .filter((pull) => pull.stage === 'merged' && now - Date.parse(pull.mergedAt) < MERGED_WINDOW_MS)
       .map((pull) => ({ number: pull.number, title: pull.title, url: webUrl(pull.url), mergedAt: pull.mergedAt })),
     worktrees: typeof worktrees === 'string' ? worktrees : worktrees.map((tree) => ({ path: hideHome(tree.path, env), branch: tree.branch })),
+    usage,
     desk: leadDesk(root, env, found),
     updated: new Date(now).toISOString(),
     seats: readBoardSeats(root),

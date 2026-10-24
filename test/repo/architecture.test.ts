@@ -293,7 +293,10 @@ test('child processes: a killed child names the test that ran it (#436)', () => 
 // #813: runChild spread the caller's options into spawnSync, so `shell: true` let a test value
 // (a temp path, a file name) become shell code. A caller that asks for a shell gets none.
 test('child processes: runChild never starts a shell (#813)', () => {
-  const result = runChild('/bin/echo', ['a; echo shell ran'], { shell: true });
+  // The type names every field, so TypeScript callers cannot ask. Plain JavaScript, or this cast,
+  // still can: the helper must ignore it at runtime, not only refuse it at compile time.
+  const asksForShell = { shell: true } as unknown as Parameters<typeof runChild>[2];
+  const result = runChild('/bin/echo', ['a; echo shell ran'], asksForShell);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'a; echo shell ran\n', 'an argument stays a value, even when a caller asks for a shell');
 });
@@ -1203,9 +1206,9 @@ test('home: every test file loads the temp home first, and no child gets an env 
   assert.deepEqual(homeProblems(files), [], 'import test/repo/home.ts first; give a child process HOME, or spread an env that has it');
 });
 
-test('home: in src, only privacy.ts asks the system for the home folder (#356)', () => {
+test('home: in src, only privacy/home.ts asks the system for the home folder (#356)', () => {
   const found = filesUnder(SRC).filter((path) => /\bhomedir\(|userInfo\(\)\.homedir/.test(readFileSync(join(SRC, path), 'utf8')));
-  assert.deepEqual(found, ['rules/privacy.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
+  assert.deepEqual(found, ['rules/privacy/home.ts'], 'read the home folder from env.HOME (homeOf or homeIn); the CLI entry fills it in');
 });
 
 test('home: a test that reads the home folder gets the empty temp one, not the real one (#356)', () => {

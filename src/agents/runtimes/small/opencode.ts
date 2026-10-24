@@ -39,6 +39,7 @@ import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
 import type { Action } from '../../../run/hook.ts';
 import type { RuntimeEnv } from '../../desk/agent-env.ts';
 import { isFolder } from '../../folder-trust.ts';
+import type { AgentAdapter } from '../runtime.ts';
 import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../../hooks-file.ts';
 
 /** The project plugin `init` writes. OpenCode loads every file in this folder at startup. */
@@ -435,3 +436,18 @@ export const addUserPlugin = (env: Env, cli: string, missing: string): Added => 
 
 /** The names this runtime's agent gets on top of the shared ones. OpenCode's login name was not in the docs. */
 export const AGENT_ENV: RuntimeEnv = { login: [], config: [] };
+
+/** The contract every adapter fills (#395). */
+export const ADAPTER: AgentAdapter = {
+  name: 'opencode',
+  label: 'OpenCode',
+  projectHook: '`.opencode/plugins/yokoten.ts`: OpenCode 2 permission `evaluate`, and OpenCode 1 `tool.execute.before`',
+  userHook: '~/.config/opencode/plugins/yokoten.ts',
+  blocking: 'OpenCode 2 sets `effect` to deny; OpenCode 1 throws the reason',
+  capabilities: { canRewrite: false, hasStopHook: false, needsTrust: false, failsOpen: false, passesRole: false },
+  readToolCall,
+  formatDenial,
+  releaseFix: 'OpenCode is not known to pass YOKOTEN_RELEASE_APPROVAL to its plugin. If the owner asked for this, stop and tell them to release outside OpenCode; do not look for another way',
+  agentEnv: AGENT_ENV,
+  call: (command) => ({ directory: '/repo', tool: 'bash', args: { command } }),
+};

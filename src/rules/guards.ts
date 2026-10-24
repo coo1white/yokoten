@@ -5087,6 +5087,77 @@ export function findProgramPlaces(words: string[]): { word: string; index: numbe
   return programs;
 }
 
+// ---- Heavy jobs (#401) ----
+//
+// A build, a test suite, a package install or a container build can fill a disk. When the
+// kept reading of the Windows drive under a WSL disk file is low, the hook asks the owner
+// before one of these starts. Only a program counts, as for a blocked command: a text that
+// merely mentions `npm test` is no heavy job, and a shell the guard cannot read names none.
+
+const PACKAGE_PROGRAMS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+const PACKAGE_INSTALLS = new Set(['install', 'i', 'ci', 'add', 'remove', 'rm', 'uninstall', 'update', 'up', 'upgrade', 'rebuild', 'link', 'dedupe', 'prune', 'pack']);
+const PACKAGE_RUNS = new Set(['run', 'run-script']);
+// A script whose name says it builds, tests or checks the project.
+const HEAVY_SCRIPTS = /(^|[:._-])(build|test|lint|check|typecheck|verify|ci)([:._-]|$)/i;
+// A program that is a heavy job on its own (`null`), or the subcommands that are one.
+const HEAVY_PROGRAMS: Record<string, ReadonlySet<string> | null> = {
+  make: null, ninja: null, bazel: null, cmake: null, meson: null, tsc: null,
+  jest: null, vitest: null, mocha: null, pytest: null, phpunit: null, rspec: null,
+  mvn: null, mvnw: null, gradle: null, gradlew: null, buildah: null,
+  cargo: new Set(['build', 'test', 'check', 'clippy', 'bench', 'install']),
+  go: new Set(['build', 'test', 'install', 'generate']),
+  dotnet: new Set(['build', 'test', 'restore', 'publish', 'pack']),
+  docker: new Set(['build', 'buildx', 'pull', 'run', 'compose']),
+  podman: new Set(['build', 'pull', 'run', 'compose']),
+  nerdctl: new Set(['build', 'pull', 'run', 'compose']),
+};
+// A version or help word asks nothing about the project.
+const PROBES = new Set(['--version', '-v', '-V', '--help', '-h']);
+
+/** The package manager's job when it installs or runs a build or test script, or null. */
+function packageJob(name: string, args: string[]): string | null {
+  const first = args.find((arg) => !arg.startsWith('-'));
+  if (first === undefined) return null;
+  if (PACKAGE_INSTALLS.has(first)) return `${name} ${first}`;
+  if (first === 'test' || first === 'build') return `${name} ${first}`;
+  if (name === 'npm' && first === 't') return 'npm test';
+  if (!PACKAGE_RUNS.has(first)) return null;
+  const script = args.slice(args.indexOf(first) + 1).find((arg) => !arg.startsWith('-'));
+  return script !== undefined && HEAVY_SCRIPTS.test(script) ? `${name} ${first} ${script}` : null;
+}
+
+/** The heavy job the program at `index` runs, as a person reads it, or null. */
+function heavyAt(words: string[], index: number): string | null {
+  const program = programName(words[index]);
+  const args = words.slice(index + 1);
+  if (program === 'node') return args.some((arg) => arg === '--test' || arg.startsWith('--test=')) ? 'node --test' : null;
+  if (PACKAGE_PROGRAMS.has(program)) return packageJob(program, args);
+  const subcommands = HEAVY_PROGRAMS[program];
+  if (subcommands === undefined) return null;
+  if (args[0] !== undefined && PROBES.has(args[0])) return null;
+  if (subcommands === null) return program;
+  const sub = args.find((arg) => !arg.startsWith('-'));
+  return sub !== undefined && subcommands.has(sub) ? `${program} ${sub}` : null;
+}
+
+/**
+ * The heavy job `command` starts, such as `npm test`, or null. It reads the command's
+ * programs, not its text, so `echo npm test` names none.
+ */
+export function findHeavyJob(command: string): string | null {
+  try {
+    for (const words of commandWords(command)) {
+      for (const place of findProgramPlaces(words)) {
+        const job = heavyAt(words, place.index);
+        if (job !== null) return job;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 // Adds the program of the command that starts at `index` to `programs`, after
 // assignments, redirects, keywords and launchers, and the programs of an `env -S`
 // string. Returns the index of the program when it is find, or -1. In a find action
