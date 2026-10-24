@@ -12,11 +12,13 @@
 // 4. Child processes work, with pipes (tests start programs).
 // 5. Commands have no network. The agent reaches only its model's API hosts, through
 //    the proxy in network/proxy.ts, which runs outside.
-// 6. YOKOTEN_ROLE=worker and TZ=UTC are set, and no token or key is passed in (agent-env.ts).
+// 6. YOKOTEN_ROLE=worker, YOKOTEN_DESK and TZ=UTC are set, and no token or key is passed
+//    in (agent-env.ts). A worker started outside a desk has no YOKOTEN_DESK, so doctor can
+//    say it is weaker.
 // 7. On a team (#674), the team folder is read-only and only the agent's own outbox in it
 //    is writable, so no agent writes, changes or deletes another's messages. The file
-//    `.git/yokoten-desk.json`, which names the agent, is locked, and YOKOTEN_DESK and
-//    YOKOTEN_TEAM say where the agent is (team/who.ts).
+//    `.git/yokoten-desk.json`, which names the agent, is locked, and YOKOTEN_TEAM says
+//    where the team is (team/who.ts).
 //
 // This file turns a request into a `DeskPlan`: plain lists of paths, hosts and names. A
 // backend per system turns the plan into a command: bwrap.ts on Linux and WSL2,
@@ -324,8 +326,11 @@ export function planDesk(request: DeskRequest): DeskPlan {
     writable.push(team.writable);
     locked.push(team.locked);
     // Who the agent is (team/who.ts): the lead's own env never has these.
-    Object.assign(teamEnv, { YOKOTEN_DESK: desk, YOKOTEN_TEAM: folder });
+    Object.assign(teamEnv, { YOKOTEN_TEAM: folder });
   }
+  // A lead-only path is the lead's explicit choice, like a login: it passes through `set`,
+  // never from the shell (agent-env.ts). The done-when command is a YOKOTEN_* name already.
+  const leadOnly = env.YOKOTEN_LEAD_ONLY_OK ? { YOKOTEN_LEAD_ONLY_OK: env.YOKOTEN_LEAD_ONLY_OK } : {};
   return {
     desk,
     state: writable,
@@ -333,7 +338,7 @@ export function planDesk(request: DeskRequest): DeskPlan {
     hidden,
     locked,
     hosts: [...new Set([...runtime.hosts, ...(request.extraHosts ?? [])])],
-    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
+    env: { ...buildAgentEnv(env, { runtime: request.runtime, set: { YOKOTEN_ROLE: 'worker', YOKOTEN_DESK: desk, ...leadOnly, ...teamEnv, ...(model ? { YOKOTEN_MODEL: model } : {}), ...(identity ? { YOKOTEN_VENDOR: identity.vendor } : {}) } }), ...runtime.stateEnv(state), TZ: 'UTC' },
     command: request.command,
   };
 }

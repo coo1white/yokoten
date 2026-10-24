@@ -229,11 +229,11 @@ test("Muse's hook entry point in a marked clone sees a worker and refuses a lead
   assert.equal(edit(join(desk, 'AGENTS.md')).status, 0);
   assert.doesNotMatch(hook('SessionStart', '{}').stdout, /this session is a worker/);
   // The lead can't mark the clone it works in.
-  let result = await sandbox.call(['worker', 'mark', desk], { cwd: desk });
+  let result = await sandbox.call(['worker', 'mark', desk, '--no-desk'], { cwd: desk });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /is the main checkout, the lead's/);
   // The lead marks the desk from its own checkout.
-  result = await sandbox.call(['worker', 'mark', desk]);
+  result = await sandbox.call(['worker', 'mark', desk, '--no-desk']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /marked the clone at .*Removing the clone removes the mark\./);
   assert.ok(existsSync(join(desk, '.git', 'yokoten-worker')));
@@ -252,7 +252,7 @@ test("Muse's hook entry point in a marked clone sees a worker and refuses a lead
   assert.equal((await sandbox.call(['hook', '--agent', 'muse'], { input: payload(sandbox.repo, 'write_file', { path: join(sandbox.repo, 'AGENTS.md') }) })).status, 0);
   // A checkout with worktrees hanging off it is a main checkout, never marked.
   sandbox.git('worktree', 'add', '-q', '-b', 'task', join(makeTempDir('yokoten-tree-'), 'wt'));
-  result = await sandbox.call(['worker', 'mark', sandbox.repo], { cwd: deskHome });
+  result = await sandbox.call(['worker', 'mark', sandbox.repo, '--no-desk'], { cwd: deskHome });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /is the main checkout, the lead's/);
 });

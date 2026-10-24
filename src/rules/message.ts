@@ -196,6 +196,12 @@ export const RULES = {
     check: 'for a worker, the tool-call guard stops a command that writes, moves, removes, links or changes the mode of a file in a git folder (a glob that can match .git or the mark counts) or redirects into one, git with GIT_DIR or --git-dir, `git worktree` other than `list`, `yokoten worker unmark`, and an edit inside a git folder, by real path. The same holds for the yokoten config folder (~/.config/yokoten), which keeps the worker list and the bot keys: for a worker, any program that does more than read is refused when it names a path that is, is in or holds that folder, by real path (a symlink, `~+` and globs such as `~/.c*/yokoten` count). A read that names .git passes. A .git link it cannot read makes the session a worker. These are the plain ways; the server and keeping credentials away from the worker are the lock',
     docs: guide('managing-agents-like-a-team'),
   },
+  'worker-desk': {
+    rule: 'a worker runs in a desk by default',
+    why: 'the desk is what an agent cannot reach; the guard catches mistakes and explains rules, and it is not the boundary',
+    check: 'the desk sets YOKOTEN_DESK and `yokoten doctor --session` reads it at the start of a session; `yokoten worker mark` needs --no-desk, and doctor notes a worker without a desk. A desk is not available on native Windows yet (#669)',
+    docs: guide('the-desk'),
+  },
   email: {
     rule: 'no personal email address in the repo (core rule 11)',
     why: 'an email address points at a person, and git keeps it after the file is gone',

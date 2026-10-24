@@ -117,6 +117,7 @@ function deskAgent(desk: string, team: string, locked: (path: string) => boolean
 export function whoAmI(root: string, env: Env, { locked = isLockedMount }: { locked?: (path: string) => boolean } = {}): Me | { refuse: string } {
   const desk = env.YOKOTEN_DESK;
   const team = env.YOKOTEN_TEAM;
+  if (desk && !team) return { refuse: 'this desk joined no team, so it has no name on the team. Ask the lead to start it again with --name.' };
   if (desk || team) {
     if (!desk || !team || !isAbsolute(desk) || !isAbsolute(team)) return { refuse: 'YOKOTEN_DESK and YOKOTEN_TEAM are set by the desk, both as full paths. Ask the lead to start the desk again.' };
     return deskAgent(realOr(desk), realOr(team), locked);

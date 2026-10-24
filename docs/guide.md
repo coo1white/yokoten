@@ -334,7 +334,7 @@ and the dated runs. A test fails when the two differ.
 | GitHub Copilot CLI | the same `.claude/settings.json`: Copilot reads it | exit 2, and the reason as JSON on stdout | no · yes · yes · open · yes | yes, 2026-10-19: Copilot CLI 1.0.98, `copilot -p`, model `gpt-6-luna` (Auto) | Runs repo hooks only after you trust the folder: run `copilot` there and choose "Yes, and remember this folder for future sessions". Skips them without a word otherwise. A hook that times out lets the call go on |
 | Antigravity CLI (`agy`) | `.agents/hooks.json`: the `yokoten` entry, PreToolUse | `{"decision": "deny"}` on stdout | no · no · no · closed · yes | yes, 2026-10-19: agy 1.4.2, `agy -p`, model `gemini-3.8-flash-high` | No stop check yet. Without `.yokoten/`, every call is refused: agy fails closed. The lead runs a worker's done-when check |
 | Codex CLI | `.codex/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | no · yes · yes · closed · yes | yes, 2026-10-19: Codex 0.163.0, `codex exec`, on DeepSeek `deepseek-flash` | Runs the hooks only after you trust the folder, and then both hooks in `/hooks`. `codex exec` skips an untrusted hook without a word |
-| Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | no · yes · yes · open · no | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so mark a worker's worktree with `yokoten worker mark <dir>`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
+| Muse Code | `.muse/hooks.json`: PreToolUse and Stop | exit 2, the reason on stderr | no · yes · yes · open · no | yes, 2026-10-19: Muse Code 1.4.10, `muse exec --trust-workspace`, model `muse-spark-1.3-contributor` | Runs the hooks only after you trust the folder: run `muse` there and choose "Trust and continue". Muse passes no `YOKOTEN_ROLE` to a hook, so run it in a desk (the desk carries the mark), or mark a worker's worktree with `yokoten worker mark <dir> --no-desk`. It is not known to pass `YOKOTEN_RELEASE_APPROVAL` either, so release outside Muse. A hook that fails or times out lets the call go on |
 | DeepSeek Harness (`dsh`) | `.dsh/hooks.json`: PreToolUse, and `.dsh/yokoten.patch.yml` to load it | exit 2, the reason on stderr | no · no · no · open · yes | yes, 2026-10-20: dsh 0.2.1-rc.2, `dsh headless --patch .dsh/yokoten.patch.yml`, default DeepSeek model | Runs hooks only through a bridge you add to each profile: see [DeepSeek Harness](#deepseek-harness). Without it, or without the patch, dsh runs no hooks and says nothing. Not guarded on Windows yet (#332). No stop check: the lead runs a worker's done-when check |
 | Grok CLI (`grok`) | `.grok/hooks/yokoten.json`: PreToolUse and Stop | `permissionDecision: "deny"` on stdout, and exit 2 | yes · yes · yes · closed · yes | yes, 2026-10-20: Grok CLI 1.0.52, `grok -p --trust --always-approve`, default model | Runs project hooks only after you trust the folder: run `grok` there and type `/hooks-trust`. Skips them without a word otherwise. Also runs the hooks in `.claude/settings.json`, so the guard may run twice for one call, on purpose |
 | Gemini CLI | `.gemini/settings.json`: BeforeTool and AfterAgent | exit 2, the reason on stderr | no · yes · yes · closed · no | not run end to end: personal sign-in retired 2026-06-18; needs a paid API key or an org license | Google's agent for individuals is now Antigravity CLI |
@@ -409,7 +409,9 @@ worker's edit. Muse Code passes a hook only a short list of variables, and `YOKO
 one of them. Grok CLI passes `YOKOTEN_ROLE` to its hooks, and a subagent whose
 `subagentType` names a worker is a worker too.
 
-So the lead also marks each worker's worktree: `yokoten worker mark <dir>` (#555). The guard
+A desk marks its own clone, so an agent there is a worker without a variable (#672). A
+worker outside a desk, such as Gemini CLI today, is marked by the lead:
+`yokoten worker mark --no-desk <dir>` (#555). The guard
 then treats every agent in that worktree as a worker, in Gemini CLI and Muse Code too. The
 mark is a file in the worktree's own git folder (`.git/worktrees/<name>/yokoten-worker`).
 The guard finds it with no git process. The mark only adds the worker role: with the mark,
@@ -977,10 +979,10 @@ It puts three safe defaults in `.github/` too:
 | `test [--heavy] [--print] [-- <runner words>]` | Runs the tests light, for a machine other work shares (#461): `node --test` under `nice -n 10` (not on Windows), with `--test-concurrency` at most half the cores and one per GB of free memory, and 1 at least. Words after `--` go to the runner: test files, or its options. It is on by default. `YOKOTEN_LIGHT_TESTS=0` turns it off for every call, `--heavy` for one. `--print` shows the command and why, and runs nothing |
 | `stops [off \| on]` | Shows the stop log at `~/.config/yokoten/stops.jsonl`, and whether yokoten writes it. `off` stops the writing and deletes the log; `on` starts it again. The log stays on this computer. See [The stop check](#the-stop-check) |
 | `explain [<id>] [--json]` | A rule or a step on the road: what it is, why, and how yokoten checks it |
-| `worker mark <dir>` | Marks the worktree at `<dir>` as a worker's. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. A plain clone, such as a desk, is marked too: the mark goes in its own `.git` (#672). The lead marks a clone from its own checkout. The main checkout (the clone the lead runs in, or one with worktrees) and a submodule are never marked. A worker can't mark or unmark. See [Works with](#works-with) |
+| `worker mark <dir> --no-desk` | Marks the worktree at `<dir>` as a worker's outside a desk. A worker runs in a desk by default (`yokoten desk`); this is the fallback for a subagent, an agent with no desk yet, or native Windows (#669), and the flag says you accept the weaker fence: the worker can read your home and reach the network, and only the guard holds the rules. The guard then treats every agent there as a worker, even one whose runtime drops `YOKOTEN_ROLE` (Muse Code). The guard refuses a worker's plain ways to remove it, and a `.git` link it can't read counts as marked; the server and credentials kept from the worker are the real lock. `git worktree remove <dir>` removes the mark. Given a subfolder, it marks the worktree's top folder and says which. A plain clone is marked too: the mark goes in its own `.git` (#672), and `yokoten desk` marks its own clone. The lead marks a clone from its own checkout. The main checkout (the clone the lead runs in, or one with worktrees) and a submodule are never marked. A worker can't mark or unmark. See [Works with](#works-with) |
 | `worker env [runtime]` | Lists the names that yokoten's agent environment would keep from this shell, and counts the names it drops. With a runtime, its own login name counts too. It never shows a value. `desk` starts an agent with it. See [What an agent's environment holds](#what-an-agents-environment-holds) |
 | `msg send <to> [<text>]`, `msg inbox`, `msg who`, `msg log` | Agents of every vendor message each other through files on this machine. Only the lead runs `log`. See [Messages between agents](#messages-between-agents) |
-| `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
+| `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker in a fenced desk: its own clone, its own state folder, and no network but its model's API. This is how every worker starts by default, for Claude Code, Codex (and DeepSeek), Grok and Muse. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay; the stop log is removed. A second run changes nothing |
 | `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. `gh pr edit` does the same for a new title or body, and removes the old tier label when the body sets a new tier. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <seconds>]` | Merges an approved, green queue in the order given, as the bot, and stops at the first pull request that needs a person. It records every base before the first merge, so a pull request stacked on a squash-merged branch merges from the base it truly shares with that branch. A conflict made only of import lines takes the union; a real conflict, a failing test, a failing `check` or a missing approval stops the train. Each merged tree is tested before the push, and CI must pass on the pushed merge; `--wait` sets how long to wait (default 1800 seconds). Only the lead runs it |
@@ -2003,13 +2005,19 @@ owner, and the bot must be the one that pushes. Related: issue #320, the merge t
 
 ### The desk
 
-A desk is a fenced place for one worker, the same for every vendor (#637). The lead starts
-a worker's agent in it with one command:
+A desk is a fenced place for one worker, the same for every vendor (#637). Every worker
+the lead starts runs in a desk by default, for every agent yokoten has a desk for:
+Claude Code, Codex (and DeepSeek), Grok and Muse. The lead starts one with one command:
 
 ```sh
 git clone ../yokoten ../desks/42
-yokoten desk claude-code ../desks/42 -- claude -p "$(cat brief.md)"
+git -C ../desks/42 switch -c 42-fix-the-cart
+yokoten desk claude-code ../desks/42 --name 42 -- claude -p "$(cat brief.md)"
 ```
+
+A worker started outside a desk is weaker: it can read your home and reach the network,
+and only the guard holds the rules. That needs `yokoten worker mark --no-desk` and
+`YOKOTEN_NO_DESK=1`; `doctor` reports it. The rest of this section is the fence.
 
 The fence is one contract. Each system builds it its own way:
 
@@ -2021,7 +2029,7 @@ The fence is one contract. Each system builds it its own way:
 | Your agent state | Not visible. Your `~/.claude`, `~/.codex`, `~/.grok` and Muse folders stay hidden: no settings, hooks, memory, MCP config, history or sessions |
 | Child processes | Work, with pipes, so tests can start programs |
 | Network | Commands get no network of their own. The proxy outside lets through only the agent's API hosts. Any command inside can use the proxy too, so a command can reach those hosts |
-| Environment | `YOKOTEN_ROLE=worker` and `TZ=UTC`. No token or key from your shell (see [What an agent's environment holds](#what-an-agents-environment-holds)) |
+| Environment | `YOKOTEN_ROLE=worker`, `YOKOTEN_DESK` and `TZ=UTC`. No token or key from your shell (see [What an agent's environment holds](#what-an-agents-environment-holds)) |
 | Team | The team folder is read-only. Only the agent's own outbox in it is writable (see [Messages between agents](#messages-between-agents)) |
 
 The desk must be its own `git clone`. A worktree's git folder lives in another checkout,
@@ -2095,8 +2103,10 @@ desk, read-only. Use it only for an agent you trust with the words.
   to check the contract.
 - **Native Windows**: experimental, and not ready yet (#669). It needs a restricted-token
   helper, ACLs on the desk and a firewall rule. The #637 contract test must pass on real
-  Windows 11 before it starts a worker. Until then run yokoten in WSL2, where the Linux
-  desk works. On native Windows, the guard alone holds the rules.
+  Windows 11 before it starts a worker. Until then the default cannot hold on native
+  Windows: run yokoten in WSL2, where the Linux desk works, or start a worker only with
+  `yokoten worker mark --no-desk` and `YOKOTEN_NO_DESK=1`. On native Windows, the guard
+  alone holds the rules.
 
 ### Messages between agents
 
@@ -2585,9 +2595,10 @@ What the function keeps and drops:
   `XDG_RUNTIME_DIR`. On Windows it also keeps `SystemRoot`, `USERPROFILE`, `APPDATA`,
   `PATHEXT`, `ComSpec` and the like.
 - **It keeps the `YOKOTEN_*` names that make the guard stricter:** `YOKOTEN_ROLE`,
-  `YOKOTEN_FIX_TASK`, `YOKOTEN_PRIVATE_MARKS` and a few settings. The bot's key and app id,
-  `YOKOTEN_RELEASE_APPROVAL` and `YOKOTEN_LEAD_ONLY_OK` never pass from your shell. The lead
-  gives those on purpose.
+  `YOKOTEN_FIX_TASK`, `YOKOTEN_DONE_WHEN`, `YOKOTEN_PRIVATE_MARKS` and a few settings. The
+  bot's key and app id, `YOKOTEN_RELEASE_APPROVAL` and `YOKOTEN_LEAD_ONLY_OK` never pass
+  from your shell. The lead gives those on purpose, and a desk passes
+  `YOKOTEN_LEAD_ONLY_OK` when the lead named it.
 - **It drops every other name.** A name with `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `AUTH`,
   `CREDENTIAL` or `PRIVATE` in it is dropped too. There are two exceptions:
   `YOKOTEN_PRIVATE_MARKS`, which is only a path, and a runtime's own login names.
@@ -2614,6 +2625,12 @@ agent sessions, and for your own commits it tells you how.
 
 Honest limits:
 
+- **The desk and the server are the boundary.** A worker runs in a desk: its own clone,
+  your home hidden, no tokens, and no network but its own API. The server is the lock.
+  The guard catches mistakes and explains the rules; it is not the security boundary. A
+  guard hole that a desk already contains is a normal bug, not a stop-the-line. A hole
+  that reaches past the desk is an incident. On native Windows a desk is not ready yet
+  (#669), so the default cannot hold there; run the worker in WSL2.
 - **The guards read command text.** They read bash syntax (quotes, heredocs, `bash -c`,
   substitutions), and they block when they can't tell what runs. A command assembled in
   pieces still gets past them. They catch mistakes and drift; they aren't a lock. The

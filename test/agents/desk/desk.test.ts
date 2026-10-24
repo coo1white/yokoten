@@ -94,7 +94,8 @@ test('hiddenFolders: Windows hides every profile folder and every other drive', 
 
 test('planDesk: the desk and its own state writable, a token dropped, role and time zone fixed', () => {
   const { projects, desk } = makeDesk();
-  const plan = planDesk({ runtime: 'claude-code', desk, command: ['node', 'x.js'], env: env(), markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), extraHosts: ['api.deepseek.com'] });
+  const lead = { ...env(), YOKOTEN_DONE_WHEN: 'node --test', YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' };
+  const plan = planDesk({ runtime: 'claude-code', desk, command: ['node', 'x.js'], env: lead, markDesk: (folder) => markWorktree(join(projects, 'origin'), folder, gitEnv()), extraHosts: ['api.deepseek.com'] });
   assert.equal(plan.desk, desk);
   assert.deepEqual(plan.state, [`${desk}.state/claude-code`]);
   assert.equal(plan.env.CLAUDE_CONFIG_DIR, `${desk}.state/claude-code`, "the agent uses the desk's state, not the lead's");
@@ -105,7 +106,12 @@ test('planDesk: the desk and its own state writable, a token dropped, role and t
   assert.ok(!plan.readable.some((path) => plan.hidden.some((folder) => isInside(folder, path))), 'no readable path opens a hidden folder');
   assert.deepEqual(plan.hosts, [...DESK_RUNTIMES['claude-code'].hosts, 'api.deepseek.com']);
   assert.equal(plan.env.YOKOTEN_ROLE, 'worker');
+  // #758: the desk says it is one, so doctor can tell a worker in a desk from one outside.
+  assert.equal(plan.env.YOKOTEN_DESK, desk);
   assert.equal(plan.env.TZ, 'UTC');
+  // #758: the done-when check and a lead-only path reach the agent; the desk gives them on purpose.
+  assert.equal(plan.env.YOKOTEN_DONE_WHEN, 'node --test');
+  assert.equal(plan.env.YOKOTEN_LEAD_ONLY_OK, 'AGENTS.md');
   assert.equal(plan.env.GH_TOKEN, undefined);
   assert.equal(plan.env.SECRET_THING, undefined);
   assert.deepEqual(plan.locked, [join(desk, '.git', 'config'), join(desk, '.git', 'hooks'), join(desk, '.git', 'yokoten-worker')], "git's config and hooks, and the worker mark, stay read-only");

@@ -113,9 +113,9 @@ test("agent env: a runtime's config name is still checked; GH_TOKEN never passes
 });
 
 test('agent env: YOKOTEN_* names that make the guard stricter pass; the bot key and the release approval do not', () => {
-  const source = { ...SAFE, YOKOTEN_ROLE: 'worker', YOKOTEN_PRIVATE_MARKS: '/home/fake/marks', YOKOTEN_BOT_KEY: '/home/fake/key.pem', YOKOTEN_BOT_APP_ID: '1', YOKOTEN_RELEASE_APPROVAL: '1', YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' };
+  const source = { ...SAFE, YOKOTEN_ROLE: 'worker', YOKOTEN_DONE_WHEN: 'node --test', YOKOTEN_PRIVATE_MARKS: '/home/fake/marks', YOKOTEN_BOT_KEY: '/home/fake/key.pem', YOKOTEN_BOT_APP_ID: '1', YOKOTEN_RELEASE_APPROVAL: '1', YOKOTEN_LEAD_ONLY_OK: 'AGENTS.md' };
   const names = Object.keys(buildAgentEnv(source)).filter((name) => name.startsWith('YOKOTEN_')).sort();
-  assert.deepEqual(names, ['YOKOTEN_PRIVATE_MARKS', 'YOKOTEN_ROLE']);
+  assert.deepEqual(names, ['YOKOTEN_DONE_WHEN', 'YOKOTEN_PRIVATE_MARKS', 'YOKOTEN_ROLE']);
   const set = buildAgentEnv(SAFE, { set: { YOKOTEN_ROLE: 'worker', YOKOTEN_LEAD_ONLY_OK: 'docs/guide.md' } });
   assert.equal(set.YOKOTEN_ROLE, 'worker');
   assert.equal(set.YOKOTEN_LEAD_ONLY_OK, 'docs/guide.md');

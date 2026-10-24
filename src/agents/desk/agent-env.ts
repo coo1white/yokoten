@@ -96,7 +96,7 @@ const SHARED_NAMES = new Set([
 // guard stricter or tell it where things are. Never the bot's key or app id, the release
 // approval, or a lead-only path: the lead gives those on purpose, through `set`.
 // YOKOTEN_PRIVATE_MARKS is a path, and the guard needs it, though its name says PRIVATE.
-const YOKOTEN_NAMES = new Set(['YOKOTEN_ROLE', 'YOKOTEN_FIX_TASK', 'YOKOTEN_PRIVATE_MARKS', 'YOKOTEN_TEMP_DIRS', 'YOKOTEN_GUARD_DEADLINE_MS', 'YOKOTEN_MIN_FREE_GB']);
+const YOKOTEN_NAMES = new Set(['YOKOTEN_ROLE', 'YOKOTEN_FIX_TASK', 'YOKOTEN_DONE_WHEN', 'YOKOTEN_PRIVATE_MARKS', 'YOKOTEN_TEMP_DIRS', 'YOKOTEN_GUARD_DEADLINE_MS', 'YOKOTEN_MIN_FREE_GB']);
 
 // A name that says it holds a secret.
 export const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|AUTH|CREDENTIAL|PRIVATE/;

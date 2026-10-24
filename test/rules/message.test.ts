@@ -110,7 +110,7 @@ import {
   upstreamNote,
   userAgentHooks,
 } from '../../src/setup/doctor/index.ts';
-import { openCodePluginNote } from '../../src/setup/doctor/checks.ts';
+import { openCodePluginNote, workerDeskNote } from '../../src/setup/doctor/checks.ts';
 import { workflowNotes } from '../../src/setup/init.ts';
 import {
   ROAD,
@@ -265,6 +265,8 @@ test('messages: every check and guard says what, why and the fix, in text and JS
   const privacy = privacyNotes(privacyEnv, null);
   assert.ok(!privacy.some((note) => note.finding.id === 'muse-claude-rules'));
   for (const c of privacy) add(c.finding);
+  // A worker outside a desk hears it from doctor, because only the guard holds the rules there (#758).
+  add(workerDeskNote({ ...privacyEnv, YOKOTEN_ROLE: 'worker' }, dir)?.finding);
   const museRules = privacyNotes(privacyEnv, dir).find((note) => note.finding.id === 'muse-claude-rules');
   assert.ok(museRules);
   assert.ok(!JSON.stringify(museRules).includes('not-sent-to-muse'));
