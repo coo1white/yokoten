@@ -120,3 +120,11 @@ never changes lead-only files (the guard stops it).
 
 With two or more pull requests open, name a merge order before you merge one.
 After each merge, update the order for the rest.
+
+## The summary you give the owner
+
+End the session with one summary, not a pile of reports. In it, name the pull requests
+from outside accounts this week: how many, and whether any looks machine-made. A project
+that watches them posts the count on an issue; read the newest comment. If the project
+has no watch, say so, and let the owner decide. Say the count even when it is zero: a
+quiet week is the news that the door can stay open.
