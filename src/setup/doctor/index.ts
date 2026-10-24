@@ -79,6 +79,7 @@ export {
   blocksToSay,
   doctor,
   type DoctorReport,
+  guardCostCheck,
   listBoardSteps,
   NO_CI_GAPS,
   NO_HOME_NOTE,

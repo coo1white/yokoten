@@ -226,6 +226,12 @@ export const RULES = {
     check: 'the commit check and CI count the entries of each folder below the root; changes/ and the folders in yokoten.json "layout.exempt" (paths, or globs with `*` and `**`) may grow',
     docs: guide('the-core-rules'),
   },
+  'stale-codeowners': {
+    rule: 'every CODEOWNERS line names a path that exists',
+    why: 'a moved or renamed file leaves its line behind, so the new path has no owner review',
+    check: '`yokoten check` and full `doctor` read the first CODEOWNERS file GitHub reads and report each rule line whose path matches no file in the tree; a pattern with `*` matches when any file does',
+    docs: guide('the-core-rules'),
+  },
   'build-output': {
     rule: 'no build output in a commit',
     why: 'a build makes it again from the source, so a committed copy goes stale',
@@ -543,6 +549,12 @@ export const RULES = {
     rule: 'the disk that holds the repo has room left (record 0012)',
     why: 'on a full disk, every agent session stops, and the agent cannot tell you why',
     check: '`doctor` reads the free space of the disk that holds the repo, with no child process; it warns below 20 GB when that is also under 10% of the disk (YOKOTEN_MIN_FREE_GB sets another limit). In WSL, full `doctor` also reads the Windows drive that holds the Linux disk file, and a session repeats the last reading. When a heavy job starts and that reading is low, the tool-call guard asks first; it never refuses',
+    docs: guide('machine-notes'),
+  },
+  'guard-cost': {
+    rule: 'the guard runs on every tool call, so it stays cheap (#461)',
+    why: 'a guard that costs more than the command it checks slows every session down',
+    check: 'full `doctor` runs the guard once on a trivial command and prints that call\'s wall time and CPU time in one line; a report line, never a failure, and a session does not run it',
     docs: guide('machine-notes'),
   },
   'agent-temp-dir': {

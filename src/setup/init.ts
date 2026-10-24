@@ -29,7 +29,7 @@ import { commitCheckLine, runs } from '../run/cli.ts';
 import { configEntries, forgetGitReads, remembered, withGitReads } from '../run/check.ts';
 import { AGENT_STATUS_FILE } from '../run/hook.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
-import { WORKTREES_DIR } from '../rules/layout.ts';
+import { codeOwnersPath, WORKTREES_DIR } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import { homeOf, systemHome } from '../rules/privacy.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
@@ -467,7 +467,7 @@ function privateRepoNote(root: string, gh: Gh, env: Env): string[] {
 export const OWNER_PLACEHOLDER = '@YOUR_GITHUB_HANDLE';
 
 /** A lead-only glob as a CODEOWNERS path: `x/**` is the folder `/x/`, a file is `/file`. */
-export const ownedPath = (glob: string): string => `/${glob.replace(/\/\*\*$/, '/')}`;
+export const ownedPath = codeOwnersPath;
 
 /**
  * The CODEOWNERS init writes: every default lead-only path, owned by `owner`, or by the

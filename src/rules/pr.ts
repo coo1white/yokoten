@@ -474,15 +474,94 @@ export interface OwnerRule {
   test: (path: string) => boolean;
 }
 
-/** The regular expression for one CODEOWNERS pattern. */
-function ownerPattern(raw: string): RegExp {
+/**
+ * A section header, such as `[Docs]`, `^[Security]` or `[Docs] @docs-team`, names no path.
+ * Owners after the brackets are the section's default owners; this reader still ignores
+ * them, as it did before, but the line is not read as a `[class]` pattern either.
+ */
+export const isCodeOwnersHeader = (line: string): boolean => /^\^?(\[[^\]]*\]\s*)+(?:\s+\S.*)?$/.test(line);
+
+/**
+ * The words of one CODEOWNERS line, with any comment removed. A `\` before a space keeps
+ * the space in its word, so `docs/my\ file.md` is one pattern; `#` after a space starts a
+ * comment. Any other `\` stays in the word, because `compileCodeOwnersPattern` reads it
+ * as the literal next character, as GitHub does for `\*`.
+ */
+export function codeOwnersWords(line: string): string[] {
+  const words: string[] = [];
+  let word = '';
+  let started = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index] as string;
+    if (character === '\\' && index + 1 < line.length) {
+      const next = line[index + 1] as string;
+      // A space is escaped here so the word does not end; the other escapes are kept
+      // for the pattern reader, which makes the next character literal.
+      word += /\s/.test(next) ? next : `\\${next}`;
+      index += 1;
+      started = true;
+    } else if (/\s/.test(character)) {
+      if (started) {
+        words.push(word);
+        word = '';
+        started = false;
+      }
+    } else if (character === '#' && !started) {
+      break;
+    } else {
+      word += character;
+      started = true;
+    }
+  }
+  if (started) words.push(word);
+  return words;
+}
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * One `[...]` character class as regular expression text. A class that cannot compile,
+ * such as `[z-a]`, becomes its own literal text instead: one malformed CODEOWNERS line
+ * is then reported as a line that matches no file, and the rest of the check still runs.
+ */
+function compileCharacterClass(inside: string, negated: boolean): string {
+  const text = `[${negated ? '^' : ''}${inside.replace(/\\/g, '\\\\').replace(/\]/g, '\\]').replace(/\^/g, '\\^')}]`;
+  try {
+    new RegExp(text);
+    return text;
+  } catch {
+    return escapeRegExp(`[${negated ? '!' : ''}${inside}]`);
+  }
+}
+
+/**
+ * The regular expression for one CODEOWNERS pattern. `[...]` is a character class,
+ * `\` makes the next character literal, `*` stays inside one folder and `**` crosses
+ * folders. A leading `/`, or a `/` inside the pattern, anchors it at the root; a trailing
+ * `/` names a folder, so it never matches a file of that name.
+ */
+export function compileCodeOwnersPattern(raw: string): RegExp {
   const folder = raw.endsWith('/');
   const body = raw.replace(/^\//, '').replace(/\/$/, '');
   const anchored = raw.startsWith('/') || body.includes('/');
   let re = '';
   for (let index = 0; index < body.length; index++) {
-    const character = body[index];
-    if (character === '*' && body[index + 1] === '*') {
+    const character = body[index] as string;
+    if (character === '\\' && index + 1 < body.length) {
+      re += escapeRegExp(body[index + 1] as string);
+      index += 1;
+    } else if (character === '[') {
+      const close = body.indexOf(']', index + 1);
+      if (close > index + 1) {
+        let inside = body.slice(index + 1, close);
+        const negated = inside.startsWith('!') || inside.startsWith('^');
+        if (negated) inside = inside.slice(1);
+        re += compileCharacterClass(inside, negated);
+        index = close;
+      } else {
+        re += '\\[';
+      }
+    } else if (character === '*' && body[index + 1] === '*') {
       if (body[index + 2] === '/') {
         re += '(?:.*/)?';
         index += 2;
@@ -492,21 +571,24 @@ function ownerPattern(raw: string): RegExp {
       }
     } else if (character === '*') re += '[^/]*';
     else if (character === '?') re += '[^/]';
-    else re += character.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    else re += escapeRegExp(character);
   }
   // `docs/*` matches the files in docs/ and not deeper (GitHub's documented case).
   const end = folder ? '/.*' : /(^|\/)\*$/.test(body) && body !== '*' ? '' : '(?:/.*)?';
   return new RegExp(`^${anchored ? '' : '(?:.*/)?'}${re}${end}$`);
 }
 
+/** Whether one CODEOWNERS pattern matches a file path. */
+export const codeOwnersPatternMatches = (pattern: string, path: string): boolean => compileCodeOwnersPattern(pattern).test(path);
+
 /** The rules in a CODEOWNERS file, in order. */
 export function parseCodeOwners(text: string): OwnerRule[] {
   const rules: OwnerRule[] = [];
   for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/(^|\s)#.*$/, '').trim();
-    if (!line) continue;
-    const [pattern, ...owners] = line.split(/\s+/);
-    const re = ownerPattern(pattern);
+    if (isCodeOwnersHeader(raw.trim())) continue;
+    const [pattern, ...owners] = codeOwnersWords(raw);
+    if (!pattern) continue;
+    const re = compileCodeOwnersPattern(pattern);
     rules.push({ pattern, owners, test: (p) => re.test(p) });
   }
   return rules;
