@@ -233,13 +233,15 @@ export const COMMANDS: Command[] = [
   {
     name: 'check',
     summary: 'layout, privacy and lead-only files; the pull request or issue in CI',
-    usage: '[--staged | --history | --pr [number] | --issue] [--json]',
-    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.'],
+    usage: '[--staged | --history | --pr [number] | --issue | --anchor] [--json]',
+    text: ['Checks the whole tree by default. Use one mode at most.', '--pr with a number reads that pull request through gh, so you can run it without CI.', '--anchor checks the event log against its daily entries in Sigstore Rekor.'],
     options: [
       { name: '--staged', text: 'the next commit, as the git hook runs it' },
       { name: '--history', text: 'the privacy check over every commit; run it before going public' },
       { name: '--pr', text: 'the title, tier, sections, issue and change file of the pull request: in CI, or by its number' },
       { name: '--issue', text: 'in CI: the issue title, `area: summary` in 60 characters at most' },
+      { name: '--anchor', text: 'the event log against the daily hashes in Sigstore Rekor' },
+      { name: '--repo', value: 'owner/name', text: 'the repo whose anchor workflow signed the entries; GITHUB_REPOSITORY or origin by default' },
       { name: '--json', text: 'the findings as JSON on stdout' },
     ],
     argument: 'number',

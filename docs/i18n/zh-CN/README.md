@@ -43,7 +43,7 @@ npx yokoten init         # 每个项目一次
 npx yokoten doctor       # 走到了第几关，下一步做什么
 ```
 
-用 Claude Code 的话，可以改用插件。先运行 `/plugin marketplace add yokoten-labs/yokoten`，再运行 `/plugin install yokoten@yokoten`。插件和 `npx` 选一个，不要两个都装。只在 CI 里用的话，[当成 GitHub Action 用](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交检查只认 UTC 时间。在 shell 的配置文件里加一行 `export TZ=UTC`，加一次就行。
+用 Claude Code 的话，可以改用插件。先运行 `/plugin marketplace add yokoten-labs/yokoten`，再运行 `/plugin install yokoten@yokoten`。插件和 `npx` 选一个，不要两个都装。选择[要安装哪个版本](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)：Stable（默认）、Beta 或 Dev。只在 CI 里用的话，[当成 GitHub Action 用](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。提交检查只认 UTC 时间。在 shell 的配置文件里加一行 `export TZ=UTC`，加一次就行。
 
 ## 你会看到什么
 

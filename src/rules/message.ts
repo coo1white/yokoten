@@ -332,6 +332,11 @@ export const RULES = {
     check: 'in a CI run, `check --pr` and `check --issue` fail when the event file is missing or is not a JSON object; with no event file named, they skip',
     docs: guide('use-it-as-a-github-action'),
   },
+  anchor: {
+    rule: 'each past day of the event log is anchored in Sigstore Rekor (record 0029)',
+    why: 'a rewritten log can carry a chain that holds, because the writer makes every hash; only an outside witness shows that a day did not change after it was anchored',
+    check: '`yokoten check --anchor` takes the hash of the last line of each past UTC day, asks Rekor for it, and verifies the signed entry timestamp with Rekor\'s key, the workflow certificate and its signature over the hash; a day with no entry, a weak chain, or an entry another identity signed fails',
+  },
   'pr-approve': {
     rule: 'a tier A pull request merges only on the commit the owner approved (core rule 9)',
     why: 'an approval is for one commit; code the owner never saw must not merge',
