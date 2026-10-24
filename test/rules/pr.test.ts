@@ -321,11 +321,12 @@ test('CODEOWNERS: anchored, folder, glob, last match wins, comments, several own
 });
 
 test('CODEOWNERS: a section header, a [class] and an escaped space (#667)', () => {
-  const rules = parseCodeOwners('[Documentation]\n^[Security]\n[Docs][2]\ndocs/my\\ file.md @writer\nsrc/*.[jt]s @code\n');
+  const rules = parseCodeOwners('[Documentation]\n^[Security]\n[Docs][2]\n[Docs] @docs-team\ndocs/my\\ file.md @writer\nsrc/*.[jt]s @code\n');
   assert.deepEqual(ownersOf(rules, 'docs/my file.md'), ['@writer'], 'the escaped space stays in the pattern');
   assert.deepEqual(ownersOf(rules, 'src/app.ts'), ['@code'], 'the class matches one character, not the brackets');
   assert.deepEqual(ownersOf(rules, 'src/app.tsx'), [], 'the class is one character');
   assert.deepEqual(ownersOf(rules, '[Documentation]'), [], 'a section header names no path');
+  assert.deepEqual(ownersOf(rules, 'D'), [], 'a section header with default owners is still no path');
 });
 
 test('CODEOWNERS: an owned file needs tier A; the paths set the lowest tier', () => {

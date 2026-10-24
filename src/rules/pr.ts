@@ -471,8 +471,12 @@ export interface OwnerRule {
   test: (path: string) => boolean;
 }
 
-/** A section header, such as `[Docs]` or `^[Security]`, names no path. */
-export const isCodeOwnersHeader = (line: string): boolean => /^\^?(\[[^\]]*\]\s*)+$/.test(line);
+/**
+ * A section header, such as `[Docs]`, `^[Security]` or `[Docs] @docs-team`, names no path.
+ * Owners after the brackets are the section's default owners; this reader still ignores
+ * them, as it did before, but the line is not read as a `[class]` pattern either.
+ */
+export const isCodeOwnersHeader = (line: string): boolean => /^\^?(\[[^\]]*\]\s*)+(?:\s+\S.*)?$/.test(line);
 
 /**
  * The words of one CODEOWNERS line, with any comment removed. A `\` keeps the next
@@ -509,6 +513,21 @@ export function codeOwnersWords(line: string): string[] {
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
+ * One `[...]` character class as regular expression text. A class that cannot compile,
+ * such as `[z-a]`, becomes its own literal text instead: one malformed CODEOWNERS line
+ * is then reported as a line that matches no file, and the rest of the check still runs.
+ */
+function compileCharacterClass(inside: string, negated: boolean): string {
+  const text = `[${negated ? '^' : ''}${inside.replace(/\\/g, '\\\\').replace(/\]/g, '\\]').replace(/\^/g, '\\^')}]`;
+  try {
+    new RegExp(text);
+    return text;
+  } catch {
+    return escapeRegExp(`[${negated ? '!' : ''}${inside}]`);
+  }
+}
+
+/**
  * The regular expression for one CODEOWNERS pattern. `[...]` is a character class,
  * `\` makes the next character literal, `*` stays inside one folder and `**` crosses
  * folders. A leading `/`, or a `/` inside the pattern, anchors it at the root; a trailing
@@ -530,7 +549,7 @@ export function compileCodeOwnersPattern(raw: string): RegExp {
         let inside = body.slice(index + 1, close);
         const negated = inside.startsWith('!') || inside.startsWith('^');
         if (negated) inside = inside.slice(1);
-        re += `[${negated ? '^' : ''}${inside.replace(/\\/g, '\\\\').replace(/\]/g, '\\]').replace(/\^/g, '\\^')}]`;
+        re += compileCharacterClass(inside, negated);
         index = close;
       } else {
         re += '\\[';

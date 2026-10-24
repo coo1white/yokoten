@@ -160,7 +160,7 @@ test('codeowners: a pattern with * matches when any file does (#667)', () => {
 });
 
 test('codeowners: a section header names no path and is not reported (#667)', () => {
-  assert.deepEqual(checkCodeOwners(OWNED_FILES, '[Documentation]\n^[Security]\n[Docs][2]\n/docs/ @lead\n'), []);
+  assert.deepEqual(checkCodeOwners(OWNED_FILES, '[Documentation]\n^[Security]\n[Docs][2]\n[Docs] @docs-team\n/docs/ @lead\n'), []);
   assert.equal(codeOwnersPatternMatches('/docs/', 'docs'), false, 'a folder pattern needs something inside it');
 });
 
@@ -168,6 +168,15 @@ test('codeowners: a [class] matches one character, not the brackets (#667)', () 
   assert.deepEqual(checkCodeOwners(OWNED_FILES, 'src/*.[jt]s @lead\n'), []);
   assert.equal(codeOwnersPatternMatches('src/*.[jt]s', 'src/app.ts'), true);
   assert.equal(codeOwnersPatternMatches('src/*.[jt]s', 'src/app.tsx'), false);
+});
+
+test('codeowners: a [class] that cannot compile is a stale line, not a crash (#667)', () => {
+  const found = checkCodeOwners(OWNED_FILES, 'src/[z-a].ts @lead\n');
+  assert.equal(found.length, 1, 'one malformed line does not throw or hide the other lines');
+  assert.equal(found[0]?.id, 'stale-codeowners');
+  assert.equal(found[0]?.line, 1);
+  assert.equal(codeOwnersPatternMatches('src/[z-a].ts', 'src/z.ts'), false, 'the class is read as its own text, not a range');
+  assert.equal(codeOwnersPatternMatches('src/[z-a].ts', 'src/[z-a].ts'), true);
 });
 
 test('codeowners: an escaped space stays inside the pattern (#667)', () => {
