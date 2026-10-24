@@ -931,7 +931,7 @@ function excludeStatusFile(common: string): void {
 
 /** A change to a status file: `set` replaces fields (null removes one), `fill` sets fields only where they are missing. */
 export interface StatusChange {
-  set?: Record<string, string | null>;
+  set?: Record<string, unknown>;
   fill?: Record<string, string>;
   /** Skip the write when the file changed less than this long ago. A new file is always written. */
   throttleMs?: number;
