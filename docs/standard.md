@@ -143,7 +143,7 @@ A mismatch means the history changed.
 A missing required field fails the check.
 An unknown `eventName` fails the check.
 The code does not append this log yet.
-No code runs this check yet.
+`yokoten check --anchor` reads an existing log and its daily anchors in Rekor (#768).
 Version 1. The log has no version field.
 
 The hook that will append is [src/run/hook.ts](../src/run/hook.ts), and its test is [test/run/hook.test.ts](../test/run/hook.test.ts).
