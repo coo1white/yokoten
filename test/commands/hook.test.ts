@@ -1523,3 +1523,49 @@ test('hook: an allowed call asks git for the root once (#821)', { skip: process.
   const asked = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
   assert.equal(asked.filter((args) => args.join(' ') === 'rev-parse --show-toplevel').length, 1);
 });
+
+// #824: a repo with no yokoten.json has no pre-commit hook, so the tool-call guard stops the
+// commit itself, with the four lines and never the secret. It is the user-level hook the
+// machine runs in every repo: no init here. Claude Code reads the refusal as a deny in JSON
+// on exit 0 (#800), and the same four lines stay on stderr.
+test('hook: a commit that adds a secret is refused with no yokoten.json (#824)', async () => {
+  const sandbox = makeSandbox();
+  // The key is built from pieces, so this file holds no secret of its own.
+  const key = `ghp_${'a1B2c3D4e5'.repeat(4).slice(0, 36)}`;
+  sandbox.write('README.md', 'hello\n');
+  sandbox.git('add', '.');
+  sandbox.git('commit', '-qm', 'start');
+  sandbox.write('config.ts', `// settings\nexport const token = '${key}';\n`);
+  sandbox.git('add', 'config.ts');
+  const call = (command: string) =>
+    sandbox.call(['hook', '--commands-only', '--agent', 'claude-code'], { input: JSON.stringify({ cwd: sandbox.repo, tool_name: 'Bash', tool_input: { command } }) });
+  // The answer Claude Code reads (#800): one deny in JSON on exit 0, and the four lines on stderr.
+  const refused = (result: { status: number | null; stdout: string; stderr: string }): string => {
+    assert.equal(result.status, 0, result.stderr);
+    const answer = JSON.parse(result.stdout).hookSpecificOutput;
+    assert.equal(answer.hookEventName, 'PreToolUse');
+    assert.equal(answer.permissionDecision, 'deny');
+    assert.ok(result.stderr.includes(answer.permissionDecisionReason), 'stderr keeps the reason');
+    return answer.permissionDecisionReason as string;
+  };
+  const result = await call('git commit -m x');
+  const reason = refused(result);
+  assert.match(reason, /config\.ts:2: this commit adds a secret \(GitHub token\)/);
+  assert.match(reason, /\.gitignore/);
+  assert.match(reason, /More: https:\/\/github\.com\/yokoten-labs\/yokoten\/blob\/main\/docs\/guide\.md#privacy/);
+  assert.ok(!result.stderr.includes(key), 'the secret is never printed');
+  assert.ok(!result.stdout.includes(key));
+  // The same key in a tracked file: only -a takes it (the staged key is gone by now).
+  sandbox.git('restore', '--staged', 'config.ts');
+  rmSync(join(sandbox.repo, 'config.ts'));
+  sandbox.write('src/a.ts', 'export const a = 0;\n');
+  sandbox.git('add', 'src/a.ts');
+  sandbox.git('commit', '-qm', 'add a');
+  sandbox.write('src/a.ts', `export const token = '${key}';\n`);
+  assert.match(refused(await call('git commit -am x')), /src\/a\.ts:1: this commit adds a secret/);
+  // A clean commit passes.
+  sandbox.write('src/a.ts', 'export const a = 1;\n');
+  sandbox.git('add', 'src/a.ts');
+  const clean = await call('git commit -m x');
+  assert.equal(clean.status, 0, clean.stderr);
+});
