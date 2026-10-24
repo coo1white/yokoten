@@ -63,7 +63,7 @@ test('record: a line that is not one JSON object, a \\r, and an empty log', () =
   assert.deepEqual(readEventLog(''), { lines: [], problems: [] });
   assert.match(readEventLog('not json\n').problems[0]?.what ?? '', /not one OTLP\/JSON log record/);
   const made = makeEventLog(TIMES);
-  const cr = readEventLog(made.text.replace('\n', '\r\n'));
+  const cr = readEventLog(made.text.replaceAll('\n', '\r\n'));
   assert.match(cr.problems[0]?.what ?? '', /carriage return/);
 });
 
