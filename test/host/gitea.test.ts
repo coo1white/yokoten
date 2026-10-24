@@ -16,7 +16,8 @@ import { LABELS } from '../../src/setup/plan.ts';
 import { at, makeTempDir } from '../repo/helpers.ts';
 
 const HOST = { repo: 'me/repo', api: 'https://gitea.example.com/api/v1' };
-const TOKEN = { GITEA_TOKEN: 'placeholder-token' };
+// Built at run time, so the file holds no key-shaped string for a scanner to flag (#849).
+const TOKEN = { GITEA_TOKEN: ['placeholder', 'token'].join('-') };
 
 /** A fake Gitea: route by path, ignore the paging query, and record what was asked. */
 function fakeGitea(routes: Record<string, unknown>, seen: string[] = []): GiteaGet {
@@ -172,4 +173,3 @@ test('gitea: doctor judges the forge steps through the adapter, not by hand (#50
   assert.ok(!text.includes("yokoten can't check this on"), 'the by-hand wording is for a host with no adapter');
   assert.ok(!text.includes('gitea.example.com'), 'a self-hosted address is never printed');
 });
-

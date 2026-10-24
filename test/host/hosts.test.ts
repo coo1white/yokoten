@@ -18,6 +18,8 @@ test('hostOf: GitHub in each remote form, another host by name, and no remote (#
   assert.deepEqual(hostOf('forgebox.example.com:me/repo.git'), other('forgebox.example.com'));
   assert.deepEqual(hostOf('https://gitlab.com/me/repo.git'), other('gitlab.com', 'GitLab'));
   assert.deepEqual(hostOf('git@codeberg.org:me/repo.git'), other('codeberg.org', 'Codeberg'));
+  // A host named like an object key is still a host, not a value from the label table (#849).
+  for (const key of ['__proto__', 'constructor']) assert.deepEqual(hostOf(`https://${key}/me/repo`), other(key), key);
   // A folder on this machine is a host with no adapter, and no name.
   for (const folder of ['/srv/git/repo.git', '../repo', 'file:///srv/git/repo.git', 'C:\\git\\repo']) assert.deepEqual(hostOf(folder), other(''), folder);
   assert.deepEqual(hostOf(''), { kind: 'none' });

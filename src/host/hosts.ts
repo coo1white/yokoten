@@ -47,7 +47,14 @@ function remoteParts(remote: string): { scheme: string; host: string; port: stri
 
 /** "owner/name" from any remote, or null when the path is not a repo. */
 function ownerAndName(path: string): string | null {
-  const clean = path.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+  // Slice the edges instead of chaining replaces: a suffix strip cannot be read as
+  // sanitizing a multi-character string, and the result stays one pass over the path.
+  let start = 0;
+  while (start < path.length && path[start] === '/') start++;
+  let end = path.length;
+  while (end > start && path[end - 1] === '/') end--;
+  let clean = path.slice(start, end);
+  if (clean.toLowerCase().endsWith('.git')) clean = clean.slice(0, -'.git'.length);
   const parts = clean.split('/').filter(Boolean);
   return parts.length === 2 ? parts.join('/') : null;
 }
@@ -67,11 +74,14 @@ export function hostOf(remote: string, declared: 'auto' | 'gitea' = 'auto'): Hos
   if (parts === null) return { kind: 'other', name: '', label: 'this host' };
   const repo = ownerAndName(parts.path);
   const name = parts.host;
-  if (repo && (parts.host === 'github.com' || parts.host === 'www.github.com')) return { kind: 'github', repo };
-  if (repo && (declared === 'gitea' || PUBLIC_GITEA.includes(name.replace(/^www\./, '')))) {
+  const bareName = name.startsWith('www.') ? name.slice('www.'.length) : name;
+  if (repo && (name === 'github.com' || bareName === 'github.com')) return { kind: 'github', repo };
+  if (repo && (declared === 'gitea' || PUBLIC_GITEA.includes(bareName))) {
     return { kind: 'gitea', repo, api: giteaApiOf(parts) };
   }
-  return { kind: 'other', name, label: PUBLIC_HOSTS[name.replace(/^www\./, '')] ?? 'this host' };
+  // A remote named __proto__ or constructor is a host, not a key: read only own labels.
+  const label = Object.hasOwn(PUBLIC_HOSTS, bareName) ? PUBLIC_HOSTS[bareName] : undefined;
+  return { kind: 'other', name, label: label ?? 'this host' };
 }
 
 /** What doctor read from a host with no adapter: nothing, and which host it is. Its `unread` and `fix` are said once. */

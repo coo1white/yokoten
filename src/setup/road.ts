@@ -124,10 +124,16 @@ export { runsTests };
 
 
 const WORKFLOW_DIRS = ['.github/workflows', '.gitea/workflows'];
+// Read the folder directly: a check-then-read can race with a folder that goes away (#849).
 const ciFiles = (root: string): string[] =>
   WORKFLOW_DIRS.flatMap((dir) => {
     const folder = join(root, dir);
-    return existsSync(folder) ? readdirSync(folder).map((f) => read(join(folder, f))) : [];
+    try {
+      return readdirSync(folder).map((f) => read(join(folder, f)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
   });
 const ciText = (root: string) => ciFiles(root).join('\n');
 
