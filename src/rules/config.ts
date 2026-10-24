@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { type Finding, finding } from './message.ts';
 
 export interface Config {
+  /** The code host, when the origin remote's address does not name it: `auto`, or `gitea` for a self-hosted Gitea (#505). */
+  host: 'auto' | 'gitea';
   layout: { maxEntries: number; exempt: string[] };
   tests: string[];
   leadOnly: string[];
@@ -21,6 +23,7 @@ export interface Config {
 export type Env = Record<string, string | undefined>;
 
 export const DEFAULTS: Config = {
+  host: 'auto',
   // At most this many entries in a folder. The root is never counted: tools expect their
   // files there. A folder in `exempt` may grow: a log (records, root-cause reports), or a
   // third-party fixture set kept under its upstream names. An entry may be a glob (#381).
@@ -112,6 +115,7 @@ const blockList: Shape = {
  * code that reads a Config can trust its types. A key not listed here is unknown.
  */
 const SHAPES: Record<keyof Config, Shape | Fields> = {
+  host: shape('"auto" or "gitea"', (value) => value === 'auto' || value === 'gitea'),
   layout: {
     example: '{ "maxEntries": 7, "exempt": ["docs/records"] }',
     fields: { maxEntries: shape('a whole number above 0, such as 7', (value) => Number.isInteger(value) && (value as number) > 0), exempt: textList('["docs/records"]') },

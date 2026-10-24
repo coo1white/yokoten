@@ -58,7 +58,10 @@ const NO_REMOTE_FIX = 'make the repo on your code host, add it as origin with `g
 /** The server settings of the origin's host, or why they can't be read. A host with no adapter is read without the network (#504). */
 function readOrigin(host: Host, gh: Gh): ServerSettings | Unread {
   if (host.kind === 'none') return { unread: NO_REMOTE, fix: NO_REMOTE_FIX };
-  return host.kind === 'github' ? readServer(gh, host.repo) : noAdapter(host);
+  if (host.kind === 'github') return readServer(gh, host.repo);
+  // Gitea is read by the command, which can wait for the network (#505).
+  if (host.kind === 'gitea') return { unread: 'the Gitea settings were not read', fix: 'run `yokoten doctor`' };
+  return noAdapter(host);
 }
 
 /**
@@ -289,7 +292,7 @@ export function guardCostCheck(root: string, probe: MachineProbe, env: Env): Pra
 
 function doctorRun(
   root: string | null,
-  { env, config, session = false, gh, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; fillMarks?: boolean; machine?: MachineProbe },
+  { env, config, session = false, gh, host: givenHost, server: givenServer, fillMarks: isFilling = false, machine: probe = REAL_MACHINE }: { env: Env; config: Config; session?: boolean; gh?: Gh; host?: Host; server?: ServerRead; fillMarks?: boolean; machine?: MachineProbe },
 ): { ok: boolean; lines: string[]; blocks?: string[][]; report: DoctorReport } {
   const lines: string[] = [];
   const failed = selfTest();
@@ -303,8 +306,17 @@ function doctorRun(
 
   // Read only, and only in full doctor: a session never calls the network (record 0004).
   // A host with no adapter needs no network, so a session knows it too (#504).
-  const host = hostOf(gitConfig(root, 'remote.origin.url', env));
-  const server: ServerRead = host.kind === 'other' ? noAdapter(host) : session ? undefined : gh ? readOrigin(host, gh) : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
+  // The Gitea read is async, so the command makes it and passes it in (#505).
+  const host = givenHost ?? hostOf(gitConfig(root, 'remote.origin.url', env), config.host);
+  const server: ServerRead = givenServer !== undefined
+    ? givenServer
+    : host.kind === 'other'
+      ? noAdapter(host)
+      : session
+        ? undefined
+        : gh
+          ? readOrigin(host, gh)
+          : { unread: 'no way to reach the code host was given', fix: 'run `yokoten doctor`' };
   const where = walk(road(root, env, ROAD, server, config), config.notNow);
   // Full doctor from the command line adds the obvious marks first (#390); a session writes nothing.
   // With no home folder, the checks that read or keep settings there are skipped, never crash (#404).

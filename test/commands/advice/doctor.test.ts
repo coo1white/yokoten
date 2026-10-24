@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { test } from 'node:test';
-import { CLI, makeSandbox, pick } from '../../repo/helpers.ts';
+import { CLI, makeSandbox, pick, stopCheckoutWalk } from '../../repo/helpers.ts';
 import { runDoctor } from '../../../src/commands/advice/doctor.ts';
 import type { Invocation, Output } from '../../../src/commands/shared.ts';
 
@@ -27,7 +27,9 @@ test('doctor --session --agent: plain text for Codex, hookSpecificOutput JSON fo
   assert.deepEqual(Object.keys(out.hookSpecificOutput), ['additionalContext']);
   assert.equal(out.hookSpecificOutput.additionalContext, (plain.stdout + unfiltered).trimEnd());
   assert.ok(!result.stdout.includes(sandbox.home), 'output shows the home path');
-  // Outside a repo there is nothing to say, and no JSON either.
+  // Outside a repo there is nothing to say, and no JSON either. A stop marker keeps the
+  // walk from finding the repo around this folder when TMPDIR lives inside one.
+  stopCheckoutWalk(sandbox.home);
   assert.equal((await sandbox.call(['doctor', '--session', '--agent', 'gemini'], { cwd: sandbox.home })).stdout, '');
   assert.equal((await sandbox.call(['doctor', '--session', '--agent', 'cursor'])).status, 1);
 });
@@ -110,7 +112,7 @@ test('doctor --session: a worker hears that lead-only files are guarded; the lea
 
 // #561: full doctor says one line while the slow reads run, on a terminal only. A session
 // never reads the server, and --json keeps stdout to the report.
-test('doctor: one progress line on a terminal; none off it, in a session, or with --json (#561)', () => {
+test('doctor: one progress line on a terminal; none off it, in a session, or with --json (#561)', async () => {
   const sandbox = makeSandbox();
   const kept = (isTTY: boolean | undefined) => {
     const chunks: string[] = [];
@@ -118,19 +120,19 @@ test('doctor: one progress line on a terminal; none off it, in a session, or wit
     if (isTTY !== undefined) (stream as Writable & { isTTY: boolean }).isTTY = isTTY;
     return { stream: stream as Output, text: () => chunks.join('') };
   };
-  const run = (isTTY: boolean | undefined, args: string[]): { code: number; stdout: string } => {
+  const run = async (isTTY: boolean | undefined, args: string[]): Promise<{ code: number; stdout: string }> => {
     const stdout = kept(isTTY);
     const stderr = kept(undefined);
     const invocation: Invocation = { command: 'doctor', args, env: { ...sandbox.env }, cwd: sandbox.repo, stdout: stdout.stream, stderr: stderr.stream, stdin: { fd: null, text: '', stream: Readable.from(['']) }, script: CLI };
-    return { code: runDoctor(invocation), stdout: stdout.text() };
+    return { code: await runDoctor(invocation), stdout: stdout.text() };
   };
   const line = 'reading GitHub settings...\n';
-  const tty = run(true, []);
+  const tty = await run(true, []);
   assert.ok(tty.stdout.startsWith(line), 'the line comes first');
-  const piped = run(undefined, []);
+  const piped = await run(undefined, []);
   assert.ok(!piped.stdout.includes('reading GitHub settings'), 'no line off a terminal');
-  assert.ok(!run(true, ['--session']).stdout.includes('reading GitHub settings'), 'no line at session start');
-  const json = run(true, ['--json']);
+  assert.ok(!(await run(true, ['--session'])).stdout.includes('reading GitHub settings'), 'no line at session start');
+  const json = await run(true, ['--json']);
   assert.ok(!json.stdout.includes('reading GitHub settings'), 'stdout holds only the report');
   JSON.parse(json.stdout);
 });

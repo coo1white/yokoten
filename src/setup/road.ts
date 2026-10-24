@@ -25,7 +25,7 @@ import { sandboxProblem as geminiSandboxProblem } from '../agents/runtimes/gemin
 import { sandboxProblem as grokSandboxProblem } from '../agents/runtimes/grok.ts';
 import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
 import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
-import { isNoAdapter } from '../host/hosts.ts';
+import { hostOf, isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
@@ -123,11 +123,30 @@ export { gitConfig };
 export { runsTests };
 
 
-const ciFiles = (root: string): string[] => {
-  const dir = join(root, '.github', 'workflows');
-  return existsSync(dir) ? readdirSync(dir).map((f) => read(join(dir, f))) : [];
+const WORKFLOW_DIRS = ['.github/workflows'];
+/**
+ * The workflow folders this project's code host reads. Gitea reads both, because it also
+ * runs GitHub workflows; every other host reads only `.github/workflows`, because a file
+ * in `.gitea/workflows` never runs on GitLab or on a host with no adapter (#849). A
+ * project that names Gitea in `yokoten.json` reads both before it has a remote.
+ */
+const workflowDirs = (root: string, env: Env, config?: Config): string[] => {
+  const host = hostOf(gitConfig(root, 'remote.origin.url', env), config?.host ?? 'auto');
+  const isGitea = host.kind === 'gitea' || (host.kind === 'none' && config?.host === 'gitea');
+  return isGitea ? [...WORKFLOW_DIRS, '.gitea/workflows'] : WORKFLOW_DIRS;
 };
-const ciText = (root: string) => ciFiles(root).join('\n');
+// Read the folder directly: a check-then-read can race with a folder that goes away (#849).
+const ciFiles = (root: string, env: Env, config?: Config): string[] =>
+  workflowDirs(root, env, config).flatMap((dir) => {
+    const folder = join(root, dir);
+    try {
+      return readdirSync(folder).map((f) => read(join(folder, f)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+  });
+const ciText = (root: string, env: Env, config?: Config) => ciFiles(root, env, config).join('\n');
 
 const TODO_FILES = ['TODO.md', 'TODO', 'todo.md', 'docs/todo'];
 // Names as the folder lists them: on a case-insensitive disk (macOS) TODO.md also "exists" as todo.md.
@@ -269,17 +288,17 @@ export const onPullRequest = (workflow: string): boolean => {
  * the step is then "can't check", and doctor goes on (#322).
  */
 export const catchLongLines =
-  (check: (root: string) => boolean) =>
-  (root: string): Found => {
+  (check: (root: string, env: Env, config?: Config) => boolean) =>
+  (root: string, env: Env = {}, _?: ServerRead, config?: Config): Found => {
     try {
-      return check(root);
+      return check(root, env, config);
     } catch (error) {
       if (error instanceof RangeError) return null;
       throw error;
     }
   };
-const WORKFLOW_TOO_LONG = 'a line in .github/workflows is too long to read; make it shorter and run doctor again';
-const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root), scriptedRuns(root));
+const WORKFLOW_TOO_LONG = 'a line in a workflow is too long to read; make it shorter and run doctor again';
+const ciRunsTests = (root: string, env: Env, config?: Config) => runsTests(ciText(root, env, config), testScript(root), isWorkspaces(root), scriptedRuns(root));
 /**
  * Why no workflow runs the tests, naming the language found by the files at the root
  * (test-commands.ts), so the reader sees doctor knows the project; the usual three when none is.
@@ -408,7 +427,7 @@ export function serverChecks(settings: ServerSettings | Unread, { isCiOff: isOff
   const cant = (id: RuleId, u: Unread): ServerCheck => ({ id, mark: "can't check", finding: finding(id, u.unread, u.fix) });
   if ('unread' in settings) return [cant('server-settings', settings)];
   const judge = (id: RuleId, found: boolean | Unread | null, what: string, fix: string): ServerCheck => {
-    if (found === null) return cant(id, { unread: 'only a repo admin can see this setting', fix: 'run doctor signed in to gh as a repo admin' });
+    if (found === null) return cant(id, { unread: 'the code host did not say whether this setting is on', fix: 'sign in as a repo admin on the code host, then run doctor again' });
     if (typeof found !== 'boolean') return cant(id, found);
     return { id, mark: found ? 'ok' : 'MISSING', finding: finding(id, what, fix) };
   };
@@ -514,7 +533,7 @@ const serverStep = (key: string, fields: { lacking: string; fix: string; byHand:
 // that mark is the owner's own decision in yokoten.json, and doctor never makes it for them.
 
 /** What the review step judges, as full doctor read it, or why there is nothing to judge. */
-const reviewRead = (server: ServerRead): { approvals: number; actionsCanApprove: boolean | null } | Unread => {
+const reviewRead = (server: ServerRead): { approvals: number; actionsCanApprove: boolean | null; actionsApprovalNote?: string } | Unread => {
   const settings = server ?? SESSION_UNREAD;
   if ('unread' in settings) return settings;
   const branch = settings.branch;
@@ -523,7 +542,7 @@ const reviewRead = (server: ServerRead): { approvals: number; actionsCanApprove:
     return branch;
   }
   if (branch.approvals === null) return { unread: 'no ruleset asks for an approval, and the old branch protection can be read only by an admin', fix: 'sign in to gh as a repo admin and run doctor again' };
-  return { approvals: branch.approvals, actionsCanApprove: settings.actionsCanApprove };
+  return { approvals: branch.approvals, actionsCanApprove: settings.actionsCanApprove, ...(settings.actionsApprovalNote ? { actionsApprovalNote: settings.actionsApprovalNote } : {}) };
 };
 
 /** True when approvals are required but a workflow may still approve a pull request. */
@@ -555,7 +574,7 @@ const reviewStep: Step = {
   unchecked: (server) => {
     const read = reviewRead(server);
     if ('unread' in read) return `${read.unread}; ${read.fix}`;
-    return read.approvals >= 1 && read.actionsCanApprove === null ? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again` : '';
+    return read.approvals >= 1 && read.actionsCanApprove === null ? (read.actionsApprovalNote ?? `the Actions setting ${ACTIONS_SETTING} can be read only by an admin; sign in to gh as a repo admin and run doctor again`) : '';
   },
   byHand: 'a merge to the default branch needs one approving review; let the bot open the pull requests, so you can approve them, and let no CI job approve one',
   why: 'the bot opens the pull requests, so you approve work you did not write, and nothing merges unread',
@@ -778,7 +797,7 @@ export const ROAD: Step[] = [
     fix: testsFix,
     byHand: 'your host\'s CI runs the tests on every push and on every pull request',
     why: 'tests that run on every push catch a broken change before it reaches main',
-    how: 'package.json has a real "test" script and a `run:` step in .github/workflows runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
+    how: 'package.json has a real "test" script and a `run:` step in a workflow runs it, or a `run:` step starts a test runner such as `node --test`, `go test`, `pytest`, `tox`, `make test` or `npx vitest`; in a workspaces repo, `npm test --workspaces` or `pnpm -r test` counts too',
     standard: 'Best Practices: test',
     withoutCi: 'run the tests yourself before each merge',
   },
@@ -797,13 +816,13 @@ export const ROAD: Step[] = [
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
-    check: catchLongLines((root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0)),
+    check: catchLongLines((root, env, config) => ciRuns(ciText(root, env, config), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root, env, config).some((f) => yokotenActions(f).length > 0)),
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not run `yokoten check`',
     fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     byHand: 'your host\'s CI runs `yokoten check` on every push and on every pull request',
     why: 'a commit made with the hook off would reach main unchecked',
-    how: 'a workflow in .github/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
+    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows`, and `.gitea/workflows` too on Gitea) runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
     withoutCi: 'the commit hook runs `yokoten check` on each commit',
   },
@@ -877,13 +896,13 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
-    check: catchLongLines((root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck))),
+    check: catchLongLines((root, env, config) => ciRuns(ciText(root, env, config), runs('check --pr')) || ciFiles(root, env, config).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck))),
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     byHand: 'before a pull request merges, its title has the commit form (`feat: ...`, `fix: ...`) and says what changed',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
-    how: 'a workflow in .github/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
+    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows`, and `.gitea/workflows` too on Gitea) runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
     withoutCi: 'run `yokoten check --pr <number>` before each merge',
   },
