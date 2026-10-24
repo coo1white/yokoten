@@ -132,6 +132,20 @@ export function writeManaged(path: string, content: string): 'wrote' | 'updated'
   return existed ? 'updated' : 'wrote';
 }
 
+/** How a write or a removal ended, as install, init and uninstall report it. */
+export type ReportState = 'wrote' | 'updated' | 'added' | 'linked' | 'same' | 'kept (yours)' | 'removed' | 'not there';
+
+/**
+ * One report line for one write or removal. A file that was already right is "kept", so a
+ * second run reads as English: `kept the tool-call hook in .claude/settings.json` (#719).
+ */
+export function describeWrite(state: ReportState, what: string): string {
+  if (state === 'same') return `kept ${what}`;
+  if (state === 'kept (yours)') return `kept ${what} (yours, not yokoten's)`;
+  if (state === 'not there') return `nothing to remove: ${what}`;
+  return `${state} ${what}`;
+}
+
 /** Fill `{{name}}` in a template. */
 export const render = (text: string, vars: Record<string, string>): string => text.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? vars[k] : m));
 
