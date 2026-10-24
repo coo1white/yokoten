@@ -145,7 +145,7 @@ OpenTelemetry 没有这份工作的名字，所以 `eventName` 以 `yokoten.agen
 缺了必填字段，检查不通过。
 不认识的 `eventName`，检查不通过。
 代码还不会写这份日志。
-现在也没有代码在跑这项检查。
+`yokoten check --anchor` 读现有的日志，和 Rekor 里每天的锚点（#768）。
 版本 1。这份日志没有版本字段。
 
 以后追加的 hook 在 [src/run/hook.ts](../../../src/run/hook.ts)，它的测试在 [test/run/hook.test.ts](../../../test/run/hook.test.ts)。
@@ -391,7 +391,7 @@ Dependabot 开的 PR，这一行有问题只是提醒，不算失败。
 
 Made-with 行是来源记录的第一种样子。
 它写明谁写的、谁审的。
-来源记录也读事件日志。
+来源记录也读 desk 状态文件和事件日志。
 代码还不会读这份日志。
 它还不是一份完整的物料清单。
 批准的人不是这一行上的字段。
@@ -400,16 +400,36 @@ Made-with 行是来源记录的第一种样子。
 | --- | --- |
 | 写的人 | `writers`，来自 `worker` 再加上 `vendor` 和 `model` |
 | 审的人 | `reviewers`，最多两个，来自 `reviewed by` |
-| 批准的人 | 主人在代码宿主上的 Approve。不在这一行上。只有 tier A。 |
+| 批准的人 | 主人在代码宿主上最新的 Approve。不在这一行上。 |
 | lead | `leads`，来自 `lead` 再加上厂商和模型。lead 不是批准的人。 |
 | 没写角色的 | `others`，一对没有角色词的名字 |
 
+没有 `worker`，也没有别的名字时，`lead` 就是写的人。
+`check --pr` 拿这一行和分支上每个 agent 的状态文件对照。
+分支上的 agent，指按 PR 分支检出的 worktree，或 `yokoten desk` 起的 clone。
+状态文件在那个 worktree 的根目录。
+检出别的分支的 worktree 不计。
+这一行要用厂商和模型写出每个 desk。
+同一个厂商可以有两种写法，比如 `Claude Code` 和 `claude-code`。
+这一行完全没写的 desk 会跳过，所以旧的行不会变成问题。
+没有状态文件时没有东西可对照，就不报 desk 的问题。
+审的人和写的人同属一个厂商，也是问题（record 0021）。
+这条检查的 id 是 `pr-provenance`。
+
+`yokoten provenance <ref>` 给一个提交打印一条记录，给一个范围就每个提交一条。
+记录里有写的人、审的人、批准的人、等级和 issue。
+批准的人是主题末尾那个 PR 上最新的 Approve。
+gh 读不到时，批准的人写成 unknown，命令仍然以 0 退出。
+`--json` 把同样的记录作为数据打印。
+
 谁来写。PR 作者写这一行。主人在代码宿主上写 Approve。
-谁来读。PR 检查，还有读正文的人。
-怎么检查。Made-with 检查给出写的人和审的人。tier A 时，`checkApprovalFreshness` 要求主人的 Approve 落在 head 上，或者之后只有基础分支的合并，而且这个 PR 自己的 diff 没变。这条检查的 id 是 `pr-approve`。tier B 和 tier C 不走这道门。
+谁来读。PR 检查、`yokoten provenance`，还有读正文的人。
+怎么检查。Made-with 检查给出写的人和审的人。`provenanceFindings` 拿它们和分支的 desk 状态文件对照。tier A 时，`checkApprovalFreshness` 要求主人的 Approve 落在 head 上，或者之后只有基础分支的合并，而且这个 PR 自己的 diff 没变。这条检查的 id 是 `pr-approve`。tier B 和 tier C 不走这道门。
 版本 1。这是第一种样子，自己没有版本字段。
 
 - [src/rules/pr.ts](../../../src/rules/pr.ts) 和 [test/rules/pr.test.ts](../../../test/rules/pr.test.ts)。
+- [src/run/hook.ts](../../../src/run/hook.ts) 和 [test/run/check.test.ts](../../../test/run/check.test.ts)。
+- [src/commands/check.ts](../../../src/commands/check.ts) 和 [test/commands/check.test.ts](../../../test/commands/check.test.ts)。
 
 ## 风险等级
 

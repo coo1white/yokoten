@@ -1,0 +1,39 @@
+# Watches this repo's Actions all the time, not only while someone is looking (#647).
+# Every 30 minutes it reads the last 200 runs and the checks of the open pull requests,
+# then updates one pinned issue, "CI health", in place. It never closes a run, cancels
+# one or comments on a pull request: it only reads and writes that one issue.
+# To stop it, delete this file. `yokoten init --no-ci` also removes it.
+name: actions-health
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+# No job gets a permission it does not name.
+permissions: {}
+# One report at a time. A report still going is never cancelled; a later one waits.
+# GitHub keeps only the newest waiter, so keep one report short and well inside 30 minutes.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '^22.23.4'
+      # The token is this run's own. It can read Actions and pull requests here and write
+      # this repo's issues; it can do nothing else. yokoten never prints it.
+      - run: node bin/yokoten.ts ci-health
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}

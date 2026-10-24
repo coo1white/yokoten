@@ -45,7 +45,7 @@ npx yokoten init        # プロジェクトごとに一度
 npx yokoten doctor      # 今いる関所と、次の一手
 ```
 
-Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
+Claude Code ではプラグインも使えます。`/plugin marketplace add yokoten-labs/yokoten` を実行し、続いて `/plugin install yokoten@yokoten` を実行します。プラグインと `npx` は、どちらか片方だけにしてください。[どのバージョンを入れるか](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#which-version-to-install)を選べます。Stable（既定）、Beta、Dev です。CI だけで使うときは、[GitHub Action として使えます](https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#use-it-as-a-github-action)。コミットのチェックは、時刻が UTC であることを求めます。シェルの設定ファイルに `export TZ=UTC` を一度書いておいてください。
 
 `npx skills add yokoten-labs/yokoten` は、スキルだけをコピーします。`npx yokoten install` も実行してください。でないと、コマンドの番人も、セッションの doctor も入りません。
 
@@ -103,6 +103,7 @@ yokoten はプルリクエストの前に動き、[PR レビューボット](htt
 ## もっと知る
 
 - **[ガイド](https://github.com/yokoten-labs/yokoten/blob/main/docs/i18n/ja/guide.md)**：12 のルール、すべてのコマンド、仕組み、そしてできないことです。
+- **[標準](https://github.com/yokoten-labs/yokoten/blob/main/docs/standard.md)**：各 agent が書き、yokoten が読む形。バージョン 1。
 - **[決定記録](https://github.com/yokoten-labs/yokoten/tree/main/docs/records)**：なぜこう作ったのか。
 - **[変更履歴](https://github.com/yokoten-labs/yokoten/blob/main/CHANGELOG.md)**、**[コントリビュート](https://github.com/yokoten-labs/yokoten/blob/main/CONTRIBUTING.md)**、**[セキュリティ](https://github.com/yokoten-labs/yokoten/blob/main/.github/SECURITY.md)**、**[サーバーの設定](https://github.com/yokoten-labs/yokoten/blob/main/docs/server.md)**。
 

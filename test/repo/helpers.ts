@@ -40,12 +40,14 @@ import {
   readServer,
   type ServerSettings,
 } from '../../src/host/github/index.ts';
+import type { Env } from '../../src/rules/config.ts';
 import type { Fact } from '../../src/setup/advice/adopt.ts';
 import {
   road,
   ROAD,
 } from '../../src/setup/road.ts';
 import type { MachineProbe } from '../../src/setup/doctor/machine.ts';
+import { lineHash } from '../../src/host/sigstore/record.ts';
 
 export const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'yokoten.ts');
 
@@ -83,6 +85,47 @@ after(removeParent);
 process.on('exit', removeParent);
 
 /** A new empty folder in the system temp folder, removed when the test that made it ends. */
+/**
+ * A small event log for the anchor tests (#768): one start line per time, chained from 64
+ * zeros, with the issue set to the line's number. `lines` lets a test change one line
+ * after the chain was made, which is the tamper the check must see.
+ */
+export function makeEventLog(times: string[]): { text: string; lines: string[]; hashes: string[] } {
+  let previous = '0'.repeat(64);
+  const hashes: string[] = [];
+  const lines = times.map((time, index) => {
+    const nanos = String(BigInt(Date.parse(time)) * 1000000n);
+    const line = JSON.stringify({
+      resourceLogs: [
+        {
+          resource: { attributes: [{ key: 'service.name', value: { stringValue: 'yokoten' } }] },
+          scopeLogs: [
+            {
+              scope: { name: 'yokoten' },
+              logRecords: [
+                {
+                  timeUnixNano: nanos,
+                  observedTimeUnixNano: nanos,
+                  eventName: 'yokoten.agent.start',
+                  attributes: [
+                    { key: 'gen_ai.agent.name', value: { stringValue: 'desk' } },
+                    { key: 'yokoten.issue', value: { stringValue: String(index + 1) } },
+                    { key: 'yokoten.event.previous_hash', value: { stringValue: previous } },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    hashes.push(lineHash(line));
+    previous = hashes[hashes.length - 1];
+    return line;
+  });
+  return { text: lines.join('\n') + '\n', lines, hashes };
+}
+
 export function makeTempDir(prefix = 'yokoten-'): string {
   if (!tempParent) tempParent = mkdtempSync(join(tmpdir(), 'yokoten-test-'));
   const path = mkdtempSync(join(tempParent, prefix));
@@ -157,6 +200,19 @@ export function runChild(command: string, args: string[], options: Pick<SpawnSyn
 // NODE_OPTIONS carries the real-home preload that home.ts builds. A sandbox child gets a fresh env,
 // so without this it would read the real private-marks file when its own file is missing (#739).
 const sandboxEnv = (home: string) => ({ PATH: process.env.PATH, HOME: home, NODE_COMPILE_CACHE: COMPILE_CACHE, ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}), TZ: 'UTC', YOKOTEN_TEMP_DIRS: '', GH_TELEMETRY: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'maintenance.auto', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'gc.auto', GIT_CONFIG_VALUE_1: '0', NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' });
+
+// A host sets markers in the environment it runs its hooks in. A test that starts
+// `yokoten hook` must not inherit them from whoever runs the tests (#800): the hook answers
+// for that host, so the same test can pass outside an agent and fail inside one.
+// `hookEnvironment` is this process's environment with those markers cleared; `host` sets
+// the ones a test wants back, after the clear.
+const HOST_MARKERS = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'YOKOTEN_HOOK_DENIAL'] as const;
+
+export function hookEnvironment(host: Env = {}): Env {
+  const env: Env = { ...process.env };
+  for (const name of HOST_MARKERS) delete env[name];
+  return { ...env, ...host };
+}
 
 /** A repo built once per test process by `build`, copied into each folder given (#475): see git-template.ts. */
 export const makeRepoTemplate = (build: (dir: string) => void) => templateRepo(makeFileTempDir, build);
