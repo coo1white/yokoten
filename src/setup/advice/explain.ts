@@ -20,8 +20,12 @@ export interface Explained {
   standard?: string;
 }
 
-/** Every id `explain` knows: the rules first, then the road's steps in order. */
-export const ids = (): string[] => [...Object.keys(RULES), ...ROAD.map((s) => s.key)];
+/**
+ * Every id `explain` knows, once each: the rules first, then the road's steps in order. A
+ * server check is both a rule (why, and how it is checked) and a step on the road (its stage,
+ * and what to do), and both carry the same id (#537); `explain` then answers with the rule.
+ */
+export const ids = (): string[] => [...new Set([...Object.keys(RULES), ...ROAD.map((s) => s.key)])];
 
 /** The rule or step with this id, or null. */
 export function explain(id: string): Explained | null {

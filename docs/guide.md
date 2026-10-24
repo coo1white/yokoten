@@ -630,8 +630,14 @@ to the plugin, run `yokoten uninstall`. It removes what `install` wrote and keep
 For Codex CLI and Gemini CLI, or without the plugin:
 
 ```sh
-npx yokoten install      # this machine: skills, agents, hooks
 cd your-project
+npx yokoten             # once: installs what is missing, then the road
+```
+
+Run it again in any project and it does only what is still missing. One step at a time:
+
+```sh
+npx yokoten install      # this machine: skills, agents, hooks
 npx yokoten init         # this project: adds files, never overwrites
 npx yokoten doctor       # the road: where you are, what's next
 ```
@@ -744,9 +750,11 @@ action skips `check --pr` and leaves a notice: the pull request check runs on
 `check --pr` holds a pull request to the standard of core rule 8. A repo that does not
 follow it yet can start with `pr-check: false`. A pull request Dependabot opens gets
 the title check, and the other rules show as notes, because Dependabot writes its own
-body. The `init` workflow in the kit still
-runs `.yokoten/`. It moves to the action after the first release, so it never depends
-on `@main`.
+body. The kit's `check` workflow runs the project's copy in `.yokoten/` first: the same
+yokoten, and so the same check, as the commit hook. It then runs the action, pinned to
+the first release's commit, so a pull request that changes `.yokoten/` still meets a
+check it cannot edit; Dependabot keeps that pin current. The kit's `pr` and `issue`
+workflows run the project's copy.
 
 ### A private repo without CI
 
@@ -906,6 +914,7 @@ It puts three safe defaults in `.github/` too:
 | `learn --ship <id>` | In yokoten: moves a reviewed lesson into a group in `kit/lessons/`, where `doctor` from that yokoten runs it in every project. Refused while a `TODO(reviewer)` is left or its test fails |
 | `learn --upstream "<what happened>" [--area <name>] [--fix <idea>]` | Keeps a note about a gap in yokoten itself, with the project and you hidden. `--list` shows the notes; `--done <id>` removes one. See [Lessons for yokoten itself](#lessons-for-yokoten-itself) |
 | `check --history` | The privacy check over every commit on every branch. Run it before a private repo goes public. A shallow clone can't see old commits, so it fails without scanning; in CI, check out the whole history (`fetch-depth: 0`). A hit in a file names the commit that added it, and the path in that commit: `file @ <commit>`. It reads commits past `git replace`, and fails the same way when a grafts file can hide commits. |
+| `pr sync` | Brings each open pull request up to date with its base branch after a merge. It merges the base in, resolves only two mechanical conflicts (both sides added a whole block, or both changed the same import list), runs typecheck and the tests of the touched files after every merge, clean or resolved, then pushes as the bot. Anything else stops with the files, the hunks and a dispatch brief. Each report line names the base it merged. The open list stops at 100 pull requests, and the report says when it did. It never force-pushes, rebases or resolves on GitHub. Run it after every merge. See [Managing agents like a team](#managing-agents-like-a-team) |
 | `hook [--agent <name>] [--commands-only] [--json]` | The tool-call guard. Reads one tool call on stdin: a Claude Code PreToolUse call by default, a Codex PreToolUse call with `--agent codex`, a Gemini CLI BeforeTool call with `--agent gemini`, an Antigravity CLI PreToolUse call with `--agent antigravity`, a Muse Code PreToolUse call with `--agent muse`, a DeepSeek Harness PreToolUse call with `--agent deepseek-harness`, a Grok CLI PreToolUse call with `--agent grok`, an OpenCode tool call with `--agent opencode` |
 | `hook --stop [--agent <name>]` | The stop check. Reads the end-of-turn event on stdin and checks the changed files: a Claude Code Stop or SubagentStop event by default, a Codex Stop event with `--agent codex`, a Muse Code Stop event with `--agent muse`, a Gemini CLI AfterAgent event with `--agent gemini`, a Grok CLI Stop event with `--agent grok`. A worker also runs the task's done-when command. See [The stop check](#the-stop-check) |
 | `stops [off \| on]` | Shows the stop log at `~/.config/yokoten/stops.jsonl`, and whether yokoten writes it. `off` stops the writing and deletes the log; `on` starts it again. The log stays on this computer. See [The stop check](#the-stop-check) |
@@ -1881,6 +1890,20 @@ add one: it names yokoten's own next step.
 
 yokoten's findings on the pull request page come from its own checks only. It does not
 repeat another bot's findings or review the code a second time (#91).
+
+### Keeping pull requests up to date
+
+Every merge leaves the other open pull requests behind. A conflict waits for nobody, so
+the lead runs `yokoten pr sync` after every merge. It merges each branch's base branch in,
+runs typecheck and the tests of the touched files, and pushes as the bot. This runs after
+every merge, clean or resolved, and in UTC so the merge commit is too. It resolves only
+two mechanical conflicts: two added blocks at one spot, and two changed import lists.
+Anything else stops with the files and the hunks, and the lead hands them to a worker with
+the dispatch brief. Each report line names the base it merged. The list stops at 100 open
+pull requests, and the report says when it did.
+
+The owner never resolves a conflict on GitHub. The web editor would commit as the
+owner, and the bot must be the one that pushes. Related: issue #320, the merge train.
 
 ### The desk
 
