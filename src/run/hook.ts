@@ -14,7 +14,7 @@ import { type Config, DEFAULTS, type Env, type IgnoredPart, loadConfig } from '.
 import { checkCommand, checkEdit, checkTeamEdit, checkWorkerMarkEdit, configFolder, DONE_WHEN_FILE, gitLinkAbove, realPath as real, stopsFile, stopsOffFile } from '../rules/guards.ts';
 import { type Finding, finding } from '../rules/message.ts';
 import type { DeskAgent } from '../rules/pr.ts';
-import { loadMarks, makeRedactor } from '../rules/privacy.ts';
+import { loadMarks, makeRedactor } from '../rules/privacy/index.ts';
 import { findEnvironmentValues, makeSecretHider, SECRET } from '../rules/privacy/secrets.ts';
 
 // ---- The stop log (#621) ----

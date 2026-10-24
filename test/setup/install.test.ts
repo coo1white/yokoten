@@ -39,7 +39,7 @@ import {
 import { hasHook } from '../../src/agents/hooks-file.ts';
 import { copyRuntime } from '../../src/setup/files.ts';
 import { addOwnMark, countMarkKinds, fillMarks, filledLines, hasMarks, install, isMachineSetUp, isOnPath, launcherText, machineStateFile, machineUserNames, migrateMarks, paths, PROFILE_LINE, setUpLauncher, uninstall, type UserNameProbe, USER_CLI, writeFileAtomic } from '../../src/setup/install.ts';
-import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy.ts';
+import { autoLogins, loadMarkKinds, makeRedactor } from '../../src/rules/privacy/index.ts';
 
 const BAD_USER_SETTINGS: [content: string, reason: (file: string) => string][] = [
   ['{ not json', (file) => `can't read ${file} ${JSON_FIX('install')}`],

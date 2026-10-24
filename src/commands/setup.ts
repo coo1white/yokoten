@@ -4,7 +4,7 @@ import { existsSync, readSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ghIn } from '../host/github/index.ts';
 import { loadConfig } from '../rules/config.ts';
-import { homeOf, NO_HOME } from '../rules/privacy.ts';
+import { homeOf, NO_HOME } from '../rules/privacy/index.ts';
 import { formatFinding } from '../rules/message.ts';
 import { init, updateCoreRules } from '../setup/init.ts';
 import { type Ask, install, isMachineSetUp, uninstall } from '../setup/install.ts';

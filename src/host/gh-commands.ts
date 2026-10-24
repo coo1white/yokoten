@@ -4,7 +4,7 @@
 
 import { type Finding, finding } from '../rules/message.ts';
 import { findProgramPlaces, plainArgs, useHostCommands, withoutShellRedirects } from '../rules/guards.ts';
-import { ghIndex, type HostApiCall, optionValue, useHostApi } from '../rules/privacy.ts';
+import { ghIndex, type HostApiCall, optionValue, useHostApi } from '../rules/privacy/index.ts';
 
 // ---- Cancelling or deleting an Actions run (#650) ----
 //

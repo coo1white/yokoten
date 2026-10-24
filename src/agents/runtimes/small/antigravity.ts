@@ -12,7 +12,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:f
 import { dirname, join } from 'node:path';
 import type { Env } from '../../../rules/config.ts';
 import { releaseFix } from '../../../rules/guards.ts';
-import { homeIn } from '../../../rules/privacy.ts';
+import { homeIn } from '../../../rules/privacy/index.ts';
 import { guardCommand, missingProjectRuntime } from '../../../run/cli.ts';
 import type { Action } from '../../../run/hook.ts';
 import { type Added, type HookState, isObject, type Problem, UnreadableHooksFile } from '../../hooks-file.ts';

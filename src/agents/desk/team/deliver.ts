@@ -16,7 +16,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Env, loadConfig } from '../../../rules/config.ts';
-import { hideHome, loadMarkKinds, mapMarkKinds, scanText } from '../../../rules/privacy.ts';
+import { hideHome, loadMarkKinds, mapMarkKinds, scanText } from '../../../rules/privacy/index.ts';
 import { isSecretValue, SECRET_NAME } from '../agent-env.ts';
 import { keepReadState, type Message, unread } from './outbox.ts';
 import { LEAD, MAX_DELIVERED, type Member, oneLine, readRoster, UNSEEN } from './team.ts';

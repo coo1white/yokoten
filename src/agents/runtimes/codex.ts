@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Env } from '../../rules/config.ts';
 import { releaseFix } from '../../rules/guards.ts';
-import { homeIn, homeOf } from '../../rules/privacy.ts';
+import { homeIn, homeOf } from '../../rules/privacy/index.ts';
 import { guardCommand, missingProjectRuntime } from '../../run/cli.ts';
 import { type Action, isWorkerType } from '../../run/hook.ts';
 import { type FolderTrust, folderKeys, isFolder } from '../folder-trust.ts';

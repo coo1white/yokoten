@@ -1145,7 +1145,7 @@ test('wall-clock smoke: a 100x blow-up fails, one slow read is retried, and a ha
 // empty temp folder, so it has to load before anything else: it is each test file's first
 // import. A child process inherits that HOME, unless the test gives it an env of its own
 // with no HOME; then the CLI falls back to the system's home, the real one. In src, only
-// privacy.ts asks the system for the home folder; the rest reads HOME from the env it is given.
+// privacy/home.ts asks the system for the home folder; the rest reads HOME from the env it is given.
 const HOME_MODULE = 'repo/home.ts';
 const RUNS_CHILD = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\(/;
 

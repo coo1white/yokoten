@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { homeIn } from '../../rules/privacy.ts';
+import { homeIn } from '../../rules/privacy/index.ts';
 
 /** Free and total bytes of one filesystem. */
 export interface DiskSpace {

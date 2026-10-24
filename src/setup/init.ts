@@ -31,7 +31,7 @@ import { AGENT_STATUS_FILE } from '../run/hook.ts';
 import { DEFAULTS, type Env, loadConfig } from '../rules/config.ts';
 import { codeOwnersPath, WORKTREES_DIR } from '../rules/layout.ts';
 import { type Finding, finding } from '../rules/message.ts';
-import { homeOf, systemHome } from '../rules/privacy.ts';
+import { homeOf, systemHome } from '../rules/privacy/index.ts';
 import { CODEOWNERS_PLACES, type Gh, ghIn, isOrganization, isPrivateRepo, repoOf } from '../host/github/index.ts';
 import { readOriginUrl } from './plan.ts';
 import { writeTestsJob } from './advice/tests-job.ts';

@@ -6,7 +6,7 @@
 
 import { join } from 'node:path';
 import type { Env } from '../rules/config.ts';
-import { homeIn } from '../rules/privacy.ts';
+import { homeIn } from '../rules/privacy/index.ts';
 
 /** Where the shared Agent Skills folder keeps a user's skills. */
 export const userDir = (env: Env): string => join(homeIn(env), '.agents');

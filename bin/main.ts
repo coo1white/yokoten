@@ -6,7 +6,7 @@
 // Loading this file runs nothing. bin/yokoten.mjs calls `runFromProcess`, which makes the one
 // invocation from the process; a test calls `main` with its own, in-process (#475).
 
-import { withHome } from '../src/rules/privacy.ts';
+import { withHome } from '../src/rules/privacy/index.ts';
 import { type Invocation, parse, print, printJsonError, say, usage } from '../src/commands/shared.ts';
 import { closestWord, COMMANDS, commandHelp, findCommand, HELP_OPTIONS, commandList } from '../src/run/cli.ts';
 import { VERSION } from '../src/setup/files.ts';

@@ -28,7 +28,7 @@ import {
   makeTranslatedRepo,
 } from '../repo/helpers.ts';
 import { DEFAULTS } from '../../src/rules/config.ts';
-import { useRealHome } from '../../src/rules/privacy.ts';
+import { useRealHome } from '../../src/rules/privacy/index.ts';
 import {
   assumeEmptyFolder,
   batchBlobs,

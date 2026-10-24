@@ -7,7 +7,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Env } from '../../rules/config.ts';
-import { homeOf } from '../../rules/privacy.ts';
+import { homeOf } from '../../rules/privacy/index.ts';
 import type { BorrowedHost, UpstreamCommit } from '../../run/check.ts';
 
 export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);

@@ -9,7 +9,7 @@ import { ADAPTERS, adapterFor, askOf, contextOf, releaseFixOf, rewriteOf, stopRe
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
 import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
-import { hideHome } from '../rules/privacy.ts';
+import { hideHome } from '../rules/privacy/index.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
 import {

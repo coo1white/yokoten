@@ -17,7 +17,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, closeSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, sep } from 'node:path';
 import { type Env } from '../../../../../rules/config.ts';
-import { homeOf } from '../../../../../rules/privacy.ts';
+import { homeOf } from '../../../../../rules/privacy/index.ts';
 import { commonGitDir } from '../../../../../run/hook.ts';
 import { boardHome } from '../../agents.ts';
 import { LINE_READERS, type StreamItem, type StreamSource } from '../items.ts';
