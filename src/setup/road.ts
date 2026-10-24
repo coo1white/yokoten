@@ -25,7 +25,7 @@ import { sandboxProblem as geminiSandboxProblem } from '../agents/runtimes/gemin
 import { sandboxProblem as grokSandboxProblem } from '../agents/runtimes/grok.ts';
 import { isGuardOff, TRUST_FIX } from '../agents/runtimes/muse.ts';
 import { type CommandTest, commitCheckLine, runs } from '../run/cli.ts';
-import { isNoAdapter } from '../host/hosts.ts';
+import { hostOf, isNoAdapter } from '../host/hosts.ts';
 import { CODEOWNERS_PLACES, hasBot, KEYS_FILE, missingBotSetup, type Planning, type ServerSettings, type Unread } from '../host/github/index.ts';
 import { KIT, runtimeVersion, VERSION } from './files.ts';
 import { claudeReadsRules, cliPath, COMMIT_HOOKS, deadHookNotes, findRulesGap, handOffBlocks, hasHandOff, hookFile, isCommitHook, isExecutable, isSelf, type OldHook, OWNER_PLACEHOLDER, readHookSetup, readOldHooks } from './init.ts';
@@ -124,9 +124,18 @@ export { runsTests };
 
 
 const WORKFLOW_DIRS = ['.github/workflows', '.gitea/workflows'];
+/**
+ * The workflow folders this project's code host reads. GitHub reads only
+ * `.github/workflows`; Gitea reads both, because it also runs GitHub workflows (#849).
+ * With no remote, or a host yokoten has no adapter for, yokoten can't tell and reads both.
+ */
+const workflowDirs = (root: string, env: Env, config?: Config): string[] => {
+  const host = hostOf(gitConfig(root, 'remote.origin.url', env), config?.host ?? 'auto');
+  return host.kind === 'github' ? ['.github/workflows'] : WORKFLOW_DIRS;
+};
 // Read the folder directly: a check-then-read can race with a folder that goes away (#849).
-const ciFiles = (root: string): string[] =>
-  WORKFLOW_DIRS.flatMap((dir) => {
+const ciFiles = (root: string, env: Env, config?: Config): string[] =>
+  workflowDirs(root, env, config).flatMap((dir) => {
     const folder = join(root, dir);
     try {
       return readdirSync(folder).map((f) => read(join(folder, f)));
@@ -135,7 +144,7 @@ const ciFiles = (root: string): string[] =>
       throw error;
     }
   });
-const ciText = (root: string) => ciFiles(root).join('\n');
+const ciText = (root: string, env: Env, config?: Config) => ciFiles(root, env, config).join('\n');
 
 const TODO_FILES = ['TODO.md', 'TODO', 'todo.md', 'docs/todo'];
 // Names as the folder lists them: on a case-insensitive disk (macOS) TODO.md also "exists" as todo.md.
@@ -277,17 +286,17 @@ export const onPullRequest = (workflow: string): boolean => {
  * the step is then "can't check", and doctor goes on (#322).
  */
 export const catchLongLines =
-  (check: (root: string) => boolean) =>
-  (root: string): Found => {
+  (check: (root: string, env: Env, config?: Config) => boolean) =>
+  (root: string, env: Env = {}, _?: ServerRead, config?: Config): Found => {
     try {
-      return check(root);
+      return check(root, env, config);
     } catch (error) {
       if (error instanceof RangeError) return null;
       throw error;
     }
   };
 const WORKFLOW_TOO_LONG = 'a line in a workflow is too long to read; make it shorter and run doctor again';
-const ciRunsTests = (root: string) => runsTests(ciText(root), testScript(root), isWorkspaces(root), scriptedRuns(root));
+const ciRunsTests = (root: string, env: Env, config?: Config) => runsTests(ciText(root, env, config), testScript(root), isWorkspaces(root), scriptedRuns(root));
 /**
  * Why no workflow runs the tests, naming the language found by the files at the root
  * (test-commands.ts), so the reader sees doctor knows the project; the usual three when none is.
@@ -805,13 +814,13 @@ export const ROAD: Step[] = [
     stage: 2,
     key: 'ci',
     // `check --pr` is the titles step, and `check --issue` checks issues; this one wants the tree check itself.
-    check: catchLongLines((root) => ciRuns(ciText(root), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root).some((f) => yokotenActions(f).length > 0)),
+    check: catchLongLines((root, env, config) => ciRuns(ciText(root, env, config), runs('check(?!\\s+--(?:pr|issue))')) || ciFiles(root, env, config).some((f) => yokotenActions(f).length > 0)),
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not run `yokoten check`',
     fix: (root) => keptWorkflow(root, 'yokoten.yml', 'check', 'actions/checkout and actions/setup-node'),
     byHand: 'your host\'s CI runs `yokoten check` on every push and on every pull request',
     why: 'a commit made with the hook off would reach main unchecked',
-    how: 'a workflow in .github/workflows or .gitea/workflows runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
+    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows` on GitHub, and `.gitea/workflows` too on Gitea) runs `yokoten check` (by its path, or with npx, bunx or pnpm dlx), or has a step that uses yokoten-labs/yokoten',
     standard: 'Scorecard: CI-Tests',
     withoutCi: 'the commit hook runs `yokoten check` on each commit',
   },
@@ -885,13 +894,13 @@ export const ROAD: Step[] = [
   {
     stage: 3,
     key: 'titles',
-    check: catchLongLines((root) => ciRuns(ciText(root), runs('check --pr')) || ciFiles(root).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck))),
+    check: catchLongLines((root, env, config) => ciRuns(ciText(root, env, config), runs('check --pr')) || ciFiles(root, env, config).some((f) => onPullRequest(f) && yokotenActions(f).some((a) => a.prCheck))),
     unchecked: () => WORKFLOW_TOO_LONG,
     what: () => 'CI does not check pull requests (`yokoten check --pr`)',
     fix: (root) => keptWorkflow(root, 'pr.yml', 'check --pr', 'actions/checkout with `fetch-depth: 0` and actions/setup-node, in a job that runs on pull_request'),
     byHand: 'before a pull request merges, its title has the commit form (`feat: ...`, `fix: ...`) and says what changed',
     why: 'a pull request title becomes the commit on main, so it must say what changed and why',
-    how: 'a workflow in .github/workflows or .gitea/workflows runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
+    how: 'a workflow in the folder this project\'s code host reads (`.github/workflows` on GitHub, and `.gitea/workflows` too on Gitea) runs `yokoten check --pr`, or runs on pull requests with a step that uses yokoten-labs/yokoten and does not set `pr-check: false`',
     standard: 'Conventional Commits 1.0.0',
     withoutCi: 'run `yokoten check --pr <number>` before each merge',
   },

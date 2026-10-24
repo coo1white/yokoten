@@ -158,13 +158,39 @@ test('gitea: walk marks the forge steps done or to do, never can\'t check (#505)
   }
 });
 
+test('gitea: a missing tag protection API is said to be missing, not a missing repo (#849)', async () => {
+  const routes: Record<string, unknown> = { ...GOOD };
+  delete routes['/repos/me/repo/tag_protections'];
+  const server = await readGiteaServer(HOST, TOKEN, fakeGitea(routes));
+  assert.ok(!('unread' in server), JSON.stringify(server));
+  if ('unread' in server) return;
+  const tags = server.tags;
+  assert.equal(typeof tags === 'object' ? tags.unread : '', 'this Gitea has no tag protection API');
+  assert.equal(serverChecks(server).find((c) => c.id === 'tag-rules')?.mark, "can't check");
+});
+
+test('gitea: a GitHub repo does not read .gitea/workflows as its CI (#849)', () => {
+  const root = makeTempDir('yokoten-github-ci-');
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/me/repo.git'], { cwd: root });
+  mkdirSync(join(root, '.gitea', 'workflows'), { recursive: true });
+  writeFileSync(join(root, '.gitea', 'workflows', 'ci.yml'), 'on: [push, pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node bin/yokoten.ts check\n');
+  for (const key of ['tests', 'ci', 'titles']) {
+    assert.equal(ROAD.find((step) => step.key === key)!.check(root, {}, undefined), false, key);
+  }
+  // The same workflow where GitHub reads it counts.
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'on: [push, pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node bin/yokoten.ts check\n');
+  assert.equal(ROAD.find((step) => step.key === 'ci')!.check(root, {}, undefined), true);
+});
+
 test('gitea: a workflow in .gitea/workflows is read as CI, like .github/workflows (#505)', () => {
   const root = makeTempDir('yokoten-gitea-ci-');
   execFileSync('git', ['init', '-q', root]);
   mkdirSync(join(root, '.gitea', 'workflows'), { recursive: true });
   writeFileSync(join(root, '.gitea', 'workflows', 'ci.yml'), 'on: [push, pull_request]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node bin/yokoten.ts check\n');
   const ci = ROAD.find((step) => step.key === 'ci')!;
-  assert.equal(ci.check(root, {}, undefined), true, 'Gitea reads .gitea/workflows');
+  assert.equal(ci.check(root, {}, undefined, { ...DEFAULTS, host: 'gitea' }), true, 'Gitea reads .gitea/workflows');
 });
 
 test('gitea: doctor judges the forge steps through the adapter, not by hand (#505)', async () => {

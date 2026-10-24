@@ -95,22 +95,27 @@ type Read = { body: unknown } | Unread;
 
 const isUnread = (value: unknown): value is Unread => typeof value === 'object' && value !== null && 'unread' in value;
 
-async function ask(get: GiteaGet, path: string): Promise<Read> {
+async function ask(get: GiteaGet, path: string, whenMissing?: Unread): Promise<Read> {
   let answer: GiteaAnswer;
   try {
     answer = await get(path);
   } catch {
     return noAnswer();
   }
-  if (answer.status < 200 || answer.status >= 300) return refused(answer.status);
+  if (answer.status < 200 || answer.status >= 300) {
+    // A read that failed with 404 after the repo read worked means the endpoint is not
+    // there, not that the repo is missing. The caller says which (#849).
+    if (answer.status === 404 && whenMissing) return whenMissing;
+    return refused(answer.status);
+  }
   return { body: answer.body };
 }
 
 /** Every row of a list read, page by page. Gitea caps a page at 50 rows. */
-async function getAll(get: GiteaGet, path: string): Promise<unknown[] | Unread> {
+async function getAll(get: GiteaGet, path: string, whenMissing?: Unread): Promise<unknown[] | Unread> {
   const rows: unknown[] = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const read = await ask(get, `${path}${path.includes('?') ? '&' : '?'}page=${page}&limit=50`);
+    const read = await ask(get, `${path}${path.includes('?') ? '&' : '?'}page=${page}&limit=50`, whenMissing);
     if (isUnread(read)) return read;
     if (!Array.isArray(read.body)) return { unread: 'Gitea sent a list that is not a list', fix: 'run doctor again; if it keeps failing, check the server version' };
     rows.push(...read.body);
@@ -218,10 +223,14 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
   if (!Object.keys(info).length) return { unread: 'Gitea sent no repo for the origin address', fix: 'check the origin address, then run doctor again' };
   const defaultBranch = asText(info.default_branch) || 'main';
 
+  // An older Gitea has no tag protection endpoint. That is unknown, never "off". The
+  // repo read worked, so a 404 here is the endpoint, not the repo (#849).
+  const noTagApi: Unread = { unread: 'this Gitea has no tag protection API', fix: 'protect the v* tags by hand in the repo settings, or update Gitea, then run doctor again' };
+
   // The independent reads run together: doctor waits for the slowest, not the sum.
   const [protectionRead, tagRead, labelRead, milestoneRead, branchRead, pullRead] = await Promise.all([
     ask(api, `${base}/branch_protections`),
-    getAll(api, `${base}/tag_protections`),
+    getAll(api, `${base}/tag_protections`, noTagApi),
     getAll(api, `${base}/labels`),
     getAll(api, `${base}/milestones?state=all`),
     getAll(api, `${base}/branches`),
@@ -230,11 +239,8 @@ export async function readGiteaServer(host: { repo: string; api: string }, env: 
 
   const branch = isUnread(protectionRead) ? protectionRead : branchRules(rowsOf(protectionRead.body), defaultBranch);
 
-  // An older Gitea has no tag protection endpoint. That is unknown, never "off".
   const tags: boolean | Unread = isUnread(tagRead)
-    ? tagRead.unread.startsWith('Gitea answered 404')
-      ? { unread: 'this Gitea has no tag protection API', fix: 'protect the v* tags by hand in the repo settings, or update Gitea, then run doctor again' }
-      : tagRead
+    ? tagRead
     : tagRead.some((rule) => coversReleaseTags(asText(asObject(rule).name_pattern)));
 
   const planning: Planning | Unread =
