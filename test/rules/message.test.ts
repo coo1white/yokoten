@@ -332,6 +332,9 @@ test('messages: every check and guard says what, why and the fix, in text and JS
 
   // The event log's daily anchor check (#768): one finding of each shape, so the rule is reached.
   found.push(finding('anchor', '2026-10-20 no longer matches its anchor: Rekor holds no entry for this hash', 'restore the line the chain names, or keep this log and start a new one'));
+  // The collision stops (#910, #911) need a conflict map of open changes; their own tests build one.
+  found.push(finding('structural-change', 'PR #12 moves src/a.ts too', 'wait for PR #12 to go in, then move src/a.ts', { file: 'src/a.ts' }));
+  found.push(finding('file-lease', 'PR #12 is moving src/a.ts. An edit here now will conflict when it merges', 'work on something else until PR #12 merges, or ask the lead to put this task after it'));
 
   const known = new Set(ids());
   for (const f of found) {
