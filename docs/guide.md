@@ -578,6 +578,25 @@ Some people arrive with skills alone: `npx skills add yokoten-labs/yokoten` copi
 skills only. A skill is advice to the agent; the guard is what stops a command. So skills
 alone guard nothing: run `npx yokoten install` too, or use the plugin, to turn the guard on.
 
+### Which version to install
+
+There are three release channels. Stable is the safe default.
+
+| Channel | Plugin | npm | What you get | For |
+|---|---|---|---|---|
+| Stable | `yokoten` | `latest` | The latest release tag, such as v0.1.0, with a changelog | Everyone |
+| Beta | `yokoten-beta` | `next` | The latest pre-release tag, such as v0.2.0-beta.1 | People who want new features early and can report problems |
+| Dev | `yokoten-dev` | none | The default branch, every merged pull request | Contributors, and our own tests |
+
+`/plugin install yokoten@yokoten` gets Stable. Use `yokoten-beta@yokoten` for Beta, or
+`yokoten-dev@yokoten` for Dev. Install one channel, not several. To switch, run
+`/plugin uninstall yokoten@yokoten`, then install the other name. From a shell,
+`claude plugin uninstall` and `claude plugin install` do the same. `doctor` names the
+channel and version at the top of its output.
+
+A pre-release can break before the stable release. Dev changes on every merge and has
+no changelog.
+
 ### The Claude Code plugin
 
 In a Claude Code session:
@@ -610,7 +629,8 @@ Claude Code runs the plugin's `.ts` files with `node`. Node can do this because 
 plugin folder is not under `node_modules`. To get a newer yokoten, open `/plugin`, select
 yokoten on the **Installed** tab, and choose **Update now**. A third-party marketplace
 does not update on its own until you turn on auto-update for it. From your shell,
-`claude plugin update yokoten@yokoten` does the same. The next tool call runs the updated
+`claude plugin update yokoten@yokoten` does the same; for Beta or Dev, use
+`yokoten-beta@yokoten` or `yokoten-dev@yokoten`. The next tool call runs the updated
 guard. A session which still has the old hook command needs one restart. If Claude Code
 removes the old plugin folder while a session still runs, the tool call is refused and
 asks for a restart. When the plugin is older than the yokoten that runs `doctor`,
@@ -924,7 +944,7 @@ It puts three safe defaults in `.github/` too:
 | `msg send <to> [<text>]`, `msg inbox`, `msg who`, `msg log` | Agents of every vendor message each other through files on this machine. Only the lead runs `log`. See [Messages between agents](#messages-between-agents) |
 | `desk <agent> <folder> [--name <name>] [--read <paths>] [--host <hosts>] [--marks] -- <command>` | Starts a worker's agent in a fenced desk: its own clone, its own state folder, and no network but its model's API. Only the lead runs it. See [The desk](#the-desk) |
 | `uninstall` | Takes back what `install` wrote: the skills and agents marked as managed by yokoten, its two hooks in `~/.claude/settings.json`, and `~/.local/share/yokoten`. Your own files, your other settings and `~/.config/yokoten` (keys, private marks) stay; the stop log is removed. A second run changes nothing |
-| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
+| `bot -- <command>` | Runs one command (`gh`, `git push`) as the bot, with a one-hour token it never prints. Before `gh issue` or `gh pr` `create` or `edit` with a title, it checks the title by the CI rules. A bad title is refused, and nothing is sent. `gh api` on an issue or pull request path is checked the same way. With `--body` or `--body-file`, `gh pr create` and `gh pr edit` also check the body by the body rules of `check --pr`, against the pull request's branch and the base branch's CODEOWNERS. A bad body is refused too, and nothing is sent. A body whose last line is not `🤖 Made with <agent> (<model>)`, one or more comma-separated pairs, is refused too: each pull request names each AI and model that made it. The line may add one `reviewed by <agent> (<model>)` part, or two reviewers joined by `and`; never more than two. A comment (`gh pr comment`, `gh issue comment`), a review with a body (`gh pr review --body`), and a new issue (`gh issue create --body`) carry the same line: a body whose last line is not the `Made with` line is refused too. A note with `--attach` is refused: the upload lands past the `Made with` line. An edit (`gh pr edit --body`, `gh issue edit --body`) stays as it is. `gh pr create` without a type or tier label gets them added: the type from the title (`bug` for `fix`), the tier from the body's `tier:` line. `gh pr edit` does the same for a new title or body, and removes the old tier label when the body sets a new tier. A label you pass is kept. A tier label that does not match the body is refused, with the message of `check --pr`. A label the repo does not have is named in a note and left out; the bot never creates labels. `gh pr create` without `--milestone` gets the milestone of the first linked issue (`Closes #N`, `Part of #N`) that has one. When no linked issue has one, it is refused, and nothing is sent; add `--milestone`. When gh can't read the issue, the pull request is sent without a milestone, with a note. It runs `gh` and `git` only, so `env gh …` or `sh -c …` is refused. It does not read a gh alias, so a title set through one is not checked. Setup: [server.md](server.md#3-the-bot-a-github-app) |
 | `train <pr>... [--wait <seconds>]` | Merges an approved, green queue in the order given, as the bot, and stops at the first pull request that needs a person. It records every base before the first merge, so a pull request stacked on a squash-merged branch merges from the base it truly shares with that branch. A conflict made only of import lines takes the union; a real conflict, a failing test, a failing `check` or a missing approval stops the train. Each merged tree is tested before the push, and CI must pass on the pushed merge; `--wait` sets how long to wait (default 1800 seconds). Only the lead runs it |
 | `board [--text] [--no-open] [--role name] [--vendor name]` | Serves a live page on this machine only: the agents grouped by issue, the picked one, each pull request stage, and each agent's estimated API cost. From the page the owner also starts and stops agents, and sees what waits. It opens the page in your browser (`--no-open` only prints the link) and runs until you stop it. The page refreshes every 15 seconds. `--text` prints the agents, pull requests, worktrees and usage as plain text. With `--text`, `--role` and `--vendor` keep only that role's or vendor's usage rows. See [The team board](#the-team-board) |
 
@@ -1790,8 +1810,9 @@ Rules 1 and 5 need judgement, so the reviewer checks them.
 
 The setup treats agents like staff on a line, each with a clear role and limited rights:
 
-- **The owner** (you) decides what gets built and when it ships. Only you approve pull
-  requests, create release tags, and change repo settings.
+- **The owner** (you) decides what gets built and when it ships. Only you approve a hard
+  line, create release tags, and change repo settings. An area lead may approve its area
+  (record 0026).
 - **The lead** is the session you talk to. It plans, splits the work, reviews, and opens
   pull requests through a **bot**, never with your account.
 - **Workers** are sessions the lead starts for one task each, in their own worktree
@@ -1822,7 +1843,7 @@ is to undo (record 0004):
 |------|----------------|-------------|
 | C | Standard: docs, wording, styles | The lead |
 | B | Normal: other code, with tests | Another vendor's agent reviews; the lead approves |
-| A | Hard to undo: owned files, or a change that makes a rule looser | The owner |
+| A | Hard to undo: owned files, or a change that makes a rule looser | The owner, or another vendor's area lead for a path that is neither a hard line nor a looser change |
 
 In yokoten's own repo, `.github/CODEOWNERS` lists the owned files: the core rules,
 CODEOWNERS, CI that publishes or holds a secret, the bot token, guard config and
@@ -1863,6 +1884,43 @@ refuses: the Approve is on <old commit>; <n> commits with changes came after it;
 the owner to approve again. `gh pr status` through the bot shows the same check for
 tier A pull requests. Keep GitHub's dismiss-stale-approvals setting on too, but
 yokoten never depends on a host setting a project may not have.
+
+### Area leads approve in their area
+
+Record [0026](records/0026-the-owner-is-the-board.md) moves the lock for paths that are
+not a hard line from your code-owner review to yokoten's merge check. An area lead
+approves with a GitHub review. The last line of the review body names the lead, its
+vendor and its model:
+
+```text
+Approved by area lead Grok (xAI, Grok 4.7)
+```
+
+GitHub records the commit the review was given on. A later commit needs a new review.
+The check refuses a lead of the same vendor that wrote the change, read from the
+`Made with` line. A file that `.github/CODEOWNERS` owns, and a looser change, still needs
+your approval. Until the diff tier check (#697) lands, a change to a test that already
+exists counts as looser; a new test does not.
+
+Nothing here changes your repository settings. When you are ready, follow these steps.
+
+1. **Check that `.github/CODEOWNERS` lists only the hard lines.** In this repo it already
+   does (record 0037): the core rules, `.github/CODEOWNERS` itself, CI that publishes or
+   holds a secret, the bot token, guard config and `package.json`. If a path there is not
+   a hard line, remove it: a path you remove becomes lead-approvable.
+2. **Keep one required approval.** A lead's review is a real GitHub review, so keep
+   "Required approvals" at 1. Do not let GitHub Actions approve a pull request.
+3. **Keep the CI check required.** The branch ruleset should still require the CI check
+   that runs `yokoten check --pr`. The bot's merge check is the second lock: it reads the
+   lead approval before `gh pr merge`.
+4. **Turn off "Require review from Code Owners" when the hard lines are safe.** After
+   step 1 the setting names only hard lines, so leaving it on still asks you only for
+   those. Turning it off lets the bot's check decide the rest.
+
+`yokoten doctor` still expects code-owner review today. Expect that one step to note the
+change until it learns the new lock. When a merge is refused, the message names the
+reason and the next step: another vendor's lead, a new review on the head, or the owner
+for a hard line or a looser change.
 
 A reviewer finds the tier through labels, so `check --pr` also reads them. A pull request
 needs one type label and one tier label. A type label is a title type (`feat`, `fix`,
