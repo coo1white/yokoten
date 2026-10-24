@@ -560,6 +560,21 @@ test('pull request body: the body rules of check --pr, without the title, milest
   assert.deepEqual(all, ['pr-title', 'pr-tier', 'pr-section', 'pr-section', 'pr-section', 'pr-issue', 'pr-made-with', 'pr-changelog', 'pr-kit', 'pr-milestone', 'pr-labels', 'pr-labels']);
 });
 
+// #875: the fix text asks for a sentence, so the body that says it passes, not only one
+// that repeats the word `kit`.
+test('pull request body: a kit change may say what every project gets (#875)', () => {
+  const kit = { files: ['kit/workflow-hashes.json', 'CHANGELOG.md'] };
+  const withSentence = (sentence: string) => goodPr().body.replace('## What changed\n', `## What changed\n${sentence}\n\n`);
+  for (const sentence of [
+    'Every project gets this change on its next init.',
+    'Each project gets the workflow on init.',
+    'All projects pick it up at the next init.',
+  ]) {
+    assert.deepEqual(checkPullRequestBody({ ...kit, body: withSentence(sentence) }, DEFAULTS), [], sentence);
+  }
+  assert.deepEqual(checkPullRequestBody({ ...kit, body: withSentence('A file.') }, DEFAULTS).map((p) => p.id), ['pr-kit']);
+});
+
 test('pull request body: read from gh pr create and edit, in every spelling gh takes (#406)', () => {
   const none = { base: null, repo: null, head: null };
   assert.deepEqual(readCommandBody(['gh', 'pr', 'create', '--body', 'tier: A']), { ...none, body: { text: 'tier: A' } });
