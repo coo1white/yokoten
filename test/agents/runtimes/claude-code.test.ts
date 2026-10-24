@@ -201,7 +201,7 @@ test('hook: a Copilot CLI call, in the Claude-format shape it sends from .claude
   });
   const result = await sandbox.call(['hook'], { input });
   assert.equal(result.status, 2, 'Claude Code reads exit 2 and stderr');
-  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: .+\nDo instead: .+\nMore: https:\/\/\S+\n$/);
+  assert.match(result.stderr, /^yokoten stopped this: git push --tags pushes tags \[release\]\nWhy: .+\nDo instead: .+\nTell the AI: "[^"]+"\nMore: https:\/\/\S+\n$/);
   // Copilot CLI shows the agent only "hook exited with code 2" unless stdout names the reason.
   assert.deepEqual(JSON.parse(result.stdout), { permissionDecision: 'deny', permissionDecisionReason: result.stderr.trimEnd() });
   const create = JSON.stringify({ hook_event_name: 'PreToolUse', cwd: sandbox.repo, tool_name: 'Write', tool_input: { path: join(sandbox.repo, 'AGENTS.md'), file_text: 'x' } });

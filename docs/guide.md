@@ -68,6 +68,41 @@ yokoten turns those lessons into something that checks itself:
 
 All of this is on from the start, for everyone: you don't answer a question or edit a file to be safe. Every setting that changes it has a way back to the default. [Record 0014](records/0014-safe-by-default.md) says how yokoten decides what it does by itself, what it asks first, and what it never does.
 
+## The safeguard
+
+The same five protections are on from the start, for every person and every agent. They
+hold with no `yokoten init` and no setting: a repo that never ran `init` gets them too.
+
+1. **Lose your work**: no force push, no hard reset, no deleting `.git` or its history.
+2. **Leak a secret**: no key, token, email address or home path in a commit or a post.
+3. **Publish for you**: no tag, no release, no package publish, no making a repo public.
+4. **Run code from the internet unread**: no download piped into a shell.
+5. **Take the safeguard apart**: no turning off a check or a hook. A worker does not
+   edit CI or the rules; it reports to its lead, and the lead brings the change to you.
+
+When it stops something, it says what it stopped and shows the same short lines:
+
+```
+yokoten stopped this: creating the tag v1.2.0 [release]
+Why: Only the owner decides when to release.
+Do instead: If the owner asked for this, they run `git tag v1.2.0` themselves; do not look for another way.
+Tell the AI: "I will publish this release myself."
+More: https://github.com/yokoten-labs/yokoten/blob/main/docs/guide.md#the-core-rules
+```
+
+The title names the exact tag, file or branch. `Why` says what is at risk. `Do instead`
+gives the safe road. `Tell the AI` gives a sentence to say back to the agent, in plain
+words, so a beginner can use it without reading code; a worker says it to its lead
+instead, and a tag, a package or a repo made public each have their own sentence. The
+rule id and link come last.
+
+A rule with no words of its own gets one plain sentence: "I did not ask for that; stop and
+explain it to me in plain words." The sentence is left out when a caller has none, so the
+four lines keep the shape they had before.
+
+One check runs inside git: the commit check, which `yokoten init` installs. Until then the
+hook reads each command the agent runs, and a commit made by hand is not read.
+
 ## Three checks and a lock
 
 ```mermaid

@@ -792,6 +792,17 @@ function isLongOption(word: string, full: string): boolean {
   return name.length > 0 && (full.startsWith(name) || name.startsWith(full));
 }
 
+/**
+ * Whether `word` is git's `--hard` or a start of it (`--har`). Git reads a start of a long
+ * option, but a longer word names another option or no option, so `--harder` is not a
+ * hard reset (#816).
+ */
+function isHardResetOption(word: string): boolean {
+  if (!word.startsWith('--')) return false;
+  const name = word.slice(2).split('=')[0].toLowerCase();
+  return name.length > 0 && 'hard'.startsWith(name);
+}
+
 /** Whether `word` is a group of short options (`-Ro`) with any of `letters` in it. */
 const hasShortOption = (word: string, letters: string) => /^-[^-]/.test(word) && [...letters].some((letter) => word.slice(1).includes(letter));
 
@@ -1718,7 +1729,16 @@ function checkGit(words: string[], { env, config, cwd, rules }: { env: Env; conf
   }
   if (sub === 'tag' && !env.YOKOTEN_RELEASE_APPROVAL) {
     const tagArgs = withoutShellRedirects(words, argsAt);
-    if (createsTag(tagArgs)) return release(`git tag ${tagArgs.join(' ')} creates a tag`);
+    // A listing option does not hide a named tag (#873); name the tag when the command does.
+    if (createsTag(tagArgs)) {
+      const tag = tagToCreate(tagArgs);
+      if (tag !== null) return finding('release', `creating the tag ${tag}`, `if the owner asked for this, they run \`git tag ${quoteShellWord(tag)}\` themselves; do not look for another way`);
+      return release(`git tag ${tagArgs.join(' ')} creates a tag`);
+    }
+  }
+  // git reads a long option by any start of its name, so `--har` is `--hard` (#816).
+  if (sub === 'reset' && args.some(isHardResetOption)) {
+    return finding('hard-reset', 'git reset --hard throws away uncommitted work', 'commit or stash the work first; to undo a commit, use `git revert`');
   }
   if (sub === 'branch') {
     const names = findDeletedBranches(withoutShellRedirects(words, argsAt));
@@ -2740,15 +2760,15 @@ function looksLikeGitDelete(args: string[]): boolean {
 const DELETE_BRANCH_FIX = 'delete only the branch you mean (`git branch -d <branch>`), and leave the default branch alone';
 const deleteBranchFinding = (what: string) => finding('delete-default-branch', what, DELETE_BRANCH_FIX);
 
-/** The branches a `git branch -d`, `-D` or `--delete` removes, or null when it removes none. */
+/** The branches a `git branch -d`, `-D` or `--delete` removes, or null when it removes none. git takes a shortened long option. */
 function findDeletedBranches(args: string[]): string[] | null {
-  const deletes = args.some((arg) => arg === '--delete' || (/^-[A-Za-z]+$/.test(arg) && /[dD]/.test(arg)));
+  const deletes = args.some((arg) => isLongOption(arg, 'delete') || (/^-[A-Za-z]+$/.test(arg) && /[dD]/.test(arg)));
   return deletes ? plainArgs(args) : null;
 }
 
-/** The branches a `git push --delete` (or `-d`) or `git push <remote> :<branch>` deletes, or null. */
+/** The branches a `git push --delete` (or `-d`, or a shortened long option) or `git push <remote> :<branch>` deletes, or null. */
 function findPushedDeletes(args: string[]): string[] | null {
-  if (args.includes('--delete') || args.includes('-d')) return plainArgs(args).map((name) => name.replace(/^:/, ''));
+  if (args.some((arg) => isLongOption(arg, 'delete') || arg === '-d')) return plainArgs(args).map((name) => name.replace(/^:/, ''));
   const colon = plainArgs(args).filter((name) => name.startsWith(':')).map((name) => name.slice(1));
   return colon.length > 0 ? colon : null;
 }
@@ -2758,6 +2778,32 @@ function findDeletedRef(args: string[]): string | null {
   if (!args.includes('-d')) return null;
   const refs = plainArgs(args, ['-m', '--message']);
   return refs.length > 0 ? refs[0] : null;
+}
+
+/** Characters a shell reads as plain text, so a word made of them needs no quotes. */
+const PLAIN_WORD = /^[A-Za-z0-9._/@:+,=-]+$/;
+
+/**
+ * A value inside a command a person may run: plain as it is, or in single quotes when a
+ * shell would read more into it. A backtick or a `$` in a tag must never run when the
+ * reader pastes the line (#816).
+ */
+const quoteShellWord = (word: string): string => (PLAIN_WORD.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
+
+/**
+ * The tag a `git tag` command creates, or null when it only reads or deletes tags (#812).
+ * The name is the first word that is not an option and not the value of one.
+ */
+function tagToCreate(args: string[]): string | null {
+  const reads = new Set(['-l', '--list', '-d', '--delete', '-v', '--verify', '-n', '--column', '--sort', '--format', '--points-at', '--contains', '--merged', '--no-merged', '--omit-empty']);
+  const values = new Set(['-m', '--message', '-F', '--file', '-u', '--local-user']);
+  for (let at = 0; at < args.length; at++) {
+    const word = args[at];
+    if (reads.has(word) || [...reads].some((read) => word.startsWith(`${read}=`))) return null;
+    if (values.has(word)) at++;
+    else if (!word.startsWith('-')) return word;
+  }
+  return null;
 }
 
 /** The default branch: what refs/remotes/origin/HEAD names, else main and master. */
@@ -2789,14 +2835,22 @@ function checkPipeToShell(command: string): Finding | null {
     // The first download in the segments so far: one pass, so a long pipeline reads in
     // linear time. A shell in the first segment has nothing before it, so it passes.
     let downloader: string | undefined;
+    let downloadUrl: string | undefined;
     for (const segment of segments) {
       const commands = commandWords(segment);
       const programs = commands.flatMap(findPrograms).map(programName);
       const shell = findPipeShell(programs, commands, segment);
       if (shell !== undefined && downloader !== undefined) {
-        return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs a download without letting you read it first`, PIPE_SHELL_FIX);
+        const download = downloadUrl === undefined ? 'a download' : `the download ${downloadUrl}`;
+        return finding('pipe-to-shell', `\`${downloader} | ${shell}\` runs ${download} without letting you read it first`, PIPE_SHELL_FIX);
       }
-      downloader ??= programs.find((program) => DOWNLOAD_PROGRAMS.has(program.toLowerCase()));
+      if (downloader === undefined) {
+        const program = programs.find((name) => DOWNLOAD_PROGRAMS.has(name.toLowerCase()));
+        if (program !== undefined) {
+          downloader = program;
+          downloadUrl = /(?:https?|ftp):\/\/[^\s'"|;)]+/.exec(segment)?.[0];
+        }
+      }
     }
   }
   return null;
@@ -4053,8 +4107,22 @@ function checkPublish(words: string[], env: Env): Finding | null {
   const gh = after(['gh']);
   const sub = gh.indexOf('release');
   if (sub !== -1 && gh.slice(sub + 1).some((a) => ['create', 'upload', 'edit'].includes(a))) return release('gh release publishes a release');
+  const repo = gh.indexOf('repo');
+  const repoSub = repo === -1 ? undefined : gh[repo + 1];
+  if (repoSub === 'create' && (gh.includes('--public') || readGhVisibility(gh) === 'public')) return release('creating a public repo');
+  if (repoSub === 'edit' && readGhVisibility(gh) === 'public') return release('making the repo public');
   if (after(['npm', 'pnpm', 'yarn']).includes('publish')) return release('this publishes a package');
   return null;
+}
+
+/** The `--visibility` a `gh repo` command sets last, which is the one gh keeps. */
+function readGhVisibility(words: string[]): string | undefined {
+  let visibility: string | undefined;
+  for (const [at, word] of words.entries()) {
+    if (word === '--visibility') visibility = words[at + 1];
+    else if (word.startsWith('--visibility=')) visibility = word.slice('--visibility='.length);
+  }
+  return visibility;
 }
 
 // What a gh command posts (#391). The title of an issue or a pull request gets the title

@@ -8,7 +8,7 @@ import * as claudeCode from '../agents/runtimes/claude-code.ts';
 import { ADAPTERS, adapterFor, askOf, contextOf, releaseFixOf, rewriteOf, stopReaderOf } from '../agents/runtimes/runtime.ts';
 import { type Env, loadConfig } from '../rules/config.ts';
 import { addWorkerPath, findHeavyJob, gitLinkAbove, hardenRead, markNote, printsAccount, privateOutput, realPath, removeWorkerPath, stopsFile, stopsOffFile, withWorkerMark, WORKER_MARK, workerMarkAt, workerRole, wrapForRedact } from '../rules/guards.ts';
-import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding } from '../rules/message.ts';
+import { type Finding, finding, formatFinding, formatRefusal, notRepoFinding, type RefusalVoice, refusalLanguage, tellLine } from '../rules/message.ts';
 import { hideHome } from '../rules/privacy.ts';
 import { checkChanged, readGit } from '../run/check.ts';
 import { formatSpace, HOST_DISK_FIX, HOST_DRIVE, isLowOnSpace, readKeptHostDisk } from '../setup/doctor/host-disk.ts';
@@ -98,26 +98,31 @@ export function redactCommand(node: string, cli: string, home: string | undefine
 // Each runtime's event for the end of a turn is in its adapter (#211, #614).
 
 /**
- * The yokoten repos (those with a `yokoten.json`) an edit's files are in, past the
- * session's own (#307). A worktree in another folder, or a session started above the repo,
- * loads no project hook, so the guard applies the file's own repo's rules. One `rootOf`
- * per folder and one config per repo. A command's paths count too: Codex runs apply_patch
- * through the shell (#221).
+ * The repos an edit's files are in, past the session's own (#307). A worktree in another
+ * folder, or a session started above the repo, loads no project hook, so the guard applies
+ * the file's own repo's rules. One `rootOf` per folder and one config per repo. A command's
+ * paths count too: Codex runs apply_patch through the shell (#221). A repo with no
+ * `yokoten.json` keeps the safeguard's defaults (#816), so no init is needed for it.
  */
 function editRepos(invocation: Invocation, action: Action, base: string, session: Repo | null, commandsOnly: boolean): Repo[] {
   const rootByFolder = new Map<string, string | null>([[base, session?.root ?? null]]);
   const repos = new Map<string, Repo | null>();
   // In the full hook, the session's root already has its rules.
-  if (session) repos.set(session.root, commandsOnly && existsSync(join(session.root, 'yokoten.json')) ? session : null);
+  if (session) repos.set(session.root, commandsOnly ? session : null);
   for (const path of action.paths) {
     let folder = dirname(resolve(base, path));
     while (!existsSync(folder) && dirname(folder) !== folder) folder = dirname(folder);
     if (!rootByFolder.has(folder)) rootByFolder.set(folder, rootOf(folder, invocation.env));
     const root = rootByFolder.get(folder);
     if (!root || repos.has(root)) continue;
-    repos.set(root, existsSync(join(root, 'yokoten.json')) ? { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) } : null);
+    repos.set(root, repoAt(invocation, root));
   }
-  return [...repos.values()].filter((repo) => repo !== null);
+  return [...repos.values()].filter((repo): repo is Repo => repo !== null);
+}
+
+/** A repo's rules: its yokoten.json, or the defaults when it has none. */
+function repoAt(invocation: Invocation, root: string): Repo {
+  return { root, config: loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr)) };
 }
 
 /**
@@ -161,6 +166,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   // SubagentStop fires for every subagent. Its own type decides. The parent session's
   // role does not: a reviewer started by a worker is not checked (#614).
   const isWorker = event.subagent ? event.worker : event.worker || workerRole(env, folders) !== null;
+  const voice = refusalVoice(env, isWorker, rootOf(folder, env));
   if (event.subagent && !event.worker) {
     if (json) printJson(invocation, { blocked: false, stop: true, findings: [] });
     return 0;
@@ -232,7 +238,7 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
   if (!isWorker) {
     logTurnStop(invocation, agent, false, findings, doneWhen, 'refused');
     if (json) printJson(invocation, { blocked: true, stop: true, findings, ...(notes.length ? { notes } : {}) });
-    print(invocation, [...refusalLines(findings), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
+    print(invocation, [...refusalLines(findings, voice), ...(notes.length ? [`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes)] : [])], invocation.stderr);
     return withMessages(invocation, 2, await takeMessages());
   }
   const bumped = bumpDoneTries(env, key);
@@ -245,14 +251,14 @@ async function stopHook(invocation: Invocation, json: boolean, read: (input: unk
     }
     noteRefused(folder, key);
     logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
-    return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false), await takeMessages());
+    return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, 1, false, voice), await takeMessages());
   }
   if (bumped > DONE_TRY_LIMIT) {
     logTurnStop(invocation, agent, true, findings, doneWhen, 'allowed once');
     return allowFailingStop(invocation, json, findings, notes, doneWhen, bumped, env, key, folder, agent);
   }
   logTurnStop(invocation, agent, true, findings, doneWhen, 'refused');
-  return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true), await takeMessages());
+  return withMessages(invocation, refuseFailingStop(invocation, json, findings, notes, doneWhen, bumped, true, voice), await takeMessages());
 }
 
 /** What a passing worker hears about its anchor. Only a dirty tree asks for a commit (#792). */
@@ -377,10 +383,18 @@ function forgetDoneTries(env: Invocation['env'], key: string): void {
 }
 
 /**
- * Each finding as the refusal a tool denial prints (#707): title, why, do instead, more.
- * The board splits the same four parts from an end-of-turn refusal as from a denial.
+ * Each finding as the refusal a tool denial prints (#707): title, why, do instead, the
+ * sentence to say to the AI (#816), more. The board splits the same parts from an
+ * end-of-turn refusal as from a denial.
  */
-const refusalLines = (findings: Finding[]): string[] => findings.map((found) => formatRefusal(found));
+const refusalLines = (findings: Finding[], voice: RefusalVoice): string[] => findings.map((found) => formatRefusal(found, tellLine(found, voice)));
+
+/** Which words a refusal uses for this session: its language, who asks, and whether the repo ran init. */
+const refusalVoice = (env: Invocation['env'], isWorker: boolean, root: string | null): RefusalVoice => ({
+  lang: refusalLanguage(env),
+  worker: isWorker,
+  hasConfig: root !== null && existsSync(join(root, 'yokoten.json')),
+});
 
 /** The rule a failing stop names first, for the log: a finding's id, or the task's done-when check. */
 function stopRule(findings: Finding[], doneWhen: { ok: boolean } | undefined): string {
@@ -401,9 +415,10 @@ function refuseFailingStop(
   doneWhen: { ok: boolean; output: string } | undefined,
   tries: number,
   saved: boolean,
+  voice: RefusalVoice,
 ): number {
   const lines: string[] = [];
-  if (findings.length) lines.push(...refusalLines(findings));
+  if (findings.length) lines.push(...refusalLines(findings, voice));
   if (notes.length) lines.push(`yokoten: ${notes.length} warning(s) in the changed files:`, ...bullets(notes));
   if (doneWhen?.ok === false) {
     lines.push('yokoten: the done-when check failed. Fix what it reports, then end the task again:');
@@ -536,6 +551,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
   const config = loadHookConfig(root, (line) => say(invocation, `${line}\n`, invocation.stderr));
   const commandsOnly = options.flags.has('--commands-only');
   const repos = editRepos(invocation, action, action.cwd ?? root ?? cwd, root ? { root, config } : null, commandsOnly);
+  // The words a refusal uses here (#816): the language, who asks, and whether the repo ran init.
+  const voice = refusalVoice(env, role !== null || action.worker, root);
   const judged = judgeWithDeadline(action, { root, config, env, cwd, commandsOnly, repos }, guardDeadline(env.YOKOTEN_GUARD_DEADLINE_MS), guard);
   const answer = answerBuffer();
   const answerInvocation: Invocation = { ...invocation, stdout: answer.stream };
@@ -608,8 +625,8 @@ export function runHook(invocation: Invocation, guard?: Guard): number | Promise
     }
     if (!found) return finish(0);
     // The runtimes read the reason from stderr when the hook exits 2; some read stdout.
-    // Every rule gives the same four parts (#707): title, why, do instead, more.
-    const reason = formatRefusal(found);
+    // Every rule gives the same parts (#707), plus the sentence to say to the AI (#816).
+    const reason = formatRefusal(found, tellLine(found, voice));
     say(invocation, `${reason}\n`, invocation.stderr);
     // The --agent the hook was installed with decides the answer, never an environment
     // variable another host could inherit (#707). An unnamed hook may be read by another

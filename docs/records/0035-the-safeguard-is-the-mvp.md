@@ -34,7 +34,8 @@ Other agents follow. "Excellent" is tested, not felt:
 - No false refusals: everyday work (status, diff, reading, editing, tests, commit, push
   of a branch) passes, with a test for each.
 - Fast: the guard's check stays under 100 ms per command (baseline 88 ms, issue #408).
-- Every refusal has the four lines, in English and zh-CN, and never echoes a secret.
+- Every refusal has the four lines and the sentence to say to the AI, in English and
+  zh-CN, and never echoes a secret.
 
 Set aside until the MVP is done: the board, tiers and the review flow, lessons that
 become checks, the trust network and spending limits. Their code stays; the guide's

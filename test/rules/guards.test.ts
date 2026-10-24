@@ -178,6 +178,50 @@ test('release: tag pushes, release commands and publishing are the owner\'s', ()
   ]) blocked(command);
 });
 
+test('release: making a tag is creating a release, so the owner does it (#812)', () => {
+  for (const command of ['git tag v1.2.0', 'git tag -a v1.2.0 -m release', 'git tag -s v1 -m x', 'git tag -f v1']) {
+    const found = checkCommand(command, { cwd: process.cwd(), env: {} });
+    assert.equal(found?.id, 'release', command);
+    assert.match(found?.what ?? '', /^creating the tag /, command);
+  }
+  allowed('git tag');
+  allowed('git tag -l');
+  allowed('git tag --list "v*"');
+  allowed('git tag -d v1.2.0');
+  allowed('git tag -v v1.2.0');
+  allowed('git tag v1.2.0', { YOKOTEN_RELEASE_APPROVAL: '1' });
+  assert.match(checkCommand('git tag v1.2.0', { cwd: process.cwd(), env: {} })?.fix ?? '', /run `git tag v1\.2\.0` themselves/);
+  // The tag a refusal hands back cannot run a value from the stopped command (#816).
+  const hostile = checkCommand('git tag v1`echo-PWNED`', { cwd: process.cwd(), env: {} })?.fix ?? '';
+  assert.match(hostile, /`git tag 'v1`echo-PWNED`'`/, 'a backtick in the tag stays text');
+  const dollar = checkCommand('git tag v1$(id)', { cwd: process.cwd(), env: {} })?.fix ?? '';
+  assert.match(dollar, /`git tag 'v1\$\(id\)'`/, 'a substitution in the tag stays text');
+});
+
+test('release: making a repo public is the owner\'s', () => {
+  blocked('gh repo edit --visibility public');
+  blocked('gh repo edit octo/demo --visibility=public');
+  blocked('gh repo create octo/demo --public');
+  blocked('gh repo create octo/demo --visibility=public');
+  blocked('gh repo create octo/demo --visibility public');
+  // gh keeps the last flag, so the second one decides.
+  blocked('gh repo edit --visibility private --visibility public');
+  allowed('gh repo edit --visibility public --visibility private');
+  allowed('gh repo edit --visibility private');
+  allowed('gh repo create octo/demo --private');
+  allowed('gh repo create octo/demo --visibility=private');
+});
+
+test('losing work: a hard reset is stopped', () => {
+  // git takes any start of a long option, so `--har` is `--hard` (#816).
+  for (const command of ['git reset --hard', 'git reset --hard origin/main', 'git reset --har HEAD', 'git -C ../other reset --hard HEAD~1']) blocked(command);
+  // A longer word is another option (or none), so git rejects it and nothing is reset (#816).
+  allowed('git reset --harder');
+  allowed('git reset --soft HEAD~1');
+  allowed('git reset');
+  allowed('git restore --staged AGENTS.md');
+});
+
 test('release: the refusal names the whole push, remote included (#557)', () => {
   assert.equal(checkCommand('git push origin v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push origin v1.2.0 pushes a release tag');
   assert.equal(checkCommand('git push v1.2.0', { cwd: process.cwd(), env: {} })?.what, 'git push v1.2.0 pushes a release tag');
@@ -1343,18 +1387,18 @@ test('lead-only files: git apply reads only a plain patch file under 1 MB, and s
 });
 
 
-test('lead-only files: shell writes follow the edit guard\'s scope, only in repos that use yokoten (#402)', async () => {
+test('lead-only files: shell writes follow the edit guard\'s scope (#402, #816)', async () => {
   const sandbox = makeSandbox();
   const worker = { YOKOTEN_ROLE: 'worker' };
-  // No yokoten.json and no repo from the hook: yokoten's file list is not this repo's.
+  // No yokoten.json and no repo from the hook: the guard itself has no file list here.
   assert.equal(checkCommand('sed -i s/a/b/ AGENTS.md', { env: worker, cwd: sandbox.repo }), null);
   assert.equal(checkEdit('AGENTS.md', { config: DEFAULTS, env: worker }) === null, false, 'the edit guard has the same list');
   const hook = (flags: string[], command: string) => sandbox.call(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { command } }) });
   const edit = (flags: string[]) => sandbox.call(['hook', ...flags], { input: JSON.stringify({ cwd: sandbox.repo, agent_type: 'yokoten:worker', tool_input: { file_path: join(sandbox.repo, 'AGENTS.md') } }) });
-  // The user-level hook: neither an edit nor a shell write is stopped outside a yokoten repo...
-  assert.equal((await edit(['--commands-only'])).status, 0);
-  assert.equal((await hook(['--commands-only'], 'echo x > AGENTS.md')).status, 0);
-  // ...and both are, once the repo has a yokoten.json.
+  // In a repo without yokoten.json the safeguard's defaults still apply (#816), so a worker
+  // is stopped in the user-level hook and the repo's own hook alike.
+  assert.equal((await edit(['--commands-only'])).status, 2);
+  assert.equal((await hook(['--commands-only'], 'echo x > AGENTS.md')).status, 2);
   sandbox.write('yokoten.json', '{}\n');
   assert.equal((await edit(['--commands-only'])).status, 2);
   assert.equal((await hook(['--commands-only'], 'echo x > AGENTS.md')).status, 2);
@@ -3250,17 +3294,21 @@ test('guard: deleting the default branch is refused (#560)', () => {
       'git branch -D main',
       'git branch -d main',
       'git branch --delete main',
+      'git branch --del main',
       'git update-ref -d refs/heads/main',
       'git push --delete origin main',
+      'git push --del origin main',
       'git push origin :main',
     ]) stop(command, main);
     for (const command of [
       'git branch -D feature',
       'git branch',
       'git branch -d',
+      'git branch --del feature',
       'git update-ref -d refs/heads/feature',
       'git update-ref refs/heads/feature HEAD',
       'git push --delete origin feature',
+      'git push --del origin feature',
       'git push origin main',
     ]) pass(command, main);
     // The default branch git names counts, not the fallback names.

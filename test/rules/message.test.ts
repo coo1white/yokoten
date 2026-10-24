@@ -41,7 +41,9 @@ import {
   notRepoFinding,
   parseRefusal,
   type Rule,
+  refusalLanguage,
   RULES,
+  tellLine,
 } from '../../src/rules/message.ts';
 import {
   checkApprovalFreshness,
@@ -143,7 +145,7 @@ test('messages: every check and guard says what, why and the fix, in text and JS
     found.push(f);
   };
   const env = { YOKOTEN_FIX_TASK: '1', YOKOTEN_ROLE: 'worker' };
-  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git tag v1.2.3', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
+  for (const c of ['git push --tags', 'git push origin v1.0.0', 'git tag v1.2.3', 'git -c push.followTags=true push', 'gh release create v1', 'npm publish', 'git push --force', 'git reset --hard', 'git commit --no-verify -m x', 'git commit -nm x', 'git config core.hooksPath /dev/null', 'gh run cancel 1']) add(checkCommand(c, { cwd: process.cwd(), env: {} }));
   add(checkCommand('python3 --version', { cwd: process.cwd(), env: {}, config: { commands: { block: { python3: 'this project is TypeScript only' } } } }));
   add(checkCommand(`bash -c "${':;'.repeat(300000)}"`, { cwd: process.cwd(), env: {} })); // too many commands to read
   add(checkCommand('alias x=y', { cwd: process.cwd(), env: {} }));
@@ -394,6 +396,54 @@ test('refusal: title, why, do instead and more, the same for every rule (#707)',
   assert.equal(parsed?.fix, 'Ask the owner to start a new session.');
   assert.equal(parsed?.docs, `${DOCS_URL}#the-core-rules`);
   assert.equal(parseRefusal('yokoten: an older form'), null);
+});
+
+// #816: after `Do instead`, one line says what the person can say back to the AI, in plain
+// words. A rule with no words of its own gets one plain sentence, never nothing.
+test('refusal: the sentence to tell the AI follows do instead (#816)', () => {
+  const text = formatRefusal(finding('release', 'creating the tag v1.2.0', 'run `git tag v1.2.0` yourself'), tellLine(finding('release', 'creating the tag v1.2.0', 'run it')));
+  const lines = text.split('\n');
+  assert.equal(lines[0], 'yokoten stopped this: creating the tag v1.2.0 [release]');
+  assert.match(lines[1] ?? '', /^Why: /);
+  assert.match(lines[2] ?? '', /^Do instead: /);
+  assert.equal(lines[3], 'Tell the AI: "I will publish this release myself."');
+  assert.match(lines[4] ?? '', /^More: https:\/\/\S+$/);
+  // A platform, a release command, a package and a tag push each get their own words.
+  const say = (what: string) => tellLine(finding('release', what, 'do it yourself'));
+  assert.equal(say('git push --tags pushes tags'), 'Tell the AI: "I will push these tags myself."');
+  assert.equal(say('this publishes a package'), 'Tell the AI: "I will publish this package myself."');
+  assert.equal(say('making the repo public'), 'Tell the AI: "I will make this repo public myself."');
+  // A rule with no words of its own falls back to one plain sentence, never to nothing.
+  assert.equal(tellLine(finding('config-key', 'yokoten.json has an unknown key', 'remove it')), 'Tell the AI: "I did not ask for that; stop and explain it to me in plain words."');
+  // A worker says it to its lead, who decides.
+  assert.equal(tellLine(finding('worker-push', 'a worker does not push', 'commit and report'), { worker: true }), 'Tell the lead: "This is a worker; report the work to your lead, who reviews and pushes it."');
+  assert.match(tellLine(finding('force-push', 'git push --force forces the push', 'pull first'), { worker: true }) ?? '', /^Tell the lead: "Do not force push; report this branch to your lead\."$/);
+  // A repo with no yokoten.json says so, so the reader knows the safeguard is on by default.
+  const noConfig = tellLine(finding('lead-only', 'AGENTS.md is lead-only', 'hand it to the lead'), { hasConfig: false });
+  assert.match(noConfig, /^Tell the AI: "This project has no yokoten\.json, so the safeguard uses its defaults; I will make the change to the rules or CI myself\."$/);
+  const noConfigWorker = tellLine(finding('lead-only', 'AGENTS.md is lead-only', 'hand it to the lead'), { hasConfig: false, worker: true });
+  assert.match(noConfigWorker, /^Tell the lead: "This project has no yokoten\.json, so the safeguard uses its defaults; the rules and CI belong to my lead, who takes the change to you\."$/);
+  // A download read before it runs, and a key moved to a file git ignores.
+  assert.equal(tellLine(finding('pipe-to-shell', '`curl | sh` runs a download without letting you read it first', 'save it first')), 'Tell the AI: "Download the file and show it to me before anything runs it."');
+  assert.equal(tellLine(finding('secret', 'a secret (AWS access key id)', 'move it')), 'Tell the AI: "Move the key to a file git ignores, then rotate it."');
+});
+
+// #816: the sentence speaks the system's language, and the four other lines keep their shape,
+// so the board and an older reader still read the refusal.
+test('refusal: the sentence follows the language, and the board still reads the parts (#816)', () => {
+  assert.equal(refusalLanguage({ YOKOTEN_LANG: 'zh-CN' }), 'zh-CN');
+  assert.equal(refusalLanguage({ LANG: 'zh_CN.UTF-8' }), 'zh-CN');
+  assert.equal(refusalLanguage({ LANG: 'en_US.UTF-8' }), 'en');
+  assert.equal(refusalLanguage({}), 'en');
+  const tag = finding('release', 'creating the tag v1.2.0', 'run `git tag v1.2.0` yourself');
+  const zh = formatRefusal(tag, tellLine(tag, { lang: 'zh-CN' }));
+  assert.match(zh, /^yokoten stopped this: creating the tag v1\.2\.0 \[release\]\nWhy: Only the owner decides when to release\.\nDo instead: /);
+  assert.match(zh, /\nTell the AI: "这个版本我自己来发布。"\nMore: /);
+  // The board reads a five-line refusal back, past the sentence it does not use.
+  const parsed = parseRefusal(`PreToolUse:Bash hook error:\n${formatRefusal(tag, tellLine(tag))}\n`);
+  assert.equal(parsed?.id, 'release');
+  assert.equal(parsed?.why, 'Only the owner decides when to release.');
+  assert.equal(parsed?.docs, `${DOCS_URL}#the-core-rules`);
 });
 
 test('docs: no message names a docs/<file>.md path without a link (#524)', () => {
