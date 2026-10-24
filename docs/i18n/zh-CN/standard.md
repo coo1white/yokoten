@@ -145,7 +145,7 @@ OpenTelemetry 没有这份工作的名字，所以 `eventName` 以 `yokoten.agen
 缺了必填字段，检查不通过。
 不认识的 `eventName`，检查不通过。
 代码还不会写这份日志。
-现在也没有代码在跑这项检查。
+`yokoten check --anchor` 读现有的日志，和 Rekor 里每天的锚点（#768）。
 版本 1。这份日志没有版本字段。
 
 以后追加的 hook 在 [src/run/hook.ts](../../../src/run/hook.ts)，它的测试在 [test/run/hook.test.ts](../../../test/run/hook.test.ts)。
