@@ -131,13 +131,13 @@ export function changedPaths(git: GitRead, main: string, head: string): { files:
   const words = answer.out.split('\0');
   const files: string[] = [];
   const moves: string[] = [];
-  for (let i = 0; i < words.length; i++) {
-    const status = words[i] ?? '';
+  for (let at = 0; at < words.length; at++) {
+    const status = words[at] ?? '';
     if (!status) continue;
     const kind = status[0];
     if (kind === 'R' || kind === 'C') {
-      const from = words[++i] ?? '';
-      const to = words[++i] ?? '';
+      const from = words[++at] ?? '';
+      const to = words[++at] ?? '';
       if (to) files.push(to);
       // A copy leaves the old path alone, so only a rename moves it.
       if (kind === 'R' && from) {
@@ -146,7 +146,7 @@ export function changedPaths(git: GitRead, main: string, head: string): { files:
       }
       continue;
     }
-    const path = words[++i] ?? '';
+    const path = words[++at] ?? '';
     if (!path) continue;
     files.push(path);
     if (kind === 'D') moves.push(path);

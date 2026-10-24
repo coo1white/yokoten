@@ -449,7 +449,7 @@ function doctorRun(
     notes.push(zones);
   }
   // Open changes that collide (#909): read from the kept map, no git call for each change.
-  const conflicts = conflictNote(root, env);
+  const conflicts = conflictNote(root, env, Date.now(), unsaved?.commonDir ?? null);
   if (conflicts) lines.push(`  note    conflicts: ${conflicts}`);
   const noCi = noCiNote(config.notNow, where.stage, server);
   if (noCi) {

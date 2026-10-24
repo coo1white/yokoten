@@ -568,10 +568,11 @@ export const CONFLICT_MAP_AGE_MS = 60 * 60 * 1000;
  * every open change, and a session start has a time budget. Null when there is nothing to
  * say, and null for a map this yokoten does not know.
  */
-export function conflictNote(root: string, env: Env, now: number = Date.now()): string | null {
+export function conflictNote(root: string, env: Env, now: number = Date.now(), commonDir: string | null = null): string | null {
   let file: string;
   try {
-    const common = readGit(root, ['rev-parse', '--git-common-dir'], { env }).toString('utf8').trim();
+    // Doctor has read the git folder already; pass it, so this note starts no process (#453).
+    const common = commonDir ?? readGit(root, ['rev-parse', '--git-common-dir'], { env }).toString('utf8').trim();
     if (!common) return null;
     file = resolve(root, common, CONFLICT_MAP_PATH);
   } catch {
